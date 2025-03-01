@@ -1,8 +1,8 @@
 import { create } from "zustand";
 
 const usePosts = create((set) => ({
-  selectedPosts: [],
-  setselectedPosts: (selectedPosts) => set({ selectedPosts }),
+  selectedPost: null,
+  setSelectedPost: (selectedPost) => set({ selectedPost }),
   postsList: [],
   setPostsList: (postsList) => set({ postsList }),
 }));

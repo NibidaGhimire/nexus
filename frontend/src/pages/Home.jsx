@@ -4,6 +4,7 @@ import Navbar from "../components/Navbar";
 import PostsList from "../components/PostsList";
 import Saved from "../components/Saved";
 import SubNexus from "../components/SubNexus";
+import PostDetails from "../components/PostDetails";
 
 const Home = () => {
   return (
@@ -17,8 +18,9 @@ const Home = () => {
         </div>
         <div className="flex-[0.6]">
           <Routes>
-            <Route path="/create-post" element={<CreatePost />} />
             <Route path="/" element={<PostsList />} />
+            <Route path="/create-post" element={<CreatePost />} />
+            <Route path="/post/:postId" element={<PostDetails />} />
           </Routes>
         </div>
         <div className="flex-[0.2]">
