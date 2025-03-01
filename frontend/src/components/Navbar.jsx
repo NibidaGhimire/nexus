@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
 import useLogout from "../hooks/useLogout";
-import {logo} from "../assets"; 
+import { logo } from "../assets";
 import { useAuthContext } from "../context/AuthContext";
 import { MdMessage } from "react-icons/md";
+import { FaSearch } from "react-icons/fa";
 
 const Navbar = () => {
   const { logout, loading } = useLogout();
@@ -20,23 +21,26 @@ const Navbar = () => {
   };
 
   return (
-    <nav className="bg-bg/40 rounded-2xl px-4 py-2 w-full shadow-md shadow-white/20"> 
+    <nav className="bg-bg rounded-2xl px-4 py-2 w-full shadow-md shadow-white/20">
       <div className="container mx-auto flex justify-between items-center">
         <Link to="/" className="text-white text-2xl font-bold">
           <img src={logo} alt="Nexus" className="h-8 w-8 inline-block mr-2" />
           Nexus
         </Link>
 
-        <input
-          type="text"
-          placeholder="Search SubNexus, Posts, Users"
-          className="px-4 py-2 rounded-lg bg-gray-700/60 text-white w-96"
-          value={searchQuery}
-          onChange={handleSearchChange}
-        />
+        <div className="px-4 py-2 rounded-lg bg-gray-700/60 text-white flex items-center gap-4">
+          <FaSearch className="absolute"/>
+          <input
+            type="text"
+            placeholder="Search SubNexus, Posts, Users"
+            className="px-8 outline-none bg-transparent text-white"
+            value={searchQuery}
+            onChange={handleSearchChange}
+          />
+        </div>
         <div className="flex items-center space-x-4">
           <Link to="/messages" className="text-white">
-            <MdMessage className="w-8 h-8"/>
+            <MdMessage className="w-8 h-8" />
           </Link>
           <div className="relative">
             <img

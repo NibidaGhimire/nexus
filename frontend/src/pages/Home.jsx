@@ -5,10 +5,12 @@ import SubNexus from "../components/SubNexus";
 
 const Home = () => {
   return (
-    <div className="flex flex-col items-center justify-center">
+    <div className="flex flex-col gap-2" >
+      <div className="sticky top-0 z-10">
       <Navbar />
-      <div className="flex  flex-row ">
-        <div className="flex-[0.2] ">
+      </div>
+      <div className="flex flex-row ">
+        <div className="flex-[0.2] sticky ">
           <SubNexus />
         </div>
         <div className="flex-[0.6]">
