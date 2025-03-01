@@ -13,12 +13,12 @@ const SubNexus = () => {
   }, []);
 
   return (
-    <div className=" px-4 py-2 shadow-md text-white w-full h-screen  border-r-1 border-white/40">
+    <div className="bg-bg/40 px-4 py-2 shadow-md text-white w-full h-screen  border-r-1 border-white/40">
       <div className="mb-4">
         <ul className="mt-2 space-y-2">
           <li
             className={`flex items-center px-8 py-4 rounded-2xl ${
-              location.pathname === "/" ? "bg-darkpurple" : "text-gray-500"
+              location.pathname === "/" ? "bg-darker" : "text-gray-500"
             }`}
           >
             <FaHome className="mr-2" />
@@ -29,7 +29,7 @@ const SubNexus = () => {
           <li
             className={`flex items-center px-8 py-4 rounded-2xl ${
               location.pathname === "/popular"
-                ? "bg-darkpurple"
+                ? "bg-darker"
                 : "text-gray-500"
             }`}
           >
@@ -40,7 +40,7 @@ const SubNexus = () => {
           </li>
           <li
             className={`flex items-center px-8 py-4 rounded-2xl ${
-              location.pathname === "/new" ? "bg-darkpurple" : "text-gray-500"
+              location.pathname === "/new" ? "bg-darker" : "text-gray-500"
             }`}
           >
             <MdNewReleases className="mr-2" />
@@ -61,7 +61,7 @@ const SubNexus = () => {
                 key={subNexus._id}
                 className={`flex items-center px-8 py-4 rounded-2xl  w-full ${
                     location.pathname === `/subnexus/${subNexus._id}`
-                      ? "bg-darkpurple"
+                      ? "bg-darker"
                       : "text-gray-500"
                   }`}
               >

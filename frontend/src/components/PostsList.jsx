@@ -11,12 +11,12 @@ const PostsList = () => {
   }, []);
 
   return (
-    <div className=" px-4 py-2 w-full shadow-md text-white ">
+    <div className="px-4 py-2 w-full shadow-md text-white">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold">Posts</h2>
         <Link
           to="/create-post"
-          className="bg-purple hover:bg-darkpurple outline hover:outline-gray-100 outline-gray-700 px-4 py-2 rounded-lg text-white"
+          className="bg-secondary hover:bg-lighter outline hover:outline-gray-100 outline-gray-700 px-4 py-2 rounded-lg text-black font-medium"
         >
           Create Post
         </Link>
@@ -27,12 +27,12 @@ const PostsList = () => {
         ) : (
           <ul className="mt-2 space-y-2">
             {postsList.map((post) => (
-              <li key={post._id} className="bg-bg/40 rounded-2xl px-4 py-2 ">
+              <li key={post._id} className="bg-bg/40 rounded-2xl px-4 py-2">
                 <Link to={`/post/${post._id}`} className=" flex flex-col gap-2">
                   <h2 className="text-lg font-semibold hover:underline">
                     {post.title}
                   </h2>
-                  <p className="text-sm">{post.description}</p>
+                  <p className="text-sm text-gray-400">{post.description}</p>
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2">
                       <FaRegCommentDots className="w-6 h-6" />

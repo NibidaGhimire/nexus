@@ -1,10 +1,14 @@
 import express from "express";
-import { createPost, getPosts } from "../controllers/post.controller.js";
+import {
+  createPost,
+  getPosts,
+  upload,
+} from "../controllers/post.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
 
 const router = express.Router();
 
-router.post("/create", protectRoute,createPost);
+router.post("/create", protectRoute, upload.single("pdfFile"), createPost);
 router.get("/", getPosts);
 
 export default router;
