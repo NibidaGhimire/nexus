@@ -9,7 +9,7 @@ const SubNexus = () => {
 
 
   return (
-    <div className="bg-bg/40 px-4 py-2 shadow-md text-white w-full h-screen  border-r-1 border-white/40">
+    <div className="bg-bg/40 px-4 py-2 shadow-md text-white w-full h-full  border-r-1 border-white/40">
       <div className="mb-4">
         <ul className="mt-2 space-y-2">
           <li
