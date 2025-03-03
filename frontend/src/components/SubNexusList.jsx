@@ -1,13 +1,22 @@
 import React, { useEffect } from "react";
 import useGetSubNexus from "../hooks/useGetSubNexus";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { FaPlus } from "react-icons/fa";
+import useSubNexus from "../../zustand/useSubNexus";
 
 const SubNexusList = () => {
   const { loading, getSubNexus, subNexusList } = useGetSubNexus();
+  const { setSelectedSubNexus } = useSubNexus();
+  const navigate = useNavigate();
+
   useEffect(() => {
     getSubNexus();
   }, []);
+
+  const handleSubNexusClick = (subNexus) => {
+    setSelectedSubNexus(subNexus);
+    navigate(`/subnexus/${subNexus._id}`);
+  };
 
   return (
     <div>
@@ -24,12 +33,12 @@ const SubNexusList = () => {
                   : "text-gray-500"
               }`}
             >
-              <Link
-                to={`/subnexus/${subNexus._id}`}
-                className={`hover:underline flex items-center`}
+              <div
+                className={`hover:underline flex items-center cursor-pointer`}
+                onClick={() => handleSubNexusClick(subNexus)}
               >
                 <FaPlus className="mr-2" /> {subNexus.name}
-              </Link>
+              </div>
             </li>
           ))}
         </ul>
