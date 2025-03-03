@@ -19,6 +19,27 @@ const postSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    upvotes: {
+      type: Number,
+      default: 0,
+    },
+    downvotes: {
+      type: Number,
+      default: 0,
+    },
+
+    comments: [
+      {
+        type: String,
+      },
+    ],
+    subNexus: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "SubNexus",
+        required: true,
+      },
+    ],
   },
   { timestamps: true }
 );

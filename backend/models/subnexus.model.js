@@ -18,7 +18,12 @@ const subnexusSchema = new mongoose.Schema({
     members: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
-    }]
+    }],
+    posts: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Post'
+    }],
+
 }, { timestamps: true });
 
 const SubNexus = mongoose.model('SubNexus', subnexusSchema);
