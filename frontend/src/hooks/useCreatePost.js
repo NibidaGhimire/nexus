@@ -6,12 +6,13 @@ const useCreatePost = () => {
   const [loading, setLoading] = useState(false);
   const { postsList, setPostsList } = usePosts();
 
-  const createPost = async ({ title, description, pdfFile }) => {
+  const createPost = async ({ title, description, pdfFile, subNexus }) => {
     setLoading(true);
 
     const formData = new FormData();
     formData.append("title", title);
     formData.append("description", description);
+    formData.append("subNexus", JSON.stringify(subNexus));
     if (pdfFile) {
       formData.append("pdfFile", pdfFile);
     }

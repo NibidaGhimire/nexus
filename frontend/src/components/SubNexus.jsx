@@ -1,16 +1,12 @@
-import React, { useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { FaHome, FaFire, FaPlus } from "react-icons/fa";
+import { FaHome, FaFire } from "react-icons/fa";
 import { MdNewReleases } from "react-icons/md";
-import useGetSubNexus from "../hooks/useGetSubNexus";
+import SubNexusList from "./SubNexusList";
 
 const SubNexus = () => {
-  const { loading, getSubNexus, subNexusList } = useGetSubNexus();
   const location = useLocation();
 
-  useEffect(() => {
-    getSubNexus();
-  }, []);
+
 
   return (
     <div className="bg-bg/40 px-4 py-2 shadow-md text-white w-full h-screen  border-r-1 border-white/40">
@@ -57,29 +53,7 @@ const SubNexus = () => {
           +
         </Link>
         </div>
-        {loading ? (
-          <div className="mt-2">Loading...</div>
-        ) : (
-          <ul className="space-y-2">
-            {subNexusList.map((subNexus) => (
-              <li
-                key={subNexus._id}
-                className={`flex items-center px-8 py-4 rounded-2xl  w-full ${
-                  location.pathname === `/subnexus/${subNexus._id}`
-                    ? "bg-darker"
-                    : "text-gray-500"
-                }`}
-              >
-                <Link
-                  to={`/subnexus/${subNexus._id}`}
-                  className={`hover:underline flex items-center`}
-                >
-                  <FaPlus className="mr-2" /> {subNexus.name}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
+        <SubNexusList />
       </div>
     </div>
   );

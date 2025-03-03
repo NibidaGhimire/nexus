@@ -23,8 +23,11 @@ const Home = () => {
             <Route path="/" element={<PostsList />} />
             <Route path="/create-post" element={<CreatePost />} />
             <Route path="/post/:postId" element={<PostDetails />} />
+
             <Route path="/checkplagiarism" element={<CheckPlagiarism />} />
+
             <Route path="/create-subnexus" element={<CreateSubNexus />} />
+            <Route path="/subnexus/:subnexusID" element={<PostDetails />} />
           </Routes>
         </div>
         <div className="flex-[0.2]">
