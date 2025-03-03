@@ -23,7 +23,22 @@ export const upload = multer({ storage });
 export const createPost = async (req, res) => {
   try {
     const { title, description } = req.body;
-    const userId = req.user ? req.user._id : null; // Ensure req.user is defined
+    let subNexus = req.body.subNexus;
+
+    if (typeof subNexus === "string") {
+      try {
+        subNexus = JSON.parse(subNexus); 
+      } catch (error) {
+        return res.status(400).json({ error: "Invalid subNexus format" });
+      }
+    }
+
+    if (!Array.isArray(subNexus)) {
+      return res.status(400).json({ error: "subNexus must be an array" });
+    }
+
+
+    const userId = req.user ? req.user._id : null; 
     const pdfUrl = req.file ? `/uploads/${req.file.filename}` : "";
 
     console.log("Creating post with data:", {
@@ -31,18 +46,20 @@ export const createPost = async (req, res) => {
       description,
       pdfUrl,
       userId,
+      subNexus,
     });
 
     if (!userId) {
       console.error("User ID is missing");
       return res.status(400).json({ error: "User ID is missing" });
     }
-    
+
     const newPost = new Post({
       title,
       description,
       pdfUrl,
       author: userId,
+      subNexus,
     });
 
     await newPost.save();

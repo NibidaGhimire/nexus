@@ -1,4 +1,6 @@
 import SubNexus from "../models/subnexus.model.js";
+import Post from "../models/post.model.js";
+
 
 export const createSubNexus = async (req, res) => {
   try {
@@ -75,3 +77,24 @@ export const joinSubNexus = async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+
+export const getSubNexusPosts = async (req, res) => {
+  try {
+    const subnexusId = req.params.id;
+    const posts = await Post.find({ subNexus: subnexusId })
+      .populate("author", "username")
+      .populate("subNexus", "name");
+
+    if (!posts.length) {
+      return res
+        .status(404)
+        .json({ error: "No posts found for this SubNexus" });
+    }
+
+    res.status(200).json(posts);
+  } catch (error) {
+    console.log("Error in getSubNexusPosts controller", error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};  
