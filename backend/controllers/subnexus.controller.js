@@ -3,12 +3,26 @@ import SubNexus from "../models/subnexus.model.js";
 export const createSubNexus = async (req, res) => {
   try {
     const { name, description } = req.body;
-    const userId = req.user._id; // Assuming you have user ID in req.user
+    const userId = req.user ? req.user._id : null;
+    const members = [userId];
+
+
+    console.log("Creating post with data:", {
+      name,
+      description,
+      userId,
+    });
+
+    if (!userId) {
+      console.error("User ID is missing");
+      return res.status(400).json({ error: "User ID is missing" });
+    }
 
     const newSubNexus = new SubNexus({
       name,
       description,
       createdBy: userId,
+      members,
     });
 
     await newSubNexus.save();

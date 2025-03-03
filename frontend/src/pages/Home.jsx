@@ -5,6 +5,8 @@ import PostsList from "../components/PostsList";
 import Saved from "../components/Saved";
 import SubNexus from "../components/SubNexus";
 import PostDetails from "../components/PostDetails";
+import CheckPlagiarism from "../components/CheckPlagiarism";
+import CreateSubNexus from "../components/CreateSubNexus";
 
 const Home = () => {
   return (
@@ -21,6 +23,8 @@ const Home = () => {
             <Route path="/" element={<PostsList />} />
             <Route path="/create-post" element={<CreatePost />} />
             <Route path="/post/:postId" element={<PostDetails />} />
+            <Route path="/checkplagiarism" element={<CheckPlagiarism />} />
+            <Route path="/create-subnexus" element={<CreateSubNexus />} />
           </Routes>
         </div>
         <div className="flex-[0.2]">

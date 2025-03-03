@@ -5,6 +5,8 @@ const usePosts = create((set) => ({
   setSelectedPost: (selectedPost) => set({ selectedPost }),
   postsList: [],
   setPostsList: (postsList) => set({ postsList }),
+  savedPosts: [],
+  setSavedPosts: (savedPosts) => set({ savedPosts }),
 }));
 
 export default usePosts;

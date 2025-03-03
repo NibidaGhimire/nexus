@@ -28,30 +28,35 @@ const SubNexus = () => {
           </li>
           <li
             className={`flex items-center px-8 py-4 rounded-2xl ${
-              location.pathname === "/popular"
+              location.pathname === "/checkplagiarism"
                 ? "bg-darker"
                 : "text-gray-500"
             }`}
           >
             <FaFire className="mr-2" />
-            <Link to="/popular" className="hover:underline">
-              Popular
+            <Link to="/checkplagiarism" className="hover:underline">
+              Check Plagiarism
             </Link>
           </li>
           <li
             className={`flex items-center px-8 py-4 rounded-2xl ${
-              location.pathname === "/new" ? "bg-darker" : "text-gray-500"
+              location.pathname === "/popular" ? "bg-darker" : "text-gray-500"
             }`}
           >
             <MdNewReleases className="mr-2" />
-            <Link to="/new" className="hover:underline">
-              New
+            <Link to="/popular" className="hover:underline">
+              Popular
             </Link>
           </li>
         </ul>
       </div>
-      <div>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">SubNexus</h2>
+        <Link to="/create-subnexus" className="bg-darker hover:bg-lighter outline hover:outline-gray-100 outline-gray-700 px-2 py-1 rounded-lg font-medium">
+          +
+        </Link>
+        </div>
         {loading ? (
           <div className="mt-2">Loading...</div>
         ) : (
@@ -60,14 +65,14 @@ const SubNexus = () => {
               <li
                 key={subNexus._id}
                 className={`flex items-center px-8 py-4 rounded-2xl  w-full ${
-                    location.pathname === `/subnexus/${subNexus._id}`
-                      ? "bg-darker"
-                      : "text-gray-500"
-                  }`}
+                  location.pathname === `/subnexus/${subNexus._id}`
+                    ? "bg-darker"
+                    : "text-gray-500"
+                }`}
               >
                 <Link
                   to={`/subnexus/${subNexus._id}`}
-                  className={`hover:underline flex items-center` }
+                  className={`hover:underline flex items-center`}
                 >
                   <FaPlus className="mr-2" /> {subNexus.name}
                 </Link>
