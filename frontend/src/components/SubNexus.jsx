@@ -40,8 +40,8 @@ const SubNexus = () => {
             }`}
           >
             <MdNewReleases className="mr-2" />
-            <Link to="/popular" className="hover:underline">
-              Popular
+            <Link to="/summarize" className="hover:underline">
+              Summarize
             </Link>
           </li>
         </ul>

@@ -7,7 +7,7 @@ import { useNavigate } from "react-router-dom";
 const ReviewersView = () => {
   const { selectedPost } = usePosts();
   const apiUrl = import.meta.env.VITE_API_URL;
-    const { addReview, loading } = useAddReview();
+    const { addReview } = useAddReview();
   const navigate = useNavigate();
 
   const [review, setReview] = useState({

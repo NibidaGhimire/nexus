@@ -10,7 +10,7 @@ const PostListLayout = ({postsList}) => {
   const { setSelectedPost } = usePosts();
   const navigate = useNavigate();
   const handlePostClick = (post) => {
-    setSelectedPost(post);
+    setSelectedPost(post);866
     navigate(`/post/${post._id}`);
   };
 

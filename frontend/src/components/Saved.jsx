@@ -18,9 +18,6 @@ const Saved = () => {
     navigate(`/post/${post._id}`);
   };
 
-  console.log("All posts:", postsList);
-  console.log("Saved posts:", savedPosts);
-  console.log("Filtered saved posts:", filteredPosts);
 
   return (
     <div className=" px-4 py-2 shadow-md w-full h-screen text-white/40  border-l-1 flex flex-col gap-4">

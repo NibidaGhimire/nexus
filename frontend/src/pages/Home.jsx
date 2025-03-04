@@ -10,6 +10,7 @@ import CreateSubNexus from "../components/CreateSubNexus";
 import SubNexusDetails from "../components/SubNexusDetails";
 import AuthorsView from "../components/AuthorsView";
 import ReviewersView from "../components/ReviewersView";
+import Summarize from "../components/Summarize";
 
 const Home = () => {
   return (
@@ -32,6 +33,7 @@ const Home = () => {
             <Route path="/post/:postId/addreview" element={<ReviewersView />} />
 
             <Route path="/checkplagiarism" element={<CheckPlagiarism />} />
+            <Route path="/summarize" element={<Summarize />} />
 
             <Route path="/create-subnexus" element={<CreateSubNexus />} />
             <Route path="/subnexus/:subnexusID" element={<SubNexusDetails />} />
