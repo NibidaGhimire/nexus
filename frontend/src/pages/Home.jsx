@@ -18,10 +18,12 @@ const Home = () => {
         <Navbar />
       </div>
       <div className="flex flex-row ">
-        <div className="flex-[0.2] sticky ">
-          <SubNexus />
+        <div className="flex-[0.2] sticky">
+          <div className="fixed top-16 h-full w-70 bg-bg/40 text-white">
+            <SubNexus />
+          </div>
         </div>
-        <div className="flex-[0.6]">
+        <div className="flex-[0.6] ">
           <Routes>
             <Route path="/" element={<PostsList />} />
             <Route path="/create-post" element={<CreatePost />} />
@@ -36,7 +38,9 @@ const Home = () => {
           </Routes>
         </div>
         <div className="flex-[0.2]">
-          <Saved />
+          <div className="fixed top-16 h-full w-60 bg-bg/40 text-white">
+            <Saved />
+          </div>
         </div>
       </div>
     </div>
