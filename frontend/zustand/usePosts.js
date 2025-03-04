@@ -10,6 +10,8 @@ const usePosts = create(
       setPostsList: (postsList) => set({ postsList }),
       savedPosts: [],
       setSavedPosts: (savedPosts) => set({ savedPosts }),
+      comments:[],
+      setComments: (comments) => set({comments}),
     }),
     {
       name: "posts-storage", 

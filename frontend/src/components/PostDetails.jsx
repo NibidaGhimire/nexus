@@ -5,13 +5,27 @@ import usePosts from "../../zustand/usePosts";
 import { useAuthContext } from "../context/AuthContext";
 import { Link } from "react-router-dom";
 import { FaBookmark } from "react-icons/fa";
+import { IoSend } from "react-icons/io5";
+import useAddComment from "../hooks/useAddComment";
+import Comments from "./Comments";
 
 const PostDetails = () => {
   const { selectedPost, setSavedPosts } = usePosts();
-  const [comments, setComments] = useState([]);
+  const [comment, setComment] = useState([]);
   const apiUrl = import.meta.env.VITE_API_URL;
   const { authUser } = useAuthContext();
   const [authormatch, setAuthormatch] = useState(false);
+  const { addComment } = useAddComment();
+
+  const handleAddComment = async (e) => {
+    e.preventDefault();
+    await addComment({
+      postId: selectedPost._id,
+      comment: comment,
+      username: authUser.username,
+    });
+    setComment("");
+  };
 
   useEffect(() => {
     if (selectedPost && authUser) {
@@ -70,22 +84,23 @@ const PostDetails = () => {
           )}
         </div>
       </div>
-      <div className="mt-6">
+      <div className="mt-6 flex flex-col gap-4">
         <h3 className="text-xl font-semibold">Comments</h3>
-        {comments.length > 0 ? (
-          <ul className="mt-2 space-y-2">
-            {comments.map((comment) => (
-              <li key={comment._id} className="bg-bg/40 px-4 py-2 rounded-lg">
-                <p className="text-gray-500 text-sm">
-                  {comment.author.username}
-                </p>
-                <p className="text-white">{comment.text}</p>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-2 text-gray-400">No comments yet.</p>
-        )}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="Add a comment"
+            className="w-full mt-2 p-2 outline rounded-2xl"
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+          />
+          <button onClick={handleAddComment}>
+            <IoSend className="w-6 h-6" />{" "}
+          </button>
+        </div>
+        <div>
+          <Comments />
+        </div>
       </div>
     </div>
   );
