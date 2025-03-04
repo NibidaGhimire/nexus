@@ -1,12 +1,14 @@
 import React, { useState } from "react";
 import usePosts from "../../zustand/usePosts";
 import useAddReview from "../hooks/useAddReview";
+import { useNavigate } from "react-router-dom";
+
 
 const ReviewersView = () => {
   const { selectedPost } = usePosts();
   const apiUrl = import.meta.env.VITE_API_URL;
     const { addReview, loading } = useAddReview();
-
+  const navigate = useNavigate();
 
   const [review, setReview] = useState({
     clarity: "",
@@ -22,8 +24,8 @@ const ReviewersView = () => {
  const handleReviewSubmit = async (e) => {
    e.preventDefault();
    await addReview({ postId: selectedPost._id, review });
+   navigate(`/post/${selectedPost._id}`);
  };
-
 
   return (
     <div className="flex flex-col gap-2 bg-bg">
