@@ -40,6 +40,11 @@ const postSchema = new mongoose.Schema(
         required: true,
       },
     ],
+    reviews: [
+      {
+        type:String,
+      },
+    ],
   },
   { timestamps: true }
 );

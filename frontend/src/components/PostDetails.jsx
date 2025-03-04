@@ -1,16 +1,31 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FaRegCommentDots } from "react-icons/fa";
 import { BiSolidUpvote, BiSolidDownvote } from "react-icons/bi";
 import usePosts from "../../zustand/usePosts";
+import { useAuthContext } from "../context/AuthContext";
+import { Link } from "react-router-dom";
+import { FaBookmark } from "react-icons/fa";
 
 const PostDetails = () => {
   const { selectedPost } = usePosts();
   const [comments, setComments] = useState([]);
   const apiUrl = import.meta.env.VITE_API_URL;
+  const { authUser } = useAuthContext();
+  const [authormatch, setAuthormatch] = useState(false);
 
-  if (!selectedPost) {
-    return <div>Post not found</div>;
-  }
+  useEffect(() => {
+    if (selectedPost && authUser) {
+      console.log("Checking author match...");
+      console.log("Selected Post Author ID:", selectedPost.author._id);
+      console.log("Auth User ID:", authUser._id);
+
+      setAuthormatch(selectedPost.author._id === authUser._id);
+    }
+  }, [selectedPost, authUser]);
+
+  console.log("authormatch", authormatch);
+  console.log("selected post", selectedPost.author._id);
+  console.log(authUser._id);
 
   return (
     <div className="px-4 py-2 w-full shadow-md text-white">
@@ -42,6 +57,25 @@ const PostDetails = () => {
             <FaRegCommentDots className="w-6 h-6" />
             {/* <span>{comments.length}</span> */}
           </div>
+        </div>
+        <div className="flex  items-center gap-4">
+          <>
+            <FaBookmark className="w-6 h-6" />
+          </>
+          {!authormatch && (
+            <Link to={`/post/${selectedPost._id}/addreview`}>
+              <button className="bg-secondary hover:bg-lighter outline hover:outline-gray-100 outline-gray-700 px-4 py-2 rounded-lg text-black font-medium">
+                Add Custom Review
+              </button>
+            </Link>
+          )}
+          {authormatch && (
+            <Link to={`/post/${selectedPost._id}/reviews`}>
+              <button className="bg-secondary hover:bg-lighter outline hover:outline-gray-100 outline-gray-700 px-4 py-2 rounded-lg text-black font-medium">
+                View Custom Reviews
+              </button>
+            </Link>
+          )}
         </div>
       </div>
       <div className="mt-6">

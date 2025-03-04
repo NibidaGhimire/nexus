@@ -8,6 +8,8 @@ import PostDetails from "../components/PostDetails";
 import CheckPlagiarism from "../components/CheckPlagiarism";
 import CreateSubNexus from "../components/CreateSubNexus";
 import SubNexusDetails from "../components/SubNexusDetails";
+import AuthorsView from "../components/AuthorsView";
+import ReviewersView from "../components/ReviewersView";
 
 const Home = () => {
   return (
@@ -24,6 +26,8 @@ const Home = () => {
             <Route path="/" element={<PostsList />} />
             <Route path="/create-post" element={<CreatePost />} />
             <Route path="/post/:postId" element={<PostDetails />} />
+            <Route path="/post/:postId/reviews" element={<AuthorsView />} />
+            <Route path="/post/:postId/addreview" element={<ReviewersView />} />
 
             <Route path="/checkplagiarism" element={<CheckPlagiarism />} />
 
