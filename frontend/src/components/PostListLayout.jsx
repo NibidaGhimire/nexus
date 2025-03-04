@@ -1,4 +1,3 @@
-import React, {  useEffect } from "react";
 import usePosts from "../../zustand/usePosts";
 import { useNavigate } from "react-router";
 import { FaRegCommentDots } from "react-icons/fa";
