@@ -7,7 +7,7 @@ import { Link } from "react-router-dom";
 import { FaBookmark } from "react-icons/fa";
 
 const PostDetails = () => {
-  const { selectedPost } = usePosts();
+  const { selectedPost, setSavedPosts } = usePosts();
   const [comments, setComments] = useState([]);
   const apiUrl = import.meta.env.VITE_API_URL;
   const { authUser } = useAuthContext();
@@ -15,17 +15,9 @@ const PostDetails = () => {
 
   useEffect(() => {
     if (selectedPost && authUser) {
-      console.log("Checking author match...");
-      console.log("Selected Post Author ID:", selectedPost.author._id);
-      console.log("Auth User ID:", authUser._id);
-
       setAuthormatch(selectedPost.author._id === authUser._id);
     }
   }, [selectedPost, authUser]);
-
-  console.log("authormatch", authormatch);
-  console.log("selected post", selectedPost.author._id);
-  console.log(authUser._id);
 
   return (
     <div className="px-4 py-2 w-full shadow-md text-white">
@@ -59,9 +51,9 @@ const PostDetails = () => {
           </div>
         </div>
         <div className="flex  items-center gap-4">
-          <>
+          <button onClick={() => setSavedPosts(selectedPost._id)}>
             <FaBookmark className="w-6 h-6" />
-          </>
+          </button>
           {!authormatch && (
             <Link to={`/post/${selectedPost._id}/addreview`}>
               <button className="bg-secondary hover:bg-lighter outline hover:outline-gray-100 outline-gray-700 px-4 py-2 rounded-lg text-black font-medium">
