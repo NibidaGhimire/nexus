@@ -30,7 +30,7 @@ On the project folder
 #### Install npm packages:
 > ```npm install```
 
-#### Make a env file with URL:
+#### Make a .env file with Frontend URL:
 
 eg: 
 > VITE_API_URL=http://localhost:5000
@@ -41,3 +41,23 @@ eg:
 
 
 ### Frontend will run at: [http://localhost:3000/](http://localhost:3000/)
+
+
+#### Change the directory to projectFolder/detection:
+#### Create a virtual Environnment and Activate:
+> ```python -m venv venv```
+
+>```source venv/Scripts/activate``` (Git Bash Windows)
+
+>``` pip install -r requirements.txt```
+
+#### Start your FastAPI server:
+> ```uvicorn main:app --reload```
+
+### FastAPI will run at: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+
+
+
+
+
+
