@@ -1,5 +1,11 @@
 import mongoose from "mongoose";
 
+const commentSchema = new mongoose.Schema({
+  comment: { type: String, required: true },
+  username: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
 const reviewSchema = new mongoose.Schema(
   {
     clarity: { type: Number, required: true },
@@ -47,12 +53,8 @@ const postSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    comments: [commentSchema],
 
-    comments: [
-      {
-        type: String,
-      },
-    ],
     subNexus: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -60,7 +62,7 @@ const postSchema = new mongoose.Schema(
         required: true,
       },
     ],
-    reviews: [reviewSchema]
+    reviews: [reviewSchema],
   },
   { timestamps: true }
 );

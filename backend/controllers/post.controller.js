@@ -108,3 +108,33 @@ export const addReview = async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+export const addComment = async (req, res) => {
+  try {
+    const { postId, comment, username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: "Username is missing" });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+
+    const newComment = {
+      comment,
+      username,
+      createdAt: new Date(),
+    };
+
+    post.comments.push(newComment);
+    await post.save();
+    await post.populate("comments.username", "username");
+    res.status(201).json(post);
+  } catch (error) {
+    console.error("Error in addComment controller:", error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
