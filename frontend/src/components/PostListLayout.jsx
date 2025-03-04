@@ -1,4 +1,4 @@
-import React from "react";
+import React, {  useEffect } from "react";
 import usePosts from "../../zustand/usePosts";
 import { useNavigate } from "react-router";
 import { FaRegCommentDots } from "react-icons/fa";
@@ -30,7 +30,7 @@ const PostListLayout = ({postsList}) => {
               </p>
 
               <div
-                className=" flex flex-col gap-2 cursor-pointer"
+                className=" flex flex-col gap-2 cursor-pointer text-white"
                 onClick={() => handlePostClick(post)}
               >
                 <h2 className="text-lg font-semibold hover:underline">
@@ -49,7 +49,7 @@ const PostListLayout = ({postsList}) => {
               >
                 Open PDF
               </a>
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center text-white">
                 <div className="flex items-center gap-6">
                   <div className="flex items-center gap-2">
                     <BiSolidUpvote className="w-6 h-6" />

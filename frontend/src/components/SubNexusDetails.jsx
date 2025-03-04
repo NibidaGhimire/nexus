@@ -10,9 +10,14 @@ const SubNexusDetails = () => {
   const { selectedSubNexus } = useSubNexus();
   const { postsList } = usePosts();
 
-  const filteredPosts = postsList.filter(
-    (post) => post.subNexus._id === selectedSubNexus._id
-  );
+  const filteredPosts =
+    postsList && selectedSubNexus
+      ? postsList.filter(
+          (post) =>
+            Array.isArray(post.subNexus) &&
+            post.subNexus.some((sub) => sub === selectedSubNexus._id)
+        )
+      : [];
 
   return (
     <div className=" w-full ">
