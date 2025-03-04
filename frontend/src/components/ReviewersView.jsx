@@ -1,13 +1,35 @@
-import React from "react";
+import React, { useState } from "react";
 import usePosts from "../../zustand/usePosts";
+import useAddReview from "../hooks/useAddReview";
 
 const ReviewersView = () => {
   const { selectedPost } = usePosts();
   const apiUrl = import.meta.env.VITE_API_URL;
+    const { addReview, loading } = useAddReview();
+
+
+  const [review, setReview] = useState({
+    clarity: "",
+    methodology: "",
+    quality: "",
+    logicalFlow: "",
+    writingStyle: "",
+    citation: "",
+    contribution: "",
+    review: "",
+  });
+
+ const handleReviewSubmit = async (e) => {
+   e.preventDefault();
+   await addReview({ postId: selectedPost._id, review });
+ };
+
 
   return (
     <div className="flex flex-col gap-2 bg-bg">
-      <form className="flex flex-col gap-2 p-4">
+      <form 
+      onSubmit={handleReviewSubmit}
+      className="flex flex-col gap-2 p-4">
         <label className="text-white font-semibold">
           <a
             href={`${apiUrl}${selectedPost.pdfUrl}`}
@@ -29,6 +51,10 @@ const ReviewersView = () => {
               className=" bg-bg/40 p-2 rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.clarity}
+              onChange={(e) =>
+                setReview({ ...review, clarity: e.target.value })
+              }
             />
           </li>
           <li className=" text-sm flex items-center gap-2">
@@ -37,6 +63,10 @@ const ReviewersView = () => {
               className="bg-bg/40 p-2 rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.methodology}
+              onChange={(e) =>
+                setReview({ ...review, methodology: e.target.value })
+              }
             />
           </li>
           <li className="text-sm flex items-center gap-2">
@@ -45,6 +75,10 @@ const ReviewersView = () => {
               className="bg-bg/40 p-2 rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.quality}
+              onChange={(e) =>
+                setReview({ ...review, quality: e.target.value })
+              }
             />
           </li>
 
@@ -54,6 +88,10 @@ const ReviewersView = () => {
               className="bg-bg/40 p-2 rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.logicalFlow}
+              onChange={(e) =>
+                setReview({ ...review, logicalFlow: e.target.value })
+              }
             />
           </li>
 
@@ -63,6 +101,10 @@ const ReviewersView = () => {
               className="bg-bg/40 p-2  rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.writingStyle}
+              onChange={(e) =>
+                setReview({ ...review, writingStyle: e.target.value })
+              }
             />
           </li>
 
@@ -72,6 +114,10 @@ const ReviewersView = () => {
               className="bg-bg/40 p-2 rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.citation}
+              onChange={(e) =>
+                setReview({ ...review, citation: e.target.value })
+              }
             />
           </li>
           <li className="text-sm flex items-center gap-2">
@@ -82,6 +128,10 @@ const ReviewersView = () => {
               className="bg-bg/40 p-2 rounded-lg font-bold text-white placeholder:text-gray-700 placeholder:font-regular"
               type="number"
               placeholder="1-10"
+              value={review.contribution}
+              onChange={(e) =>
+                setReview({ ...review, contribution: e.target.value })
+              }
             />
           </li>
         </ul>
@@ -91,8 +141,13 @@ const ReviewersView = () => {
           className="bg-bg/40 p-2 rounded-lg text-white border"
           rows="7"
           placeholder="Write your review here"
+          value={review.review}
+          onChange={(e) => setReview({ ...review, review: e.target.value })}
         ></textarea>
-        <button className="bg-secondary hover:bg-lighter text-black font-medium rounded-lg p-2">
+        <button
+          type="submit"
+          className="bg-secondary hover:bg-lighter text-black font-medium rounded-lg p-2"
+        >
           Submit Review
         </button>
       </form>

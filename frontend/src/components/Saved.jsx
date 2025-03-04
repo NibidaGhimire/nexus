@@ -1,6 +1,7 @@
 import { BiSolidDownvote, BiSolidUpvote } from "react-icons/bi";
 import usePosts from "../../zustand/usePosts";
 import { FaRegCommentDots } from "react-icons/fa";
+import { useNavigate } from "react-router";
 
 const Saved = () => {
   const { savedPosts, postsList } = usePosts();
@@ -9,6 +10,13 @@ const Saved = () => {
   const filteredPosts = postsList.filter((post) =>
     savedPosts.includes(post._id)
   );
+
+  const { setSelectedPost } = usePosts();
+  const navigate = useNavigate();
+  const handlePostClick = (post) => {
+    setSelectedPost(post);
+    navigate(`/post/${post._id}`);
+  };
 
   console.log("All posts:", postsList);
   console.log("Saved posts:", savedPosts);
@@ -24,11 +32,13 @@ const Saved = () => {
             key={post._id}
             className="bg-bg border rounded-2xl  w-full px-4 py-2 hover:outline-gray-500 hover:outline flex flex-col gap-2"
           >
-            <h1>
-              {post.title} -{" "}
-              <span className="text-sm">{post.author.username}</span>
-            </h1>
-            <p className="line-clamp-1">{post.description}</p>
+            <div onClick={() => handlePostClick(post)} className="cursor-pointer">
+              <h1>
+                {post.title} -{" "}
+                <span className="text-sm">{post.author.username}</span>
+              </h1>
+              <p className="line-clamp-1">{post.description}</p>
+            </div>
             <a
               href={`${apiUrl}${post.pdfUrl}`}
               target="_blank"
