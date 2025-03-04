@@ -1,5 +1,6 @@
 import express from "express";
 import {
+  addReview,
   createPost,
   getPosts,
   upload,
@@ -10,5 +11,6 @@ const router = express.Router();
 
 router.post("/create", protectRoute, upload.single("pdfFile"), createPost);
 router.get("/", getPosts);
+router.post("/:id/reviews",protectRoute, addReview);
 
 export default router;

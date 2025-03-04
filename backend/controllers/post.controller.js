@@ -27,7 +27,7 @@ export const createPost = async (req, res) => {
 
     if (typeof subNexus === "string") {
       try {
-        subNexus = JSON.parse(subNexus); 
+        subNexus = JSON.parse(subNexus);
       } catch (error) {
         return res.status(400).json({ error: "Invalid subNexus format" });
       }
@@ -37,8 +37,7 @@ export const createPost = async (req, res) => {
       return res.status(400).json({ error: "subNexus must be an array" });
     }
 
-
-    const userId = req.user ? req.user._id : null; 
+    const userId = req.user ? req.user._id : null;
     const pdfUrl = req.file ? `/uploads/${req.file.filename}` : "";
 
     console.log("Creating post with data:", {
@@ -77,6 +76,35 @@ export const getPosts = async (req, res) => {
     res.status(200).json(posts);
   } catch (error) {
     console.error("Error in getPosts controller:", error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const addReview = async (req, res) => {
+  try {
+    const { postId, review } = req.body;
+    const userId = req.user ? req.user._id : null;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is missing" });
+    }
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+
+    const newReview = {
+      ...review,
+      reviewer: userId,
+    };
+
+    post.reviews.push(newReview);
+    await post.save();
+    await post.populate("reviews.reviewer", "username");
+    res.status(201).json(post);
+  } catch (error) {
+    console.error("Error in addReview controller:", error.message);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

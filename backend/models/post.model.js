@@ -1,5 +1,25 @@
 import mongoose from "mongoose";
 
+const reviewSchema = new mongoose.Schema(
+  {
+    clarity: { type: Number, required: true },
+    methodology: { type: Number, required: true },
+    quality: { type: Number, required: true },
+    logicalFlow: { type: Number, required: true },
+    writingStyle: { type: Number, required: true },
+    citation: { type: Number, required: true },
+    contribution: { type: Number, required: true },
+    review: { type: String, required: true },
+    reviewer: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+  },
+  { timestamps: true }
+);
+
+
 const postSchema = new mongoose.Schema(
   {
     title: {
@@ -40,11 +60,7 @@ const postSchema = new mongoose.Schema(
         required: true,
       },
     ],
-    reviews: [
-      {
-        type:String,
-      },
-    ],
+    reviews: [reviewSchema]
   },
   { timestamps: true }
 );
