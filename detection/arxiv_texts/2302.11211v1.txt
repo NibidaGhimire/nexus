@@ -1,0 +1,1428 @@
+Published as a conference paper at ICLR 2023
+DISTRIBUTIONALLY ROBUST RECOURSE ACTION
+Duy Nguyen1, Ngoc Bui1, Viet Anh Nguyen2
+1VinAI Research, Vietnam
+2The Chinese University of Hong Kong
+ABSTRACT
+A recourse action aims to explain a particular algorithmic decision by showing
+one speciﬁc way in which the instance could be modiﬁed to receive an alternate
+outcome. Existing recourse generation methods often assume that the machine
+learning model does not change over time. However, this assumption does not
+always hold in practice because of data distribution shifts, and in this case, the
+recourse action may become invalid. To redress this shortcoming, we propose
+the Distributionally Robust Recourse Action (DiRRAc) framework, which gener-
+ates a recourse action that has a high probability of being valid under a mixture
+of model shifts. We formulate the robustiﬁed recourse setup as a min-max opti-
+mization problem, where the max problem is speciﬁed by Gelbrich distance over
+an ambiguity set around the distribution of model parameters. Then we suggest
+a projected gradient descent algorithm to ﬁnd a robust recourse according to the
+min-max objective. We show that our DiRRAc framework can be extended to
+hedge against the misspeciﬁcation of the mixture weights. Numerical experiments
+with both synthetic and three real-world datasets demonstrate the beneﬁts of our
+proposed framework over state-of-the-art recourse methods.
+1 I NTRODUCTION
+Post-hoc explanations of machine learning models are useful for understanding and making reliable
+predictions in consequential domains such as loan approvals, college admission, and healthcare. Re-
+cently, recourse has been rising as an attractive tool to diagnose why machine learning models have
+made a particular decision for a given instance. A recourse action provides a possible modiﬁcation
+of the given instance to receive an alternate decision (Ustun et al., 2019). Consider, for example, the
+case of loan approvals in which a credit application is rejected. Recourse will offer the reasons for
+rejection by showing what the application package should have been to get approved. A concrete
+example of a recourse in this case may be “the monthly salary should be higher by $500” or “20%
+of the current debt should be reduced”.
+A recourse action has a positive, forward-looking meaning: they list out a directive modiﬁcation that
+a person should implement so that they can get a more favorable outcome in the future. If a machine
+learning system can provide the negative outcomes with the corresponding recourse action, it can
+improve user engagement and boost the interpretability at the same time (Ustun et al., 2019; Karimi
+et al., 2021b). Explanations thus play a central role in the future development of human-computer
+interaction as well as human-centric machine learning.
+Despite its attractiveness, providing recourse for the negative instances is not a trivial task. For real-
+world implementation, designing a recourse needs to strike an intricate balance between conﬂicting
+criteria. First and foremost, a recourse action should be feasible: if the prescribed action is taken,
+then the prediction of a machine learning model should be ﬂipped. Further, to avoid making a dras-
+tic change to the characteristics of the input instance, a framework for generating recourse should
+minimize the cost of implementing the recourse action. An algorithm for ﬁnding recourse must
+make changes to only features that are actionable and should leave immutable features (relatively)
+unchanged. For example, we must consider the date of birth as an immutable feature; in contrast,
+we can consider salary or debt amount as actionable features.
+Various solutions have been proposed to provide recourses for a model prediction (Karimi et al.,
+2021b; Stepin et al., 2021; Artelt & Hammer, 2019; Pawelczyk et al., 2021; 2020; Verma et al.,
+1arXiv:2302.11211v1  [cs.LG]  22 Feb 2023Published as a conference paper at ICLR 2023
+2020). For instance, Ustun et al. (2019) used an integer programming approach to obtain actionable
+recourses and also provide a feasibility guarantee for linear models. Karimi et al. (2020) proposed a
+model-agnostic approach to generate the nearest counterfactual explanations and focus on structured
+data. Dandl et al. (2020) proposed a method that ﬁnds the counterfactual by solving a multi-objective
+optimization problem. Recently, Russell (2019) and Mothilal et al. (2020) focus on ﬁnding a set of
+multiple diverse recourse actions, where the diversity is imposed by a rule-based approach or by
+internalizing a determinant point process cost in the objective function.
+These aforementioned approaches make a fundamental assumption that the machine learning model
+does not change over time. However, the dire reality suggests that this assumption rarely holds. In
+fact, data shifts are so common nowadays in machine learning that they have sparkled the emerg-
+ing ﬁeld of domain generalization and domain adaptation. Organizations usually retrain models
+as a response to data shifts, and this induces corresponding shifts in the machine learning models
+parameters, which in turn cause serious concerns for the feasibility of the recourse action in the
+future (Rawal et al., 2021). In fact, all of the aforementioned approaches design the action which is
+feasible only with the current model parameters, and they provide no feasibility guarantee for the
+future parameters. If a recourse action fails to generate a favorable outcome in the future, then the
+recourse action may become less beneﬁcial (Venkatasubramanian & Alfano, 2020), the pledge of a
+brighter outcome is shattered, and the trust in the machine learning system is lost (Rudin, 2019).
+To tackle this challenge, Upadhyay et al. (2021) proposed ROAR, a framework for generating
+instance-level recourses that are robust to shifts in the underlying predictive model. ROAR used
+a robust optimization approach that hedges against an uncertainty set containing plausible values
+of the future model parameters. However, it is well-known that robust optimization solutions can
+be overly conservative because they may hedge against a pathological parameter in the uncertainty
+set (Ben-Tal et al., 2017; Roos & den Hertog, 2020). A promising approach that can promote
+robustness while at the same time prevent from over-conservatism is the distributionally robust op-
+timization framework (El Ghaoui et al., 2003; Delage & Ye, 2010; Rahimian & Mehrotra, 2019;
+Bertsimas et al., 2018). This framework models the future model parameters as random variables
+whose underlying distribution is unknown but is likely to be contained in an ambiguity set. The
+solution is designed to counter the worst-case distribution in the ambiguity set in a min-max sense.
+Distributionally robust optimization is also gaining popularity in many estimation and prediction
+tasks in machine learning (Namkoong & Duchi, 2017; Kuhn et al., 2019).
+Contributions. This paper combines ideas and techniques from two principal branches of explain-
+able artiﬁcial intelligence: counterfactual explanations and robustness to resolve the recourse prob-
+lem under uncertainty. Concretely, our main contributions are the following:
+1. We propose the framework of Distributionally Robust Recourse Action (DiRRAc) for design-
+ing a recourse action that is robust to mixture shifts of the model parameters. Our DiRRAc
+maximizes the probability that the action is feasible with respect to a mixture shift of model
+parameters while at the same time conﬁnes the action in the neighborhood of the input instance.
+Moreover, the DiRRAc model also hedges against the misspeciﬁcation of the nominal distribu-
+tion using a min-max form with a mixture ambiguity set prescribed by moment information.
+2. We reformulate the DiRRAc problem into a ﬁnite-dimensional optimization problem with an
+explicit objective function. We also provide a projected gradient descent to solve the problem.
+3. We extend our DiRRAc framework along several axis to handle mixture weight uncertainty, to
+minimize the worst-case component probability of receiving the unfavorable outcome, and also
+to incorporate the Gaussian parametric information.
+We ﬁrst describe the recourse action problem with mixture shifts in Section 2. In Section 3, we
+present our proposed DiRRAc framework, its reformulation and the numerical routine for solving
+it. The extension to the parametric Gaussian setting will be discussed in Section 4. Section 5 reports
+the numerical experiments showing the beneﬁts of the DiRRAc framework and its extensions.
+Notations. For each integer K, we have [K] =f1;:::;Kg. We use Sd
++(Sd
+++) to denote the space
+of symmetric positive semideﬁnite (deﬁnite) matrices. For any A2Rmm, the trace operator is
+Tr
+A
+=Pd
+i=1Aii. If a distribution Qkhas meankand covariance matrix k, we write Qk
+(k;k). If additionally Qkis Gaussian, we write QkN(k;k). Writing Q(Qk;pk)k2[K]
+means Qis a mixture of Kcomponents, the k-th component has weight pkand distribution Qk.
+2Published as a conference paper at ICLR 2023
+2 R ECOURSE ACTION UNDER MIXTURE SHIFTS
+We consider a binary classiﬁcation setting with label Y=f0;1g, where 0represents the unfavorable
+outcome while 1denotes the favorable one. The covariate space is Rd, and any linear classiﬁer
+C:Rd!Y characterized by the d-dimensional parameter is of the form
+C(x) =1if>x0;
+0otherwise.
+Note that the bias term can be internalized into by adding an extra dimension, and thus it is omitted.
+Suppose that at this moment ( t= 0), the current classiﬁer is parametrized by 0, and we are given
+an input instance x02Rdwith unfavorable outcome, that is, C0(x0) = 0 . One period of time from
+now (t= 1), the parameters of the predictive model will change stochastically and are represented
+by ad-dimensional random vector ~. This paper focuses on ﬁnding a recourse action xwhich is
+reasonably close to the instance x0, and at the same time, has a high probability of receiving a
+favorable outcome in the future. Figure 1 gives a bird’s eye view of the setup.
+Figure 1: A canonical setup of the recourse action under mixture shifts problem.
+To measure the closeness between the action xand the input x0, we assume that the covariate space
+is endowed with a non-negative, continuous cost function c. In addition, suppose temporarily that ~
+follows a distribution bP. Because maximizing the probability of the favorable outcome is equivalent
+to minimizing the probability of the unfavorable outcome, the recourse can be found by solving
+minn
+bP(C~(x) = 0) :x2X; c(x;x0)o
+: (1)
+The parameter 0in (1) governs how far a recourse action can be from the input instance x0.
+Note that we constrain xin a set Xwhich captures operational constraints, for example, the highest
+education of a credit applicant should not be decreasing over time.
+In this paper, we model the random vector ~using a ﬁnite mixture of distributions with Kcom-
+ponents, the mixture weights are bpsatisfyingP
+k2[K]bpk= 1. Each component in the mixture
+represents one speciﬁc type of model shifts: the weights bpreﬂect the proportion of the shift types
+while the component distribution bPkrepresents the (conditional) distribution of the future model
+parameters in the k-th shift. Further information on mixture distributions and their applications
+in machine learning can be found in (Murphy, 2012, §3.5). Note that the mixture model is not a
+strong assumption. It is well-known that the Gaussian mixture model is a universal approximator
+of densities, in the sense that any smooth density can be approximated with any speciﬁc nonzero
+amount of error by a Gaussian mixture model with enough components (Goodfellow et al., 2016;
+McLachlan & Peel, 2000). Thus, our mixture models are ﬂexible enough to hedge against distribu-
+tional perturbations of the parameters under large values of K. The design of the ambiguity set to
+handle ambiguous mixture weights and under the Gaussian assumption is extensively studied in the
+literature on distributionally robust optimization (Hanasusanto et al., 2015; Chen & Xie, 2021).
+If eachbPkis a Gaussian distribution N(bk;bk), thenbPis a mixture of Gaussian distributions. The
+objective of problem (1) can be expressed as
+bP(C~(x) = 0) =X
+k2[K]bpkbPk(C~(x) = 0) =X
+k2[K]bpk x>bkq
+x>bkx
+;
+where the ﬁrst equality follows from the law of conditional probability, and is the cumulative
+distribution function of a standard Gaussian distribution. Under the Gaussian assumption, we can
+solve (1) using a projected gradient descent type of algorithm (Boyd & Vandenberghe, 2004).
+3Published as a conference paper at ICLR 2023
+Remark 2.1 (Nonlinear models) .Our analysis focuses on linear classiﬁers, which is a common
+setup in the literature (Upadhyay et al., 2021; Ustun et al., 2019; Rawal et al., 2021; Karimi et al.,
+2020; Wachter et al., 2018; Ribeiro et al., 2016). To extend to nonlinear classiﬁers, we can follow
+a similar approach as in Rawal & Lakkaraju (2020b) and Upadhyay et al. (2021) by ﬁrst using
+LIME Ribeiro et al. (2016) to approximate the nonlinear classiﬁers locally with an interpretable
+linear model, then subsequently applying our framework.
+3 D ISTRIBUTIONALLY ROBUST RECOURSE ACTION FRAMEWORK
+Our Distributionally Robust Recourse Action (DiRRAc) framework robustiﬁes formulation (1) by
+relaxing the parametric assumption and hedging against distribution misspeciﬁcation. First, we
+assume that the mixture components bPkare speciﬁed only through moment information, and no
+particular parametric form of the distribution is imposed. In effect, bPkis assumed to have mean
+vectorbk2Rdand positive deﬁnite covariance matrix bk0. Second, we leverage ideas from
+distributionally robust optimization to propose a min-max formulation of (1), in which we consider
+anambiguity set which contains a family of probability distributions that are sufﬁciently close to the
+nominal distribution bP. We prescribe the ambiguity set using Gelbrich distance (Gelbrich, 1990).
+Deﬁnition 3.1 (Gelbrich distance) .The Gelbrich distance Gbetween two tuples (;)2RdSd
++
+and(b;b)2RdSd
++amounts to G((;);(b;b)),q
+k bk2
+2+ Tr
+ +b 2(b1
+2b1
+2)1
+2
+.
+It is easy to verify that Gis non-negative, symmetric and it vanishes to zero if and only if
+(;) = (b;b). Further, Gis a distance on RdSd
++because it coincides with the type- 2Wasser-
+stein distance between two Gaussian distributions N(;)andN(b;b)(Givens & Shortt, 1984).
+Distributionally robust formulations with moment information prescribed by the Gdistance are
+computationally tractable under mild conditions, deliver reasonable performance guarantees and
+also generate a conservative approximation of the Wasserstein distributionally robust optimization
+problem (Kuhn et al., 2019; Nguyen et al., 2021).
+In this paper, we use the Gelbrich distance Gto form a neighborhood around each bPkas
+Bk(bPk),n
+Qk:Qk(k;k);G((k;k);(bk;bk))ko
+:
+Intuitively, one can view Bk(bPk)as a ball centered at the nominal component bPkof radiusk
+0prescribed using the distance G. This component set Bk(bPk)is non-parametric, and the ﬁrst
+two moments of Qkare sufﬁcient to decide whether Qkbelongs toBk(bPk). Moreover, if Qk2
+Bk(bPk), then any distribution Q0
+kwith the same mean vector and covariance matrix as Qkalso
+belongs toBk(bPk). Notice that even when the radius kis zero, the component set Bk(bPk)does not
+collapse into a singleton. Instead, if k= 0thenBk(bPk)still contains alldistributions of the same
+moment (bk;bk)with the nominal component distribution bPk, and consequentially it possesses the
+robustiﬁcation effects against the parametric assumption on bPk. The component sets are utilized to
+construct the ambiguity set for the mixture distribution as
+B(bP),n
+Q:9Qk2Bk(bPk)8k2[K]such that Q(Qk;bpk)k2[K]o
+:
+AnyQ2B(bP)is also a mixture distribution with Kcomponents, with the same mixture weights bp.
+Thus,B(bP)contains all perturbations of bPinduced separately on each component by Bk(bPk).
+We are now ready to introduce our DiRRAc model, which is a min-max problem of the form
+inf
+x2Xsup
+Q2B(bP)Q(C~(x) = 0)
+s:t: c(x;x0)
+sup
+Qk2Bk(bPk)Qk(C~(x) = 0)<18k2[K]:(2)
+The objective of (2) is to minimize the worst-case probability of unfavorable outcome of the recourse
+action. Moreover, the last constraint imposes that for each component, the worst-case conditional
+4Published as a conference paper at ICLR 2023
+probability of unfavorable outcome should be strictly less than one. Put differently, this last con-
+straint requires that the action should be able to lead to favorable outcome for anydistribution in
+Bk(bPk). By deﬁnition, each supremum subproblem in (2) is an inﬁnite-dimensional maximization
+problem over the space of probability distributions, and thus it is inherently difﬁcult. Fortunately,
+because we use the Gelbrich distance to prescribe the set Bk(bPk), we can solve these maximization
+problems analytically. This consequentially leads to a closed-form reformulation of the DiRRAc
+model into a ﬁnite-dimensional problem. Next, we will reformulate the DiRRAc problem (2), pro-
+vide a sketch of the proof and propose a numerical solution routine.
+3.1 R EFORMULATION OF DIRRA C
+Each supremum in (2) is an inﬁnite-dimensional optimization problem on the space of probability
+distributions. We now show that (2) can be reformulated as a ﬁnite-dimensional problem. Towards
+this end, letXbe the following d-dimensional set.
+X,
+x2X:c(x;x0); b>
+kx+kkxk2<08k2[K]	
+: (3)
+The next theorem asserts that the DiRRAc problem (2) can be reformulated as a d-dimensional
+optimization problem with an explicit, but complicated, objective function.
+Theorem 3.2 (Equivalent form of DiRRAc) .Problem (2) is equivalent to the ﬁnite-dimensional
+optimization problem
+inf
+x2XX
+k2[K]bpkfk(x)2; (4)
+where the function fkadmits the closed-form expression
+fk(x) =kb>
+kxkxk2+q
+x>bkxq
+(b>
+kx)2+x>bkx 2
+kkxk2
+2
+(b>
+kx)2+x>bkx:
+Next, we sketch a proof of Theorem 3.2 and a solution procedure to solve problem (4).
+3.2 P ROOF SKETCH
+For any component k2[K], deﬁne the following worst-case probability of unfavorable outcome
+fk(x), sup
+Qk2Bk(bPk)Qk(C~(x) = 0) = sup
+Qk2Bk(bPk)Qk(~>x0)8k2[K]: (5)
+To proceed, we rely on the following elementary result from (Nguyen, 2019, Lemma 3.31).
+Lemma 3.3 (Worst-case Value-at-Risk) .For anyx2Rdand2(0;1), we have
+inf(
+: sup
+Qk2Bk(bPk)Qk(~>x ))
+= b>
+kx+s
+1 
+q
+x>bkx+kpkxk2:(6)
+Note that the left-hand side of (6) is the worst-case Value-at-Risk with respect to the ambiguity set
+Bk(bPk). Leveraging this result, the next proposition provides the analytical form of fk(x).
+Proposition 3.4 (Worst-case probability) .For anyk2[K]and(bk;bk;k)2RdSd
++R+,
+deﬁne the following constants Ak, b>
+kx,Bk,q
+x>bkx, andCk,kkxk2. We have
+fk(x), sup
+Qk2Bk(bPk)Qk(~>x0) =(1 ifAk+Ck0; AkCk+Bkp
+A2
+k+B2
+k C2
+k
+A2
+k+B2
+k2
+2(0;1) ifAk+Ck<0:
+The proof of Theorem 3.2 follows by noticing that the DiRRAc problem (2) can be reformulated
+using the elementary functions fkas
+min
+x2X8
+<
+:X
+k2[K]bpkfk(x) :c(x;x0); fk(x)<18k2[K]9
+=
+;;
+5Published as a conference paper at ICLR 2023
+where the objective function follows from the deﬁnition of the set B(bP). It sufﬁces now to combine
+with Proposition 3.4 to obtain the necessary result. The detailed proof is relegated to the Appendix.
+Next we propose a projected gradient descent algorithm to solve the problem (4).
+3.3 P ROJECTED GRADIENT DESCENT ALGORITHM
+We consider in this section an iterative numerical routine to solve the DiRRAc problem in the equiv-
+alent form (4). First, notice that the second constraint that deﬁnes Xin (3) is a strict inequality, thus
+the setXis open. We thus modify slightly this constraint by considering the following set
+X"=n
+x2X:c(x;x0); b>
+kx+kkxk2 "8k2[K]o
+for some value " >0sufﬁciently small. Moreover, if the parameter is too small, it may happen
+that the setX"becomes empty. Deﬁne min2R+as the optimal value of the following problem
+infn
+c(x;x0) :x2X; b>
+kx+kkxk2 "8k2[K]o
+: (7)
+Then it is easy to see that X"is non-empty whenever min. In addition, because cis continuous
+andXis closed, the setX"is compact. In this case, we can consider problem (4) with the feasible
+set beingX", for which the optimal solution is guaranteed to exist. Let us now deﬁne the projection
+operator ProjX"asProjX"(x0),arg min
+kx x0k2
+2:x2X"	
+. IfXis convex and c(;x0)is a
+convex function, then X"is also convex, and the projection operation can be efﬁciently computed
+using convex optimization.
+In particular, suppose that c(x;x0) =kx x0k2is the Euclidean norm and Xis second-order cone
+representable, then the projection is equivalent to a second-order cone program, and can be solved
+using off-the-shelf solvers such as GUROBI Gurobi Optimization, LLC (2021) or Mosek (MOSEK
+ApS, 2019). The projection operator ProjX"now forms the building block of a projected gradient
+descent algorithm with a backtracking linesearch. The details regarding the algorithm, along with
+the convergence guarantee, are presented in Appendix E.
+To conclude this section, we visualize the geometrical intuition of our method in Figure 2.
+Figure 2: The feasible set Xin (3) is shaded in blue.
+The circular arc represents the proximity boundary
+c(x;x0) =withcbeing an Euclidean distance.
+Dashed lines represent the hyperplane  b>
+kx= 0 for
+differentk, while elliptic curves represent the robust
+margin b>
+kx+kkxk= 0 with matching color. In-
+creasing the ambiguity size kbrings the elliptic curves
+towards the top-right corner and farther away from the
+dash lines. The set Xtaken as the intersection of ellip-
+tical and promixity constraints will move deeper into
+the interior of the favorable prediction region, resulting
+in more robust recourses.
+4 G AUSSIAN DIRRA CFRAMEWORK
+We here revisit the Gaussian assumption on the component distributions, and propose the parametric
+Gaussian DiRRAc framework. We make the temporary assumption that bPkare Gaussian for all
+k2[K], and we will robustify against only the misspeciﬁcation of the nominal mean vector and
+covariance matrix (bk;bk). To do this, we ﬁrst construct the Gaussian component ambiguity sets
+8k:BN
+k(bPk),
+Qk:QkN(k;k);G((k;k);(bk;bk))k	
+;
+where the superscript emphasizes that the ambiguity sets are neighborhoods in the space of Gaussian
+distributions. The resulting ambiguity set for the mixture distribution is
+BN(bP) =n
+Q:9Qk2BN
+k(bPk)8k2[K]such that Q(Qk;bpk)k2[K]o
+:
+6Published as a conference paper at ICLR 2023
+The Gaussian DiRRAc problem is formally deﬁned as
+min
+x2Xsup
+Q2BN(bP)Q(C~(x) = 0)
+s:t: c(x;x0)
+sup
+Qk2BN
+k(bPk)Qk(C~(x) = 0)<1
+28k2[K]:(8)
+Similar to Section 3, we will provide the reformulation of the Gaussian DiRRAc formulation and a
+sketch of the proof in the sequence. Note that the last constraint in (8) has margin1
+2instead of 1as
+in the DiRRAc problem (2). The detailed reason will be revealed in the proof sketch in Section 4.2.
+4.1 R EFORMULATION OF GAUSSIAN DIRRA C
+Remind that the feasible set Xis deﬁned as in (3). The next theorem asserts the equivalent form of
+the Gaussian DiRRAc problem (8).
+Theorem 4.1 (Gaussian DiRRAc reformulation) .The Gaussian DiRRAc problem (8) is equivalent
+to the ﬁnite-dimensional optimization problem
+min
+x2X1 X
+k2[K]bpk(gk(x)); (9)
+where the function gkadmits the closed-form expression
+gk(x) =(b>
+kx)2 2
+kkxk2
+2
+b>
+kxq
+x>bkx+kkxk2q
+(b>
+kx)2+x>bkx 2
+kkxk2
+2:
+Problem (9) can be solved using the projected gradient descent algorithm discussed in Section 3.3.
+4.2 P ROOF SKETCH
+The proof of Theorem 4.1 relies on the following analytical form of the worst-case Value-at-Risk
+(VaR) under parametric Gaussian ambiguity set (Nguyen, 2019, Lemma 3.31).
+Lemma 4.2 (Worst-case Gaussian VaR) .For anyx2Rdand2(0;1
+2], lett=  1(1 ). Then
+inf(
+: sup
+Qk2BN
+k(bPk)Qk(~>x ))
+= b>
+kx+tq
+x>bkx+p
+1 +t2kxk2: (10)
+It is important to note that Lemma 4.2 is only valid for 2(0;0:5]. Indeed, for  >1
+2, evaluat-
+ing the inﬁmum problem in the left-hand side of (10) requires solving a non-convex optimization
+problem ast=  1(1 )<0. As a consequence, the last constraint of the Gaussian DiRRAc
+formulation (8) is capped at a probability value of 0:5to ensure the convexity of the feasible set
+in the reformulation (9). The proof of Theorem 4.1 follows a similar line of argument as for the
+DiRRAc formulation, with gkbeing the worst-case Gaussian probability
+gk(x), sup
+Qk2BN
+k(bPk)Qk(C~(x) = 0) = sup
+Qk2BN
+k(bPk)Qk(~>x0)8k2[K]:
+To conclude this section, we provide a quick sanity check: by setting K= 1and1= 0, we have a
+special case in which ~follows a Gaussian distribution N(b1;b1). Thus, ~>xN(b>
+1x;x>b1x)
+and it is easy to verify from the formula of g1in the statement of Theorem 4.1 that g1(x) =
+(b>
+1x)=(x>b1x)1
+2, which recovers the value of Pr(~>x0)under the Gaussian distribution.
+5 N UMERICAL EXPERIMENTS
+We compare extensively the performance of our DiRRAc model (2) and Gaussian DiRRAc
+model (8) against four strong baselines: ROAR (Upadhyay et al., 2021), CEPM (Pawelczyk et al.,
+7Published as a conference paper at ICLR 2023
+2020), AR (Ustun et al., 2019) and Wachter (Wachter et al., 2018). We conduct the experiments
+on three real-world datasets (German, SBA, Student). Appendix A provides further comparisons
+with more baselines: Nguyen et al. (2022), Karimi et al. (2021a) and ensemble variants of ROAR,
+along with the sensitivity analysis of hyperparameters. Appendix A also contains the details about
+the datasets and the experimental setup.
+Metrics. For all experiments, we use the l1distancec(x;x0) =kx x0k1as the cost function . Each
+dataset contains two sets of data (the present and shifted data). The present data is to train the current
+classiﬁer for which recourses are generated while the remaining data is used to measure the validity
+of the generated recourses under model shifts. We choose 20% of the shifted data randomly 100
+times and train 100 classiﬁers respectively. The validity of a recourse is computed as the fraction
+of the classiﬁers for which the recourse is valid. We then report the average of the validity of all
+generated recourses and refer this value as M2validity . We also report M1validity , which is the
+fraction of the instances for which the recourse is valid with respect to the original classiﬁer.
+Results on real-world data. We use three real-world datasets which capture different data distri-
+bution shifts (Dua & Graff, 2017): (i) the German credit dataset, which captures a correction shift.
+(ii) the Small Business Administration (SBA) dataset, which captures a temporal shift. (iii) the Stu-
+dent performance dataset, which captures a geospatial shift. Each dataset contains original data and
+shifted data. We normalize all continuous features to [0;1]. Similar to Mothilal et al. (2020), we
+use one-hot encodings for categorial features, then consider them as continuous features in [0;1]. To
+ease the comparison, we choose K= 1. The choices of Kare discussed further in Appendix A.
+1 2 3 4
+l1cost0.70.80.91.0M2validity
+German
+1.0 1.5 2.0 2.5 3.0
+l1cost0.70.80.91.0
+SBA
+1.0 1.5 2.0
+l1cost0.70.80.91.0
+Student
+DiRRAc ROAR
+Figure 3: Comparison of M2validity as a function of the l1distance between input instance and the
+recourse for our DiRRAc method and ROAR on real datasets.
+Table 1: Benchmark of M1andM2validity,l1andl2cost for linear models on real datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German AR 1.000.00 0.76 0.26 0.610.40 0.43 0.25
+Wachter 1.000.00 0.82 0.24 0.81 0.51 0.410.25
+CEPM 1.000.00 0.83 0.38 1.30 0.02 1.02 0.04
+ROAR 1.000.00 0.94 0.15 3.88 0.54 1.61 0.22
+DiRRAc 1.000.00 0.990.06 1.62 0.30 1.25 0.21
+Gaussian DiRRAc 1.000.00 0.990.06 1.62 0.30 1.05 0.23
+SBA AR 1.000.00 0.41 0.18 0.610.42 0.560.36
+Wachter 1.000.00 0.55 0.22 2.30 2.39 0.77 0.66
+CEPM 1.000.00 0.94 0.24 5.30 0.01 2.18 0.02
+ROAR 1.000.00 1.000.00 3.10 0.72 1.35 0.30
+DiRRAc 1.000.00 1.000.00 1.74 0.44 1.34 0.40
+Gaussian DiRRAc 1.000.00 0.99 0.02 1.60 0.62 0.98 0.42
+Student AR 1.000.00 0.48 0.19 0.290.21 0.260.18
+Wachter 1.000.00 0.53 0.19 0.60 0.43 0.30 0.22
+CEPM 1.000.00 0.91 0.15 4.52 0.01 2.03 0.01
+ROAR 1.000.00 0.94 0.10 2.02 0.38 0.96 0.18
+DiRRAc 1.000.00 0.950.09 1.55 0.34 1.07 0.23
+Gaussian DiRRAc 1.000.00 0.74 0.18 0.78 0.30 0.54 0.21
+We split 80% of the original dataset and train a logistic classiﬁer. This process is repeated 100 times
+independently to obtain 100 observations of the model parameters. Then we compute the empirical
+mean and covariance matrix for (b1;b1). To evaluate the trade-off between l1cost andM2validity
+of DiRRAc and ROAR, we compute l1cost and the M2validity by running DiRRAc with varying
+8Published as a conference paper at ICLR 2023
+values ofaddand ROAR with varying values of . We deﬁne =min+add,minis speciﬁed
+in (7). Figure 3 shows that the frontiers of DiRRAc dominate the frontiers of ROAR. This indicates
+that DiRRAc achieves a far smaller l1cost for the robust recourses than ROAR. Next, we evaluate
+thel1andl2cost,M1andM2validity of DiRRAc, ROAR and other baselines. The results in Table 1
+demonstrate that DiRRAc has high validity in all three datasets while preserving low costs ( l1andl2
+cost) in comparison to ROAR. Our DiRRAc framework consistently outperforms the AR, Wachter,
+and CEPM in terms of M2validity.
+Nonlinear models. Following the previous work as in Rawal et al. (2021); Upadhyay et al. (2021)
+and Bui et al. (2022), we adapt our DiRRAc framework and other baselines (AR and ROAR) to
+non-linear models by ﬁrst generating local linear approximations using LIME (Ribeiro et al., 2016).
+For each instance x0, we ﬁrst generate a local linear model for the MLPs classiﬁer 10 times using
+LIME, each time using 1000 perturbed samples. To estimate (b1;b1), we compute the mean and
+covariance matrix of parameters x0of 10 local linear models. We randomly choose 10% of the
+shifted dataset and concatenate with training data of the original dataset 10 times, then train a shifted
+MLPs classiﬁer. According to Table 2. On the German Credit and Student dataset, DiRRAc has a
+higherM2validity than other baselines, and a slightly lower M2validity on the SBA dataset than
+ROAR, while maintaining a low l1cost relative to ROAR and CEPM.
+Table 2: Benchmark of M1andM2validity,l1andl2cost for non-linear models on real datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German LIME-AR 0.72 0.45 0.71 0.27 1.05 0.20 1.00 0.03
+Wachter 1.000.00 0.55 0.42 0.200.26 0.110.16
+CEPM 1.000.00 0.74 0.40 1.30 0.01 1.02 0.00
+LIME-ROAR 0.60 0.49 0.69 0.27 2.52 0.20 1.25 0.07
+LIME-DiRRAc 0.78 0.42 0.750.27 1.14 0.27 1.02 0.05
+LIME-Gaussian DiRRAc 0.70 0.46 0.70 0.31 1.11 0.26 1.00 0.06
+SBA LIME-AR 0.65 0.48 0.60 0.49 0.53 0.23 0.44 0.23
+Wachter 1.000.00 0.61 0.45 0.300.24 0.110.09
+CEPM 1.000.00 0.80 0.40 2.24 0.01 1.42 0.00
+LIME-ROAR 0.97 0.16 0.970.16 4.05 0.36 1.45 0.12
+LIME-DiRRAc 0.93 0.26 0.93 0.26 1.10 0.11 1.07 0.05
+LIME-Gaussian DiRRAc 0.82 0.38 0.80 0.38 0.64 0.29 0.43 0.32
+Student LIME-AR 0.66 0.48 0.53 0.45 0.53 0.63 0.37 0.32
+Wachter 1.000.00 0.43 0.39 0.400.27 0.200.14
+CEPM 1.000.00 0.70 0.46 4.51 0.00 2.03 0.01
+LIME-ROAR 0.97 0.18 0.95 0.20 6.30 0.19 1.97 0.16
+LIME-DiRRAc 0.97 0.18 0.970.18 1.12 0.23 1.12 0.23
+LIME-Gaussian DiRRAc 0.69 0.46 0.59 0.46 0.58 0.54 0.50 0.51
+Concluding Remarks. In this work, we proposed the Distributionally Robust Recourse Action
+(DiRRAc) framework to address the problem of recourse robustness under shifts in the parame-
+ters of the classiﬁcation model. We introduced a distributionally robust optimization approach for
+generating a robust recourse action using a projected gradient descent algorithm. The experimental
+results demonstrated that our framework has the ability to generate the recourse action that has high
+probability of being valid under different types of data distribution shifts with a low cost. We also
+showed that our framework can be adapted to different model types, linear and non-linear models,
+and allows for actionability constraints of the recourse action.
+Remark 5.1 (Extensions) .The DiRRAc framework can be extended to hedge against the misspec-
+iﬁcation of the mixture weights bp. Alternatively, the objective function of DiRRAc can be modiﬁed
+to minimize the worst-case component probability. These extensions are explored in Section C.
+Corresponding extensions for the Gaussian DiRRAc framework are presented in Section D.
+Remark 5.2 (Choice of ambiguity set) .This paper’s results rely fundamentally on the design of
+ambiguity sets using a Gelbrich distance on the moment space. This Gelbrich ambiguity set leads to
+thekk2-regularizations of the worst-case Value-at-Risk in Lemmas 3.3 and 4.2. If we consider other
+moment ambiguity sets, for example, the moment bounds in Delage & Ye (2010) or the Kullback-
+Leibler-type sets in Taskesen et al. (2021), then these regularization equivalence are not available,
+and there is no trivial way to extend the results to reformulate the (Gaussian) DiRRAc framework.
+9Published as a conference paper at ICLR 2023
+Acknowledgments. Viet Anh Nguyen acknowledges the generous support from the CUHK’s Im-
+provement on Competitiveness in Hiring New Faculties Funding Scheme.
+REFERENCES
+Andr ´e Artelt and Barbara Hammer. On the computation of counterfactual explanations - A survey.
+arXiv preprint arXiv:1911.07749 , 2019.
+G. Bayraksan and D. K. Love. Data-driven stochastic programming using phi-divergences. IN-
+FORMS TutORials in Operations Research , pp. 1–19, 2015.
+Amir Beck. First-order Methods in Optimization . SIAM, 2017.
+Aharon Ben-Tal, Dick Den Hertog, Anja De Waegenaere, Bertrand Melenberg, and Gijs Rennen.
+Robust solutions of optimization problems affected by uncertain probabilities. Management Sci-
+ence, 59(2):341–357, 2013.
+Aharon Ben-Tal, Ruud Brekelmans, Dick den Hertog, and Jean-Philippe Vial. Globalized robust
+optimization for nonlinear uncertain inequalities. INFORMS Journal on Computing , 29(2):350–
+366, 2017.
+D. Bertsimas, V . Gupta, and N. Kallus. Data-driven robust optimization. Mathematical Program-
+ming , 167(2):235–292, 2018.
+Emily Black, Zifan Wang, and Matt Fredrikson. Consistent counterfactuals for deep models. In
+International Conference on Learning Representations , 2022. URL https://openreview.
+net/forum?id=St6eyiTEHnG .
+S. Boyd and L. Vandenberghe. Convex Optimization . Cambridge University Press, 2004.
+Ngoc Bui, Duy Nguyen, and Viet Anh Nguyen. Counterfactual plans under distributional ambiguity.
+InInternational Conference on Learning Representations , 2022.
+Zhi Chen and Weijun Xie. Sharing the value-at-risk under distributional ambiguity. Mathematical
+Finance , 31(1):531–559, 2021.
+Paulo Cortez and Alice Silva. Using data mining to predict secondary school student performance.
+Proceedings of 5th FUture BUsiness TEChnology Conference , 2008.
+Susanne Dandl, Christoph Molnar, Martin Binder, and Bernd Bischl. Multi-objective counterfactual
+explanations. In International Conference on Parallel Problem Solving from Nature , pp. 448–469.
+Springer, 2020.
+E. Delage and Y . Ye. Distributionally robust optimization under moment uncertainty with application
+to data-driven problems. Operations Research , 58(3):595–612, 2010.
+Dheeru Dua and Casey Graff. UCI machine learning repository, 2017. URL http://archive.
+ics.uci.edu/ml .
+John C Duchi, Peter W Glynn, and Hongseok Namkoong. Statistics of robust optimization: A
+generalized empirical likelihood approach. Mathematics of Operations Research , 2021.
+L. El Ghaoui, M. Oks, and F. Oustry. Worst-case value-at-risk and robust portfolio optimization: A
+conic programming approach. Operations Research , 51(4):543–556, 2003.
+Stanislav Fort, Huiyi Hu, and Balaji Lakshminarayanan. Deep ensembles: A loss landscape per-
+spective. arXiv preprint arXiv:1912.02757 , 2019.
+M. Gelbrich. On a formula for the L2Wasserstein metric between measures on Euclidean and
+Hilbert spaces. Mathematische Nachrichten , 147(1):185–203, 1990.
+C.R. Givens and R.M. Shortt. A class of Wasserstein metrics for probability distributions. The
+Michigan Mathematical Journal , 31(2):231–240, 1984.
+10Published as a conference paper at ICLR 2023
+Ian Goodfellow, Yoshua Bengio, and Aaron Courville. Deep Learning . MIT Press, 2016.
+Gurobi Optimization, LLC. Gurobi Optimizer Reference Manual, 2021. URL https://www.
+gurobi.com .
+G.A. Hanasusanto, D. Kuhn, S. W. Wallace, and S. Zymler. Distributionally robust multi-item
+newsvendor problems with multimodal demand distributions. Mathematical Programming , 152
+(1-2):1–32, 2015.
+Tatsunori Hashimoto, Megha Srivastava, Hongseok Namkoong, and Percy Liang. Fairness without
+demographics in repeated loss minimization. In International Conference on Machine Learning ,
+pp. 1929–1938, 2018.
+Amir-Hossein Karimi, Gilles Barthe, Borja Balle, and Isabel Valera. Model-agnostic counterfactual
+explanations for consequential decisions. arXiv preprint arXiv:1905.11190 , 2020.
+Amir-Hossein Karimi, Bernhard Sch ¨olkopf, and Isabel Valera. Algorithmic recourse: From counter-
+factual explanations to interventions. In Proceedings of the 2021 ACM Conference on Fairness,
+Accountability, and Transparency , FAccT ’21, pp. 353–362, 2021a.
+Amirhossein Karimi, Bernhard Sch ¨olkopf, and Isabel Valera. A survey of algorithmic recourse:
+Contrastive explanations and consequential recommendations. arXiv preprint arXiv:2010.04050 ,
+2021b.
+David J Ketchen and Christopher L Shook. The application of cluster analysis in strategic manage-
+ment research: an analysis and critique. Strategic Management Journal , 17(6):441–458, 1996.
+D. Kuhn, P. Mohajerin Esfahani, V .A. Nguyen, and S. Shaﬁeezadeh-Abadeh. Wasserstein distribu-
+tionally robust optimization: Theory and applications in machine learning. INFORMS TutORials
+in Operations Research , pp. 130–169, 2019.
+Min Li, Amy Mickel, and Stanley Taylor. “Should this loan be approved or denied?”: A large dataset
+with class assignment guidelines. Journal of Statistics Education , 26(1):55–66, 2018.
+Geoffrey J. McLachlan and David Peel. Finite Mixture Models , volume 299 of Probability and
+Statistics – Applied Probability and Statistics Section . Wiley, New York, 2000.
+MOSEK ApS. MOSEK Optimizer API for Python 9.2.10 , 2019. URL https://docs.mosek.
+com/9.2/pythonapi/index.html .
+Ramaravind K Mothilal, Amit Sharma, and Chenhao Tan. Explaining machine learning classiﬁers
+through diverse counterfactual explanations. In Proceedings of the 2020 Conference on Fairness,
+Accountability, and Transparency , pp. 607–617, 2020.
+K.P. Murphy. Machine Learning: A Probabilistic Perspective . MIT Press, 2012.
+Hongseok Namkoong and John C Duchi. Variance-based regularization with convex objectives. In
+Advances in Neural Information Processing Systems 30 , pp. 2971–2980, 2017.
+Tuan-Duy H Nguyen, Ngoc Bui, Duy Nguyen, Man-Chung Yue, and Viet Anh Nguyen. Robust
+Bayesian recourse. In Uncertainty in Artiﬁcial Intelligence , pp. 1498–1508. PMLR, 2022.
+Viet Anh Nguyen. Adversarial Analytics . PhD thesis, Ecole Polytechnique F ´ed´erale de Lausanne,
+2019.
+Viet Anh Nguyen, Soroosh Shaﬁeezadeh Abadeh, Damir Filipovi ´c, and Daniel Kuhn. Mean-
+covariance robust risk measurement. arXiv preprint arXiv:2112.09959 , 2021.
+Yaniv Ovadia, Emily Fertig, Jie Ren, Zachary Nado, David Sculley, Sebastian Nowozin, Joshua
+Dillon, Balaji Lakshminarayanan, and Jasper Snoek. Can you trust your model’s uncertainty?
+evaluating predictive uncertainty under dataset shift. Advances in neural information processing
+systems , 32, 2019.
+Leandro Pardo. Statistical Inference Based on Divergence Measures . CRC Press, 2018.
+11Published as a conference paper at ICLR 2023
+Martin Pawelczyk, Klaus Broelemann, and Gjergji Kasneci. On counterfactual explanations under
+predictive multiplicity. In UAI, 2020.
+Martin Pawelczyk, Sascha Bielawski, Johannes van den Heuvel, Tobias Richter, and Gjergji Kas-
+neci. CARLA: A Python library to benchmark algorithmic recourse and counterfactual explana-
+tion algorithms. arXiv preprint arXiv:2108.00783 , 2021.
+Hamed Rahimian and Sanjay Mehrotra. Distributionally robust optimization: A review. arXiv
+preprint arXiv:1908.05659 , 2019.
+Kaivalya Rawal and Himabindu Lakkaraju. Beyond individualized recourse: Interpretable and inter-
+active summaries of actionable recourses. Advances in Neural Information Processing Systems ,
+33:12187–12198, 2020a.
+Kaivalya Rawal and Himabindu Lakkaraju. Beyond individualized recourse: Interpretable and in-
+teractive summaries of actionable recourses. arXiv preprint arXiv:2009.07165 , 2020b.
+Kaivalya Rawal, Ece Kamar, and Himabindu Lakkaraju. Algorithmic recourse in the wild: Under-
+standing the impact of data and model shifts. arXiv preprint arXiv:2012.11788 , 2021.
+Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin. “Why should I trust you?”: Explaining the
+predictions of any classiﬁer. In Proceedings of the 22nd ACM SIGKDD International Conference
+on Knowledge Discovery and Data Mining , pp. 1135–1144, 2016.
+Ernst Roos and Dick den Hertog. Reducing conservatism in robust optimization. INFORMS Journal
+on Computing , 32(4):1109–1127, 2020.
+Cynthia Rudin. Stop explaining black box machine learning models for high stakes decisions and
+use interpretable models instead. Nature Machine Intelligence , 1(5):206–215, 2019.
+Chris Russell. Efﬁcient search for diverse coherent explanations. In Proceedings of the Conference
+on Fairness, Accountability, and Transparency , FAT* ’19, pp. 20–28. Association for Computing
+Machinery, 2019.
+Alexander Shapiro, Darinka Dentcheva, and Andrzej Ruszczynski. Lectures on Stochastic Program-
+ming: Modeling and Theory . SIAM, 2009.
+Ilia Stepin, Jose M. Alonso, Alejandro Catala, and Mart ´ın Pereira-Fari ˜na. A survey of contrastive
+and counterfactual explanation generation methods for explainable artiﬁcial intelligence. IEEE
+Access , 9:11974–12001, 2021.
+Bahar Taskesen, Man-Chung Yue, Jose Blanchet, Daniel Kuhn, and Viet Anh Nguyen. Sequential
+domain adaptation by synthesizing distributionally robust experts. In Proceedings of the 38th
+International Conference on Machine Learning , 2021.
+Robert L Thorndike. Who belongs in the family. In Psychometrika . Citeseer, 1953.
+Sohini Upadhyay, Shalmali Joshi, and Himabindu Lakkaraju. Towards robust and reliable algorith-
+mic recourse. In Advances in Neural Information Processing Systems 35 , 2021.
+Berk Ustun, Alexander Spangher, and Yang Liu. Actionable recourse in linear classiﬁcation. In
+Proceedings of the Conference on Fairness, Accountability, and Transparency , FAT* ’19, pp.
+10–19, 2019.
+Suresh Venkatasubramanian and Mark Alfano. The philosophical basis of algorithmic recourse.
+InProceedings of the 2020 Conference on Fairness, Accountability, and Transparency , FAT*
+’20, pp. 284–293, New York, NY , USA, 2020. Association for Computing Machinery. ISBN
+9781450369367. doi: 10.1145/3351095.3372876. URL https://doi.org/10.1145/
+3351095.3372876 .
+Sahil Verma, Varich Boonsanong, Minh Hoang, Keegan E. Hines, John P. Dickerson, and Chirag
+Shah. Counterfactual explanations and algorithmic recourses for machine learning: A review,
+2020. URL https://arxiv.org/abs/2010.10596 .
+Sandra Wachter, Brent Mittelstadt, and Chris Russell. Counterfactual explanations without opening
+the black box: Automated decisions and the GDPR. Harvard Journal of Law & Technology , 2018.
+12Published as a conference paper at ICLR 2023
+A A DDITIONAL EXPERIMENT RESULTS
+Here, we provide further details about the datasets, experimental settings, and additional results.
+Source code can be found at https://github.com/duykhuongnguyen/DiRRAc .
+A.1 D ATASETS
+Real-world datasets. We use three real-world datasets which are popular in the settings of ro-
+bust algorithmic recourse: German credit (Dua & Graff, 2017), SBA Li et al. (2018), and Student
+performance Cortez & Silva (2008). We select a subset of features from each dataset:
+• For the German credit dataset from the UCI repository, we choose ﬁve features: Status, Dura-
+tion, Credit amount, Personal Status, and Age. We found in the descriptions of two datasets
+that feature Status in the data correction shift dataset corrects the coding errors in the original
+dataset (Dua & Graff, 2017).
+• For the SBA dataset, we follow Li et al. (2018) and Upadhyay et al. (2021) and we choose 13
+features: Selected, Term, NoEmp, CreateJob, RetainedJob, UrbanRural, ChgOffPrinGr, GrAppv,
+SBA Appv, New, RealEstate, Portion, Recession. We use the instances during 1989-2006 as
+original data and the remaining instances as shifted data.
+• For the Student Performance dataset, motivated by Cortez & Silva (2008), we choose G3 - ﬁnal
+grade for deciding the label pass or fail for each student. The student who has G3 <12is labeled
+0 (failed) and 1 (passed) otherwise. For input features, we choose 9 features: Age, Study time,
+Famsup, Higher, Internet, Health, Absences, G1, G2. We separate the dataset into the original
+and the geospatial shift data by 2 different schools.
+We report the accuracy of the current classiﬁers and shifted classiﬁers for two types of models:
+logistics classiﬁers (LR) and MLPs classiﬁers (MLPs) on each dataset in Table 3.
+Table 3: Accuracy of the underlying classiﬁers.
+Dataset Methods Accuracy
+German LR 0.72 0.00
+MLPs 0.76 0.01
+Shifted German LR 0.7 0.00
+MLPs 0.72 0.01
+SBA LR 0.79 0.01
+MLPs 0.93 0.02
+Shifted SBA LR 0.77 0.01
+MLPs 0.89 0.01
+Student LR 0.84 0.01
+MLPs 0.91 0.01
+Shifted Student LR 0.91 0.00
+MLPs 0.99 0.01
+Synthetic data. We synthesize two-dimensional data and simulate the shifted data by using K= 3
+different shifts similar to Upadhyay et al. (2021): mean shift, covariance shift, mean and covariance
+shift. First, we ﬁx the unshifted conditional distributions with XjY=yN (y;y)8y2Y.
+For mean shift, we replace 0byshift
+0=0+ [;0]>, whereis a mean shift magnitude. For
+covariance shift, we replace 0byshift
+0= (1 +)0, whereis a covariance shift magnitude. For
+mean and covariance shift, we replace (0;0)by(shift
+0;shift
+0). We generate 500 samples for each
+class from the unshifted distribution with 0= [ 3; 3],1= [3; 3] , and 0=  1=I.
+To visualize the decision boundaries of the linear classiﬁers for synthetic data, we synthesize the
+shifted data in total 100 times including 33 mean shifts, 33 covariance shifts and 34 both shifts, then
+we visualize the 100 model’s parameters in a two-dimensional space in Figure 4 and Figure 5.
+13Published as a conference paper at ICLR 2023
+10
+ 0 10
+x110
+5
+0510x2
+(a) Original data
+10
+ 0 10
+x110
+5
+0510x2 (b) Mean shift
+10
+ 0 10
+x110
+5
+0510x2 (c) Covariance shift
+10
+ 0 10
+x110
+5
+0510x2 (d) Both shift
+Figure 4: Synthetic data shifts and the corresponding model parameter shifts (decision boundaries).
+0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0
+0
+1.001.251.501.752.002.252.502.751
+Original
+Mean shift
+Cov shift
+Both shift
+Figure 5: Parameter of the classiﬁer with different types of data distribution shifts.
+A.2 E XPERIMENTAL SETTINGS
+Implementation details. For all the baselines, we use the implementation of CARLA (Pawelczyk
+et al., 2021). We use the hyperparameters of AR, Wachter and CEPM that are provided by CARLA.
+For ROAR, we use the same parameters as in ROAR (Upadhyay et al., 2021).
+Experimental settings. The experimental settings for the experiments in the main text are as fol-
+lows:
+• In Figure 3, we ﬁx 1= 0:1and varyadd2[0;2:0]for DiRRAc. Then we ﬁx max= 0:1and
+vary2[0:01;0:2]for ROAR.
+• In Table 1 and Table 2, we ﬁrst initialize 1= 0:1and we choose the addthat maximizes the
+M1validity. We follow the same procedure as in the original paper for ROAR (Upadhyay et al.,
+2021): choose max= 0:1and ﬁnd the value of that maximizes the M1validity. The detailed
+settings are provided in Table 4.
+Table 4: Parameters for the experiments with real-world data in Table 1.
+Parameters Values
+K 1
+add 1.0
+bp [1]
+ [0:1]
+ 0:7
+ 1
+14Published as a conference paper at ICLR 2023
+Choice of number of components Kfor real-world datasets. To chooseKfor real-world datasets,
+we use the same procedure in Section 5 to obtain 100 observations of the model parameters. Then
+we determine the number of components Kon these observations by using K-means clustering and
+Elbow method (Thorndike, 1953; Ketchen & Shook, 1996). Then we train a Gaussian mixture model
+on these observations and obtain bpk,bk,bkfor the optimal number of components K. The Elbow
+method visualization for each dataset is shown in Figure 6.
+2 3 4 5 6 7 8 9
+Number of components8101214Distortion
+German
+2 3 4 5 6 7 8 9
+Number of components17.520.022.525.0
+SBA
+2 3 4 5 6 7 8 9
+Number of components16182022
+Student
+Figure 6: Elbow method for determining the optimal number of components for parameter shifts.
+Dashed lines represent the optimal Kfor three real-world datasets. German Credit: Elbow at K= 5.
+SBA: Elbow at K= 4. Student Performace: Elbow at K= 6.
+Table 5: Performance of DiRRAc and Gaussian DiRRAc with Kcomponents on three real-world
+datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German DiRRAc ( K= 5) 1.000.00 0.990.07 1.730.31 1.40 0.20
+Gaussian DiRRAc ( K= 5)1.000.00 0.990.07 1.730.31 1.230.23
+SBA DiRRAc ( K= 4) 1.000.00 1.000.00 1.83 0.49 1.48 0.29
+Gaussian DiRRAc ( K= 4)1.000.00 0.99 0.02 1.670.68 0.980.42
+Student DiRRAc ( K= 6) 1.000.00 0.960.09 1.59 0.33 1.04 0.22
+Gaussian DiRRAc ( K= 6)1.000.00 0.75 0.19 0.820.30 0.530.21
+The results in Table 5 indicate that as we deploy our framework with the optimal number of com-
+ponentsK, then DiRRAc delivers a smaller cost in all three datasets. The M2validity of Gaussian
+DiRRAc slightly increases in the Student Performance dataset.
+Sensitivity analysis of hyperparameters addandk.Here we analyze the sensitivity of the
+hyperparameters addandkto thel1cost of recourses and M2validity of DiRRAc.
+From the results in Figure 3, we can observe that as addincreases, both the cost and the robustness
+of the recourse increase.
+We study the sensitivity of hyperparameters ktoM2validity by ﬁrst ﬁxing the add= 0:1and vary
+k2[0:0;0:5]. According to Figure 7, we can observe that as kincreases, the cost of recourses
+rises as well, yielding in more robust recourses.
+15Published as a conference paper at ICLR 2023
+0.0 0.2 0.40.60.81.01.2l1cost
+German
+0.0 0.2 0.40.80.91.01.1
+SBA
+0.0 0.2 0.40.40.50.6
+Student
+0.0 0.2 0.4
+ρk0.850.900.95M2validity
+0.0 0.2 0.4
+ρk0.70.80.9
+0.0 0.2 0.4
+ρk0.550.600.65
+Figure 7: Sensitivity analysis of hyperparameters ktol1cost andM2validity of DiRRAc.
+A.3 R ESULTS ON REAL -WORLD DATA
+Experiments with prior on b.In some cases, we presume, we may not have access to the training
+data. We setb1=0, where0is the parameters of the original classiﬁer. Then we choose b1=I
+with= 0:1. We generate recourse for each input instance and compute the M1validity using the
+original classiﬁer and the M2validity using the shifted classiﬁers. The results in Table 6 show that
+our methods produce the same performance while at the same time keeping the l1andl2cost lower
+than ROAR in all three datasets.
+Table 6: Benchmark of M1validity,M2validity,l1andl2usingb1=0andb1= 0:1Ion different
+real-world datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German ROAR 1.000.00 0.94 0.15 3.88 0.54 1.61 0.22
+DiRRAc 1.000.00 0.96 0.07 1.480.39 1.340.41
+Gaussian DiRRAc 1.000.00 0.990.06 1.58 0.29 1.35 0.24
+SBA ROAR 1.000.00 1.000.00 3.10 0.72 1.35 0.30
+DiRRAc 1.000.00 1.000.00 1.640.37 1.27 0.30
+Gaussian DiRRAc 1.000.00 1.000.00 1.640.37 1.250.26
+Student ROAR 1.000.00 0.94 0.10 2.02 0.38 0.96 0.18
+DiRRAc 1.000.00 0.970.06 1.81 0.19 1.47 0.13
+Gaussian DiRRAc 1.000.00 0.88 0.14 1.180.26 0.820.18
+Experiments with actionability constraints. Using our two methods (DiRRAc and Gaussian
+DiRRAc) and the AR method (Ustun et al., 2019), we analyze how the actionability constraints
+affect the cost and validity of the recourse. We select a subset of features from each dataset and
+deﬁne each feature as immutable or non-decreasing as follows:
+• In the German credit dataset, we select Personal status as an immutable attribute because it is
+challenging to impose changes in an individual‘s status and sex. We view age as a non-decreasing
+feature.
+• In the SBA dataset, we select UrbanRural and Recession as two immutable attributes since it
+will be difﬁcult to change these features in the near future. RetainedJob is another feature that
+we view as non-decreasing.
+• In the Student Performance dataset, we assume that a student’s Higher education would not
+change, and select higher education as an immutable feature. Age and Absences are considered
+as non-decreasing.
+16Published as a conference paper at ICLR 2023
+The above speciﬁcations are aligned with the existing numerical setup in algorithmic recourse (Us-
+tun et al., 2019; Rawal & Lakkaraju, 2020a).
+For each dataset, we run the process of generating the recourse action by adding constraints to the
+projected gradient descent algorithm. The experimental setup on three different real-world datasets
+is the same as in Section 5.
+The results in Table 7 indicate that the M2validity of our 2 methods drops in the German Credit
+dataset. The validity in shifted data of AR also decreases in this dataset. In other datasets, the
+performance of our 2 methods remains the same. The l1andl2cost of DiRRAc slightly increase in
+the Student Performance dataset. Furthermore, there exists recourse for every input instance.
+Table 7: Benchmark of M1validity,M2validity,l1andl2using actionability constraints on different
+real-world datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German AR 1.000.00 0.76 0.26 0.610.40 0.430.25
+DiRRAc 1.000.00 0.990.06 1.62 0.30 1.27 0.20
+Gaussian DiRRAc 1.000.00 0.990.06 1.62 0.30 1.09 0.24
+SBA AR 1.000.00 0.41 0.18 0.610.42 0.560.36
+DiRRAc 1.000.00 1.000.00 1.74 0.44 1.34 0.40
+Gaussian DiRRAc 1.000.00 0.99 0.02 1.60 0.62 0.98 0.42
+Student AR 1.000.00 0.48 0.19 0.290.21 0.260.18
+DiRRAc 1.000.00 0.950.09 1.61 0.31 1.08 0.24
+Gaussian DiRRAc 1.000.00 0.74 0.18 0.81 0.27 0.55 0.21
+Comparison with RBR. Here we compare our approach on the nonlinear model settings to a more
+recent approach on robust recourse (Nguyen et al., 2022).
+Table 8: Comparison with RBR for non-linear models on real datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German RBR 0.980.13 0.71 0.25 1.110.10 0.500.07
+LIME-DiRRAc 0.78 0.42 0.750.27 1.14 0.27 1.02 0.05
+LIME-Gaussian DiRRAc 0.70 0.46 0.70 0.31 1.110.26 1.00 0.06
+SBA RBR 1.000.00 0.970.12 1.42 0.45 0.59 0.18
+LIME-DiRRAc 0.93 0.26 0.93 0.26 1.10 0.11 1.07 0.05
+LIME-Gaussian DiRRAc 0.82 0.38 0.80 0.38 0.640.29 0.430.32
+Student RBR 1.000.00 0.90 0.23 1.02 0.53 0.420.20
+LIME-DiRRAc 0.97 0.18 0.970.18 1.12 0.23 1.12 0.23
+LIME-Gaussian DiRRAc 0.69 0.46 0.59 0.46 0.580.54 0.50 0.51
+We provide the results in Table 8: we can observe that RBR has (nearly) perfect M1validity. This
+result is natural because RBR is designed to handle the nonlinear predictive model directly. Our
+methods do not have the perfect M1validity because we use the LIME approximation. However,
+it is important to note that in the problem of robust recourse facing future model shifts, we regard
+theM2validity as the most crucial metric because it is the proportion of recourse instances that are
+valid with respect to the shifted (future) models.
+In terms ofl1cost andM2validity, the results demonstrate that our method has a competitive perfor-
+mance compared to the existing state-of-the-art methods. In particular, LIME-DiRRAc outperforms
+RBR in terms of M2validity for two datasets (German and Student). In the SBA dataset, our ap-
+proach has a lower M2validity, but the cost of recourses generated by our method is also lower. This
+result is consistent with our discussion about the l1cost andM2validity trade-off in the Appendix.
+Comparison with MINT on German Credit datasets. We add a more recent baseline MINT
+proposed by Karimi et al. (2021a) for comparison purpose. MINT requires a causal graph; thus, we
+restrict the experiment to the German Credit dataset (the speciﬁcations of the causal graphs are not
+available for SBA and Student Performance). We do not consider MACE as a baseline for nonlinear
+17Published as a conference paper at ICLR 2023
+model comparison because MACE is not applicable to neural network target models due to its high
+computational cost. We use the same set of features as in the MINT and ROAR paper (Karimi et al.,
+2021a; Upadhyay et al., 2021) with four features: Sex, Age, Credit Amount and Duration. The
+results in Table 9 demonstrate that the recourse generated by our framework is more robust to model
+shifts, but it has a higher l1cost.
+Table 9: Comparison with MINT on German Credit dataset.
+Methods M1validity M2validity l1cost
+MINT 1.000.00 0.87 0.09 0.770.23
+DiRRAc 1.000.00 0.990.06 1.62 0.30
+Gaussian DiRRAc 1.000.00 0.990.06 1.62 0.30
+Comparison with ensemble baselines. Prior work suggested that model ensembles can be effective
+for out-of-distribution prediction (Ovadia et al., 2019; Fort et al., 2019). Now we explore a model
+ensemble method to generate recourse based on ROAR as follows. First we follow the procedure
+in Section 5 to obtain 100 model parameters iwithi2f1;:::; 100g. Then we ﬁnd recourse by
+solving the following problem:
+x00= arg min
+x002Amax
+2max
+i2f1;:::;100g`
+Ci
+(x00);1
++c(x0;x00);
+where`is the cross-entropy loss function.
+Second, we use the same 100 models and generate recourse for each model independently. Then we
+average the ROAR recourses across those 100 models as follows.
+x00=1
+100100X
+i=1arg min
+x002Amax
+2`
+Ci
+(x00);1
++c(x0;x00):
+Table 10: Benchmark of different variants of ROAR on three real-world datasets.
+Dataset Methods M1validity M2validity l1cost l2cost
+German ROAR 1.000.00 0.94 0.15 3.88 0.54 1.61 0.22
+ROAR-Ensemble 1.000.00 0.95 0.15 5.11 0.59 2.12 0.24
+ROAR-Avg 1.000.00 0.95 0.15 4.46 0.36 2.00 0.14
+DiRRAc 1.000.00 0.990.06 1.620.30 1.25 0.21
+Gaussian DiRRAc 1.000.00 0.990.06 1.620.30 1.050.23
+SBA ROAR 1.000.00 1.000.00 3.10 0.72 1.35 0.30
+ROAR-Ensemble 1.000.00 1.000.00 4.54 0.95 1.91 0.38
+ROAR-Avg 1.000.00 1.000.00 2.86 0.70 1.78 0.35
+DiRRAc 1.000.00 1.000.00 1.74 0.44 1.34 0.40
+Gaussian DiRRAc 1.000.00 0.99 0.02 1.600.62 0.980.42
+Student ROAR 1.000.00 0.94 0.10 2.02 0.38 0.96 0.18
+ROAR-Ensemble 1.000.00 0.980.05 3.73 0.50 1.43 0.19
+ROAR-Avg 1.000.00 0.97 0.10 2.78 0.31 1.31 0.17
+DiRRAc 1.000.00 0.95 0.09 1.55 0.34 1.07 0.23
+Gaussian DiRRAc 1.000.00 0.74 0.18 0.780.30 0.540.21
+In Table 10, we provide results for the ROAR ensemble method as ROAR-Ensemble and the average
+ROAR recourses as ROAR-Avg. From this table, the M1andM2validity of ROAR-Ensemble and
+ROAR-Avg remain the same for all datasets. In almost every benchmark, the recourses generated by
+those two approaches are more costly than ROAR. In comparison with our framework, our DiRRAc
+and Gaussian DiRRAc methods demonstrate advantages in terms of the cost of recourses.
+More discussions about cost-validity trade-off. Previous work about robust recourses have sug-
+gested that recourses are more robust with the expense of higher costs (Rawal et al., 2021; Upadhyay
+et al., 2021; Pawelczyk et al., 2020; Black et al., 2022). Our results with DiRRAc and Gaussian
+18Published as a conference paper at ICLR 2023
+DiRRAc are consistent with this suggestion. However, our framework can achieve robust and ac-
+tionable recourses with a far smaller cost than ROAR (Upadhyay et al., 2021) and CEPM (Pawelczyk
+et al., 2020).
+Comparison of run time. Table 11 reports the average run time: we observe that Wachter has the
+smallest run time, and our (Gaussian) DiRRAc has a smaller run time than ROAR in all datasets.
+Table 11: Average runtime (seconds).
+Methods German SBA Student
+AR 0.027 0.046 0.039
+Wachter 0.006 0.011 0.006
+ROAR 0.396 0.355 0.412
+DiRRAc 0.208 0.363 0.244
+Gaussian DiRRAc 0.091 0.117 0.124
+A.4 R ESULTS ON SYNTHETIC DATA
+We deﬁne the adaptive mean and covariance shift magnitude as =adaptiter,=  adaptiter
+withadapt;adapt are the factor of data shifts, iter is the index of iterative loop of synthesizing
+process.
+6.0 6.2 6.4 6.6 6.8 7.0
+l1 cost0.50.60.70.80.91.0M2 validity
+DiRRAc
+ROAR
+Figure 8: Comparison of M2validity as a function of the l1distance between input instance and the
+recourse for our DiRRAc method and ROAR on synthetic data.
+For data distribution shifts, we generate mean shifts and covariance shifts 50 times each type with
+adaptive mean and covariance shift magnitude, with the parameters adapt =  adapt = 0:1. To
+estimatebkandbk, we deﬁne valid mixture weights bpand generate data for each component for
+100 times with the same ratio as the mixture weight. We train 100 logistic classiﬁers to compute the
+empirical mean bkand the empirical covariance matrix bkfor thek-th component. We generate a
+recourse for each test instance that belongs to the negative class. In Figure 8, we present the results
+of the cost-robustness analysis of DiRRAc and ROAR on synthetic data.
+0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+0.40.50.60.70.80.91.0M2 validity
+0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+0.40.50.60.70.80.91.0
+0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+0.40.50.60.70.80.91.0
+DiRRAc AR Wachter ROAR
+Figure 9: Impact of distribution shifts to the empirical validity. Left: mean shifts parametrized by
+; Center: covariance shifts parametrized by ; Right: Mean and covariance shifts with =.
+19Published as a conference paper at ICLR 2023
+B P ROOFS
+B.1 P ROOFS OF SECTION 3
+To prove Proposition 3.4, we are using the notion of Value-at-Risk which is deﬁned as follows.
+Deﬁnition B.1 (Value-at-Risk) .For any ﬁxed distribution Qkof~, the Value-at-Risk at the risk
+tolerance level 2(0;1)of the loss ~>xis deﬁned as
+Qk-VaR(~>x),inff2R:Qk(~>x)1 g:
+We are now ready to provide the proof of Proposition 3.4.
+Proof of Proposition 3.4. Using the deﬁnition of the Value-at-Risk in Deﬁnition B.1, we have
+sup
+Qk2Bk(bPk)Qk(~>x0) = inf(
+:2[0;1]; sup
+Qk2Bk(bPk)Qk(~>x0))
+= inf(
+:2[0;1]; sup
+Qk2Bk(bPk)Qk-VaR( ~>x)0)
+By Nguyen (2019, Lemma 3.31), we can reformulate the worst-case value-at-risk as
+sup
+Qk2Bk(bPk)Qk-VaR( ~>x) = b>
+kx+s
+1 
+q
+x>bkx+kpkxk2:
+It is now easy to observe that in the ﬁrst case when  b>
+kx+kkxk20, then we should have
+supQk2Bk(bPk)Qk(~>x0) = 1 .
+We now consider the second case when  b>
+kx+kpkxk2<0. It is easy to see, by the monotocity
+of the worst-case value-at-risk with respect to , that the minimal value ?should satisﬁes
+ b>
+kx+s
+1 ?
+?q
+x>bkx+kp?kxk2= 0:
+Using the transformation t p?, we have
+ b>
+kxt+p
+1 t2q
+x>bkx+kkxk2= 0:
+By rearranging terms and then squaring up both sides, we have the equivalent quadratic equation
+(A2
+k+B2
+k)t2+ 2AkCkt+C2
+k B2
+k= 0
+withAk, b>
+kx0,Bk,q
+x>bkx0, andCk,kkxk20as deﬁned in the statement of
+the proposition. Note, moreover, that we also have A2
+kC2
+k. This leads to the solution
+t= AkCk+Bkp
+A2
+k+B2
+k C2
+k
+A2
+k+B2
+k0:
+Thus, we ﬁnd
+fk(x) = AkCk+Bkp
+A2
+k+B2
+k C2
+k
+A2
+k+B2
+k2
+:
+This completes the proof.
+We now provide the proof of Theorem 3.2.
+20Published as a conference paper at ICLR 2023
+Proof of Theorem 3.2. We ﬁrst consider the objective function fof (2), which can be re-expressed
+as
+f(x) = sup
+P2B(bP)P(C~(x) = 0)
+= sup
+Qk2Bk(bPk)8kX
+k2[K]bpkQk(~>x0)
+=X
+k2[K]bpk sup
+Qk2Bk(bPk)Qk(~>x0)
+=X
+k2[K]bpkfk(x);
+where the equality in the second line follows from the non-negativity of bpk, and the last equality fol-
+lows from the deﬁnition of fk(x)in (5). Applying Proposition 3.4, we obtain the objective function
+of problem (4).
+Consider now the last constraint of (2). Using the result of Proposition 3.4, this constraint is equiv-
+alent to
+ b>
+kx+kkxk2<08k2[K]:
+This leads to the feasible set Xas is deﬁned in (3). This completes the proof.
+B.2 P ROOFS OF SECTION 4
+To prove Theorem 4.1, we ﬁrst deﬁne the following worst-case Gaussian component probability
+function
+fN
+k(x), sup
+Qk2BN
+k(bPk)Qk(C~(x) = 0) = sup
+Qk2BN
+k(bPk)Qk(~>x0)8k2[K]: (11)
+The next proposition provides the reformulation of fN
+k.
+Proposition B.2 (Worst-case probability - Gaussian) .For anyx2Rd, anyk2[K]and any
+(bk;bk;k)2RdSd
++R+, deﬁne the following constants Ak, b>
+kx,Bk,q
+x>bkx, and
+Ck,kkxk2. The following holds:
+(i) We have fN
+k(x)<1
+2if and only if Ak+Ck<0.
+(ii) IfxsatisﬁesfN
+k(x)<1
+2, then
+fN
+k(x) = 1 A2
+k C2
+k
+ AkBk+Ckp
+A2
+k+B2
+k C2
+k
+:
+Proof of Proposition B.2. We ﬁrst prove Assertion (i). Pick any Qk2BN
+k(bPk), thenQkis a Gaus-
+sian distribution QkN(k;k), and thus
+Qk(~>x0) =  >
+kxp
+x>x
+:
+Guaranteeing fN
+k(x)<1
+2is equivalent to guaranteeing
+sup
+G((k;k);(bk;bk))k >
+kx0:
+Note that we also have
+sup
+G((k;k);(bk;bk))k >
+kx= sup
+k:kk bkk2k >
+kx= b>
+kx+kkxk2
+by the properties of the dual norm. This leads to the equivalent condition that Ak+Ck<0.
+21Published as a conference paper at ICLR 2023
+We now prove Assertion (ii). Using the deﬁnition of the Value-at-Risk in Deﬁnition B.1, we have
+sup
+Qk2BN
+k(bPk)Qk(~>x0) = inf(
+:2[0;1
+2); sup
+Qk2BN
+k(bPk)Qk(~>x0))
+= inf(
+:2[0;1
+2); sup
+Qk2BN
+k(bPk)Qk-VaR( ~>x)0)
+Using the result from Nguyen (2019, Lemma 3.31), we have
+sup
+Qk2Bk(bPk)Qk-VaR( ~>x) = b>
+kx+tq
+x>bkx+p
+1 +t2kxk2=Ak+Bkt+Ckp
+1 +t;
+witht=  1(1 ). Taking the inﬁmum over is then equivalent to ﬁnding the root of the
+equation
+Ak+tBk+Ckp
+1 +t2= 0:
+Using a transformation = 1=t, the above equation becomes
+Ak+Bk+Ckp
+1 +2= 0
+with solution
+= AkBk+Ckp
+A2
+k+B2
+k C2
+k
+A2
+k C2
+k>0:
+Notice thatAk+Ck<0, and we also have A2
+k>C2
+k, thusis well-deﬁned. The result now follows
+by noticing that fN
+k(x) = 1 (t) = 1 (1=).
+We are now ready to prove Theorem 4.1.
+Proof of Theorem 4.1. Problem (8) is equivalent to
+minP
+k2[K]bpkfN
+k(x)
+s:t: c(x;x0)
+fN
+k(x)<1
+28k2[K]:
+Applying Proposition B.2, we obtain the necessary result.
+C E XTENSIONS OF THE DIRRA CFRAMEWORK
+Throughout this section, we explore two extensions of our DiRRAc framework. In Section C.1,
+we study an additional layer of robustiﬁcation with respect to the mixture weights bp. Next, in
+Section C.2, we consider an alternative formulation of the objective function to minimize the worst-
+case component probability.
+C.1 R OBUSTIFICATION AGAINST MIXTURE WEIGHT UNCERTAINTY
+The DiRRAc problem considered in Section 3 only robustiﬁes the component distributions bPk. We
+now discuss a plausible approach to robustify against the misspeciﬁcation of the mixture weights
+bp. Because the mixture weights should form a probability vector, it is convenient to model the
+perturbation in the mixture weights using the -divergence.
+Deﬁnition C.1 (-divergence) .Let:R!Rbe a convex function on the domain R+,(1) = 0 ,
+0(a=0) =alimt"1(t)=tfora >0, and 0(0=0) = 0 . The-divergence Dbetween
+two probability vectors p;bp2RK
++amounts to D(pkbp),P
+k2[K]bpk(pk=bpk).
+The family of -divergences contains many well-known statistical divergences such as the Kullback-
+Leibler divergence, the Hellinger distance, etc. Further discussion on this family can be found
+in Pardo (2018). Distributionally robust optimization models with -divergence ambiguity set were
+originally studied in decision-making problems (Ben-Tal et al., 2013; Bayraksan & Love, 2015) and
+22Published as a conference paper at ICLR 2023
+have recently gained attention thanks to their successes in machine learning tasks (Namkoong &
+Duchi, 2017; Hashimoto et al., 2018; Duchi et al., 2021).
+Let"0be a parameter indicating the uncertainty level of the mixture weights. The uncertainty
+set for the mixture weights is formally deﬁned as
+,
+p2[0;1]K: 1>p= 1;D(pkbp)"	
+;
+which contains all K-dimensional probability vectors which are of -divergence at most "from the
+nominal weights bp. The ambiguity set of the mixture distributions that hedge against the weight
+misspeciﬁcation is
+U(bP),
+Q:9p2;9Qk2Bk(bPk)8k2[K]such that Q(Qk;pk)	
+;
+where the component sets Bk(bPk)are deﬁned as in Section 3. The DiRRAc problem with respect to
+the ambiguity setU(bP)becomes
+min sup
+P2U(bP)P(C~(x) = 0)
+s:t: c(x;x0)
+sup
+Qk2Bk(bPk)Qk(C~(x) = 0)<18k2[K]:(12)
+It is important to note at this point that the feasible set of (12) coincides with the feasible set of (2).
+Thus, to resolve problem (12), it sufﬁces to analyze the objective function of (12). Given the function
+, we deﬁne its conjugate function :R!R[f1g by
+(s) = sup
+t0fts (t)g:
+The next theorem asserts that the worst-case probability under U(bP)can be computed by solving a
+convex program.
+Theorem C.2 (Objective value) .The feasible set of problem (12) coincides with X. Further, for
+everyx2 X , the objective value of (12) equals to the optimal value of a convex optimization
+problem
+sup
+P2U(bP)P(C~(x) = 0) = min
+2R+;2R+"+X
+k2[K]bpkfk(x) 
+
+;
+wherefk(x)are computed using Proposition 3.4.
+Proof of Theorem C.2. From the deﬁnition of the set U(bP), we can rewrite Fusing a two-layer
+decomposition
+F(x) = sup
+P2U(bP)P(C~(x) = 0) = sup
+p2sup
+Qk2Bk(bPk)8kX
+k2[K]pkQk(~>x0)
+= sup
+p2X
+k2[K]pk sup
+Qk2Bk(bPk)Qk(~>x0)
+= sup
+p2X
+k2[K]pkfk(x);
+where the equality in the second line follows from the non-negativity of pk, and the last equal-
+ity follows from the deﬁnition of fk(x)in (5). By applying the result from Ben-Tal et al. (2013,
+Corollary 4.2), we have
+F(x) =8
+><
+>:min+"+X
+k2[K]bpkfk(x) 
+
+s:t: 2R+; 2R:
+The proof is complete.
+From the result of Theorem C.2, we can derive the gradient of the objective function of (12) using
+Danskin’s theorem Shapiro et al. (2009, Theorem 7.21), or simply using auto-differentiation. Fur-
+thermore,is convex, and thus solving the minimization problem in Theorem C.2 can be done
+efﬁciently using convex optimization algorithms.
+23Published as a conference paper at ICLR 2023
+C.2 M INIMIZING THE WORST -CASE COMPONENT PROBABILITY
+Instead of minimizing the (total) probability of unfavorable outcome, we can consider an alternative
+formulation where the recourse action minimizes the worst-case conditional probability of unfavor-
+able outcome over all Kcomponents. Mathematically, if we opt for the component ambiguity sets
+Bk(bPk)constructed in Section 3, then we can solve
+min max
+k2[K]sup
+Qk2Bk(bPk)Qk(C~(x) = 0)
+s:t: c(x;x0)
+sup
+Qk2Bk(bPk)Qk(C~(x) = 0)<18k2[K]:(13a)
+Interestingly, problem (13a) does not involve the mixture weighs bp. As a consequence, a trivial ad-
+vantage of this model is that it hedges automatically against the misspeciﬁcation of bp. To complete,
+we provide its equivalent ﬁnite-dimensional form.
+Corollary C.3 (Component Probability DiRRAc) .Problem (13a) is equivalent to
+min
+x2Xmax
+k2[K]kb>
+kxkxk2+q
+x>bkxq
+(b>
+kx)2+x>bkx 2
+kkxk2
+2
+(b>
+kx)2+x>bkx:(13b)
+D E XTENSIONS OF THE GAUSSIAN DIRRA CFRAMEWORK
+In this section, we leverage the results in Section C to extend the Gaussian DiRRAc framework to
+(i) handle the uncertainty of the mixture weight and (ii) minimize the worst-case modal probability.
+Remind that each individual mixture ambiguity set BN
+k(bPk)is of the form
+BN
+k(bPk) =n
+Qk:QkN(k;k);G((k;k);(bk;bk))ko
+;
+which is a ball in the space of Gaussian distributions.
+D.1 H ANDLING MIXTURE WEIGHT UNCERTAINTY - GAUSSIAN DIRRA C
+Following the notations in Section C.1, we deﬁne the set of possible mixture weights as
+ =
+p2[0;1]K: 1>p= 1;D(pkbp)"	
+and the ambiguity set with Gaussian information is deﬁned as
+UN(bP) =n
+Q:9p2;9Qk2BN
+k(bPk)8k2[K]such that Q(Qk;pk)k2[K]o
+:
+The distributionally robust problem with respect to the ambiguity set U(bP)is
+inf sup
+P2UN(bP)P(C~(x) = 0)
+s:t: c(x;x0)
+sup
+Qk2BN
+k(bPk)Qk(C~(x) = 0)<1
+28k2[K]:(14)
+Following the results in Section 4, the feasible set of (14) coincides with the set X. It sufﬁces now
+to provide the reformulation for the objective function of (14).
+Corollary D.1. For anyx2X, we have
+sup
+P2UN(bP)P(C~(x) = 0) =8
+><
+>:inf+"+X
+k2[K]bpkfN
+k(x) 
+
+s:t: 2R+; 2R;
+where the values fN
+k(x)are obtained in Proposition B.2.
+Corollary D.2 follows from Theorem D.2 by replacing the quantities fk(x)byfN
+k(x)to take into
+account the Gaussian parametric information. The proof of Corollary D.2 is omitted.
+24Published as a conference paper at ICLR 2023
+D.2 M INIMIZING WORST -CASE COMPONENT PROBABILITY
+We now consider the Gaussian DiRRAc that minimizes the worst-case modal probability of infeasi-
+bility. More concretely, we consider the recourse action obtained by solving
+inf max
+k2[K]sup
+Qk2BN
+k(bPk)Qk(C~(x) = 0)
+s:t: c(x;x0)
+sup
+Qk2BN
+k(bPk)Qk(C~(x) = 0)<1
+28k2[K]:(15a)
+The next corollary provides the equivalent form of the above optimization problem.
+Corollary D.2. Problem (15a) is equivalent to
+inf
+x2Xmax
+k2[K]8
+><
+>:1  
+(b>
+kx)2 2
+kkxk2
+2
+b>
+kxq
+x>bkx+kkxk2q
+(b>
+kx)2+x>bkx 2
+kkxk2
+2!9
+>=
+>;: (15b)
+E P ROJECTED GRADIENT DESCENT ALGORITHM
+The pseudocode of the algorithm is presented in Algorithm 1. The convergence guarantee for Algo-
+rithm 1 follows from Beck (2017, Theorem 10.15), and is distilled in the next theorem.
+Algorithm 1 Projected gradient descent algorithm with backtracking line-search
+Input: Input instance x0, feasible setX"and objective function f
+Line search parameters: 2(0;1), >0(Default values: = 0:7;= 1)
+Initialization: Setx0 ProjX"(x0)
+fort= 0;:::;T 1do
+Find the smallest integer i0such that
+f 
+ProjX"(xt irf(xt))
+f(xt) 1
+2ikxt ProjX"(xt irf(xt))k2
+2:
+Setxt+1= ProjX"(xt irf(xt)).
+end for
+Output:xT
+Theorem E.1 (Convergence guarantee) .Letfxtgt=0;1;:::;T be the sequence generated by Algo-
+rithm 1. Then, all limit points of the sequence fxtgt=0;1;:::;T are stationary points of problem (4)
+with the modiﬁed feasible set X". Furthermore, there exists some constant C > 0such that for any
+T1, we have
+min
+t=0;1;:::;Txt ProjX"(xt rf(xt))
+2
+Cp
+T:
+25

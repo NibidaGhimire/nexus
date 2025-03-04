@@ -1,0 +1,1499 @@
+Published as a conference paper at ICLR 2023
+LS-IQ: I MPLICIT REWARD REGULARIZATION FOR
+INVERSE REINFORCEMENT LEARNING
+Firas Al-Hafez1, Davide Tateo1, Oleg Arenz1, Guoping Zhao2, Jan Peters1;3
+1Intelligent Autonomous Systems,2Locomotion Laboratory
+3German Research Center for AI (DFKI), Centre for Cognitive Science, Hessian.AI
+TU Darmstadt, Germany
+fname.surnameg@tu-darmstadt.de
+ABSTRACT
+Recent methods for imitation learning directly learn a Q-function using an implicit
+reward formulation rather than an explicit reward function. However, these meth-
+ods generally require implicit reward regularization to improve stability and often
+mistreat absorbing states. Previous works show that a squared norm regularization
+on the implicit reward function is effective, but do not provide a theoretical anal-
+ysis of the resulting properties of the algorithms. In this work, we show that using
+this regularizer under a mixture distribution of the policy and the expert provides
+a particularly illuminating perspective: the original objective can be understood as
+squared Bellman error minimization, and the corresponding optimization problem
+minimizes a bounded 2-Divergence between the expert and the mixture distribu-
+tion. This perspective allows us to address instabilities and properly treat absorb-
+ing states. We show that our method, Least Squares Inverse Q-Learning (LS-IQ),
+outperforms state-of-the-art algorithms, particularly in environments with absorb-
+ing states. Finally, we propose to use an inverse dynamics model to learn from
+observations only. Using this approach, we retain performance in settings where
+no expert actions are available.1
+1 I NTRODUCTION
+Inverse Reinforcement Learning (IRL) techniques have been developed to robustly extract behaviors
+from expert demonstration and solve the problems of classical Imitation Learning (IL) methods (Ng
+et al., 1999; Ziebart et al., 2008). Among the recent methods for IRL, the Adversarial Imitation
+Learning (AIL) approach (Ho & Ermon, 2016; Fu et al., 2018; Peng et al., 2021), which casts the
+optimization over rewards and policies into an adversarial setting, have been proven particularly
+successful. These methods, inspired by Generative Adversarial Networks (GANs) (Goodfellow
+et al., 2014), alternate between learning a discriminator, and improving the agent’s policy w.r.t.
+a reward function, computed based on the discriminator’s output. These explicit reward methods
+require many interactions with the environment as they learn both a reward and a value function.
+Recently, implicit reward methods (Kostrikov et al., 2020; Arenz & Neumann, 2020; Garg et al.,
+2021) have been proposed. These methods directly learn the Q-function, signiﬁcantly accelerating
+the policy optimization. Among the implicit reward approaches, the Inverse soft Q-Learning (IQ-
+Learn) is the current state-of-the-art. This method modiﬁes the distribution matching objective by
+including reward regularization on the expert distribution, which results in a minimization of the 2-
+divergence between the policy and the expert distribution. However, whereas their derivations only
+consider regularization on the expert distribution, their practical implementations on continuous
+control tasks have shown that regularizing the reward on both the expert and policy distribution
+achieves signiﬁcantly better performance.
+The contribution of this paper is twofold: First, when using this regularizer, we show that the result-
+ing objective minimizes the 2divergence between the expert and a mixture distribution between the
+expert and the policy. We then investigate the effects of regularizing w.r.t. the mixture distribution
+on the theoretical properties of IQ-Learn. We show that this divergence is bounded, which translates
+1The code is available at https://github.com/robfiras/ls-iq
+1arXiv:2303.00599v1  [cs.LG]  1 Mar 2023Published as a conference paper at ICLR 2023
+to bounds on the reward and Q-function, signiﬁcantly improving learning stability. Indeed, the re-
+sulting objective corresponds to least-squares Bellman error minimization and is closely related to
+Soft Q-Imitation Learning (SQIL) (Reddy et al., 2020). Second, we formulate Least Squares Inverse
+Q-Learning (LS-IQ), a novel IRL algorithm. By following the theoretical insight coming from the
+analysis of the 2regularizer, we tackle many sources of instabilities of the IQ-Learn approach:
+the arbitrariness of the Q-function scales, exploding Q-functions targets, and reward bias Kostrikov
+et al. (2019), i.e., assuming that absorbing states provide the null reward. We derive the LS-IQ
+algorithm by exploiting structural properties of the Q-function and heuristics based on expert opti-
+mality. This results in increased performance on many tasks and, in general, more stable learning
+and less variance in the Q-function estimation. Finally, we extend the implicit reward methods to
+the IL from observations setting by training an Inverse-Dynamics Model (IDM) to predict the expert
+actions, which are no longer assumed to be available. Even in this challenging setting, our approach
+retains performance similar to the one where expert actions are known.
+Related Work. The vast majority of IRL and IL methods build upon the Maximum Entropy
+(MaxEnt) IRL framework (Ziebart, 2010). In particular, Ho & Ermon (2016) introduce Generative
+Adversarial Imitation Learning (GAIL), which applies GANs to the IL problem. While the original
+method minimizes the Jensen-Shannon divergence to the expert distribution, the approach is ex-
+tended to general f-divergences (Ghasemipour et al., 2019), building on the work of Nowozin et al.
+(2016). Among the f-divergences, the Pearson 2divergence improves the training stability for
+GANs (Mao et al., 2017) and for AIL (Peng et al., 2021). Kostrikov et al. (2019) introduce a replay
+buffer for off-policy updates of the policy and discriminator. The authors also point out the problem
+of reward bias, which is common in many imitation learning methods. Indeed, AIL methods implic-
+itly assign a null reward to these states, leading to survival or termination biases, depending on the
+chosen divergence. Kostrikov et al. (2020) improve the previous work introducing recent advances
+from ofﬂine policy evaluation (Nachum et al., 2019). Their method, ValueDice, uses an inverse Bell-
+man operator that expresses the reward function in terms of its Q-function, to minimize the reverse
+Kullback-Leibler Divergence (KL) to the expert distribution. Arenz & Neumann (2020) derive a
+non-adversarial formulation based on trust-region updates on the policy. Their method, O-NAIL,
+uses a standard Soft-Actor Critic (SAC) (Haarnoja et al., 2018) update for policy improvement. O-
+NAIL can be understood as an instance of the more general IQ-Learn algorithm (Garg et al., 2021),
+which can optimize different divergences depending on an implicit reward regularizer. Garg et al.
+(2021) also show that their algorithm achieves better performance using the 2divergence instead
+of the reverse KL. Reddy et al. (2020) propose a method that uses SAC and assigns ﬁxed binary
+rewards to the expert and the policy. Swamy et al. (2021) provide a unifying perspective on many
+of the methods mentioned above, explicitly showing that GAIL, ValueDice, MaxEnt-IRL, and SQIL
+can be viewed as moment matching algorithms. Lastly, Sikchi et al. (2023) propose a ranking loss
+for AIL, which trains a reward function using a least-squares objective with ranked targets.
+2 P RELIMINARIES
+Notation. A Markov Decision Process (MDP) is a tuple (S;A;P;r;; 0), whereSis the state
+space,Ais the action space, P:SAS ! R+is the transition kernel, r:SA! R
+is the reward function, is the discount factor, and 0:S ! R+is the initial state distribu-
+tion. At each step, the agent observes a state s2 S from the environment, samples an action
+a2 A using the policy :SA ! R+, and transitions with probability P(s0js;a)into
+the next state s02 S , where it receives the reward r(s;a). We deﬁne an occupancy measure
+(s;a) =(ajs)P1
+t=0t
+t(s), where
+t(s0) =R
+s;a
+t(s)(ajs)P(s0js;a)dads is the state
+distribution for t >0, with
+0(s) =0(s). The occupancy measure allows us to denote the ex-
+pected reward under policy asE[r(s;a)],E[P1
+t=0tr(st;at)], wheres00,at(:jst)
+andst+1P(:jst;at)fort >0. Furthermore, RSA=fx:SA! Rgdenotes the set of
+functions in the state-action space and Rdenotes the extended real numbers R[f+1g. We refer
+to the soft value functions as ~V(s)and~Q(s;a), while we use V(s)andQ(s;a)to denote the value
+functions without entropy bonus.
+Inverse Reinforcement Learning as an Occupancy Matching Problem. Given a set of demon-
+strations consisting of states and actions sampled from an expert policy E, IRL aims at ﬁnding
+a reward function r(s;a)from a family of reward functions R=RSAassigning high reward to
+2Published as a conference paper at ICLR 2023
+samples from the expert policy Eand low reward to other policies. We consider the framework pre-
+sented in Ho & Ermon (2016), which derives the maximum entropy IRL objective with an additional
+convex reward regularizer  :RSA!Rfrom an occupancy matching problem
+max
+r2Rmin
+2L(r;) = max
+r2R
+min
+2 H() E[r(s;a)]
++EE[r(s;a)]  (r); (1)
+with the space of policies  = RSA, the discounted cumulative entropy bonus H() =
+E[ log((ajs))], and a constant controlling the entropy bonus. Note that the inner optimiza-
+tion is a maximum entropy Reinforcement Learning (RL) objective (Ziebart, 2010), for which the
+optimal policy is given by
+(ajs) =1
+Zsexp ( ~Q(s;a)); (2)
+whereZs=R
+^aexp~Q(s;^a)d^ais the partition function and ~Q(s;a)is the soft action-value function,
+which is given for a certain reward function by the soft Bellman operator (~B~Q)(s;a) =r(s;a) +
+Es0P(:js;a)~V(s0), where ~V(s0) =Ea(:js)[~Q(s;a) log(ajs)].
+Garg et al. (2021) transform Equation 1 from reward-policy space to ~Q-policy space using the inverse
+soft Bellman operator (~T~Q)(s;a) =~Q(s;a) Es0P(:js;a)~V(s0)to get a one-to-one correspon-
+dence between the reward and the ~Q-function. This operator allows to change the objective function
+Lfrom reward-policy to Q-policy space, from now on denoted as J
+max
+r2Rmin
+2L(r;) = max
+~Q2~
+min
+2J(~Q;); (3)
+where ~
+ =RSAis the space of ~Q-functions. Furthermore, they use Equation 2 to extract the
+optimal policy ~Qgiven a ~Q-function to drop the inner optimization loop in Equation 1 such that
+max
+~Q2~
+J(~Q; ~Q) = max
+~Q2~
+EEh
+~Q(s;a) Es0P(:js;a)[~V(s0)]i
+ H(~Q) (4)
+ Eh
+~Q(s;a) Es0P(:js;a)[~V(s0)]i
+  (~T~Q):
+Practical Reward Regularization. Garg et al. (2021) derive a regularizer enforcing an L 2norm-
+penalty on the reward on state-action pairs from the expert, such that  E(r) =cEE
+r(s;a)2
+withcbeing a regularizer constant. However, in continuous action spaces, this regularizer causes
+instabilities. In practice, Garg et al. (2021) address this instabilities by using the regularizer to the
+mixture
+ (r) =cEE
+r(s;a)2
++ (1 )cE
+r(s;a)2
+; (5)
+whereis typically set to 0:5. It is important to note that this change of regularizer does not allow
+the direct extraction of the policy from Equation 1 anymore. Indeed, the regularizer in Equation 5
+also depends on the policy. Prior work did not address this issue. In the following sections, we will
+provide an in-depth analysis of this regularizer, allowing us to address the aforementioned issues
+and derive the correct policy update. Before we introduce our method, we use Proposition A.1
+in Appendix A to change the objectives LandJfrom expectations under occupancy measures
+to expectations under state-action distributions dEandd, from now on denoted as LandJ,
+respectively.
+3 L EAST SQUARES INVERSE Q-L EARNING
+In this section, we introduce our proposed imitation learning algorithm, which is based on the oc-
+cupancy matching problem presented in Equation 1 using the regularizer deﬁned in Equation 5. We
+start by giving an interpretation of the resulting objective as a 2divergence between the expert
+distribution and a mixture distribution of the expert and the policy. We then show that the regular-
+izer allows us to cast the original objective into a Bellman error minimization problem with ﬁxed
+binary rewards for the expert and the policy. An RL problem with ﬁxed rewards is a unique setting,
+which we can utilize to bound the Q-function target, provide ﬁxed targets for the Q-function on
+expert states instead of doing bootstrapping, and adequately treat absorbing states. However, these
+techniques need to be applied on hard Q-functions. Therefore, we switch from soft action-value
+functions ~Qto hardQ-functions, by introducing an additional entropy critic. We also present a reg-
+ularization critic allowing us to recover the correct policy update corresponding to the regularizer
+in Equation 5. Finally, we propose to use an IDM to solve the imitation learning from observations
+problem.
+3Published as a conference paper at ICLR 2023
+3.1 I NTERPRETATION AS A STATISTICAL DIVERGENCE
+Ho & Ermon (2016) showed that their regularizer results in a Jensen-Shannon divergence minimiza-
+tion between the expert’s and the policy’s state-action distribution. Similarily, Garg et al. (2021)
+showed that their regularizer  E(r)results in a minimization of the 2divergence. However, the
+regularizer presented in Equation 5 is not investigated yet. We show that this regularizer minimizes
+a2divergence between the expert’s state-action distribution and a mixture distribution between
+the expert and the policy. Therefore, we start with the objective presented in Equation 1 and note
+that strong duality – maxr2Rmin2L= min2maxr2RL– follows straightforwardly from
+the minimax theorem (V on Neumann, 1928) as  H(), Ed[r(s;a)]and (r)are convex in ,
+and Ed[r(s;a)],EdE[r(s;a)]and (r)are concave in r(Ho & Ermon, 2016). We express the 2
+divergence between the expert’s distribution and the mixture distribution using its variational form,
+22 
+dEdE+d
+2|{z}
+dmix
+=sup
+r2
+EdE[r(s;a)] E~dh
+r(s;a)+r(s;a)2
+4i
+=sup
+rEdE[r(s;a)] Ed[r(s;a)] cEdE
+r(s;a)2
+ c(1 )Ed
+r(s;a)2
+;(6)
+with the regularizer constant c=1=2and=1=2. Now, if the optimal reward is in R, the original
+objective from Equation 1 becomes an entropy-regularized 2divergence minimization problem
+max
+r2Rmin
+2L= min
+222 
+dEdE+d
+2
+ H(): (7)
+Equation 7 tells us that the regularized IRL objective optimizes the reward to match a divergence
+while optimizing the policy to minimize the latter. When the divergence to be matched is unbounded,
+the optimal reward is also unbounded, causing instability during learning. Unlike the 2-divergence
+between the agent’s and the expert’s distribution, the 2-divergence to the mixture distribution is
+bounded to [0,1⁄c] as shown in Proposition A.3, and its optimal reward
+r(s;a) =1
+cdE(s;a) d(s;a)
+dE(s;a) +d(s;a); (8)
+is also bounded in the interval [ 1=c;1=c]as shown in Proposition A.2.
+3.2 A R EINFORCEMENT LEARNING PERSPECTIVE ON DISTRIBUTION MATCHING
+In the following, we present a novel perspective on Equation 4 allowing us to better understand
+the effect of the regularizer. Indeed, for the regularizer deﬁned in Equation 5, we can interpret this
+objective as an entropy-regularized least squares problem, as shown by the following proposition:
+Proposition 3.1 Letr~Q(s;a) = ( ~T~Q)(s;a)be the implicit reward function of a ~Q-function, then
+for (r~Q) =cE~d[r~Q(s;a)2]with ~d(s;a) =dE(s;a) + (1 )d(s;a), the solution of Equa-
+tion 4 under state-action distributions equals the solution of an entropy-regularized least squares
+minimization problem such that arg min ~Q2~
+L(~Q; ~Q) = arg max ~Q2~
+J(~Q; ~Q)with
+L(~Q; ~Q) =EdEh 
+r~Q(s;a) rmax2i
++ (1 )Ed~Qh 
+r~Q(s;a) rmin2i
++
+cH(~Q);(9)
+wherermax=1
+2candrmin= 1
+2(1 )c.
+The proof is provided in Appendix A.3. The resulting objective in Equation 9 is very similar to
+the one in the Least Squares Generative Adversarial Networks (LSGANs) (Mao et al., 2017) setting,
+wherer~Q(s;a)can be interpreted as the discriminator, rmaxcan be interpreted as the target for expert
+samples, and rmincan be interpreted as the target for samples under the policy . For= 0:5and
+c= 1, resulting in rmax= 1andrmin= 1, Equation 9 differs from the discriminator’s objective in
+the LSGANs setting only by the entropy term.
+Now replacing the implicit reward function with the inverse soft Bellman operator and rearranging
+the terms yields
+L(~Q; ~Q) =EdE
+~Q(s;a) (rmax+Es0P(:js;a)[~V(s0)]2
+(10)
++ (1 )Ed~Q
+~Q(s;a) (rmin+Es0P(:js;a)[~V(s0)])2
++
+cH(~Q)
+=2(dE;rmax) + (1 )2(d;rmin) +
+cH(~Q); (11)
+4Published as a conference paper at ICLR 2023
+where2is the squared soft Bellman error. We can deduce the following from Equation 11:
+2-regularized IRL under a mixture can be seen as an RL problem with ﬁxed rewards rmax
+andrminfor the expert and the policy. This insight allows us to understand the importance of the
+regularizer constant c: it deﬁnes the target rewards and, therefore, the scale of the Q-function. The
+resulting objective shows strong relations to the SQIL algorithm, in which also ﬁxed rewards are
+used. However, SQIL uses rmax= 1 andrmin= 0, which is infeasible in our setting for  < 1.
+While the entropy term appears to be another difference, we note that it does not affect the critic
+update, where ~Qis ﬁxed. As in SQIL, the entropy is maximized by extracting the MaxEnt policy
+using Equation 2.
+Stabilizing the training in a ﬁxed reward setting is straightforward. We can have a clean solution
+to the reward bias problem – c.f., Section 3.4 –, and we can provide ﬁxed Q-target for the expert
+and clipped Q-function targets for the policy – c.f., Section 3.5 & 3.7 to improve learning stability
+signiﬁcantly. However, we must switch from soft to hard action-value functions by introducing an
+entropy critic to apply these techniques. Additionally, we show how to recover the correct policy
+update corresponding to the regularizer in Equation 5 by introducing a regularization critic.
+3.3 E NTROPY AND REGULARIZATION CRITIC
+We express the ~Q-function implicitly using ~Q(s;a) =Q(s;a) +H(s;a)decomposing it into a
+hardQ-function and an entropy critic
+H(s;a) =EP;"1X
+t0=t t0 t+1log(at0+1jst0+1)st=s;at=a#
+: (12)
+This procedure allows us to stay in the MaxEnt formulation while retaining the ability to operate
+on the hardQ-function. We replace the soft inverse Bellman operator with the hard optimal inverse
+Bellman operator (TQ)(s;a) =Q(s;a) Es0P(:js;a)V(s0), with the optimal value function
+V(s) = maxaQ(s;a).
+As mentioned before, the regularizer introduced in Equation 5 incorporates yet another term depend-
+ing on the policy. Indeed, the inner optimization problem in Equation 1—the term in the brackets—is
+not purely the MaxEnt problem anymore, but includes the term  kEd[r(s;a)2]withk=c(1 ).
+To incorporate this term into our ﬁnal implicit action-value function Qy(s;a), we learn an additional
+regularization critic
+C(s;a) =EP;"1X
+t0=tt0 tr(st0;at0)2st=s;at=a#
+: (13)
+such thatQy(s;a) =Q(s;a) +H(s;a) +kC(s;a). UsingQy, we obtain the exact solution to the
+inner minimization problem in Equation 2. In practice, we learn a single critic GcombiningH
+andC. We train the latter independently using the following objective
+min
+G2
+G= min
+GEd
+(G(s;a) (krQ(s;a)2+Es0P
+a0
+( log(a0js0) +G(s0;a0)
+))2
+;(14)
+which is an entropy-regularized Bellman error minimization problem given the squared implicit
+rewardrQscaled byk.
+3.4 T REATMENT OF ABSORBING STATES
+Another technical aspect neglected by IQ-Learn is the proper treatment of absorbing states. Garg
+et al. (2021) treat absorbing states by adding an indicator —where= 1ifs0is a terminal state—in
+front of the discounted value function in the inverse Bellman operator
+(T
+iqQ)(s;a) =Q(s;a) (1 )Es0P(:js;a)V(s0): (15)
+This inverse Bellman operator is obtained by solving the forward Bellman operator for r(s;a)under
+the assumption that the value of absorbing states is zero. However, as pointed out by Kostrikov
+et al. (2019), such an assumption may introduce termination or survival bias; the value of absorbing
+states also needs to be learned. Our perspective provides a clear understanding of the effect of
+the inverse Bellman operator in Equation 15: The objective in Equation 10 will regress the Q-
+function of transitions into absorbing states towards rmaxorrmin, respectively. However, based
+on Equation 9, the implicit reward of absorbing states should be regressed toward rmaxorrmin.
+5Published as a conference paper at ICLR 2023
+Figure 1: Point mass toy task
+(top) with success rate plot
+(bottom). Here, we compare
+the standard IQ-Learn operator
+to the modiﬁed operator.Instead, we derive our inverse operator from the standard Bellman
+operator while exploiting that the value of the absorbing state sAis
+independent of the policy 
+(T
+lsiqQ)(s;a)=Q(s;a) Es0P(:js;a) 
+(1 )V(s0)+V(sA)
+:(16)
+We further exploit that the value of the absorbing state can be com-
+puted in closed form as V(sA) =rA
+1 , whererAequalsrmaxon ex-
+pert states and rminon policy states. Please note that the correspond-
+ing forward Bellman operator converges to the same Q-function, de-
+spite using the analytic value of absorbing states instead of bootstrap-
+ping, as we show in Appendix A.5. When applying our inverse opera-
+tor in Equation 16 to Equation 9, we correctly regress the Q-function
+of transitions into absorbing states towards their discounted return.
+We show the resulting full objective in Appendix A.4.
+We show the effect of our modiﬁed operator on the toy task depicted
+in Figure 1 (top), where the black point mass is spawned in either of
+the four dark blue squares and has to reach the green area in the mid-
+dle. Once the agent enters the red area, the episode terminates. The
+expert always takes the shortest path to the green area, never visiting
+the red area. The operator proposed by IQ-Learn does not sufﬁciently
+penalize the agent for reaching absorbing states, preventing the IQ-
+Learn agent from reaching the goal consistently, as can be seen from
+the orange graph in Figure 1 (bottom). In contrast, when using our
+operatorTlsiq, the agent solves the task successfully.
+3.5 A NALTERNATIVE FORMULATION FOR THE EXPERT RESIDUAL MINIMIZATION
+The ﬁrst term in Equation 9 deﬁnes the squared Bellman error minimization problem on the distri-
+butiondE
+2(dE;rmax) =EdE
+(rQ(s;a) rmax)2
+: (17)
+Due to bootstrapping, this minimization can become challenging, even for a ﬁxed expert policy, as
+it does not ﬁx the scale of the Q-function unless the trajectory reaches an absorbing state. This
+problem arises particularly on expert data for cyclic tasks, where we generate trajectories up to
+a ﬁxed horizon. The lack of a ﬁxed scale increases the variance of the algorithm, affecting the
+performance negatively.
+Therefore, we propose a modiﬁed objective, analyzing Equation 17. The minimum of this term is
+achieved when rQ(s;a) =rmaxfor all reachable (s;a)underdE. Thus, the objective of this term is
+to push the reward, on expert trajectories, towards rmax. If we consider this minimum, each transition
+in the expert’s trajectory has the following Q-value:
+QE(s;a) =1X
+t=0trmax=rmax
+1 =Qmax;withs;adE(s;a): (18)
+As the objective of our maximization on expert distribution is equivalent to pushing the value of the
+expert’s states and actions towards Qmax, we propose to replace the bootstrapping target with the
+ﬁxed targetQmaxresulting in the following new objective:
+Llsiq(Q)=EdE
+(Q(s;a) Qmax)2
++(1 )Edh 
+Q(s;a) (rmin+Es0P(:js;a)[V(s0)])2i
+: (19)
+Note that we skip the terminal state treatment for clarity. The full objective is shown in Appendix
+A.4. Also, we omit the entropy term as we incorporate the latter now in H(s;a). This new objective
+incorporates a bias toward expert data. Therefore, it is not strictly equivalent to the original problem
+formulation. However, it updates the Q-function toward the same ideal target, while providing a
+simpler and more stable optimization landscape. Empirically, we experienced that this modiﬁcation,
+while only justiﬁed intuitively, has a very positive impact on the algorithm’s performance.
+6Published as a conference paper at ICLR 2023
+3.6 L EARNING FROM OBSERVATIONS
+In many real-world tasks, we do not have access to expert actions, but only to observations of expert’s
+behavior (Torabi et al., 2019b). In this scenario, AIL methods, such as GAIfO (Torabi et al., 2019a),
+can be easily adapted by learning a discriminator only depending on the current and the next state.
+Unfortunately, it is not straightforward to apply the same method to implicit rewards algorithms
+that learn aQ-function. The IQ-Learn method (Garg et al., 2021) relies on a simpliﬁcation of the
+original objective to perform updates not using expert actions but rather actions sampled from the
+policy on expert states. However, this reformulation is not able to achieve good performance on
+standard benchmarks as shown in our experimental results.
+A common practice used in the literature is to train an IDM. This approach has been previously used
+in behavioral cloning (Torabi et al., 2018; Nair et al., 2017) and for reinforcement learning from
+demonstrations (Guo et al., 2019; Pavse et al., 2020; Radosavovic et al., 2021). Following the same
+idea, we generate an observation-only version of our method by training an IDM online on policy
+data and using it for the prediction of unobserved actions of the expert. We modify the objective in
+Equation 19 to
+Llsiq-o(Q)=EdEh 
+Q(s; !(s;s0)) Qmax2i
++Edh 
+Q(s;a) (rmin+Es0P(:js;a)[V(s0)])2i
+;(20)
+with the dynamics model  !(s;s0), its parameters !and= (1 ). We omit the notation for
+absorbing states and refer to Appendix A.4 instead. Notice that the IDM is only used to evaluate the
+expert actions, and is trained by solving the following optimization problem
+min
+!L (!) = min
+!Ed;P
+k !(s;s0) ak2
+2
+; (21)
+where the expectation is performed on the state distribution generated by the learner policy . While
+the mismatch between the training distribution and the evaluation distribution could potentially cause
+problems, our empirical evaluation shows that on the benchmarks we achieve performance similar
+to the action-aware algorithm. We give more details on this approach in Appendix B.
+3.7 P RACTICAL ALGORITHMAlgorithm 1 LS-IQ
+Initialize:Q,,Gand optionally  !
+forsteptinf1;:::;Ngdo
+Sample mini-batches DandDE
+(opt.) Predict actions for DEusing  !
+DE ffs; !(s;s0);s0gj8fs;s0g2DEg
+Update theQ-function using Eq. 20
+t+1 t+Qr[J(;D;DE)]
+(opt.) UpdateG-function using Eq. 14
+t+1 t Gr[2
+G(;D)]
+Update Policy using the KL
+t+1 t r[DKL(k~Q)]
+(opt.) Update  !using Eq. 21
+!t+1 !t  r![L (!;D)]
+end forWe now instantiate a practical version of our algorithm
+in this section. An overview of our method is shown in
+Algorithm 1. In practice, we use parametric functions to
+approximate Q,,Gand , and optimize the latter us-
+ing gradient ascent on surrogate objective functions that
+approximate the expectations under danddEusing the
+datasetsDandDE. Further, we use target networks,
+as already suggested by the Garg et al. (2021). How-
+ever, while the objective in Equation 4 lacked intuition
+about the usage of target networks, the objective in Equa-
+tion 11 is equivalent to a reinforcement learning objec-
+tive, in which target networks are a well-known tool for
+stabilization. Further, we exploit our access to the hard
+Q-function as well as our ﬁxed reward target setting to
+calculate the maximum and minimum Q-values possible, Qmin=rmin
+1 andQmax=rmax
+1 , and clip
+the output of target network to that range. Note that this also holds for the absorbing states. In doing
+so, we ensure that the target Qalways remains in the desired range, which was often not the case
+with IQ-Learn. Target clipping prevents the explosion of the Q-values that can occur due to the use
+of neural approximators. This technique allows the algorithm to recover from poor value function
+estimates and prevents the Q-function from leaving the set of admissible functions. Finally, we
+found that training the policy on a small ﬁxed expert dataset anneals the entropy bonus of expert
+trajectories, even if the policy never visits these states and actions. To address this problem, we clip
+the entropy bonus on expert states to a running average of the maximum entropy on policy states.
+In continuous action spaces, Zsis intractable, which is why we can not directly extract the optimal
+policy using Equation 2. As done in previous work (Haarnoja et al., 2018; Garg et al., 2021),
+we use a parametric policy to approximate ~Qby minimizing the KL DKL(k~Q). In our
+implementation, we found it unnecessary to use a double-critic update. This choice reduces the
+7Published as a conference paper at ICLR 2023
+0 500 1000 15000.00.20.40.60.81.0Atlas
+0 500 1000 15000.00.20.40.60.81.0Ant-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+SQIL IQ IQv0 LSIQ LSIQ-H LSIQ-HC Expert
+Figure 2: Comparison of different versions of LS-IQ. Abscissa shows the normalized discounted cumulative
+reward. Ordinate shows the number of training steps ( 103). The ﬁrst row shows the results and an exemplary
+trajectory – here the trained LS-IQ agent – on a locomotion task using an Atlas robot. The second row shows
+4 MuJoCo Gym tasks, for which the expert’s cumulative rewards are !Hopper:3299.81, Walker2d:5841.73,
+Ant:6399.04, Humanoid:6233.45
+computational and memory requirements of the algorithm, making it comparable to SAC. Finally,
+we replaceV(s)withV(s)on the policy expectation, as we do not have access to the latter in
+continuous action spaces.
+4 E XPERIMENTS
+We evaluate our method on six MuJoCo environments: Ant-v3, Walker2d-v3, Hopper-v3,
+HalfCheetah-v3, Humanoid-v3, and Atlas. The latter is a novel locomotion environment introduced
+by us and is further described in Appendix C.1. We select the following baselines: GAIL (Ho &
+Ermon, 2016), V AIL (Peng et al., 2019), IQ-Learn (Garg et al., 2021) and SQIL (Reddy et al.,
+2020). For a fair comparison, all methods are implemented in the same framework, Mush-
+roomRL (D’Eramo et al., 2021). We verify that our implementations achieve comparable results
+to the original implementations by the authors. We use the hyperparameters proposed by the origi-
+nal authors for the respective environments and perform a grid search on novel environments. The
+original implementation of IQ-Learn evaluates two different algorithm variants depending on the
+given environment. We refer to these variants as IQv0—which uses telescoping (Garg et al., 2021)
+to evaluate the agent’s expected return in Equation 4—, and IQ—which directly uses Equation 4—
+and evaluate both variants on all environments. For our method, we use the same hyperparameters
+as IQ-Learn, except for the regularizer coefﬁcient cand the entropy coefﬁcient , which we tune on
+each environment. We only consider equal mixing, i.e., = 0:5.
+In our ﬁrst experiment, we perform ablations on the different design choices of LSIQ. We evaluate
+the following variants: LSIQ-HC uses a (combined) entropy critic and regularization critic, LSIQ-H
+only uses the entropy critic, and LSIQ does not use any additional critic, similar to IQ-Learn. We
+use ten seeds and ﬁve expert trajectories for these experiments. For the Atlas environment, we use
+100 trajectories. We also consider IQ, IQv0, and SQIL as baselines and show the learning curves
+for four environments in Figure 2. The learning curves on the HalfCheetah environment can be
+found in Appendix C.6. It is interesting to note that IQ-Learn without telescoping does not perform
+well on Atlas, Walker, and Hopper, where absorbing states are more likely compared to Ant and
+HalfCheetah, which almost always terminate after a ﬁxed amount of steps. We hypothesize that
+the worse performance on Walker and Hopper is caused by reward bias, as absorbing states are not
+sufﬁciently penalized. IQv0 would suffer less from this problem as it treats all states visited by the
+agent as initial states, which results in stronger reward penalties for these states. We conduct further
+ablation studies showing the inﬂuence of the proposed techniques, including an ablation study on
+the effect of ﬁxed targets, clipping on the target Q-value, entropy clipping for the expert, as well as
+8Published as a conference paper at ICLR 2023
+1 5 10 250.000.250.500.751.00Ant-v3
+1 5 10 250.000.250.500.751.00Walker2d-v3
+1 5 10 250.000.250.500.751.00Hopper-v3
+1 5 10 250.000.250.500.751.00Humanoid-v3
+States and Actions
+1 5 10 250.000.250.500.751.00Ant-v3
+1 5 10 250.000.250.500.751.00Walker2d-v3
+1 5 10 250.000.250.500.751.00Hopper-v3
+1 5 10 250.000.250.500.751.00Humanoid-v3
+States Only
+Gail Vail IQ IQv0 SQIL LSIQ LSIQ-H LSIQ-HC Expert
+Figure 3: Ablation study on the effect of the number of expert trajectories on different Mujoco environments.
+Abscissa shows the normalized cumulative reward. Ordinate shows the number of expert trajectories. The ﬁrst
+row shows the performance when considering states and action, while the second row considers the performance
+when using states only. Expert cumulative rewards identical to Figure 2.
+the treatment of absorbing states in Appendix C. Our results show that the additional critics have
+little effect, while ﬁxing the targets signiﬁcantly increases the performance.
+For our main experiments, we only evaluate LSIQ and LSIQ-H, which achieve the best performance
+in most environments. We compare our method to all baselines for four different numbers of expert
+demonstrations, 1,5,10, and 25, and always use ﬁve seeds. We perform each experiment with and
+without expert action. When actions are not available, we use a state transition discriminator (Torabi
+et al., 2019a) for GAIL and V AIL, and IDMs for LSIQ (c.f., Section 3.6). In contrast, IQ-Learn
+uses actions predicted on expert states by the current policy when no expert actions are available.
+In the learning-from-observation setting, we do not evaluate SQIL, and we omit the plots for IQ,
+which does not converge in any environment and focus only on IQv0. Figure 3 shows the ﬁnal
+expected return over different numbers of demonstrations for four of the environments. All learn-
+ing curves, including the HalfCheetah environment, can be found in Appendix C.6 for state-action
+setting and in Appendix C.5 for the learning-from-observation setting. Our experiments show that
+LSIQ achieves on-par or better performance compared to all baselines. In particular, in the learning-
+from-observation setting, LSIQ performs very well by achieving a similar return compared to the
+setting where states and actions are observed.
+5 C ONCLUSION
+Inspired by the practical implementation of IQ-Learn, we derive a distribution matching algorithm
+using an implicit reward function and a squared L 2penalty on the mixture distribution of the expert
+and the policy. We show that this regularizer minimizes a bounded 2-divergence to the mixture
+distribution and results in modiﬁed updates for the Q-function and policy. Our analysis reveals
+an interesting connection to SQIL—which is not derived from an adversarial distribution matching
+objective—and shows that IQ-Learn suffers from reward bias. We build on our insights to propose a
+novel method, LS-IQ, which uses a modiﬁed inverse Bellman operator to address reward bias, target
+clipping, ﬁxed reward targets for policy samples, and ﬁxed Q-function targets for expert samples.
+We also show that the policy optimization of IQ-Learn is not consistent with regularization on the
+mixture distribution and show how this can be addressed by learning an additional regularization
+critic. In our experiments, LS-IQ outperforms strong baseline methods, particularly when learning
+from observations, where we train an IDM for predicting expert actions. In future work, we will
+quantify the bias introduced by the ﬁxed Q-function target and investigate why this heuristic is
+fundamental for stabilizing learning. We will also analyze the error propagation in the Q-function
+target and derive theoretical guarantees on the Q-function approximation error.
+9Published as a conference paper at ICLR 2023
+ACKNOWLEDGMENTS
+Calculations for this research were conducted on the Lichtenberg high-performance computer of
+the TU Darmstadt. This work was supported by the German Science Foundation (DFG) under
+grant number SE1042/41-1. Research presented in this paper has been partially supported by the
+German Federal Ministry of Education and Research (BMBF) within the subproject “Modeling and
+exploration of the operational area, design of the AI assistance as well as legal aspects of the use of
+technology” of the collaborative KIARA project (grant no. 13N16274).
+REFERENCES
+Alexander Amini, Wilko Schwarting, Ava Soleimany, and Daniela Rus. Deep evidential regression.
+InProceeding of the Thirty-fourth Conference on Neural Information Processing Systems , Virtual,
+December 2020.
+Oleg Arenz and Gerhard Neumann. Non-adversarial imitation learning and its connections to ad-
+versarial methods. arXiv , August 2020.
+Carlo D’Eramo, Davide Tateo, Andrea Bonarini, Marcello Restelli, and Jan Peters. Mushroomrl:
+Simplifying reinforcement learning research. Journal of Machine Learning Research , 22:1–5,
+2021.
+Justin Fu, Katie Luo, and Sergey Levine. Learning robust rewards with adversarial inverse rein-
+forcement learning. In Proceeding of the International Conference on Learning Representations ,
+Vancouver, Canada, April 2018.
+Divyansh Garg, Shuvam Chakraborty, Chris Cundy, Jiaming Song, and Stefano Ermon. Iq-learn:
+Inverse soft-q learning for imitation. In Proceeding of the Thirty-ﬁfth Conference on Neural
+Information Processing Systems , Sydney, Australia, December 2021.
+Seyed Kamyar Seyed Ghasemipour, Richard Zemel, and Shixiang Gu. A divergence minimization
+perspective on imitation learning methods. In Proceeding of the Conference on Robot Learning ,
+Osaka, Japan, November 2019.
+Ian J. Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair,
+Aaron Courville, and Yoshua Bengio. Generative adversarial networks. In Proceeding of the
+Twenty-eighth Conference on Neural Information Processing Systems , Montreal, Canada, De-
+cember 2014.
+Xiaoxiao Guo, Shiyu Chang, Mo Yu, Gerald Tesauro, and Murray Campbell. Hybrid reinforce-
+ment learning with expert state sequences. In Proceedings of the AAAI Conference on Artiﬁcial
+Intelligence , volume 33, pp. 3739–3746, 2019.
+Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy
+maximum entropy deep reinforcement learning with a stochastic actor. In Proceeding of the
+International Conference on Machine Learning , Stockholm, Sweden, July 2018.
+Jonathan Ho and Stefano Ermon. Generative adversarial imitation learning. In NIPS 2016.
+ICLR 2019. Proceeding of the International Conference on Learning Representations , New Orleans,
+United States, May 2019.
+ICLR 2020. Proceeding of the International Conference on Learning Representations , Virtual, May
+2020.
+Ilya Kostrikov, Kumar Krishna Agrawal, Debidatta Dwibedi, Sergey Levine, and Jonathan Tomp-
+son. Discriminator-actor-critic: Addressing sample inefﬁciency and reward bias in adversarial
+imitation learning. In ICLR 2019.
+Ilya Kostrikov, Oﬁr Nachum, and Jonathan Tompson. Imitation learning via off-policy distrbution
+matching. In ICLR 2020.
+10Published as a conference paper at ICLR 2023
+Xudong Mao, Qing Li Haoran Xie, Raymond Y .K. Lau, Zhen Wang, and Stephen Paul Smolley.
+Least squares generative adversarial networks. In Proceeding of the IEEE International Confer-
+ence on ComputerVision (ICCV) , Venice, Italy, October 2017.
+Oﬁr Nachum, Yinlam Chow, Bo Dai, and Lihong Li. Dualdice: Behavior-agnostic estimation of
+discounted stationary distribution corrections. In Proceeding of the Thirty-third Conference on
+Neural Information Processing Systems , Vancouver, Canada, December 2019.
+Ashvin Nair, Dian Chen, Pulkit Agrawal, Phillip Isola, Pieter Abbeel, Jitendra Malik, and Sergey
+Levine. Combining self-supervised learning and imitation for vision-based rope manipulation. In
+2017 IEEE international conference on robotics and automation (ICRA) , pp. 2146–2153. IEEE,
+2017.
+Andrew Ng, Daishi Harada, and Stuart Russell. Policy invariance under reward transformations:
+Theory and application to reward shaping. In Proceeding of the International Conference on
+Machine Learning , Bled, Slovenia, June 1999.
+NIPS 2016. Proceeding of the Thirtieth Conference on Neural Information Processing Systems ,
+Barcelona, Spain, December 2016.
+Sebastian Nowozin, Botonf Cseke, and Ryota Tomioka. f-gan: Training generative neural samplers
+using variational divergence minimization. In NIPS 2016.
+Brahma S Pavse, Faraz Torabi, Josiah Hanna, Garrett Warnell, and Peter Stone. Ridm: Reinforced
+inverse dynamics modeling for learning from a single observed demonstration. IEEE Robotics
+and Automation Letters , 5(4):6262–6269, 2020.
+Xue Bin Peng, Angjoo Kanazawa, Sam Toyer, Pieter Abbeel, and Sergey Levine. Variational dis-
+criminator bottleneck: Improving imitation learning, inverse rl, and gans by constraining infor-
+mation ﬂow. In ICLR 2019.
+Xue Bin Peng, Ze Ma, Pieter Abbeel, Sergey Levine, and Angjoo Kanazawa. Amp: Adversarial
+motion priors for stylized physics-based character control. ACM Transactions on Graphics , 40:1
+– 20, 2021.
+Ilija Radosavovic, Xiaolong Wang, Lerrel Pinto, and Jitendra Malik. State-only imitation learning
+for dexterous manipulation. In 2021 IEEE/RSJ International Conference on Intelligent Robots
+and Systems (IROS) , pp. 7865–7871. IEEE, 2021.
+Siddharth Reddy, Anca D. Dragan, and Sergey Levine. Sqil: Imitation learning via reinforcement
+learning with sparse rewards. In ICLR 2020.
+Harshit Sikchi, Akanksha Saran, Wonjoon Goo, and Scott Niekum. A ranking game for imitation
+learning. Transactions on Machine Learning Research , 2023.
+Gokul Swamy, Sanjiban Choudhury, J. Andrew Bagnell, and Zhiwei Steven Wu. Of moments and
+matching: A game-theoretic framework for closing the imitation gap. In Proceeding of the Inter-
+national Conference on Machine Learning , Virtual, July 2021.
+Faraz Torabi, Garrett Warnell, and Peter Stone. Behavioral cloning from observation. In Proceeding
+of the Twenty-Seventh International Joint Conference on Artiﬁcial Intelligence (IJCAI) , pp. 4950–
+4957, Stockholm, Sweden, July 2018.
+Faraz Torabi, Garrett Warnell, and Peter Stone. Generative adversarial imitation from observation.
+InProceeding of the International Conference on Machine Learning , Long Beach, California,
+July 2019a.
+Faraz Torabi, Garrett Warnell, and Peter Stone. Recent advances in imitation learning from observa-
+tion. In Proceeding of the Twenty-Eighth International Joint Conference on Artiﬁcial Intelligence
+(IJCAI) , Macao, China, August 2019b.
+John V on Neumann. Zur theorie der gesellschaftsspiele. Mathematische annalen , 100(1):295–320,
+1928. Translated to English by Sonya Bargman (V on Neumann, 1959).
+11Published as a conference paper at ICLR 2023
+John V on Neumann. On the theory of games of strategy. Contributions to the Theory of Games , 4:
+13–42, 1959.
+Brian D. Ziebart. Modeling Purposeful Adaptive Behavior with the Principle of Maximum Causal
+Entropy . PhD thesis, University of Washington, 2010.
+Brian D. Ziebart, Andrew Maas, J.Andrew Bagnell, and Anind K. Dey. Maximum entropy inverse
+reinforcement learning. In Proceeding of the Twenty-Third AAAI Conference on Artiﬁcial Intelli-
+gence , Chicago, United States, July 2008.
+12Published as a conference paper at ICLR 2023
+A P ROOFS AND DERIVATIONS
+In this section, we present proofs of the propositions in the main paper. Furthermore, we provide
+two additional propositions on the optimal reward function and the bounds for the 2-divergence
+when considering the mixture distribution.
+A.1 F ROM OCCUPANCY MEASURES TO DISTRIBUTIONS
+Based on Proposition A.1, the solution arg maxQ2~
+J(~Q; ~Q)under occupancy measures equals
+the solution arg max ~Q2~
+J(~Q; ~Q)under state-action distributions. This result allows us to use the
+following distribution matching problem from now on:
+max
+~Q2~
+J(~Q; ~Q) = max
+~Q2~
+EdE
+r~Q(s;a)
+ Ed~Q
+r~Q(s;a)
+  (r~Q) H(~Q); (22)
+where we introduce the implicit reward r~Q(s;a) =~Q(s;a) Es0P(:js;a)[~V(s0)]for comprehen-
+sion,is a constant controlling the entropy regularization, dEis the state-action distribution of the
+expert, anddis the state-action distribution under the policy.
+Proposition A.1 Letmaxr2Rmin2L(;r)be the dual problem of a regularized occupancy
+matching optimization problem and L(;r)be the Lagrangian of the regularized distribution match-
+ing problem. Then it holds that L(;r)/L(;r)andJ(~Q; ~Q)/J(~Q; ~Q).
+Proof of Proposition A.1.
+Starting from the deﬁnition of the occupancy measure of an arbitrary policy , we compute the
+normalizing constant as an integral:
+Z
+SA(s;a)dsda =Z
+SAlim
+T!1T 1X
+t=0t
+t(s)(ajs)dsda
+= lim
+T!1T 1X
+t=0tZ
+SA
+t(s)(ajs)dsda
+= lim
+T!1T 1X
+t=0t1
+=1
+1 (23)
+Now we compute the (discounted) state-action distribution as:
+d(s;a) =(s;a)R
+SA(s;a)dsda=(s;a)
+1
+1 = (1 )(s;a) (24)
+Thus, we have:
+(s;a) =1
+1 d(s;a) (25)
+Using equation 25 in the deﬁnition of the objective we obtain:
+J() =1
+1 Z
+SAd(s;a)r(s;a)dsda =1
+1 Ed[r(s;a)] (26)
+A derivation similar to equation 26 can be done for the entropy and the regularizer using equa-
+tion 25. Substituting the derived formulas into equation 1 and collecting the constant1
+1 proves
+the proposition. 
+A.2 T HEBOUNDS OF THE 2DIVERGENCE ON MIXTURE DISTRIBUTIONS
+Proposition A.2 Given the Pearson 2-divergence between the distribution dEand the mixture
+distribution 0:5dE+ 0:5din its variational form shown in Equation 6, the optimal reward is
+given by
+r(s;a) =1
+cdE(s;a) d(s;a)
+dE(s;a) +d(s;a)(27)
+and is bounded such that r(s;a)2[ 1=c;1=c]for alls2S;a2A.
+13Published as a conference paper at ICLR 2023
+Proof of Proposition A.2. This proof follows the proof of Proposition 1 in Goodfellow et al. (2014).
+We recall that the 2-divergence on a mixture in Equation 6 is
+22 
+dEdE+d
+2|{z}
+dmix
+=max
+r2R2
+EdE[r(s;a)] Edmix
+r(s;a)+kr(s;a)2
+=max
+r2REdE[r(s;a)] Ed[r(s;a)] kEdE
+r(s;a)2
+ kEd
+r(s;a)2
+=max
+r2RZ
+SZ
+AdE(s;a) 
+r(s;a) kr(s;a)2
+ d(s;a) 
+r(s;a)+kr(s;a)2
+dads; (28)
+wherek=1=4for the conventional 2-divergence. We generalize the 2-divergence by setting
+k=c=2. For anya;b2R+nf0g, the function y!a(y c
+2y2) b(y+c
+2y2)achieves its maximum
+at1
+ca b
+a+b, which belongs to the interval [ 1=c;1=c].
+To conclude the proof, we notice that the reward function can be arbitrarily deﬁned outside of
+Supp (d)[Supp (dE), as it has no effect on the divergence. 
+Proposition A.3 The Pearson 2-divergence between the distribution dEand the mixture distri-
+bution 0:5dE+ 0:5dis bounded as follows
+022 
+dEdE+d
+2|{z}
+dmix
+1
+c: (29)
+Proof of Proposition A.3. To increase the readability, we drop the explicit dependencies on state
+and action in the notation, and we write dEanddfordE(s;a)andd(s;a), respectively. The
+lower bound is trivially true for any divergence and is reached when d=dmix=dE. To prove
+the upper bound, we use the optimal reward function from Equation 27 and plug it into Equation 28
+withk=c=2
+22 
+dEdE+d
+2|{z}
+dmix
+=Z
+SZ
+AdE 
+r(s;a) c
+2r(s;a)2
+ d 
+r(s;a)+c
+2r(s;a)2
+dads
+=Z
+SZ
+AdE 
+1
+cdE d
+dE+d
+ c
+21
+c2dE d
+dE+d2!
+ d 
+1
+cdE d
+dE+d
++c
+21
+c2dE d
+dE+d2!
+dads
+=Z
+SZ
+AdE2d2
+E 2d2
+ d2
+E+2dEd d2
+
+2c(dE+d)2
+ d2d2
+E 2d2
++d2
+E 2dEd+d2
+
+2c(dE+d)2
+dads
+=Z
+SZ
+Ad3
+E+d3
+ dEd2
+ d2
+Ed
+2c(dE+d)2dads =1
+2cZ
+SZ
+A(dE d)2
+dE+ddads
+=1
+2cZ
+SZ
+Ad2
+E
+dE+d+d2
+
+dE+d 2dEd
+dE+ddads
+=1
+2c
+EdEdE
+dE+d
+|{z}
+1+Edd
+dE+d
+|{z}
+1+EdE 2d
+dE+d
+|{z}
+0
+1
+c: (30)
+Note that the bound is tight, as the individual bounds of each expectation are only achieved in
+conjunction. 
+Proposition A.4 Let2 
+dEdE+ (1 )d
+be the Pearson 2-divergence between the
+distribution dEand the mixture distribution dE+ (1 )d. Then it holds that:
+2 
+dEdE+ (1 )d
+(1 )2 
+dEd
+:
+Proof of Proposition A.4. The proof follows straightforwardly from the joint convexity of f-
+divergences:
+Df 
+P1+ (1 )P2Q1+ (1 )Q2
+Df(P1kQ1) + (1 )Df(P2kQ2);
+14Published as a conference paper at ICLR 2023
+where2[0;1]is the a mixing coefﬁcient. The 2-divergence is an f-divergence with f(t) =
+(t 1)2. Now using the 2-divergence, and let P=P1=P2=Q2,D=Q1, and= (1 ):
+2 
+PP+ (1 )D
+(1 )2(PkD) +2(PkP)|{z}
+=0
+2 
+PP+ (1 )D
+(1 )2 
+PD
+:
+SettingP=dEandD=dconcludes the proof. 
+A.3 F ROM2-REGULARIZED MAXENT-IRL TOLEAST -SQUARES REWARD REGRESSION
+We recall that the entropy-regularized IRL under occupancy measures is given by
+L(r;) = ( H() E[r(s;a)]) +EE[r(s;a)]  (r): (31)
+We also recall that using soft inverse Bellman operator to do the change of variable yields:
+J(~Q; ~Q) =EEh
+~Q(s;a) Es0P(:js;a)[~V(s0)]i
+ H(~Q) (32)
+ Eh
+~Q(s;a) Es0P(:js;a)[~V(s0)]i
+  (r):
+We can now use Proposition A.1 to switch the objective from occupancy measures to distributions.
+Proof of Proposition 3.1. Staring from the objective function in Equation 22, by expanding the
+expectation and rearranging the terms, we obtain:
+J(~Q; ~Q) =EdE
+r~Q(s;a)
+ Ed
+r~Q(s;a)
+ cE~d
+r~Q(s;a)2
+ H(~Q)
+=EdE
+r~Q(s;a)
+ Ed
+r~Q(s;a)
+ cEdE
+r~Q(s;a)2
+ c(1 )Ed
+r~Q(s;a)2
+ H(~Q)
+= EdE
+cr ~Q(s;a)2 r~Q(s;a)
+ Ed
+c(1 )r~Q(s;a)2+r~Q(s;a)
+ H(~Q)
+= c
+EdE
+r~Q(s;a)2 1
+cr~Q(s;a)
++(1 )Edh
+r~Q(s;a)2+1
+(1 )cr~Q(s;a)i
++
+cH(~Q)
+Deﬁningrmax=1
+2candrmin= 1
+2(1 )cand completing the squares we obtain:
+J(~Q; ~Q) = c
+EdE
+r~Q(s;a)2 1
+cr~Q(s;a)
++ (1 )Edh
+r~Q(s;a)2+1
+(1 )cr~Q(s;a)i
++
+cH(~Q)
++c(r2
+max r2
+max) + (1 )c(r2
+min r2
+min)
+= c
+EdE
+r~Q(s;a)2 1
+cr~Q(s;a) +r2
+max
++ (1 )Ed
+r~Q(s;a)2
++1
+(1 )cr~Q(s;a) +r2
+mini
++
+cH(~Q)
++cr2
+max+ (1 )cr2
+min
+= c
+EdEh 
+r~Q(s;a) 1
+2c2i
++ (1 )Ed
+r~Q(s;a) +1
+2(1 )c2
++
+cH(~Q)
++cr2
+max+ (1 )cr2
+min:
+Finally, we obtain the following result:
+J(~Q; ~Q) = c
+EdEh 
+r~Q(s;a) rmax2i
++ (1 )Edh 
+r~Q(s;a) rmin2i
++
+cH(~Q)
++K;
+(33)
+whereK=cr2
+max+ (1 )cr2
+min=1
+4c+1
+4(1 )cis a ﬁxed constant.
+Comparing Equation 9 with Equation 33 results in
+J(~Q; ~Q) +K/L(~Q; ~Q): (34)
+Given that an afﬁne transformation (with positive multiplicative constants) preserves the optimum,
+arg max ~Q2~
+J(~Q; ~Q)is the solution of the entropy-regularized least squares objective L(~Q; ~Q).
+
+15Published as a conference paper at ICLR 2023
+A.4 F ULL LS-IQ O BJECTIVE WITH TERMINAL STATES HANDLING
+Inserting our inverse Bellman operator derived in Section 3.4 into the least-squares objective deﬁned
+in Equation 9 and rearranging the terms yields the following objective for hard Q-functions:
+L(Q;Q) =Es;adE
+s0P(:js;a)h
+(1 ) 
+Q(s;a) (rmax+V(s0)2i
+(35)
++Es;adE
+s0P(:js;a)
+
+Q(s;a) (rmax+rmax
+1 2
++ (1 )Es;adQ
+s0P(:js;a)h
+(1 ) 
+Q(s;a) (rmin+V(s0))2i
++ (1 )Es;adQ
+s0P(:js;a)
+
+Q(s;a) (rmin+rmin
+1 )2
++
+cH(Q)
+L(Q;Q) =Es;adE
+s0P(:js;a)h
+(1 ) 
+Q(s;a) (rmax+V(s0)2i
+(36)
++Es;adE
+s0P(:js;a)
+
+Q(s;a) rmax
+1 2
++ (1 )Es;adQ
+s0P(:js;a)h
+(1 ) 
+Q(s;a) (rmin+V(s0))2i
++ (1 )Es;adQ
+s0P(:js;a)
+
+Q(s;a) rmin
+1 2
++
+cH(Q):
+Now including the ﬁxed target for the expert distribution introduced in Section 3.5 yields:
+Llsiq(Q;Q) =Es;adE
+s0P(:js;a)
+(1 )
+Q(s;a) rmax
+1 2
+(37)
++Es;adE
+s0P(:js;a)
+
+Q(s;a) rmax
+1 2
++ (1 )Es;adQ
+s0P(:js;a)h
+(1 ) 
+Q(s;a) (rmin+V(s0))2i
++ (1 )Es;adQ
+s0P(:js;a)
+
+Q(s;a) rmin
+1 2
++
+cH(Q)
+Llsiq(Q;Q) =Es;adE
+s0P(:js;a)
+Q(s;a) rmax
+1 2
+(38)
++ (1 )Es;adQ
+s0P(:js;a)h
+(1 ) 
+Q(s;a) (rmin+V(s0))2i
++ (1 )Es;adQ
+s0P(:js;a)
+
+Q(s;a) rmin
+1 2
++
+cH(Q);
+where Equation 38 is the full LS-IQ objective for our hard Q-function. For the observations-only
+setting we predict the expert’s actions using the IDM.
+A.5 C ONVERGENCE OF OUR FORWARD BACKUP OPERATOR
+As described in Section 3.4, our inverse operator,
+(T
+lsiqQ)(s;a) =Q(s;a) Es0P(:js;a) 
+(1 )V(s0) +V(sA)
+; (39)
+is based on the standard Bellman backup operator, except that, instead of bootstrapping, we use the
+known values for transitions into absorbing state. We will now show that repeatedly applying the
+corresponding forward Operator
+(B
+lsiqQ)(s;a) =r(s;a) +Es0P(:js;a) 
+(1 )V(s0) +V(sA)
+; (40)
+converges to the Q function. Our proof is based on the same technique that is commonly used
+to prove convergence of the standard Bellmen operator, namely by showing that the Q function
+16Published as a conference paper at ICLR 2023
+Q(s;a):=r(s;a) +Es0p(s0js;a)Ea0(a0js0)Q(s0;a0)is a ﬁxed point of our operator, that is,
+(B
+lsiqQ)(s;a) =Q(s;a), and by further showing that our operator is a contraction,
+jj(B
+lsiqQA)(s;a) (B
+lsiqQB)(s;a)jj1jjQA(s;a) QB(s;a)jj1; (41)
+werejj:jj1is the maximum norm; here, we assume a ﬁnite states and actions for the sake of sim-
+plicity.
+Proposition A.5 The Q function of policy is a ﬁxed point ofB
+lsiq,
+(B
+lsiqQ(s;a)) =Q(s;a): (42)
+Proof of Proposition A.5. The proof follows straightforwardly from the fact that our forward
+operator performs the same update as the standard Bellman operator, if applied to the actual Q
+function of the policy, Q(s;a), since thenV(sA):=r(sA)
+(1 )=Ea0(:jA)Q(s0;a0)). Thus,
+(B
+lsiqQ(s;a)) =r(s;a) +Es0P(:js;a) 
+(1 )V(s0) +V(sA)
+(43)
+=r(s;a) +Es0P(:js;a) 
+(1 )Ea0(a0js0)Q(s0;a0) +Ea0(:js0)Q(s0;a0)
+(44)
+=r(s;a) +Es0P(:js;a)Ea0(:js0)Q(s0;a0) =Q(s;a): (45)
+
+Proposition A.6 The forward operator B
+lsiqis a contraction,
+jj(B
+lsiqQA)(s;a) (B
+lsiqQB)(s;a)jj1jjQA(s;a) QB(s;a)jj1: (46)
+Proof of Proposition A.6.
+(B
+lsiqQA)(s;a) (B
+lsiqQB)(s;a)
+1(47)
+= max
+s;aEs0P(:js;a)Ea0(a0js0)
+(1 )(QA(s0;a0) QB(s0;a0)) (48)
+max
+s;aEs0P(:js;a)Ea0(a0js0)
+(QA(s0;a0) QB(s0;a0)) (49)
+max
+s0;a0QA(s0;a0) QB(s0;a0) (50)
+=QA(s;a) QB(s;a)
+1(51)
+
+17Published as a conference paper at ICLR 2023
+Expert BufferStartUpdate
+IDMRun
+Policy
+Infer
+ActionsUpdate
+Q-functionAppend to
+Replay Buffer
+Update
+Policy
+Figure 4: Training procedure of the IDM in LS-IQ.
+B L EARNING FROM OBSERVATIONS
+This section describes the IDM in greater detail. Figure 4 illustrates the training procedure of the
+IDM in LS-IQ. As can be seen, the IDM uses the replay buffer data generated by an agent to infer
+the actions from state transitions. Therefore, the simple regression loss from Equation 21 is used.
+At the beginning of training, the IDM learns on transitions generated by a (random) agent. Once
+the agent gets closer to the expert distribution, the IDM is trained on transitions closer to the ex-
+pert. The intuition behind the usage of an IDM arises from the idea that, while two agents might
+produce different trajectories and, consequently, state-action distributions, the underlying dynamics
+are shared. This allows the IDM to infer more information about an action corresponding to a state
+transition than a random action predicted by the policy includes, as done by Garg et al. (2021). The
+experiments in Section 4 show that using an IDM yields superior or on-par performance w.r.t. the
+baselines in the state-only scenario.
+While we only present a deterministic IDM, we also experimented with stochastic ones. For in-
+stance, we modeled the IDM as a Gaussian distribution and trained it using a maximum likelihood
+loss. We also tried a fully Bayesian approach to impose a prior, where we learned the parameters of
+a Normal-Inverse Gamma distribution and used a Student’s t distribution for predicting actions of
+state transitions, as done by Amini et al. (2020). However, stochastic approaches did not show any
+notable beneﬁt, therefore we stick to the simple deterministic approach.
+C E XPERIMENTS
+This section contains environment descriptions and additional results that have been omitted in the
+main paper due to space constraints.
+C.1 T HEATLAS LOCOMOTION ENVIRONMENT
+The Atlas locomotion environment is a novel locomotion environment introduced by us. This en-
+vironment aims to train agents on more realistic tasks, in contrast to the Mujoco Gym tasks, which
+generally have ﬁne-tuned dynamics explicitly targeted towards reinforcement learning agents. The
+Atlas environment ﬁxes the arms by default, resulting in 10 active joints. Each joint is torque-
+controlled by one motor. The state space includes all joint positions and velocities as well as 3D
+forces on the front and back foot, yielding a state-dimensionality of Ds= 20 + 223 = 32 . The
+action space includes the desired torques for each joint motor, yielding an action dimensionality of
+Da= 10 . Optionally, the upper body with the arms can be activated, extending the number of joints
+and actuators to 27. The Atlas environment is implemented using Mushroom-RL’s (D’Eramo et al.,
+2021) Mujoco interface.
+For the sake of completeness, we added the cumulative reward plots – in contrast to the discounted
+cumulative reward plots as in Figure 2 – with an additional V AIL agent in Figure 5. The reward used
+as a metric for the performance is deﬁned as r= exp( (v vE)2), wherevis the agent’s upper
+body velocity and vEis the expert’s upper body velocity. The expert’s walking velocity is 1:25m
+s.
+The code for the environment as well as the expert data is available at https://github.com/
+robfiras/ls-iq .
+18Published as a conference paper at ICLR 2023
+0 500 1000 15000.000.250.500.751.00Atlas
+LSIQ LSIQ-H LSIQ-HC Vail IQ IQv0 SQIL Expert
+Figure 5: Training results and an exemplary trajectory – here the trained LSIQ agent – of a locomotion task
+using as simulated Atlas robot. Abscissa shows the normalized cumulative reward. Ordinate shows the number
+of training steps (103).
+C.2 A BLATION STUDY : ABSORBING STATE TREATMENT AND TARGETQCLIPPING
+Figure 6 presents ablations on the effects of the proposed treatment of absorbing states and the
+clipping of the Q-function target on an LSIQ agent with bootstrapping. To see the pure effect of
+the absorbing state treatment and the clipping, we did not include ﬁxed targets. Note that the ﬁxed
+target implicitly treats absorbing states of the expert, as it provides the same target for states and
+actions transitioning towards absorbing states. We have chosen a LSIQ agent without an entropy
+and regularization critic. The experiments are conducted on the Humanoid-v3 task, as the tasks
+HalfCheetah-v3, Ant-v3, either do not have or have very rare absorbing states, and Walker-v3 and
+Hopper-v3 are too easy to see the effects. We use a regularizer constant of c= 0:5and a mixing
+parameter of = 0:5yielding a maximum reward of rmax=1
+2(1 0:5)0:5= 2 and a minimum
+reward ofrmin= 1
+2(1 0:5)0:5= 2. This yields a maximum Q-value ofQmax=rmax
+1 = 200 and a
+minimumQ-value ofQmin=rmin
+1 = 200. The rows show the different agent conﬁgurations: First,
+LSIQ with clipping and absorbing state treatment; second, LSIQ with clipping but no absorbing
+state treatment; and lastly, LSIQ without clipping and no treatment of absorbing states – which is
+equivalent to SQIL with symmetric reward targets. For a better understanding of the effect, the plots
+show the individual seeds of a conﬁguration. As can be seen, the ﬁrst LSIQ agent can successfully
+learn the task and regresses the Q-value of the transitions towards absorbing states to the minimum
+Q-value of -200. The second conﬁguration does not treat absorbing states and is not able to learn
+the task with all seeds. As can be seen, the average Q-value of absorbing states is between -2 and
+-6. Taking a closer look at the ﬁrst two plots in the second row, one can see that those seeds did
+not learn, whose average Q-value on non-absorbing transitions is close or even below the average
+Q-values of states and actions yielding to absorbing states. This strengthens the importance of our
+terminal state treatment, which pulls Q-values of states and action towards absorbing states to the
+lowest possible Q-value and, therefore, avoids a termination bias. Finally, one can see the problem
+of exploding Q-value in the last LSIQ conﬁguration. This is evident by the scale of the abscissa,
+highlighted in the plots. Interestingly, while some seeds still perform reasonably well despite the
+enormously high Q-value, it clearly correlates to the high variance in the cumulative reward plot.
+C.3 A BLATION STUDY : INFLUENCE OF FIXED TARGETS AND ENTROPY CLIPPING
+To show the effect of the ﬁxed target (c.d., Section 3.5) and the entropy clipping (c.f., 3.7), we
+conducted a range of ablation studies for different versions of LSIQ on all Mujoco task. The results
+are shown in Figure 7 for the LSIQ version only with an entropy critic and in Figure 8 for the
+LSIQ version with an entropy and a regularization critic. As can be seen from the Figures, the
+version with the ﬁxed target and the entropy clipping performs at best. It is especially noteworthy
+that the entropy clipping becomes of particular importance on tasks that require a high temperature
+parameter, which is the case for the Humanoid-v3 environment.
+19Published as a conference paper at ICLR 2023
+Clipping  &
+ Abs. TreatmentClipping  &
+ No Abs. Treatment No Clipping  & 
+No Abs. Treatment
+0
+200
+400
+600 800
+200
+100
+0
+100
+Q-Value Policy
+0
+200
+400
+600
+800
+0
+2000
+4000
+6000
+Cumulative Reward
+0
+200
+400
+600
+800
+8
+6
+4
+2
+Q-Value Absorbing Policy
+0
+200
+400
+600
+800
+0
+2000
+4000
+6000
+Cumulative Reward
+0
+200
+400
+600
+800
+2.0
+1.5
+1.0
+0.5
+0.0
+0.5
+Q-Value Absorbing Policy
+0
+200
+400
+600
+800
+0.0
+0.5
+1.0
+1.5
+Q-Value Policy
+0
+200
+400
+600
+800
+0
+2000
+4000
+6000
+Cumulative Reward
+0
+200
+400
+600
+800
+0
+50
+100
+Q-Value Policy
+0
+200
+400
+600
+800
+0
+50
+100
+Q-Value Policy
+1.01e7 2.01e8
+Figure 6: Ablation study on the effect of the proposed treatment of absorbing states and the clipping of the
+Q-value target on a LSIQ agent with bootstrapping (no ﬁxed targets). The experiments are conducted on
+the Humanoid-v3 task, with an expert reaching a cumulative reward of 6233:45. Multiple lines in each plot
+show the individual seeds . The ﬁrst column presents the average Q-value of states and actions yielding to an
+absorbing state visited by the policy. The second column presents the average Q-value of all states and actions
+that do not yield in absorbing states visited by the policy. The third column presents the cumulative reward.
+The rows present the ablations done to the LSIQ agent. Ordinate shows the number of training steps ( 103).
+0 500 1000 15000.00.20.40.60.81.0Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 7: Comparison of different versions of LSIQ-H (Regularization Critic ): First, the bootstrapping ver-
+sion!LSIQ-H; second, the bootstrapping version with entropy clipping !LSIQ-H+EC; thirdly, the ﬁxed
+target version with entropy clipping !LSIQ-H+EC+FT. IQ and SQIL are added for reference. Abscissa shows
+the normalized discounted cumulative reward. Ordinate shows the number of training steps ( 103). Experi-
+ments are conducted with 5expert trajectories and ﬁve seeds. Expert cumulative rewards !Hopper:3299.81,
+Walker2d:5841.73, Ant:6399.04, HalfCheetah:12328.78, Humanoid:6233.45
+20Published as a conference paper at ICLR 2023
+0 500 1000 15000.00.20.40.60.81.0Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 8: Comparison of different versions of LSIQ-HC (Entropy+Regularization Critic ): First, the boot-
+strapping version!LSIQ-HC; second, the bootstrapping version with entropy clipping !LSIQ-HC+EC;
+thirdly, the ﬁxed target version with entropy clipping !LSIQ-HC+EC+FT. IQ and SQIL are added for refer-
+ence. Abscissa shows the normalized discounted cumulative reward. Ordinate shows the number of training
+steps (103). Experiments are conducted with 5expert trajectories and ﬁve seeds. Expert cumulative rewards
+!Hopper:3299.81, Walker2d:5841.73, Ant:6399.04, HalfCheetah:12328.78, Humanoid:6233.45
+C.4 A LLEXPERIMENT RESULTS OF THE DIFFERENT VERSION OF LSIQ
+Figure 9 presents all the plots presented in Figure 2 with the additional Humanoid-v3 results. Fig-
+ure 10 and Figure 11 correspond to Figure 3 but show all ﬁve environments. The corresponding
+learning curves are shown in Appendix C.6 and C.5.
+0 500 1000 15000.00.20.40.60.81.0Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 9: Comparison of different versions of LS-IQ. Now also with the Humanoid-v3 environment. Abscissa
+shows the normalized discounted cumulative reward. Ordinate shows the number of training steps ( 103).
+Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04, HalfCheetah:12328.78, Hu-
+manoid:6233.45
+21Published as a conference paper at ICLR 2023
+1 5 10 250.000.250.500.751.00Ant-v3
+1 5 10 250.000.250.500.751.00HalfCheetah-v3
+1 5 10 250.000.250.500.751.00Hopper-v3
+1 5 10 250.000.250.500.751.00Walker2d-v3
+1 5 10 250.000.250.500.751.00Humanoid-v3
+Figure 10: Comparison of the effect of the number of expert trajectories on different Mujoco environments.
+States and actions from the expert are provided to the agent. All plots are added here for the sake of complete-
+ness. Abscissa shows the normalized cumulative reward. Ordinate shows the number of expert trajectories.
+The ﬁrst row shows the performance when considering states and action, while the second row considers the
+performance when using states only. Training results are averaged over ﬁve seeds per agent. The shaded area
+constitutes the 95% conﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73,
+Ant:6399.04, HalfCheetah:12328.78, Humanoid:6233.45
+1 5 10 250.000.250.500.751.00Ant-v3
+1 5 10 250.000.250.500.751.00HalfCheetah-v3
+1 5 10 250.000.250.500.751.00Hopper-v3
+1 5 10 250.000.250.500.751.00Walker2d-v3
+1 5 10 250.000.250.500.751.00Humanoid-v3
+Figure 11: Comparison of the effect of the number of expert trajectories on different Mujoco environments.
+Only expert states are provided to the expert. All plots are added here for the sake of completeness. Abscissa
+shows the normalized cumulative reward. Ordinate shows the number of expert trajectories. The ﬁrst row
+shows the performance when considering states and action, while the second row considers the performance
+when using states only. Training results are averaged over ﬁve seeds per agent. The shaded area constitutes
+the95% conﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04,
+HalfCheetah:12328.78, Humanoid:6233.45
+22Published as a conference paper at ICLR 2023
+C.5 I MITATION LEARNING FROM STATES ONLY – FULL TRAINING CURVES
+The learning curves for the learning from observation experiments can be found in Figure 12, 13, 14
+and 15 for 1,5,10and25expert demonstrations, respectively.
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 12: Training performance of different agents on Mujoco Tasks when using 1expert trajectory consisting
+ofonly states . Abscissa shows the normalized discounted cumulative reward. Ordinate shows the number of
+training steps (103). Training results are averaged over ﬁve seeds per agent. The shaded area constitutes
+the95% conﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04,
+HalfCheetah:12328.78, Humanoid:6233.45
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 13: Training performance of different agents on Mujoco Tasks when using 5expert trajectory consisting
+ofonly states . Abscissa shows the normalized discounted cumulative reward. Ordinate shows the number
+of training steps (103). Training results are averaged over ten seeds per agent. The shaded area constitutes
+the95% conﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04,
+HalfCheetah:12328.78, Humanoid:6233.45
+23Published as a conference paper at ICLR 2023
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 14: Training performance of different agents on Mujoco Tasks when using 10expert trajectory consist-
+ing of only states . Abscissa shows the normalized discounted cumulative reward. Ordinate shows the number
+of training steps (103). Training results are averaged over ﬁve seeds per agent. The shaded area constitutes
+the95% conﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04,
+HalfCheetah:12328.78, Humanoid:6233.45
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 15: Training performance of different agents on Mujoco Tasks when using 25expert trajectory consist-
+ing of only states . Abscissa shows the normalized discounted cumulative reward. Ordinate shows the number
+of training steps (103). Training results are averaged over ﬁve seeds per agent. The shaded area constitutes
+the95% conﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04,
+HalfCheetah:12328.78, Humanoid:6233.45
+24Published as a conference paper at ICLR 2023
+C.6 I MITATION LEARNING FROM STATES AND ACTIONS – FULL TRAINING CURVES
+The learning curves for the experiments where states and actions are observed can be found in
+Figure 16, 17, 18 and 19 for 1,5,10and25expert demonstrations, respectively.
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 16: Training performance of different agents on Mujoco Tasks when using 1expert trajectory. Abscissa
+shows the normalized discounted cumulative reward. Ordinate shows the number of training steps ( 103).
+Training results are averaged over ﬁve seeds per agent. The shaded area constitutes the 95% conﬁdence inter-
+val. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04, HalfCheetah:12328.78,
+Humanoid:6233.45
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 17: Training performance of different agents on Mujoco Tasks when using 5expert trajectories. Abscissa
+shows the normalized discounted cumulative reward. Ordinate shows the number of training steps ( 103).
+Training results are averaged over ten seeds per agent. The shaded area constitutes the 95% conﬁdence inter-
+val. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04, HalfCheetah:12328.78,
+Humanoid:6233.45
+25Published as a conference paper at ICLR 2023
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 18: Training performance of different agents on Mujoco Tasks when using 10expert trajectories. Ab-
+scissa shows the normalized discounted cumulative reward. Ordinate shows the number of training steps
+(103). Training results are averaged over ﬁve seeds per agent. The shaded area constitutes the 95% con-
+ﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04, HalfChee-
+tah:12328.78, Humanoid:6233.45
+0 500 1000 15000.000.250.500.751.00Ant-v3
+0 500 1000 15000.00.20.40.60.81.0HalfCheetah-v3
+0 500 1000 15000.00.20.40.60.81.0Hopper-v3
+0 500 1000 15000.00.20.40.60.81.0Walker2d-v3
+0 500 1000 15000.00.20.40.60.81.0Humanoid-v3
+Figure 19: Training performance of different agents on Mujoco Tasks when using 25expert trajectories. Ab-
+scissa shows the normalized discounted cumulative reward. Ordinate shows the number of training steps
+(103). Training results are averaged over ﬁve seeds per agent. The shaded area constitutes the 95% con-
+ﬁdence interval. Expert cumulative rewards !Hopper:3299.81, Walker2d:5841.73, Ant:6399.04, HalfChee-
+tah:12328.78, Humanoid:6233.45
+26

@@ -1,0 +1,1419 @@
+Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Yiwei Lu1 2Gautam Kamath1 2Yaoliang Yu1 2
+Abstract
+Indiscriminate data poisoning attacks aim to de-
+crease a model’s test accuracy by injecting a
+small amount of corrupted training data. Despite
+significant interest, existing attacks remain rela-
+tively ineffective against modern machine learn-
+ing (ML) architectures. In this work, we intro-
+duce the notion of model poisoning reachability
+as a technical tool to explore the intrinsic lim-
+its of data poisoning attacks towards target pa-
+rameters (i.e., model-targeted attacks). We de-
+rive an easily computable threshold to establish
+and quantify a surprising phase transition phe-
+nomenon among popular ML models: data poi-
+soning attacks can achieve certain target param-
+eters only when the poisoning ratio exceeds our
+threshold. Building on existing parameter corrup-
+tion attacks and refining the Gradient Canceling
+attack, we perform extensive experiments to con-
+firm our theoretical findings, test the predictabil-
+ity of our transition threshold, and significantly
+improve existing indiscriminate data poisoning
+baselines over a range of datasets and models.
+Our work highlights the critical role played by
+the poisoning ratio, and sheds new insights on
+existing empirical results, attacks and mitigation
+strategies in data poisoning. Our code is available
+athttps://github.com/watml/plim .
+1. Introduction
+Modern machine learning (ML) models require a large
+amount of training data to perform well on various tasks.
+Such hunger for data not only increases the training cost
+but also introduces potential risks during the data collection
+process (Kumar et al. 2020; Nelson et al. 2008; Szegedy et
+al. 2014). Data poisoning, where an adversary can actively
+inject corrupted data into dataset aggregators or passively
+Authors GK and YY are listed in alphabetical order.1School of
+Computer Science, University of Waterloo, Canada2Vector Insti-
+tute. Correspondence to: Yiwei Lu <yiwei.lu@uwaterloo.ca >.
+Proceedings of the 40thInternational Conference on Machine
+Learning , Honolulu, Hawaii, USA. PMLR 202, 2023. Copyright
+2023 by the author(s).place poisoned samples on the web for scraping (Gao et al.
+2020; Lyu et al. 2020; Shejwalkar et al. 2022; Wakefield
+2016), has caused serious concerns in the ML community
+and inspired a number of interesting works to expose and
+address this threat (Goldblum et al. 2023).
+By now many data poisoning algorithms have been pro-
+posed; see Section 2 for some pointers. However, in the
+setting of indiscriminate data poisoning, where an attacker
+aims to decrease the overall test accuracy by adding a small
+fraction of corrupted data, the effectiveness of existing at-
+tacks remains underwhelming. For example, the recent
+work of Lu et al. (2022) achieved 1.11% accuracy drop for a
+three-layer CNN on MNIST and a 5.54% accuracy drop for
+ResNet-18 on CIFAR-10, after adding εd= 3% poisoned
+data and retraining. Part of the difficulty lies in the compu-
+tational challenge: the attacker has to anticipate what would
+happen after retraining the model on the mixed data (clean
+in-house data plus poisoned data). Other empirical works
+seem to suggest there might also be some intrinsic barrier
+to data poisoning; see Section 2 for a detailed discussion.
+In this work we focus on model-targeted attacks (e.g., Koh
+et al. 2022; Suya et al. 2021) and introduce the notion of
+model poisoning reachability , i.e., given (arbitrary) clean
+training data, what model, represented by its parameter w,
+can be achieved through data poisoning, and what is the min-
+imum (relative) percentage εdof poisoned data that one has
+to introduce, with what algorithm? While model poisoning
+reachability intuitively depends on the clean training data,
+the loss and the target model we aim to achieve, we show
+that under mild conditions, it can be largely characterized by
+a simple threshold τthat is readily computable and involves
+no training at all. In particular, when the poisoning percent-
+ageεdfalls under τ, no algorithm could achieve the target
+model by retraining on a mixed dataset (however crafted).
+On the flip side, if εd> τ, we show that Gradient Canceling
+(GC), a refinement of the KKT attack of Koh et al. (2022),
+can achieve a given target model surprisingly efficiently. We
+further demonstrate that most ML classifiers exhibit a phase
+transition: they become poisoning reachable only when εd
+crosses the threshold τ. In contrast, regression methods can
+be poisoning reachable even when εdapproaches 0. Thus,
+our results expose the critical role played by the poisoning
+percentage εd, and clarify the somewhat disparate empirical
+results in the literature (with varying εd).
+1arXiv:2303.03592v3  [cs.LG]  6 Jun 2023Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Empirically, we apply the GC attack and verify the model
+poisoning reachability property across a wide range of ML
+models, from logistic regression to residual networks on
+various datasets. Moreover, our work can also be applied as
+a distillation device: given any target parameter (namely the
+teacher, however crafted or impractical) that is effective for
+certain purpose, we can use our threshold and GC attack to
+pinpoint the (minimum) amount of poisoning data that needs
+to be constructed in order to simulate the teacher through
+retraining the model (student) over the combination of clean
+and poisoned data. Indeed, using the target parameters
+generated by parameter corruption (Sun et al. 2020) as a
+teacher, GC is able to construct more practical and effective
+(student) data poisoning attacks than baseline methods.
+We summarize our main contributions as follows:
+•We formalize the notion of model poisoning reachability
+as a technical tool to study model-targeted data poisoning
+and we derive an easily computable threshold to charac-
+terize it.
+•We quantify the critical role played by the poisoning ra-
+tioεdand we establish a surprising phase transition for
+ML classifiers, explaining seemingly disparate empirical
+results obtained with varying εd.
+•We perform the Gradient Canceling attack on a number of
+models and datasets to extensively test our results. With
+carefully chosen target parameters, we are able to improve
+existing indiscriminate data poisoning baselines.
+2. Background
+Data poisoning, an emerging concern on modern ML sys-
+tems, refers to the threat of (often passively) crafting “poi-
+soned” training data so that systems retrained on it (along
+with possibly clean in-house data) are skewed towards cer-
+tain behaviour. For example, indiscriminate data poisoning
+(e.g., Biggio et al. 2012; Koh and Liang 2017; Koh et al.
+2022; Lu et al. 2022; Mu ˜noz-Gonz ´alez et al. 2017) aims
+to decrease the overall test accuracy while targeted data
+poisoning (e.g., Aghakhani et al. 2021; Guo and Liu 2020;
+Shafahi et al. 2018; Zhu et al. 2019) only affects certain
+classes. Backdoor attacks (e.g., Chen et al. 2017; Gu et al.
+2017; Saha et al. 2020; Tran et al. 2018) that aim to trigger
+a particular pattern, and unlearnable examples (e.g., Fowl
+et al. 2021a,b; Fu et al. 2021; Huang et al. 2021; Liu and
+Chawla 2010; Sandoval-Segura et al. 2022; Yu et al. 2022)
+that aim to protect user data.
+While many algorithms have been proposed for data poi-
+soning, their effectiveness remains largely underwhelming
+against neural networks, especially when εd, the relative
+proportion of poisoned data, is small. For example, Figure
+4 of Lu et al. (2022) and Table 2 of Huang et al. (2021)
+revealed that SOTA attacks can only decrease the test ac-Table 1: The attack accuracy/accuracy drop (%) on MNIST.
+ModelClean TGDA GradPC
+Acc. Accuracy/Drop εw= 0.5 εw= 1
+LR 92.35 89.56 / 2.79 ( εw= 2.45) 69.80 / 22.55 21.48 / 70.87
+NN 98.04 96.54 / 1.50 ( εw= 0.55) 76.51 / 20.03 31.14 / 66.90
+CNN 99.13 98.02 / 1.11 ( εw= 0.74) 73.24 / 24.78 12.98 / 86.15
+curacy noticeably when εdis sufficiently (and sometimes
+exceedingly, e.g., εd>100% ) large. These attacks, re-
+lying on sophisticated optimization tricks, are also rather
+expensive to run. On the other hand, any data poisoning
+attack amounts to an indirect way of rewiring an ML model
+(i.e., any change must be induced by retraining the model
+over clean and poisoned data). Direct approaches, such as
+the gradient-based parameter corruption (GradPC) attack
+of Sun et al. (2020) and Zhang et al. (2021), seek to over-
+write a target model directly (i.e., without constructing any
+poisoned data or retraining), under a perturbation constraint
+specified by εw, i.e., the relative change of the model pa-
+rameter should be less than εw. While the applicability of
+direct approaches may seem limited, they are suitable for
+exploring the limits of more realistic data poisoning attacks.
+In Table 1 we compare the performance of the direct ap-
+proach GradPC (Sun et al. 2020) and the indirect approach
+TGDA (Lu et al. 2022). The latter adds εd= 3% poisoned
+data while both attacks yield comparable perturbations of
+the (clean) model, as measured by εw. The difference is
+significant, and begs the obvious question: what caused this
+difference? Is it because existing data poisoning attacks
+are not sufficiently optimized yet, or is there some intrinsic
+barrier to produce certain target parameters through data
+poisoning? To what extent would increasing εdhelp, and
+how do we know without trying every εd? These questions
+will be formally and experimentally explored in the sequel,
+with the ultimate goal (if possible) to reduce the gap be-
+tween data poisoning and parameter corruption attacks with
+comparable εw, as highlighted in Table 1.
+Connection with Learning Theory: There has been signif-
+icant work on training-time robustness in the learning theory
+literature, primarily focused on poisoning worst-case distri-
+butions . Two models of robust PAC learning (Fr ´enay and
+Verleysen 2014; Natarajan et al. 2013), slightly rephrased
+for the sake of comparison, include the malicious noise
+model, where the adversary adds points (e.g., Cesa-Bianchi
+et al. 1999; Kearns and Li 1988), and the nasty noise model,
+where the adversary may both add and remove points (e.g.,
+Balcan et al. 2022; Bshouty et al. 2002). Many of these the-
+oretical results show strong computational barriers against
+robust learning for even the most basic problems. Although
+our setting is similar to the malicious noise model (and we
+touch a bit on the nasty noise model in Appendix C.10),
+there are three major differences with the majority of the
+theory literature: (1) our attacks address distributions that
+arise in practice, which differ from worst-case distributions;
+2Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+(2) while other attacks flip labels, we consider “clean label”
+attacks which are not visibly mislabeled; (3) we focus on
+model-targeted attacks whose goal is to induce certain tar-
+get parameters while the above-mentioned references focus
+directly on decreasing accuracy on the test sample.
+3. Theoretical Results
+In this section we formalize the notion of model poisoning
+reachability as a technical tool for studying model-targeted
+data poisoning. We further derive an easily computable
+threshold τand reveal that model-targeted data poisoning
+attacks are effective only when εd, the (relative) percentage
+of poisoning data, crosses τ.
+Notation and Preliminaries. Letℓ(z,w)be our loss that
+measures the fitness of our model won data z∈Z, e.g.,z=
+(x, y)for supervised learning and z=xfor unsupervised
+learning. Let P=P(Z)denote the set of all distributions
+onZ, and we abstract the training data as an (empirical)
+distribution1µ∈ P. For any given model wand training
+distribution µ, is it possible to construct a poisoning set,
+denoted by another (empirical) distribution ν, such that w
+minimizes ℓover the mixed distribution χ= (1−λ)µ+λν,
+where λ=εd
+1+εd∈[0,1]is the proportion of poisoning
+data. To account for possible nonconvexity of the loss ℓ, we
+relax the optimality of a model wto simply have vanishing
+(sub)gradient. More formally, let
+g(z) =g(z;w) =∇wℓ(z;w) (1)
+be the gradient vector with respect to a fixed model weval-
+uated at the data z. For practical reasons (e.g., to evade
+possible defenses or to account for the technical capabilities
+of an attacker) we also restrict the poisoning distribution ν
+into a convex subset Γ⊆ P of admissible distributions. For
+instance, we may consider
+Γ = Γ µ,δ:={γ:∥γ−µ∥ ≤δ}, (2)
+where ∥ · ∥ denotes (say) the Wasserstein distance. By
+definition we always have µ∈Γ. For each ν∈Γ, define
+g(ν) =g(ν;w) :=Ez∼νg(z;w), (3)
+i.e., the average gradient w.r.t. the distribution ν. Clearly,
+G=G(Γ) := {g(ν) :ν∈Γ} (4)
+is a subset of the closed convex hull of all gradient vectors.
+In fact, equality holds when Γ =P(e.g., δ=∞).
+3.1. Model Poisoning Reachability
+We can now state our fundamental problem of interest:
+1For convenience in this work we do not distinguish the (clean)
+training set from the training distribution, i.e., µcan be empirical.Definition 1 (Model Poisoning Reachability) .We say a
+target parameter wis(ℓ, µ,Γ, λ)-poisoning reachable if
+there exists some poisoning distribution ν∈Γsuch that
+g(χ;w) = (1 −λ)g(µ;w) +λg(ν;w) =0,(5)
+i.e., the parameter whas vanishing gradient (w.r.t. loss ℓ)
+over the mixed distribution χ= (1−λ)µ+λν.
+When the loss ℓ, training distribution µ, and admissible
+poisoning distributions Γare evident, we will simply say
+the parameter wisλ-poisoning reachable, or poisoning
+reachable if it is λ-poisoning reachable for some λ∈[0,1].
+We make three further remarks regarding Definition 1: (a)
+If we are interested in more quantitative results about data
+poisoning, for example, is it possible to craft a poisoning
+set such that retraining on the mixed distribution would
+decrease test accuracy by a large margin, we need only
+specify a set of target models w∈ W that all decrease the
+test accuracy as required2, and we say data poisoning is
+successful if any w∈ W is (λ-) poisoning reachable. (b)
+Definition 1 leaves out the computational aspects of data
+poisoning, i.e., how efficiently we can find such a poisoning
+distribution ν(whenever it exists). This will be studied in
+Section 4, using a gradient-based algorithm inspired directly
+by our definition. (c) We could also add other requirements,
+such as curvature or stability, to Definition 1.
+Given the above formalization, the following characteriza-
+tion is immediate:
+Theorem 1. A target parameter wisλ-poisoning reachable
+iff0∈Gλ=Gλ(g(µ)) :={(1−λ)g(µ) +λg:g∈G}.
+SinceG(see equations (1)-(4)) is clearly convex, the subsets
+Gλare all convex and increasing with respect to λ, i.e.,
+g(µ) =G0⊆Gλ↑⊆G1=G.
+Recall that λ=εd
+1+εdis the (absolute) proportion of the
+poisoned set. Thus, we conclude intuitively that the larger
+εd(equivalently λ) is, the easier it is to induce any target
+model won any training distribution µ. In particular, the
+special case λ= 1corresponds to the so-called “unlearnable
+examples” (Fowl et al. 2021a,b; Fu et al. 2021; Huang et al.
+2021; Liu and Chawla 2010; Sandoval-Segura et al. 2022;
+Yu et al. 2022), where an attacker is allowed to change the
+entire training set (i.e., empirical distribution µ).
+Conversely, we can also conclude from Theorem 1 that if
+0̸∈G(Γ), then data poisoning, with any budget εd, will
+not be successful in producing the target parameter w. If
+0̸∈G(P), then no training distribution can yield w. In
+particular, data poisoning will not be successful in producing
+weven if εw=∞.
+2As pointed out by a reviewer, this may not be computationally
+feasible if one is too ambitious about the set W.
+3Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Let us give some examples to illustrate our results so far.
+Example 1 (Least-square regression) .Consider
+ℓ(z;w) =1
+2(y−w⊤x)2,where z= (x, y).
+Clearly, we have
+g(x, y) = (w⊤x−y)x= (xx⊤)w−yx,
+and hence g(µ) = Σ w−m, where Σ =Ex∼µxx⊤and
+m=E(x,y)∼µyx. For simplicity let us assume Z=Rd×R
+andΓ =Pso that G=Rd(by considering product distri-
+butions where xconcentrates on a single point). Therefore,
+we conclude from Theorem 1 that data poisoning with any
+εd>0is possible for least-square regression. The same
+conclusion holds even if we add regularization to w(which,
+we recall, is fixed).
+3.2. Scalar Output Linear Models
+For linear models we can further simplify the iff condition
+in Theorem 1. We begin with the following result:
+Theorem 2. Suppose Γ =Pcontains all distributions,
+ℓ((x, y);w) =l(w⊤x, y)for some univariate loss l, and
+⟨w,g(µ)⟩ ̸= 0. Then, wisλ-poisoning reachable iff
+λ >maxn
+⟨w,g(µ)⟩
+⟨w,g(µ)⟩−a,−⟨w,g(µ)⟩
+b−⟨w,g(µ)⟩o
+,where (6)
+a= inf
+(x,y)∈Z(w⊤x)·l′(w⊤x, y),
+b= sup
+(x,y)∈Z(w⊤x)·l′(w⊤x, y),
+with equality attained if the maximum is attained.
+Theorem 2 follows from the more general Theorem 5 in Ap-
+pendix A, where we further remove the restriction Γ =P.
+The condition ⟨w,g(µ)⟩ ̸= 0can be checked easily a pri-
+ori; see Remark 1 (Appendix A) for discussions on when
+it fails. Remark 2 (Appendix A) draws further connection
+between our result and the breakdown point in robust statis-
+tics. Compared to the more general Theorem 1, Theorem 2
+exploits the linear structure to simplify the set Gto basically
+an interval and hence the condition (6)is much easier to
+verify. Indeed, consider Example 1 again. It is clear that
+l′(t, y) =t−y, whence a=−∞ andb=∞. Thus, we ver-
+ify more easily that data poisoning succeeds on least-square
+regression for any εd>0.
+The next example reveals a surprising phase transition in
+terms of the poisoning proportion λ(or equivalently εd):
+Example 2 (Logistic regression) .Consider now
+ℓ(z;w) = log(1 + exp( −w⊤˜x)),
+where we have absorbed the binary label yinto˜x(e.g.,
+˜x←yx). Clearly, we have g(˜x) =−1
+1+exp( w⊤˜x)˜x. Onthe direction w, for any distribution µwe have
+−W(1
+e)=inf
+t−t
+1+exp( t)≤ ⟨w,g(µ)⟩ ≤sup
+t−t
+1+exp( t),
+where the left-hand side is Lambert’s W function and the
+right-hand side is clearly ∞. Therefore, suppose X=Rd
+andΓ =P, we have
+G={g:w⊤g≥ −W(1/e)≈ −0.28},
+which is not the entire space! Consequently, if
+λ <⟨w,g(µ)⟩
+⟨w,g(µ)⟩+W(1/e)⇐⇒ εd< τ:= max {⟨w,g(µ)⟩
+W(1/e),0},
+(7)
+then any poisoning distribution ν(with any support) cannot
+produce w(along with training distribution µ)!
+By simply changing ˜x←yxand then dropping ywe im-
+mediately obtain from Theorem 2 sufficient and necessary
+conditions for the poisoning reachability of binary margin
+classifiers. In particular, we record the following result:
+Corollary 1 (Binary Margin Classifier) .Consider linear
+models with loss ℓ(˜x;w) =l(w⊤˜x).
+Suppose Γ =Pconsist of all distributions on ˜Xand
+⟨w,g(µ)⟩ ̸= 0. Define
+a:= inf
+t∈w⊤˜Xt·l′(t), b:= sup
+t∈w⊤˜Xt·l′(t).
+Then, a target parameter wisλ-poisoning reachable iff
+(6)holds (with equality attained if the maximum there is
+attained).
+The standard margin losses are decreasing, such as the lo-
+gistic loss in Example 2, the exponential loss in Adaboost,
+and the hinge loss in SVM. When X=Rdis unbounded,
+typically b=∞buta >−∞, leading to a common phase
+transition phenomenon: data poisoning against these losses
+succeeds in producing a target parameter wiffλcrosses
+the threshold in (6). In particular, any target parameter w
+such that ⟨w,g(µ)⟩<0is always poisoning reachable for
+anyλ >0. Interestingly, Koh et al. (2022, Proposition 3)
+showed that if a model is poisoning reachable, then it (often)
+can be poisoned to by a distribution νsupported on two
+distinct points (which however does not imply diminishing
+εddue to repetitions). Corollary 1 provides a definitive an-
+swer on when a model is poisoning reachable and hence
+complements the results of Koh et al. (2022).
+We emphasize that with any further restrictions on the poi-
+soning distribution (such that Γ⊊P), condition (6)remains
+to be necessary: data poisoning is apparently even harder in
+this case. For nonlinear models with a fixed feature map ϕ
+(such as kernel methods), our results extend immediately,
+after the obvious change-of-variable x←ϕ(x).
+4Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Figure 1: Logistic regression on the 2d OR dataset that verifies the transitioning threshold τin Corollary 1. Left:τw.r.t.
+target models w∈R2, which all achieve 0 accuracy; Middle : accuracy drop due to the gradient canceling attack in
+Section 4. Indeed, poisoning successfully induces the target model was long as εd≥τ;Right : norm of gradient w.r.t.
+model wover the mixed distribution χ, with εdthe relative proportion of poisoned data. In general, the closer εdgets above
+τ, the smaller the gradient norm, which is an indication of the target model being more achievable through data poisoning.
+Figure 1 illustrates the transition threshold τin(7)on the
+simple OR dataset (where each of the four points is repeated
+50 times with small Gaussian perturbation, see Appendix C
+for details). Logistic regression (LR), trained on the clean
+data, achieves perfect accuracy. In Figure 1 (left), each grid
+point represents a target parameter w= (w1, w2), all of
+which achieve 0 test accuracy (i.e., malicious models). The
+heat map indicates the threshold τfor each w, which, as pre-
+dicted by our theory, is the percentage of poisoning required
+to achieve wthrough retraining. In Figure 1 (middle) we
+run the gradient canceling attack (see Section 4) with vary-
+ing percentage εdand verify that indeed we can reduce the
+100% clean accuracy to 0% iff εd≥τ. In Figure 1 (right)
+we plot the magnitude of the gradient of the target parameter
+wover the mixed dataset (clean training data plus poisoned
+data), as an approximate measure of how close wcan be
+achieved by retraining on the mixed dataset. Overall, the
+larger εdis, the larger the accuracy drop is (not surprisingly)
+and the smaller the gradient norm is, with a clear transition
+onceεdcrosses τ(perhaps surprisingly).
+3.3. Multiple Output Linear Models
+Next, we extend our results to multiple outputs (classes):
+Theorem 3 (Multiclass) .Consider ℓ(x,y;W) =
+l(W⊤x,y)for some loss l. Then3,
+G(x,y) :=∇Wℓ(x,y;W) =x⊗ ∇l(W⊤x,y).(8)
+Suppose W⊤G(µ)is non-degenerate and Γ =Pcontains
+all distributions. Then, Wisλ-poisoning reachable iff
+0∈(1−λ)W⊤G(µ) +λ{W⊤G(ν) :ν∈Γ}.(9)
+Compared to Theorem 5, condition (9)is no longer univari-
+ate but a square matrix of dimensions the same as y(the
+output). Nevertheless, we may simply take the trace on both
+3We use the notation a⊗b:=ab⊤for two column vectors.sides to arrive at an easier albeit only necessary condition.
+We illustrate the last point through a familiar example:
+Example 3 (Cross-entropy) .Leth=W⊤x. The cross-
+entropy loss corresponds to
+l(h,y) =−⟨h,y⟩+ logX
+kexphk,
+where yis one-hot. Taking trace on (9)we obtain
+0 = (1 −λ)g(µ) +λg(ν),where
+g(ν) =E(x,y)∼ν⟨h,p−y⟩,
+andp:= softmax( h) = exp( h)/P
+kexp(hk). In Ap-
+pendix A we prove the tight bound −W(c−1
+e)≤g(ν)≤ ∞ ,
+leading to the necessary condition for inducing W:
+εd≥τ=τ(c) := max {⟨W, G(µ)⟩/W(c−1
+e),0},(10)
+where cis the number of classes. When c= 2, we recover
+the sufficient and necessary condition in (7).
+We remark that all of our results continue to hold as nec-
+essary (but may not be sufficient) conditions for neural
+networks where the input xgoes through a learned feature
+transformation φ(x;u), parameterized by u:
+Theorem 4 (Neural Networks) .Consider ℓ(x,y;W,u) =
+l(h,y)for some loss l, where h:=W⊤φ(x;u). Then,
+∇Wℓ(x,y;W,u) =φ(x;u)⊗ ∇ hl(h,y) (11)
+∇uℓ(x,y;W,u) =∇uφ(x;u)W∇hl(h,y), (12)
+and(W,u)isλ-poisoning reachable iff there exists ν∈Γ
+such that
+0∈(1−λ)G(µ) +λG(ν), (13)
+where G(ν) := E(x,y)∼ν(∇Wℓ,∇uℓ). In particular,
+(W,u)isλ-poisoning reachable only if there exists some
+ν∈Γsuch that
+0∈(1−λ)G1(µ) +λG1(ν), (14)
+where G1(ν) :=E(x,y)∼νφ(x;u)⊗ ∇ hl(h,y).
+5Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+4. Gradient Canceling Attack
+In this section we discuss how to find a poisoning distribu-
+tionν∈Γso that upon retraining on the mixed distribution
+χ= (1−λ)µ+λν, the target parameter wwill be favored.
+We recall that µis the (clean) training distribution and λis
+the (absolute) poisoning proportion.
+The algorithm we propose is very intuitive and directly
+inspired by our Definition 1: we simply find a poisoning
+distribution ν∈Γso that
+g(χ) = (1 −λ)g(µ) +λg(ν)≈0, (15)
+where recall that λ=εd
+1+εdandg(ν) :=Ez∼ν∇wℓ(z;w)
+is the model gradient computed over a distribution ν. Thus,
+we arrive at the following Gradient Canceling problem4:
+min
+ν∈Γ1
+2∥g(µ) +εdg(ν)∥2
+2, (16)
+which is always convex (since g(ν)is linear in νwhile Γis
+a convex subset of admissible distributions). In Appendix B
+we discuss a measure optimization approach for solving
+(16), while below we focus on a Lagrangian approach that
+directly constructs a poisoning dataset and eliminates the
+need of resampling from ν.
+In more details, we constrain the poisoning distribution to
+be uniform over nεddata points {zj}:
+ˆν=1
+nεdnεdX
+j=1δzj, (17)
+where nis the size of the (clean) training set and δzde-
+notes the point mass concentrated on z. We only optimize
+the locations of the points zjbut keep their mass uniform
+throughout.
+Thus, we arrive at the following problem:
+min
+ˆν∈Γ1
+2g(µ) +εd·1
+nεdnεdX
+j=1∇wℓ(zj;w)2
+2, (18)
+where we remind that g(µ) =Ez∼µ∇wℓ(z;w)as well
+as the target parameter ware fixed during optimization.
+For supervised tasks where z= (x,y), we may choose to
+optimize both the feature xand label y, or simply optimize
+the feature xonly (as in our experiments).
+We apply (projected) gradient descent to solve (18), where
+the gradient with respect to the j-th poisoning data zjis:
+∂
+∂zj=1
+n∇z∇wℓ(zj;w)·[g(µ) +εdg(ˆν)]. (19)
+We note that using auto-differentiation, the above matrix
+vector product can be computed very efficiently, costing
+4Other merit functions than the ℓ2-norm here can also be used.Algorithm 1: Gradient Canceling(GC) Attack
+Input: training distribution µ,
+step size η, poisoning fraction εd, and target parameter
+w.
+1initialize poisoned dataset ˆνin (17), e.g., randomly
+subsample clean training data
+2calculate g(µ) =Ez∼µ∇wℓ(z;w)
+3fort= 1,2, ...do
+4 calculate g(ˆν)←1
+nεdPnεd
+j=1∇wℓ(zj;w)
+5 calculate loss L=1
+2∥g(µ) +εdg(ˆν)∥2
+2
+6 update poisoned data using (19): zj←zj−η∂L
+∂zj
+7 project to admissible set: ˆν←ProjΓ(ˆν)
+8return the final poisoned dataset ˆν
+essentially as much as gradient calculation. The constraint
+forˆνto lie in Γcan be handled by projection. For instance,
+the constraint z∈Z(e.g. pixels must lie in Z= [0,1]) can
+be enforced by projecting the gradient update onto Z.
+We summarize the Gradient Canceling(GC) attack in Al-
+gorithm 1, and we emphasize that it can take anytarget
+parameter was “teacher” and construct a poisoning dataset
+such that retraining will arrive (approximately) at w. We
+note that Gradient Canceling is a refinement of the KKT
+attack of Koh et al. (2022): our refinement lies in the gen-
+eralization to any loss ℓ, different optimization strategy,
+exploring target parameters generated by the much stronger
+GradPC attack (Sun et al. 2020), experimenting on a variety
+of different models, and studying the effect of the poisoning
+proportion. Other authors such as Suya et al. (2021) also
+explored (rather costly) attacks based on a target parameter
+in the online setting (that require retraining in each round),
+whereas their lower bound on the amount of poisoned points
+may not be easily computed even for logistic regression.
+Comparison with Gradient Matching. Geiping et al.
+(2021) proposed a gradient matching algorithm for crafting
+targeted poisoning attacks, which can be easily adapted to
+our setting. Suppose that a defender aims at minimizing a
+lossℓto achieve model won (clean) training distribution
+µ. Letℓbe a reversed version of ℓ. For example, if lis the
+cross-entropy loss in Example 3, thenl(h,y)=−log[1−exp(−l(h,y))],where h=W⊤x,(20)
+is the reversed cross-entropy loss (Fowl et al. 2021a). Asℓdiscourages the model from classifying clean data xas
+y, Geiping et al. (2021) proposed to match its gradient
+∇w
+ℓ(µ,w)over a poisoned distribution ˆν(within some
+proximity of µ), based on some dissimilarity function S
+(e.g., cosine dissimilarity):
+min
+ˆν∈ΓS(∇w
+ℓ(µ;w),∇wℓ(ˆν;w)). (21)
+6Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+We point out some key differences between gradient match-
+ing (Fowl et al. 2021a) and our work: (1) Gradient matching
+focuses on λ= 1, i.e., an attacker is able to modify the en-
+tire training set. While this is useful in certain settings (e.g.,
+crafting “unlearnable examples”), it masks the effect of the
+poisoning proportion, which, as we showed in Section 3,
+can determine if a target parameter is poisoning reachable
+at all. (2) Gradient matching requires the construction of a
+reversed loss, whose gradient may not be at the same scale
+as that of the loss we are interested in. Thus, one typically
+can only hope to align the direction of gradients, which does
+not necessarily imply the desired matching in performance.
+In contrast, Algorithm 1 only requires the original loss and
+our theory gives guidance on when it succeeds. (3) There
+is no guarantee that after retraining over ˆν, gradient match-
+ing will arrive at the target parameter while Algorithm 1
+explicitly aims to achieve this goal. Further experimental
+comparisons against gradient matching will be presented in
+Section 5 and Appendix C.
+5. Experiments
+We perform extensive experiments to verify our main re-
+sults: (a) how competitive the gradient canceling attack
+(Algorithm 1) is compared to SOTA baselines in indiscrim-
+inate data poisoning? (b) to what extent our threshold τ
+(see(10)) can predict model poisoning reachability?(c) how
+effective gradient canceling remains against certain existing
+defense mechanisms?
+5.1. Experimental Settings
+Dataset: We consider image classification on
+MNIST (Deng 2012) (60k training and 10k test im-
+ages), CIFAR-10 (Krizhevsky 2009) (50k training and 10k
+test images), and TinyImageNet (Chrabaszcz et al. 2017)
+(100k training, 10k validation and 10k test images). For the
+first two datasets, we further split the training data into 70%
+training set and 30% validation set, respectively.
+Target Models: We examine the following ML models. On
+MNIST: Logistic Regression (LR), a fully connected neural
+network (NN) with three layers and a convolutional neural
+network (CNN) with two convolutional layers, max-pooling
+and one fully connected layer; On CIFAR-10: ResNet-18
+(He et al. 2016); and on TinyImageNet: ResNet-34.
+Baselines: We compare to TGDA (Lu et al. 2022) and
+Gradient Matching (Geiping et al. 2021) attacks. To our
+knowledge, the TGDA attack is one of the most effective
+data poisoning attacks against neural networks. Gradient
+Matching was originally proposed for targeted attacks and
+unlearnable examples, and we also compare against it due
+to its similarity with the Gradient Canceling (GC) attack.
+Implementation: For GC implementation, we follow Al-gorithm 1 and we discuss the effect of the projection step
+in Section 5.4. Most of our target parameters are generated
+using GradPC5except LR on MNIST, where we use εw= 1
+to allow meaningful accuracy drop and transition threshold
+τ6. We initialized the poisoned points with a random nεd
+sample from the clean training set and we only optimized
+the feature vectors but not the labels. Accuracy drops are
+obtained after retraining.
+Evaluation Protocol: To evaluate the effectiveness of differ-
+ent attacks, we first apply each attack to acquire its poisoned
+set and then retrain the model from scratch (initialized with
+the same random seed across all attacks) on both clean and
+poisoned data until convergence. The (test) accuracy drop,
+compared with clean accuracy (obtained by training on clean
+data only), is reported across all experiments.
+5.2. How Competitive Is Gradient Canceling (GC)?
+Table 2 reports the accuracy drop of LR, NN, CNN and
+ResNet due to GC on the aforementioned datasets. We
+note the trade-off of εwin GradPC when generating a target
+parameter w: the larger εwis, the more effective GradPC
+is but also the larger the resulting transition threshold τis,
+meaning that GC (or any other data poisoning attack) can
+succeed (in reproducing w) only with a larger proportion εd
+of poisoned points. We used τ=τ(2)in Table 2 as we find
+it is much more indicative than the more conservative τ(c)
+(which is roughly 11 times smaller on TinyImageNet and 4
+times smaller otherwise).
+We observe that GC is much more effective than TGDA and
+Gradient Matching, across all datasets, models, and choices
+ofεd. This confirms that existing data poisoning attacks are
+under-optimized and there is room for future improvements.
+Moreover, when εdapproaches the transition threshold τ,
+GC, a bona fide data poisoning attack, indeed achieves a
+comparable accuracy drop as GradPC (which directly over-
+writes the model). While Table 1 still has room to improve,
+both in terms of the tightness of τand the effectiveness
+of GC, we believe our results yield significant insights on
+indiscriminate data poisoning, in particular the theoretical
+and experimental quantification of the detrimental effect of
+a large proportion εdof poisoned points.
+5.3. Predicting Poisoning Reachability Using τ
+Next, we further examine the predictability of the transition
+threshold τ≈max{3.6⟨W, G(µ)⟩,0}, whose main term
+is simply proportional to the inner product between a target
+parameter and its gradient on the clean training data.
+Binary Logistic Regression : We have already shown the
+5We follow the implementation in https://github.com/
+TobiasLee/ParamCorruption .
+6We discuss the selection of target parameters in Appendix D.
+7Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Table 2: The attack accuracy/accuracy drop (%) on MNIST, CIFAR-10 and TinyImageNet. We perform GC based on the
+target parameters generated by GradPC. Our attack significantly outperforms TGDA and Gradient Matching.
+DatasetTarget Model Clean Acc GradPC Gradient Canceling TGDA Gradient Matching
+εd 0 0 0.03 0.1 1 εd=τ0.03 0.1 1 0.03 0.1 1
+MNISTLR 92.35 -70.87 ( τ=1.15) -22.97 -63.83 -67.01 -69.66 -2.79 -4.01 -8.97 -3.33 -8.14 -12.13
+NN 98.04 -20.03 ( τ=2.48) -6.10 -9.77 -12.05 -19.05 -1.50 -1.72 -5.49 -2.82 -3.71 - 4.03
+CNN 99.13 -24.78 ( τ=0.98) -9.55 -20.10 -23.80 -23.77 -1.11 -1.31 -4.76 -2.01 -3.80 -6.94
+CIFAR-10 ResNet-18 94.95 -21.69 ( τ=1.29) -13.73 -16.40 -18.33 -19.98 -5.54 -6.28 -17.21 -6.01 -7.62 -9.80
+TinyImageNet ResNet-34 66.65 -24.77 ( τ=1.08) -13.22 -16.11 -20.15 -22.79 -4.42 -6.52 -14.33 -5.53 -7.72 -10.85
+Figure 2: We run experiments on logistic regression to verify the transition threshold τin Corollary 1. Left: accuracy
+difference between GC and GradPC on 10-d Gaussian dataset; Middle : norm of the gradient over the mixed dataset χon
+10-d Gaussian dataset; Right : norm of the gradient over the mixed dataset χon MNIST-17.
+predictability of τon the OR dataset in Figure 1. In Figure 2
+we show additional results on a 10-dimensional Gaussian
+dataset (see Appendix C.1) and MNIST-17 (consisting only
+of digits 1 and 7). The observations are similar: GC could
+achieve similar accuracy drops as GradPC (which directly
+overwrites the model), as long as εdcrosses the threshold τ.
+We note that the threshold τtends to be more conservative as
+the dimension of the problem increases, which we believe
+is largely because the optimization cost of GC becomes
+accordingly higher, making convergence harder to attain.
+Multi-class with Cross-Entropy: We also perform experi-
+ments on multi-class problems with the cross-entropy loss
+in Example 3. In Table 2 we have confirmed that when
+εd> τ, GC largely achieves the target parameters gener-
+ated by GradPC. We now further examine the opposite case
+where εd< τ. We fix εd= 1 and vary εwin GradPC,
+consequently generating target parameters with varying τ
+on MNIST. Figure 3 shows how much the gradient ∥g(χ)∥
+of the target parameters decreases w.r.t. each epoch of GC
+(when χ, the mixed dataset, gets updated). We observe that
+the gradients do not converge to 0, indicating that GC failed
+to produce the target parameters. The failure of GC indicates
+that a larger poisoning proportion εdmay be necessary to
+produce the target parameters, as confirmed by our theory.
+5.4. Does GC Remain Effective Against Defenses?
+Lastly, we choose several defenses from (Angel et al.
+2022) and examine the effectiveness of GC against (1) a
+distribution-wise certified defense Sever (Diakonikolas et al.Table 3: Accuracy drop (%) of Gradient Canceling (w/wo
+clipping) on MNIST against Sever defense (+ indicates the
+accuracy increased by the defense). GC-c: GC with clipped
+output; GC-d: GC after defense; GC-cd: GC-c after defense.
+Model Clean εd GC GC-cSever
+GC-d GC-cd
+LR 92.350.03 -22.79 -11.28 -12.81 / +9.98 -9.66 / +1.62
+0.1 -63.83 -26.77 -59.79 / +4.04 -25.53 / +1.24
+1 -67.01 -28.99 -65.01 / +2.00 -27.89 / +1.10
+NN 98.040.03 -6.10 -3.25 -3.22 / +2.88 -2.26 / +0.90
+0.1 -9.77 -5.10 -7.66 / +2.11 -4.46 / +0.56
+1 -12.05 -6.53 -10.02 / +2.03 -6.11 / +0.42
+CNN 99.130.03 -9.55 -5.87 -5.55 / +4.00 -4.36 / +1.51
+0.1 -20.10 -12.50 -16.55 / +3.55 -11.32 / +1.18
+1 -23.80 -13.32 -21.05 / +2.75 -12.51 / +0.81
+2019), which removes εdtraining points with the highest
+outlier scores, defined using the top singular value of the
+gradient matrix, and (2) one of the SOTA pointwise certi-
+fied defenses (Levine and Feizi 2021; Wang et al. 2022a,b)
+called Deep Partition Aggregation (DPA) (Levine and Feizi
+2021), which provides certified robustness for individual test
+samples. More results w.r.t. other defenses (e.g., influence
+defense and max-up defense) can be found in Appendix C.8.
+Results on Sever: Table 3 reports the accuracy drops on
+MNIST. We observe that (1) Sever indeed reduces the effec-
+tiveness of GC, consistently across all models. (2) Clipping
+poisoned data to the range of the clean training set makes
+GC more robust against all defenses, at the cost of less effec-
+tiveness in terms of accuracy drop. (3) Even with clipping
+and against defenses, GC still largely outperforms TGDA
+8Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Figure 3: The learning curve for running GC on MNIST with different target models wandεw. We fix εd= 1, and the
+curves indicate the decrease of the gradient ∥g(χ)∥w.r.t. GC epoch. We confirm that GC fails to achieve wwhen εd< τ.
+Table 4: The Certified Accuracy (CA) (%) of DPA and
+Accuracy drop (%) of Gradient Canceling ( εd= 0.008) on
+MNIST against the DPA defense (+ indicates the accuracy
+increased by the defense).
+Model Clean k Clean (DPA) GC CA DPA
+LR 92.351200 91.33 -8.25 47.12 -4.68/ +3.57
+3000 89.97 -8.25 49.23 -4.21/ +4.04
+NN 98.041200 94.65 -2.25 46.11 -1.29/ +0.96
+3000 92.37 -2.25 48.52 -1.17/ +1.08
+CNN 99.131200 95.53 -2.77 47.22 -1.66/ +1.11
+3000 93.15 -2.77 50.01 -1.52/ +1.25
+and Gradient Matching. (4) Larger εdgenerally makes GC
+both more effective and more robust, which matches our
+observation in least-squares regression (see Appendix C.3).
+Results on DPA : although DPA is originally proposed
+for pointwise robustness, it can be easily applied to the
+indiscriminate data poisoning setting. Here we choose
+k= 1200 /3000 for DPA and fix εd= 0.008to roughly
+preserve median certified robustness on MNIST. Note that
+we choose the base classifiers to be the same as the tar-
+get models. We report the certified accuracy (CA), which
+is the percentage of certified robust examples among the
+test set, and (relative) accuracy increase due to deploying
+DPA in Table 4. We observe that DPA is generally effective
+against GC, where the (relative) accuracy increased by DPA
+roughly approaches its certified accuracy. For example, on
+LR with k= 3000 , GC was able to decrease test accuracy
+by8.25%, whereas with the DPA defense, 4.04% (relative)
+accuracy drop of GC are rectified, leading to an effective-
+ness that is roughly proportional to its certified accuracy,
+i.e.,4.04≈8.25∗0.4923 .
+6. Conclusion and Future Work
+In this work, we introduce the notion of model poisoning
+reachability as a technical tool to study the intrinsic limits in
+model-targeted data poisoning. We give complete character-
+izations on the poisoning ratio that any data poisoning attackhas to satisfy (in order to induce a given target parameter),
+and we derive an easily computable threshold that is readily
+applicable and gives guidance on crafting effective model-
+targeted attacks. Using the gradient canceling attack, we
+perform extensive experiments on a number of datasets and
+models to quantify the critical role played by the poisoning
+ratio, confirm the precision of our transition threshold, and
+achieve better performance against existing baselines (w/wo
+several existing defenses). Our empirical results also reveal
+further room to sharpen the transition threshold and develop
+more effective data poisoning attacks, and we mention the
+exciting possibility of designing (clean) in-house data to
+mitigate and regulate the risk of future poisoning attacks.
+One limitation of this work is its focus on achieving specific
+target parameters, which may not always be available or
+necessary. Indeed, data poisoning attacks that are not based
+on any target parameter abound. However, we point out
+that our work may still be valuable for the latter class of
+attacks, for instance, as a distillation device: a data poison-
+ing attack can use our threshold to evaluate the potential
+“wastefulness” of its constructed poisoning set (along with
+the model parameter obtained by retraining) and then use
+GC to further distill and improve it. Another limitation is
+that most existing data poisoning attacks, including GC,
+assume a lot of knowledge of the victim model (e.g., fixed
+architecture, access to clean training data, etc.) and hence
+may not always be realistic. Advanced and adaptive defense
+mechanisms may also thwart the effectiveness of many at-
+tacks (including GC). Further investigations of these issues
+form another important direction for future research.
+ACKNOWLEDGMENTS
+We thank the reviewers for the critical comments that have
+largely improved the presentation and precision of this paper.
+We gratefully acknowledge funding support from NSERC
+and the Canada CIFAR AI Chairs program. Resources used
+in preparing this research were provided, in part, by the
+Province of Ontario, the Government of Canada through
+CIFAR, and companies sponsoring the Vector Institute.
+9Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+References
+Aghakhani, H., D. Meng, Y . -X. Wang, C. Kruegel, and
+G. Vigna (2021). “Bullseye polytope: A scalable clean-
+label poisoning attack with improved transferability”. In:
+IEEE European Symposium on Security and Privacy (Eu-
+roS&P) , pp. 159–178.
+Angel, N. B. et al. (2022). “Benchmarking the Effect of
+Poisoning Defenses on the Security and Bias of the Fi-
+nal Model”. In: NeurIPS Workshop on Trustworthy and
+Socially Responsible Machine Learning .
+Balcan, M. -F., A. Blum, S. Hanneke, and D. Sharma (2022).
+“Robustly-reliable learners under poisoning attacks”. In:
+Proceedings of Thirty Fifth Conference on Learning The-
+ory, pp. 4498–4534.
+Biggio, B., B. Nelson, and P. Laskov (2012). “Poisoning
+attacks against support vector machines”. In: Proceed-
+ings of the 29th International Conference on Machine
+Learning (ICML) , pp. 1467–1474.
+Bshouty, N. H., N. Eiron, and E. Kushilevitz (2002). “PAC
+learning with nasty noise”. Theoretical Computer Science ,
+vol. 288, no. 2, pp. 255–275.
+Cesa-Bianchi, N., E. Dichterman, P. Fischer, E. Shamir,
+and H. U. Simon (1999). “Sample-efficient strategies for
+learning in the presence of noise”. Journal of the ACM
+(JACM) , vol. 46, no. 5, pp. 684–719.
+Chen, X., C. Liu, B. Li, K. Lu, and D. Song (2017). “Tar-
+geted backdoor attacks on deep learning systems using
+data poisoning”. arXiv:1712.05526.
+Chrabaszcz, P., I. Loshchilov, and F. Hutter (2017). “A
+downsampled variant of ImageNet as an alternative to the
+CIFAR datasets”. arXiv preprint arXiv:1707.08819.
+Deng, L. (2012). “The MNIST database of handwritten
+digit images for machine learning research”. IEEE Signal
+Processing Magazine , vol. 29, no. 6, pp. 141–142.
+Diakonikolas, I., G. Kamath, D. M. Kane, J. Li, J. Stein-
+hardt, and A. Stewart (2019). “Sever: A Robust Meta-
+Algorithm for Stochastic Optimization”. In: Proceedings
+of the 36th International Conference on Machine Learn-
+ing, pp. 1596–1606.
+Fowl, L., P. -y. Chiang, M. Goldblum, J. Geiping, A. Bansal,
+W. Czaja, and T. Goldstein (2021a). “Preventing unautho-
+rized use of proprietary data: Poisoning for secure dataset
+release”. arXiv preprint arXiv:2103.02683.Fowl, L., M. Goldblum, P. -y. Chiang, J. Geiping, W. Czaja,
+and T. Goldstein (2021b). “Adversarial Examples Make
+Strong Poisons”. In: Advances in Neural Information
+Processing Systems , pp. 30339–30351.
+Fr´enay, B. and M. Verleysen (2014). “Classification in the
+Presence of Label Noise: A Survey”. IEEE Transactions
+on Neural Networks and Learning Systems , vol. 25, no. 5,
+pp. 845–869.
+Fu, S., F. He, Y . Liu, L. Shen, and D. Tao (2021). “Robust
+unlearnable examples: Protecting data privacy against
+adversarial learning”. In: International Conference on
+Learning Representations .
+Gao, L. et al. (2020). “The Pile: An 800GB Dataset of
+Diverse Text for Language Modeling”. arXiv preprint
+arXiv:2101.00027.
+Geiping, J., L. H. Fowl, W. R. Huang, W. Czaja, G. Taylor,
+M. Moeller, and T. Goldstein (2021). “Witches’ Brew: ial
+Scale Data Poisoning via Gradient Matching”. In: Inter-
+national Conference on Learning Representations .
+Goldblum, M., D. Tsipras, C. Xie, X. Chen, A.
+Schwarzschild, D. Song, A. Madry, B. Li, and T. Gold-
+stein (2023). “Dataset Security for Machine Learning:
+Data Poisoning, Backdoor Attacks, and Defenses”. IEEE
+Transactions on Pattern Analysis and Machine Intelli-
+gence , vol. 45, no. 2, pp. 1563–1580.
+Gu, T., B. Dolan-Gavitt, and S. Garg (2017). “Badnets:
+Identifying vulnerabilities in the machine learning model
+supply chain”. arXiv:1708.06733.
+Guo, J. and C. Liu (2020). “Practical Poisoning Attacks
+on Neural Networks”. In: European Conference on Com-
+puter Vision , pp. 142–158.
+He, K., X. Zhang, S. Ren, and J. Sun (2016). “Deep Residual
+Learning for Image Recognition”. In: Proceedings of
+the IEEE Conference on Computer Vision and Pattern
+Recognition , pp. 770–778.
+Huang, H., X. Ma, S. M. Erfani, J. Bailey, and Y . Wang
+(2021). “Unlearnable Examples: Making Personal Data
+Unexploitable”. In: International Conference on Learning
+Representations .
+Kearns, M. and M. Li (1988). “Learning in the presence of
+malicious errors”. In: Proceedings of the twentieth annual
+ACM symposium on Theory of computing , pp. 267–280.
+Koh, P. W. and P. Liang (2017). “Understanding black-box
+predictions via influence functions”. In: Proceedings of
+10Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+the 34th International Conference on Machine Learning
+(ICML) , pp. 1885–1894.
+Koh, P. W., J. Steinhardt, and P. Liang (2022). “Stronger
+Data Poisoning Attacks Break Data Sanitization De-
+fenses”. Machine Learning , vol. 111, pp. 1–47.
+Krizhevsky, A. (2009). “Learning multiple layers of features
+from tiny images”. tech. report.
+Kumar, R. S. S., M. Nystr ¨om, J. Lambert, A. Marshall, M.
+Goertzel, A. Comissoneru, M. Swann, and S. Xia (2020).
+“Adversarial machine learning-industry perspectives”. In:
+IEEE Security and Privacy Workshops (SPW) , pp. 69–75.
+Levine, A. and S. Feizi (2021). “Deep Partition Aggregation:
+Provable Defense against General Poisoning Attacks”. In:
+International Conference on Learning Representations .
+Liu, W. and S. Chawla (2010). “Mining adversarial patterns
+via regularized loss minimization”. Machine learning ,
+vol. 81, no. 1, pp. 69–83.
+Lu, Y ., G. Kamath, and Y . Yu (2022). “Indiscriminate Data
+Poisoning Attacks on Neural Networks”. Transactions on
+Machine Learning Research .
+Lyu, L., H. Yu, and Q. Yang (2020). “Threats to federated
+learning: A survey”. arXiv preprint arXiv:2003.02133.
+Mu˜noz-Gonz ´alez, L., B. Biggio, A. Demontis, A. Paudice,
+V . Wongrassamee, E. C. Lupu, and F. Roli (2017). “To-
+wards Poisoning of Deep Learning Algorithms with Back-
+gradient Optimization”. In: Proceedings of the 10th ACM
+Workshop on Artificial Intelligence and Security (AISec) .
+Natarajan, N., I. S. Dhillon, P. K. Ravikumar, and A. Tewari
+(2013). “Learning with noisy labels”. Advances in neural
+information processing systems , vol. 26.
+Nelson, B., M. Barreno, F. J. Chi, A. D. Joseph, B. I. Rubin-
+stein, U. Saini, C. Sutton, J. D. Tygar, and K. Xia (2008).
+“Exploiting machine learning to subvert your spam filter.”
+LEET , vol. 8, pp. 1–9.
+Saha, A., A. Subramanya, and H. Pirsiavash (2020). “Hidden
+trigger backdoor attacks”. In: Proceedings of the AAAI
+Conference on Artificial Intelligence .
+Sandoval-Segura, P., V . Singla, J. Geiping, M. Goldblum,
+T. Goldstein, and D. W. Jacobs (2022). “Autoregressive
+Perturbations for Data Poisoning”. In: Advances in Neural
+Information Processing Systems .
+Shafahi, A., W. R. Huang, M. Najibi, O. Suciu, C. Studer,
+T. Dumitras, and T. Goldstein (2018). “Poison Frogs!Targeted Clean-Label Poisoning Attacks on Neural Net-
+works”. In: Advances in Neural Information Processing
+Systems (NeurIPS) , pp. 6103–6113.
+Shejwalkar, V ., A. Houmansadr, P. Kairouz, and D. Ra-
+mage (2022). “Back to the Drawing Board: A Critical
+Evaluation of Poisoning Attacks on Production Federated
+Learning”. In: IEEE Symposium on Security and Privacy
+(SP), pp. 1354–1371.
+Sun, X., Z. Zhang, X. Ren, R. Luo, and L. Li (2020). “Ex-
+ploring the vulnerability of deep neural networks: A study
+of parameter corruption”. In: Proceedings of the AAAI
+Conference on Artificial Intelligence .
+Suya, F., S. Mahloujifar, A. Suri, D. Evans, and Y . Tian
+(2021). “Model-targeted poisoning attacks with provable
+convergence”. In: Proceedings of the 38th International
+Conference on Machine Learning , pp. 10000–10010.
+Szegedy, C., W. Zaremba, I. Sutskever, J. Bruna, D. Erhan,
+I. Goodfellow, and R. Fergus (2014). “Intriguing proper-
+ties of neural networks”. In: International Conference on
+Learning Representation .
+Tran, B., J. Li, and A. Madry (2018). “Spectral Signatures in
+Backdoor Attacks”. In: Advances in Neural Information
+Processing Systems (NeurIPS) .
+Wakefield, J. (2016). “Microsoft chatbot is taught to swear
+on Twitter”. BBC News .
+Wang, W., A. Levine, and S. Feizi (2022a). “Lethal Dose
+Conjecture on Data Poisoning”. In: Advances in Neural
+Information Processing Systems .
+Wang, W., A. J. Levine, and S. Feizi (2022b). “Improved
+certified defenses against data poisoning with (determin-
+istic) finite aggregation”. In: International Conference on
+Machine Learning , pp. 22769–22783.
+Yu, D., H. Zhang, W. Chen, J. Yin, and T. -Y . Liu (2022).
+“Availability Attacks Create Shortcuts”. In: Proceedings
+of the 28th ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining , pp. 2367–2376.
+Zhang, Z., R. Luo, X. Ren, Q. Su, L. Li, and X. Sun (2021).
+“Adversarial parameter defense by multi-step risk mini-
+mization”. Neural Networks , vol. 144, pp. 154–163.
+Zhu, C., W. R. Huang, H. Li, G. Taylor, C. Studer, and
+T. Goldstein (2019). “Transferable clean-label poisoning
+attacks on deep neural nets”. In: International Conference
+on Machine Learning , pp. 7614–7623.
+11Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+A. Proofs
+Theorem 5 (Linear Models) .Consider ℓ((x, y);w) =l(w⊤x, y)for some univariate loss l. Then,
+g(x, y) =x·l′(w⊤x, y),
+andwisλ-poisoning reachable iff there exists ν∈Γsuch that
+0∈(1−λ)g(µ) +λg(ν).
+Suppose ⟨w,g(µ)⟩ ̸= 0. Consider Π⊆ P and let
+J:={E(x,y)∼ν(w⊤x)·l′(w⊤x, y) :ν∈Π} ⊆R.
+Then, wisλ-poisoning reachable if7Γ⊇T#Πand
+0∈(1−λ)⟨w,g(µ)⟩+λJ, (A.1)
+where the transformation T(x, y) :=
+⟨w,x⟩
+⟨w,g(µ)⟩g(µ), y
+. Conversely, (A.1) holds if wisλ-poisoning reachable and Π⊇Γ.
+Proof. The gradient computation is straightforward while the first claim follows from Theorem 1.
+Suppose now ⟨w,g(µ)⟩ ̸=0.
+Suppose first (A.1) holds, so we can choose ν∈Πsuch that
+0 = (1 −λ)⟨w,g(µ)⟩+λE(x,y)∼ν(w⊤x)·l′(w⊤x, y). (A.2)
+Consider the transformation T(x, y) =
+⟨w,x⟩
+⟨w,g(µ)⟩g(µ), y
+and let ˜ν=T#ν, which is in Γdue to our assumption Γ⊇T#Π.
+We then have
+E(˜x,˜y)∼˜νl′(w⊤˜x,˜y)˜x=E(x,y)∼νl′(w⊤x, y)⟨w,x⟩
+⟨w,g(µ)⟩g(µ), (A.3)
+and hence
+(1−λ)g(µ) +λE(˜x,˜y)∼˜ν∇ℓ((˜x,˜y);w) = [(1 −λ)⟨w,g(µ)⟩+λE(x,y)∼νl′(w⊤x, y)⟨w,x⟩]g(µ)
+⟨w,g(µ)⟩(A.4)
+=0, (A.5)
+thanks to our choice of ν. Applying Theorem 1 again we know wisλ-poisoning reachable.
+Conversely, if wisλ-poisoning reachable, then from Theorem 1 it follows that
+0∈(1−λ)g(µ) +λE(x,y)∼νl′(w⊤x, y)x. (A.6)
+Taking inner product with the model won both sides and noting that Γ⊆Πwe verify (A.1).
+Remark 1. The condition ⟨w,g(µ)⟩ ̸= 0can be easily checked a priori . In case it fails, two possibilities arise:
+•g(µ) =0, in which case poisoning is trivial: simply let ν=µfor any λ.
+•g(µ)̸=0, in which case we may let νconcentrate on the line L:={αg(µ) :α∈R}. Thus, data poisoning succeeds
+if
+0 = (1 −λ) +λE(α,y)∼νl′(0, y)α, (A.7)
+where we identify αg(µ)asαforν. As long as Γcontains some distribution that puts nonzero mass on Land
+sufficiently large l′(0, y),wis again λ-poisoning reachable.
+7T#νdenotes the distribution of T(z)when z∼ν.
+12Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Once we identify an appropriate subset Πof poisoning distributions, we can even estimate the interval Jusing Monte Carlo
+algorithms. Moreover, we may restrict the search of a poisoning distribution to the potentially much smaller subset T#Π
+(where xlies on the line spanned by g(µ)).
+Remark 2 (Connection to breakdown point) .For simplicity consider Z=Rd×R. It is well-known that unbounded convex
+losses (t, y)7→l(t−y), such as the square loss in Example 1, have 0 breakdown point (and hence not robust): even adding
+a single poisoning point can perturb the model norm ∥w∥unboundedly (e.g. Yu et al. 2012, Theorem 5). Theorem 2 gives a
+much more detailed characterization: In fact, any target model wcan be induced by a diminishing amount of poisoning
+(even if νis supported on a single point)! Indeed, since lis unbounded and convex, there exists some τ∈Rsuch that
+|l′(τ)| ̸= 0. It follows then a=−∞ andb=∞, and hence the threshold in (6)is trivially 0, for any target model w. Of
+course, our characterization in Theorem 2 continues to hold for any domain Z, unbounded or not.
+Example 4 (Dichotomy) .Consider the smooth loss8
+l(t) =
+
+−(4t+ 1) exp( −2),ift≤ −1
+2
+exp(1
+t), ift∈[−1
+2,0]
+0, ift≥0. (A.8)
+Clearly, we have a= 0andb=∞. Thus, we arrive at a remarkable dichotomy:
+•If⟨w,g(µ)⟩= 0(in particular any separating w), then data poisoning succeeds with any λ >0;
+•If⟨w,g(µ)⟩ ̸= 0(and hence wcannot separate µ), then data poisoning fails with any λ <1.
+Note that lin(A.8) is not calibrated since l′(0) = 0 (Bartlett et al. 2006), so it may not be a sensible loss to use in practice.
+For a calibrated margin loss l, i.e., one that is differentiable at 0 with l′(0)<0, we necessarily have b >0anda <0, so the
+threshold in (6) usually lies strictly in (0,1), incurring a nontrivial phase transitioning.
+Theorem 6 (Multiclass) .Consider ℓ(x,y;W) =l(W⊤x,y)for some loss l. Then9,
+G(x,y) :=∇Wℓ(x,y;W) =x⊗ ∇l(W⊤x,y), (A.9)
+andWisλ-poisoning reachable iff there exists ν∈Γsuch that
+0∈(1−λ)G(µ) +λG(ν). (A.10)
+Suppose W⊤G(µ)is non-degenerate and let
+J:={E(x,y)∼ν(W⊤x)⊗ ∇l(W⊤x,y) :ν∈Π}.
+Then, Wisλ-poisoning reachable if Γ⊇T#Πand
+0∈(1−λ)W⊤G(µ) +λJ, (A.11)
+where the transformation T(x,y) := 
+G(µ)[W⊤G(µ)]−1W⊤x,y
+. Conversely, (A.11) holds if Wisλ-poisoning reach-
+able and Π⊇Γ.
+Proof. The proof is completely similar to that of Theorem 5.
+Proof. [of Example 3] We aim to show that for any h∈Rcand one-hot y∈Rc, we have
+−W(c−1
+e)≤ ⟨h,p−y⟩ ≤ ∞ ,where recall that p:= softmax( h) = exp( h)/X
+kexp(hk). (A.12)
+8This is essentially a smoothed version of the perceptron loss l(t) = max {−t,0}.
+9We use the notation a⊗b:=ab⊤for two column vectors.
+13Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+The right-hand side is clear: we need only send some hkto∞, as long as yk̸= 1. For the left-hand side, we simplify as
+follows. W.l.o.g. assume yi= 1. Then,
+⟨h,p−y⟩=X
+khk"
+exp(hk)P
+jexp(hj)−yk#
+=P
+k(hk−hi) exp( hk−hi)
+1 +P
+j̸=iexp(hj−hi)(A.13)
+=X
+k̸=i1
+c−1+ exp( hk−hi)
+1 +P
+j̸=iexp(hj−hi)·(hk−hi) exp( hk−hi)
+1
+c−1+ exp( hk−hi)(A.14)
+≥inf
+ttexp(t)
+1
+c−1+ exp( t)(A.15)
+=−W(c−1
+e), (A.16)
+where the inequality is achieved when t≡hk−himinimizes (A.15).
+Theorem 4 (Neural Networks) .Consider ℓ(x,y;W,u) =l(h,y)for some loss l, where h:=W⊤φ(x;u). Then,
+∇Wℓ(x,y;W,u) =φ(x;u)⊗ ∇ hl(h,y) (11)
+∇uℓ(x,y;W,u) =∇uφ(x;u)W∇hl(h,y), (12)
+and(W,u)isλ-poisoning reachable iff there exists ν∈Γsuch that
+0∈(1−λ)G(µ) +λG(ν), (13)
+where G(ν) :=E(x,y)∼ν(∇Wℓ,∇uℓ). In particular, (W,u)isλ-poisoning reachable only if there exists some ν∈Γsuch
+that
+0∈(1−λ)G1(µ) +λG1(ν), (14)
+where G1(ν) :=E(x,y)∼νφ(x;u)⊗ ∇ hl(h,y).
+Proof. It is straightforward to compute the gradients in (11) and(12). The iff condition in (13) then follows from Theorem 1.
+The necessary condition in (14) is obtained by simply ignoring the second part of G(µ)(that corresponds to ∇uℓ).
+From (14) we conclude that the poisoning distribution νmust be supported at least on s= rank( G1(µ))points, as long as
+λ∈(0,1). Taking inner product w.r.t. WA on both sides of (14) we obtain
+0 = (1 −λ)gA(µ) +λgA(ν), (A.17)
+where gA(ν) =E(x,y)∼ν⟨A∇hl(h,y),h⟩andAis arbitrary. The condition (A.17) is univariate and easy to check, albeit
+being necessary but not sufficient. We remark that the free choice of the matrix Amay be exploited to tighten this necessary
+condition.
+B. Data poisoning as measure optimization
+In this section we discuss a measure optimization approach for solving the gradient canceling problem:
+min
+ν∈Γ1
+2∥g(µ) +εdg(ν)∥2
+2, (B.1)
+where we recall that
+g(ν) =Ez∼ν∇wℓ(z;w) (B.2)
+is the model gradient computed over the distribution ν. The objective of (B.1) is a convex quadratic, although living in an
+infinite dimensional space (the vector space of all signed measures over Z). A particularly suitable way to solve (B.1) is the
+well-known Frank-Wolfe algorithm, where we repeatedly perform “atomic” updates to the measure ν:
+νt+1←(1−ηt)νt+ηtζt, (B.3)
+14Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+where ηtis the step size, e.g., ηt=2
+t+2. The direction ζtis found by solving the linear minimization subproblem:
+min
+ζ∈Γ⟨g(µ) +εdg(νt),g(ζ)⟩. (B.4)
+When Γ =Pconsists of all distributions over Z, the above subproblem simplifies to:
+min
+z∈Z⟨g(µ) +εdg(νt),∇wℓ(z;w)⟩, (B.5)
+i.e., we find a new poisoning point zto add to the support of the poisoning distribution νt, while the step (B.3) adjusts
+the probability mass. One particularly appealing part of this algorithm is that after titerations, the candidate poisoning
+distribution νtis supported at most on t+ 1points (assuming we start with some ν0supported on a single point). We remark
+that the subproblem (B.5) is often nonconvex (in particular for neural networks), and could be challenging to solve. The
+other difficulty is that an attacker often is not allowed to upload an entire poisoning distribution, so a resampling procedure
+(onν) will be necessary to create a poisoning set, which is why we opted for a more direct approach in the main paper.
+Another possibility is to parameterize νas the push-forward of some fixed distribution (e.g., the training distribution), i.e.,
+ν= [T(θ)]#µ, and we optimize the push-forward transformation T(θ).
+C. Additional Experiments
+C.1. Additional implementation details
+Hardware and package: experiments were run on a cluster with T4andP100 GPUs. The platform we use is Py-
+Torch (Paszke et al. 2019).
+Model in details : for the MNIST dataset, we examine three target models: Logistic Regression; a neural network (NN) with
+three layers, where we choose hidden size as 784 and apply leaky ReLU with negative slope = 0.2for activation; and a
+convolutional neural network (CNN) with two convolutional layers with kernel size 3, maxpooling and two fully connected
+layers with hidden size 128.
+Synthetic Datasets: in Figure 1 and Figure 2, we perform experiemnts on two synthetic datasets. (1) OR dataset: we simply
+use the OR dataset in 2D space in Figure 4 and repeat each point for 50 times (200 samples in total) with small Gaussian
+noise. (2) 10-D Gaussian dataset: we use the make classification function in sklearn .datasets with 1000 samples
+and 10 features.
+Figure 4: Here we visualize the OR dataset.
+More on GradPC : to choose proper target parameters (specifically, εw), we use validation sets described in Section 5 for
+accuracy drop comparison. The GradPC attack never sees the test set during the construction of its perturbed models.
+Batch size: for the Gradient Canceling experiments on MNIST, we set batch size as the size of entire training set (60000) for
+simplicity. For CIFAR-10 and TinyImageNet experiments, we set batch size as 1000 due to CUDA memory size constraint.
+Optimizer, learning rate scheduler and hyperparameters: we use SGD with momentum for optimization and the cosine
+learning rate scheduler (Loshchilov and Hutter 2017) for the Gradient Canceling algorithm. We set the initial learning rate
+as 0.5 and run 1000 epochs across every experiment.
+15Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+C.2. More on Parameter Corruption
+Recall in Table 1 we compare TGDA with GradPC briefly. Here we show the complete results with more choices of εwand
+an additional baseline method called RandomPC in Sun et al. (2020) in Table 5.
+Table 5: The attack accuracy/accuracy drop (%) on the MNIST dataset.
+Target ModelClean TGDA RandomPC GradPC
+Accuracy Accuracy/Drop εw= 0.01 εw= 0.1 εw= 1 εw= 0.01 εw= 0.1 εw= 1
+LR 92.35 89.56 / 2.79 ( εw= 2.45) 91.94 / 0.41 81.24 / 11.11 24.66 / 67.69 91.91 / 0.44 89.72 / 2.63 21.48 / 70.87
+NN 98.04 96.54 / 1.50 ( εw= 0.55) 97.62 / 0.42 82.67 / 15.37 32.77 / 65.27 97.63 / 0.41 97.05 / 0.99 31.14 / 66.90
+CNN 99.13 98.02 / 1.11 ( εw= 0.74) 98.84 / 0.29 72.00 / 27.13 19.26 / 79.87 98.74 / 0.39 98.69 / 0.44 12.98 / 86.15
+C.3. Least-square Regression
+Figure 5: Here we run the Gradient Canceling algorithm on linear regression on a 2D Gaussian dataset. The first row
+displays all figures in the same scale for better comparison; and the second row shows the upper figures in their original
+scale for better viewing. (1) The left five figures show the poisoned points generated with different εd. When εdis smaller,
+the poisoned points are farther from the data distribution. (2) The algorithm always generates the target parameter (the
+prediction) regardless of εd.
+Recall that from Example 1 we conclude data poisoning with any εd>0is possible for least-square regression. We perform
+GC attack on a synthetic 2D Gaussian dataset and visualize the results in Figure 5. We observe that (1) the algorithm always
+generates the target parameter regardless of εd, which immediately verifies our conclusion; (2) by increasing εd, the poison
+distribution νgradually moves towards the data distribution µ, which makes intuitive sense. Moreover, recall that we may
+restrict the search of a poisoning distribution to the potentially much smaller subset T#Π(where xlies on the line spanned
+byg(µ)), while in practice GC does not seem to always follow this theoretical construct.
+C.4. Comparison with Gradient Matching
+As we mentioned in Section 4, one of the difference between Gradient Matching and our work is that there is no guarantee
+that after retraining over ˆν, gradient matching will arrive at the target model while our Algorithm 1 explicitly aims to achieve
+this goal. We have shown in the Figure 5 that GC empirically achieve the target model regardless of εd. By comparing with
+Figure 6, we observe that gradient matching achieves different model parameters for every εd.
+C.5. More on Figure 3
+Recall that in Figure 3, we fix εdand draw the learning curve for GC optimization for different εw, where the y-axis indicates
+the normalized loss, i.e., ∥g(χ)∥. We observe that when τ > ε d,∥g(χ)∥converges to a larger value, influenced by the
+distance between τandεd.
+Conversely, we fix εw(consequently, τ) for different target models and repeat the MNIST experiments. In Figure 7, we
+again observe that when τ > ε d,∥g(χ)∥converges at a relatively bigger number. Overall, we have confirmed the theoretical
+limitations proved in Section 3.
+16Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Figure 6: Here we run the Gradient Matching algorithm on linear regression on a 2D Gaussian dataset. The first row displays
+the poisoned points generated with different εd; and the second row shows the different target parameters generated by the
+algorithm with different εd.
+Figure 7: The learning curve for running GC on MNIST with different target models and εd. Note that we fix εwfor each
+model and print the respective τ, and the loss indicates ∥g(χ)∥. The figure again confirms that GC cannot achieve wif
+εd< τ.
+17Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+C.6. Scaling w
+We point out a subtlety in Example 2: by scaling wtowards the origin, we do not change its accuracy (except the confidence
+it induces). However, the threshold τtends to 0 and hence data poisoning succeeds in producing the target parameter wwith
+a smaller λ. In other words, less confident models are easier to poison to, which makes intuitive sense. For verification, we
+run the GC attack with scaled target parameter w/2and compare it with the original target parameter win Table 6. With
+the same target model accuracy, scaling wsignificantly reduces its corresponding τ, making it easier to poison to.
+Table 6: The GC attack accuracy drop (%) on MNIST when scaling wby half.
+Target Model clean GradPC τ(w) τ(w/2) εd w w /2
+LR 92.35 -70.87 1.15 0.540.03 -22.97 -44.11
+0.1 -63.83 -67.22
+1 -67.01 -79.55
+NN 98.04 -20.03 2.48 1.410.03 -6.10 -9.29
+0.1 -9.77 -11.01
+1 -12.05 -15.33
+CNN 99.13 -24.78 0.98 0.420.03 -9.55 -12.03
+0.1 -20.10 -21.55
+1 -23.80 -24.56
+The fact that simply scaling wdown could improve its poisoning reachability might seem surprising at first glance. However,
+this is due to a mismatch between how we train and how we test. It is best to explain this observation in the binary setting,
+where we note the mismatch between the common prediction rule
+ˆy= sign( ⟨x,w⟩), (C.1)
+which is invariant to (positive) scaling (of w), and our training objective in finding a good parameter w, e.g., through logistic
+regression:
+inf
+w1
+nX
+ilog[1 + exp( −yi⟨xi,w⟩], (C.2)
+which is not invariant to scaling (of w).
+Let us give an explicit example to further demonstrate this point. Consider three (cleaning) training points10on the real line:
+x1=1
+1
+, y1= +; x2=−1
+1
+, y2= +; x3=0
+1
+, y3=−; (C.3)
+where we have padded 1 at the last entry of each x(so that we can absorb the bias bintow). Setting the derivative of (C.2)
+w.r.t.wto zero we obtain:
+3·g(w) =−1
+1 + exp( w1+w2)1
+1
+−1
+1 + exp( w2−w1)−1
+1
+−1
+1 + exp( −w2)0
+−1
+=0. (C.4)
+Solving the above equation we have w⋆=0
+ln 2
+.
+Now consider the scenario where we are given a target parameter w= 2w⋆. According to our theory, the poisoning ratio
+εd> τ:≈max
+1.2−w1−w2
+1 + exp( w1+w2)+w1−w2
+1 + exp( w2−w1)+w2
+1 + exp( −w2)
+,0
+(C.5)
+= max
+1.2w2·exp(w2)−2
+1 + exp( w2),0
+(C.6)
+= 0.48·2 ln 2≈0.67. (C.7)
+10This is in fact the smallest example: with 2 or fewer training points, logistic regression does not attain the infimum.
+18Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+In other words, the poisoning set needs to be as large as 67% of the training set, in order to produce w= 2w⋆. However, if
+we scale wdown to w⋆, then we do not even need to add any poisoned point, since w⋆is already stationary (by definition).
+If we continue to scale wdown to say 0.5w⋆(so that ⟨w,g(w)⟩<0and hence τ= 0), then for any ε >0, we may put ε
+copies of x=αg(w)≈1
+εg(w)as the poisoning set to produce w; see the detailed analysis below.
+More generally, consider adding εcopies of a poisoning data point at x=αg(w), y= + (where α∈Rwill be determined
+later) so that the gradient on the clean and poisoned data is proportional to:
+g(w)−ε1
+1 + exp( ⟨w,x⟩)x=g(w)−ε1
+1 + exp( ⟨w, αg(w)⟩)αg(w) =g(w)·
+1−εα
+1 + exp( α⟨w,g(w)⟩)
+.
+(C.8)
+We can break the analysis into a few cases now:
+•g(w) =0, i.e., we scale wdown to w⋆, in which case no poisoning point is needed to produce w=w⋆.
+•⟨w,g(w)⟩= 0, in which case the gradient reduces to g(w)[1−εα/2]. Therefore, for any ε >0, we may produce w
+by putting εcopies of x=2
+εg(w).
+•⟨w,g(w)⟩<0, in which case for any ε >0, the function
+α7→1 + exp( α⟨w,g(w)⟩ −εα (C.9)
+clearly has a zero α∗(easily seen by letting α→ ±∞ and applying the intermediate value theorem). Thus again, we
+may produce wby putting εcopies of xatα∗g(w). (Note that α∗→ ∞ ifε→0; roughly α∗≈1
+ε.)
+•⟨w,g(w)⟩>0, in which case the function
+α7→1 + exp( α⟨w,g(w)⟩ −εα (C.10)
+has a zero α∗iffε≥τ. Indeed,
+1 =εα
+1 + exp( α⟨w,g(w)⟩)⇐⇒ 1 =ε
+⟨w,g(w)⟩·α⟨w,g(w)⟩
+1 + exp( α⟨w,g(w)⟩)(C.11)
+≤ε
+⟨w,g(w)⟩·sup
+tt
+1 + exp( t)(C.12)
+=ε
+⟨w,g(w)⟩· W(1/e). (C.13)
+Thus again, for any ε≥τ, we may produce wby putting εcopies of xatα∗g(w).
+In Figure 8 we observe that GC converged to nonzero loss (i.e., unable to produce the target parameter) when εd< τ, for
+any learning rate we tried, while after scaling wdown so that εd> τ, GC immediately converged to zero loss (without the
+need of tuning the learning rate), confirming our theoretical analysis above. We plan to further explore the scaling effect in
+future work.
+C.7. Simulating Different Target Parameters
+Next, we verify if GC can achieve any desired target parameter. We choose poisoned models generated by TGDA attack as
+target parameters and perform PC. We discover that such parameters are also achievable by GC in Table 7, which further
+confirms that GC may be equipped with any other parameter corruption methods, regardless of how the target parameters
+are generated.
+C.8. GC against Defenses
+Next, we examine the GC attack against three popular distribution-wise defenses. (1) Influence defense (Koh and Liang
+2017) removes εdsuspicious points according to higher influence functions; (2) Sever (Diakonikolas et al. 2019) removes εd
+training points with the highest outlier scores, defined using the top singular value in the matrix of gradients; (3) Maxup
+defense (Gong et al. 2021) generates a set of augmented data with random perturbations and then aims at minimizing the
+worst case loss over the augmented data.
+We present our results on the MNIST dataset in Table 8 and observe that: (1) Among the three defenses, Sever is the most
+effective one and can significantly reduce the effectiveness of GC. (2) Clipping the poisoned data to the range of clean
+19Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Figure 8: We plot the training curves of GC on the toy example (see (C.3) ). The colored curves represent GC attack on
+w=0
+2 ln 2
+withε= 0.52< τ≈0.67under different learning rates; the black curve represents GC attack on the scaled
+target parameter w/1.1≈0
+1.82 ln 2
+withε= 0.52> τ≈0.51under learning rate 1.
+Table 7: Simulating TGDA attack ( εd= 1) with Gradient Canceling attack on the MNIST dataset.
+Target Model clean TGDA τ ε d GC
+LR 92.35 -8.97 2.330.03 -2.66
+0.1 -3.39
+1 -5.53
+τ -8.35
+NN 98.04 -5.49 0.950.03 -1.39
+0.1 -1.55
+1 -4.99
+CNN 99.13 -4.76 0.490.03 -0.98
+0.1 -2.10
+1 -4.68
+training set makes GC more robust against all defenses, with the tradeoff of attack effectiveness. (3) Larger εdmakes the
+attack generally more robust, which matches our observation in least-squared regression.
+C.9. Visualization of Poisoned Images
+Finally, we visualize some poisoned images generated by the GC attack in Figure 9 and Figure 10.
+20Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Table 8: The accuracy drop (%) Gradient Canceling attack (w/wo clipping) introduces on MNIST with Influ-
+ence/Sever/MaxUp defense (+ indicates the accuracy increased by defenses). GC: original Gradient Canceling attack; GC-c:
+GC with clipped output; GC-d: GC after defense; GC-cd: GC-c after defense.
+Model Clean Acc εd GC GC-cInfluence Sever MaxUp
+GC-d GC-cd GC-d GC-cd GC-d GC-cd
+LR 92.350.03 -22.79 -11.28 -21.99 / +0.80 -11.17 / +0.11 -12.81 / +9.98 -9.66 / +1.62 -22.59 / +0.20 -11.26 / +0.02
+0.1 -63.83 -26.77 -63.51 / +0.32 -26.67 / +0.10 -59.79 / +4.04 -25.53 / +1.24 -63.65 / +0.18 -26.67 / +0.10
+1 -67.01 -28.99 -66.75 / +0.26 -26.71 / +0.06 -65.01 / +2.00 -27.89 / +1.10 -66.02 / +0.09 -28.97 / +0.02
+NN 98.040.03 -6.10 -3.25 -5.59 / +0.51 -3.16 / +0.09 -3.22 / +2.88 -2.26 / +0.90 -6.08 / +0.02 -3.24 / +0.01
+0.1 -9.77 -5.10 -9.32 / +0.45 -5.02 / +0.08 -7.66 / +2.11 -4.46 / +0.56 -9.76 / +0.01 -5.10 / +0.00
+1 -12.05 -6.53 -11.65 / +0.40 -6.48 / +0.05 -10.02 / +2.03 -6.11 / +0.42 -12.04 / +0.01 -6.53 / +0.00
+CNN 99.130.03 -9.55 -5.87 -8.57 / +0.98 -5.56 / +0.31 -5.55 / +4.00 -4.36 / +1.51 -9.39 / +0.16 -5.83 / +0.04
+0.1 -20.10 -12.50 -19.19 / +0.91 -12.35 / +0.15 -16.55 / +3.55 -11.32 / +1.18 -20.06 / +0.04 -12.48 / +0.02
+1 -23.80 -13.32 -23.10 / +0.70 -13.21 / +0.11 -21.05 / +2.75 -12.51 / +0.81 -23.79 / +0.01 -13.32 / +0.00
+Figure 9: We visualize some poisoned images generated by the GC attack on the MNIST dataset. The first row shows the
+clean samples, the second row shows the poisoned samples; the third row displays the perturbation.
+21Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Figure 10: We visualize some poisoned images generated by the GC attack on the CIFAR-10 dataset. The first row shows
+the clean samples, the second row shows the poisoned samples; the third row displays the perturbation.
+22Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+C.10. Comparison with Replacing Attack
+In this work we only consider an adversary who is restricted to addcorrupted points Dpto the intact (clean) training set Dtr,
+while an even stronger attacker might consider replacing part of DtrwithDp(also closely related to the nasty noise model
+Bshouty et al. 2002). We first formulate the general case: recall that we consider the mixed distribution χ= (1−λ)µ+λν
+of the clean distribution µand poisoned distribution ν, where λis the proportion of poisoning data. Then, replacing part of
+the clean training data is equivalent to:
+χ= (1−λ′)µ′+λ′ν, (C.14)
+where µ′is a subset of µ, and λ′=|Dp|/|Dtr|. Empirically, with the ability to replace data points we may still apply
+Gradient Canceling in a straightforward manner: the only difference is that in Algorithm 1 we change µtoµ′, a random
+subset of µ. Following this idea, we perform a simple experiment: we choose εd= 0.03, and choose µ′to be a random
+subset of Dtr, with size1
+1+εd|Dtr| ≈0.97|Dtr|. The results on MNIST are presented below in Table 9:
+Table 9: Gradient Canceling attack ( εd= 0.03) with adding-only vs replacing-only on the MNIST dataset.
+Target Model clean GC (adding-only) GC (replacing)
+LR 92.35 -22.97 -23.10
+NN 98.04 -6.10 -6.35
+CNN 99.13 -9.55 -9.62
+We observe that the ability to replace clean training data is indeed (slightly) more powerful than the corresponding adding-
+only attack. Notably, we remove training samples randomly, which may not be relatively weak. Ideally, an adversary would
+remove the most important points (e.g., in Ilyas et al. 2022) to further reduce the test accuracy. This improved replacing
+attack might be worth future exploration, although we note that it is less likely to be applicable when an attacker does not
+have direct access to a victim’s infrastructure.
+D. Selecting Target Parameters
+Here we discuss how to select an appropriate target parameter wfor the GC attack. In principle, there are two major factors
+regarding the selection of target parameters w: (1) strength of w, measured by the test accuracy drop it incurs; (2) poisoning
+reachability, measured by the optimality condition (i.e., the empirical loss in Equation (18)). We want to choose a wthat is
+both reachable and as strong as possible. Next, we discuss both criteria in details:
+•Strength of w: (a) existing works (e.g., Koh et al. 2022; Suya et al. 2021) only explored rudimentary ways to construct
+target parameters (e.g., through the label flip attack), and thus are less effective in casting particularly powerful target
+parameters; (b) with GradPC, we can now easily quantify the strength of a target parameter wusing εw(in Table 1);
+(c) thus in practice, we first prepare a sequence of target parameters {wk:k∈K}with|K|different εw, and then
+send them all to the reachability test (in the next step).
+•Reachability test : (a) given the list of {wk:k∈K}, we first calculate every corresponding τ(wk), such that we can
+already rule out a few choices where εd< τ(that we know GC cannot achieve with the existing budget εd). After this
+process, we only keep a subset of target parameters {wk:k∈¯K}; (b) next, we run GC for each {wk:k∈¯K}, and
+examine if GC can achieve them by checking the loss upon convergence. We only keep those wk’s that return a loss
+smaller than a margin (this margin is defined by one-tenth of the initial loss) when εd≈τ. (c) finally, we empirically
+select a target parameter wwith the largest accuracy drop on the validation set.
+23Exploring the Limits of Model-Targeted Indiscriminate Data Poisoning Attacks
+Extra References
+Bartlett, P. L., M. I. Jordan, and J. D. McAuliffe (2006). “Convexity, classification, and risk bounds”. Journal of the American
+Statistical Association , vol. 101, no. 473, pp. 138–156.
+Gong, C., T. Ren, M. Ye, and Q. Liu (2021). “MaxUp: Lightweight Adversarial Training with Data Augmentation Improves
+Neural Network Training”. In: IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 2474–
+2483.
+Ilyas, A., S. M. Park, L. Engstrom, G. Leclerc, and A. Madry (2022). “Datamodels: Predicting predictions from training
+data”. In: Proceedings of the 39th International Conference on Machine Learning .
+Loshchilov, I. and F. Hutter (2017). “SGDR: Stochastic gradient descent with warm restarts”. In: International Conference
+on Learning Representations .
+Paszke, A. et al. (2019). “PyTorch: An Imperative Style, High-Performance Deep Learning Library”. In: Advances in Neural
+Information Processing Systems 32 , pp. 8026–8037.
+Yu, Y ., ¨O. Aslan, and D. Schuurmans (2012). “A Polynomial-time Form of Robust Regression”. In: Advances in Neural
+Information Processing Systems 26 .
+24

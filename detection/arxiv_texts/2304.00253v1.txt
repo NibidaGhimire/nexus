@@ -1,0 +1,935 @@
+Q-DETR: An Efficient Low-Bit Quantized Detection Transformer
+Sheng Xu1†, Yanjing Li1†, Mingbao Lin3, Peng Gao4, Guodong Guo5, Jinhu L ¨u1,2, Baochang Zhang1,2∗
+1Beihang University2Zhongguancun Laboratory3Tencent
+4Shanghai AI Laboratory5UNIUBI Research, Universal Ubiquitous Co.
+Abstract
+The recent detection transformer (DETR) has ad-
+vanced object detection, but its application on resource-
+constrained devices requires massive computation and
+memory resources. Quantization stands out as a solution
+by representing the network in low-bit parameters and op-
+erations. However, there is a significant performance drop
+when performing low-bit quantized DETR (Q-DETR) with
+existing quantization methods. We find that the bottle-
+necks of Q-DETR come from the query information distor-
+tion through our empirical analyses. This paper addresses
+this problem based on a distribution rectification distillation
+(DRD). We formulate our DRD as a bi-level optimization
+problem, which can be derived by generalizing the informa-
+tion bottleneck (IB) principle to the learning of Q-DETR.
+At the inner level, we conduct a distribution alignment for
+the queries to maximize the self-information entropy. At the
+upper level, we introduce a new foreground-aware query
+matching scheme to effectively transfer the teacher informa-
+tion to distillation-desired features to minimize the condi-
+tional information entropy. Extensive experimental results
+show that our method performs much better than prior arts.
+For example, the 4-bit Q-DETR can theoretically acceler-
+ate DETR with ResNet-50 backbone by 6.6 ×and achieve
+39.4% AP , with only 2.6% performance gaps than its real-
+valued counterpart on the COCO dataset1.
+1. Introduction
+Inspired by the success of natural language processing
+(NLP), object detection with transformers (DETR) has been
+introduced to train an end-to-end detector via a transformer
+encoder-decoder [4]. Unlike early works [22, 31] that often
+employ convolutional neural networks (CNNs) and require
+post-processing procedures, e.g., non-maximum suppres-
+sion (NMS), and hand-designed sample selection, DETR
+treats object detection as a direct set prediction problem.
+†Equal contribution.
+∗Corresponding author: bczhang@buaa.edu.cn
+1Code: https://github.com/SteveTsui/Q-DETR
+decoder.5.co_attn.query
+decoder.0.co_attn.query
+decoder.2.co_attn.query
+(b) 4-bit DETR-R50
+(a) Real-valued DETR-R50
+Figure 1. The histogram of query values q(blue shadow) and cor-
+responding PDF curves (red curve) of Gaussian distribution [17],
+w.r.t the cross attention of different decoder layers in (a) real-
+valued DETR-R50, and (b) 4-bit quantized DETR-R50 (baseline).
+Gaussian distribution is generated from the statistical mean and
+variance of the query values. The query in quantized DETR-R50
+bears information distortion compared with the real-valued one.
+Experiments are performed on the VOC dataset [9].
+Despite this attractiveness, DETR usually has a tremen-
+dous number of parameters and float-pointing operations
+(FLOPs). For instance, there are 39.8M parameters taking
+up 159MB memory usage and 86G FLOPs in the DETR
+model with ResNet-50 backbone [12] (DETR-R50). This
+leads to an unacceptable memory and computation con-
+sumption during inference, and challenges deployments on
+devices with limited supplies of resources.
+Therefore, substantial efforts on network compression
+have been made towards efficient online inference [7, 33,
+43, 44]. Quantization is particularly popular for deploying
+on AI chips by representing a network in low-bit formats.
+Yet prior post-training quantization (PTQ) for DETR [26]
+derives quantized parameters from pre-trained real-valued
+models, which often restricts the model performance in a
+sub-optimized state due to the lack of fine-tuning on the
+training data. In particular, the performance drastically
+drops when quantized to ultra-low bits (4-bits or less). Al-
+ternatively, quantization-aware training (QAT) [25, 42] per-
+forms quantization and fine-tuning on the training datasetarXiv:2304.00253v1  [cs.CV]  1 Apr 2023(b) 4-bit DETR-R50(a) Real-valued DETR-R50
+Figure 2. Spatial attention weight maps in the last decoder of (a)
+real-valued DETR-R50, and (b) 4-bit quantized DETR-R50. The
+green rectangle denotes the ground-truth bounding box. Follow-
+ing [29], the highlighted area denotes the large attention weights
+in the selected four heads in compliance with bound predic-
+tion. Compared to its real-valued counterpart that focuses on the
+ground-truth bounds, quantized DETR-R50 deviates significantly.
+simultaneously, leading to trivial performance degradation
+even with significantly lower bits. Though QAT meth-
+ods have been proven to be very effective in compressing
+CNNs [8, 27] for computer vision tasks, an exploration of
+low-bit DETR remains untouched.
+In this paper, we first build a low-bit DETR baseline,
+a straightforward solution based on common QAT tech-
+niques [2]. Through an empirical study of this baseline,
+we observe significant performance drops on the VOC [9]
+dataset. For example, a 4-bit quantized DETR-R50 us-
+ing LSQ [8] only achieves 76.9% AP 50, leaving a 6.4%
+performance gaps compared with the real-valued DETR-
+R50. We find that the incompatibility of existing QAT
+methods mainly stems from the unique attention mecha-
+nism in DETR, where the spatial dependencies are first con-
+structed between the object queries and encoded features.
+Then the co-attended object queries are fed into box coor-
+dinates and class labels by a feed-forward network. A sim-
+ple application of existing QAT methods on DETR leads to
+query information distortion, and therefore the performance
+severely degrades. Fig. 1 exhibits an example of informa-
+tion distortion in query features of 4-bit DETR-R50, where
+we can see significant distribution variation of the query
+modules in quantized DETR and real-valued version. The
+query information distortion causes the inaccurate focus of
+spatial attention, which can be verified by following [29] to
+visualize the spatial attention weight maps in 4-bit and real-
+valued DETR-R50 in Fig. 2. We can see that the quantized
+DETR-R50 bear’s inaccurate object localization. Therefore,
+a more generic method for DETR quantization is necessary.
+To tackle the issue above, we propose an efficient low-bit
+quantized DETR (Q-DETR) by rectifying the query infor-
+mation of the quantized DETR as that of the real-valued
+counterpart. Fig. 3 provides an overview of our Q-DETR,
+which is mainly accomplished by a distribution rectifica-tion knowledge distillation method (DRD). We find ineffec-
+tive knowledge transferring from the real-valued teacher to
+the quantized student primarily because of the information
+gap and distortion. Therefore, we formulate our DRD as
+a bi-level optimization framework established on the infor-
+mation bottleneck principle (IB). Generally, it includes an
+inner-level optimization to maximize the self-information
+entropy of student queries and an upper-level optimization
+to minimize the conditional information entropy between
+student and teacher queries. At the inner level, we conduct a
+distribution alignment for the query guided by its Gaussian-
+alike distribution, as shown in Fig. 1, leading to an explicit
+state in compliance with its maximum information entropy
+in the forward propagation. At the upper level, we introduce
+a new foreground-aware query matching that filters out low-
+qualified student queries for exact one-to-one query match-
+ing between student and teacher, providing valuable knowl-
+edge gradients to push minimum conditional information
+entropy in the backward propagation.
+This paper attempts to introduce a generic method for
+DETR quantization. The significant contributions in this
+paper are outlined as follows: (1) We develop the first QAT
+quantization framework for DETR, dubbed Q-DETR. (2)
+We use a bi-level optimization distillation framework, ab-
+breviated as DRD. (3) We observe a significant performance
+increase compared to existing quantized baselines.
+2. Related Work
+Quantization . Quantized neural networks often pos-
+sess low-bit (1 ∼4-bit) weights and activations to acceler-
+ate the model inference and save memory. For example,
+DoReFa-Net [45] exploits convolution kernels with low bit-
+width parameters and gradients to accelerate training and
+inference. TTQ [46] uses two real-valued scaling coeffi-
+cients to quantize the weights to ternary values. Zhuang et
+al.[48] present a 2∼4-bit quantization scheme using a
+two-stage approach to alternately quantize the weights and
+activations, providing an optimal tradeoff among memory,
+efficiency, and performance. In [14], the quantization in-
+tervals are parameterized, and optimal values are obtained
+by directly minimizing the task loss of the network. Ze-
+roQ [3] supports uniform and mixed-precision quantization
+by optimizing for a distilled dataset which is engineered to
+match the statistics of the batch normalization across dif-
+ferent network layers. Xie et al. [41] introduced transfer
+learning into network quantization to obtain an accurate
+low-precision model by utilizing Kullback-Leibler (KL) di-
+vergence. Fang et al. [10] enabled accurate approximation
+for tensor values that have bell-shaped distributions with
+long tails and found the entire range by minimizing the
+quantization error. Li et al. [17] proposed an information
+rectification module and distribution-guided distillation to
+push the bit-width in a quantized vision transformer. Atquery 𝐪key	𝐤value 𝐯𝐪∗Q"(𝐯)Q"(𝐤)Q"(𝐪∗)Attention score 𝐀Q"(𝐀)
+self-attentioncross-attentionadd & normadd & normadd & normQ-FCs
+ℒ!"!Foreground-aware query matchingLearning Q-DETR with DRDQ-FCDistribution AlignmentQuantizeQ-FCQuantizeQ-FCQuantizeQuantizeCo-attended feature 𝐃Object queries 𝐎
+Encoded feature 𝐄Positional encoding𝑄𝐾𝑉
+𝑉𝑄Architecture of quantized decoder
+𝐾Q-Backbone& Q-EncoderBackbone& EncoderObject queries 𝐎DecoderQ-DecoderObject queries 𝐎Teacher network 𝒯
+Student network 𝒮𝑏𝒮𝑐𝒮𝑏𝒯𝑐𝒯𝑉𝑄𝐾
+ℒ()ForwardpassSupervisionflow𝐺*𝐺+Figure 3. Overview of the proposed Q-DETR framework. We introduce the distribution rectification distillation method (DRD) to refine
+the performance of Q-DETR. From left to right, we respectively show the detailed decoder architecture of Q-DETR and the learning
+framework of Q-DETR. The Q-Backbone, Q-Encoder, and Q-Decoder denote quantized architectures, respectively.
+the same time, we address the quantization in DETR from
+the IB principle. The architectural design has also drawn
+increasing attention using extra shortcut [27], and parallel
+parameter-free shortcuts [25] for example.
+Detection Transformer . Driven by the success of trans-
+formers [37], several researchers have also explored trans-
+former frameworks for vision tasks. The first DETR [4]
+work introduces the Transformer structure based on the at-
+tention mechanism for object detection. But the main draw-
+back of DETR lies in the highly inefficient training process.
+The approachh of another work modifies the multi-head at-
+tention mechanism (MHA). Deformable-DETR [47] con-
+structs a sparse and point-to-point MHA mechanism using
+a static point-wise query sampling method around the ref-
+erence points. SMCA-DETR [11] introduces a Gaussian-
+distributed spatial function before formulating a spatially
+modulated co-attention. DAB-DETR [21] re-defines the
+query of DETR as dynamic anchor boxes and performs
+soft ROI pooling layer-by-layer in a cascade manner. DN-
+DETR [16] introduces query denoising into query genera-
+tion, reducing the bipartite graph matching difficulty and
+leading to faster convergence. Another set of arts improves
+DETR methods using additional learning constraints. For
+example, UP-DETR [6] proposes a novel self-supervised
+loss to enhance the convergence speed and the performance
+of DETR.
+However, prior arts mainly focus on the training effi-
+ciency of DETR, few of which have discussed the quan-
+tization of DETR. To this end, we first build a quantized
+DETR baseline and then address the query information dis-
+tortion problem based on the IB principle. Finally, a new
+KD method based on a foreground-aware query matching
+scheme is achieved to solve Q-DETR effectively.3. The Challenge of Quantizing DETR
+3.1. Quantized DETR baseline
+We first construct a baseline to study the low-bit DETR
+since no relevant work has been previously proposed. To
+this end, we follow LSQ+ [2] to introduce a general frame-
+work of asymmetric activation quantization and symmetric
+weight quantization:
+xq=⌊clip{(x−z)
+αx, Qx
+n, Qx
+p}⌉,wq=⌊clip{w
+αw, Qw
+n, Qw
+p}⌉,
+Qa(x) =αx◦xq+z, Q w(x) =αw◦wq,
+(1)
+where clip{y, r1, r2}clips the input ywith value bounds r1
+andr2; the⌊y⌉rounds yto its nearest integer; the ◦denotes
+the channel-wise multiplication. And Qx
+n=−2a−1, Qx
+p=
+2a−1−1,Qw
+n=−2b−1, Qw
+p= 2b−1−1are the discrete
+bounds for a-bit activations and b-bit weights. xgenerally
+denotes the activation in this paper, including the input fea-
+ture map of convolution and fully-connected layers and in-
+put of multi-head attention modules. Based on this, we first
+give the quantized fully-connected layer as:
+Q-FC( x) =Qa(x)·Qw(w) =αxαw◦(xq⊙wq+z/αx◦wq),
+(2)
+where ·denotes the matrix multiplication and ⊙denotes the
+matrix multiplication with efficient bit-wise operations. The
+straight-through estimator (STE) [1] is used to retain the
+derivation of the gradient in backward propagation.
+In DETR [4], the visual features generated by the back-
+bone are augmented with position embedding and fed into
+the transformer encoder. Given an encoder output E, DETR
+performs co-attention between object queries Oand the vi-(1) Quantizing backbone  (2) Quantizing encoder(4) Quantizing MLPs  (3) Quantizing MHA of decoder  (1) (1) + (2) (1) + (2) + (3)(1) + (2) + (3) + (4)
+83.382.281.179.378.84-bitDETR-R50-1.1-1.8-0.583.380.179.377.276.83-bitDETR-R50-0.8-2.1-0.4Figure 4. Performance of 3/4-bit quantized DETR-R50 on VOC
+with different quantized modules.
+sual features E, which are formulated as:
+q= Q-FC( O),k,v= Q-FC( E)
+Ai= softmax( Qa(q)i·Qa(k)⊤
+i/√
+d),
+Di=Qa(A)i·Qa(v)i,(3)
+where Dis the multi-head co-attention module, i.e., the co-
+attended feature for the object query. The ddenotes the
+feature dimension in each head. More FC layers transform
+the decoder’s output features of each object query for the
+final output. Given box and class predictions, the Hungarian
+algorithm [4] is applied between predictions and ground-
+truth box annotations to identify the learning targets of each
+object query.
+3.2. Challenge Analysis
+Intuitively, the performance of the quantized DETR
+baseline largely depends on the information representation
+capability mainly reflected by the information in the multi-
+head attention module. Unfortunately, such information is
+severely degraded by the quantized weights and inputs in
+the forward pass. Also, the rounded and discrete quantiza-
+tion significantly affect the optimization during backpropa-
+gation.
+We conduct the quantitively ablative experiments by pro-
+gressively replacing each module of the real-valued DETR
+baseline with a quantized one and compare the average pre-
+cision (AP) drop on the VOC dataset [9] as shown in Fig. 4.
+We find that quantizing the MHA decoder module to low
+bits, i.e., (1)+(2)+(3), brings the most significant accuracy
+drops of accuracy among all parts of the DETR methods,
+up to 2.1% in the 3-bit DETR-R50. At the same time, other
+parts of DETR show comparative robustness to the quanti-
+zation function. Consequently, the critical problem of im-
+proving the quantized DETR methods is restoring the infor-
+mation in MHA modules after quantization. Other quali-
+tative results in Fig. 1 and Fig. 2 also indicate that the de-graded information representation is the main obstacle to a
+better quantized DETR.
+4. The Proposed Q-DETR
+4.1. Information Bottleneck of Q-DETR
+To address the information distortion of the quantized
+DETR, we aim to improve the representation capacity of the
+quantized networks in a knowledge distillation framework.
+Generally, we utilize a real-valued DETR as a teacher and a
+quantized DETR as a student, which are distinguished with
+superscripts TandS, respectively.
+Our Q-DETR pursues the best tradeoff between perfor-
+mance and compression, which is precisely the goal of
+the information bottleneck (IB) method through quantify-
+ing the mutual information that the intermediate layer con-
+tains about the input (less is better) and the desired output
+(more is better) [35, 36]. In our case, the intermediate layer
+comes from the student, while the desired output includes
+the ground-truth labels as well as the queries of the teacher
+for distillation. Thus, the objective target of our Q-DETR
+is:
+min
+θSI(X;ES)−βI(ES,qS;yGT)−γI(qS;qT),(4)
+where qTandqSrepresent the queries in the teacher and
+student DETR methods as predefined in Eq. (3); βandγ
+are the Lagrange multipliers [35]; θSis the parameters of
+the student; and I(·)returns the mutual information of two
+input variables. The first item I(X;ES)minimizes in-
+formation between input and visual features ESto extract
+task-oriented hints [40]. The second item I(ES,qS;yGT)
+maximizes information between extracted visual features
+and ground-truth labels for better object detection. These
+two items can be easily accomplished by common network
+training and detection loss constraints, such as proposal
+classification and coordinate regression.
+The core issue of this paper is to solve the third item
+I(qS;qT), which attempts to address the information dis-
+tortion in student query via introducing teacher query as a
+priori knowledge. To accomplish our goal, we first expand
+the third item and reformulate it as:
+I(qS;qT) =H(qS)−H(qS|qT), (5)
+where H(qS)returns the self information entropy expected
+to be maximized while H(qS|qT)is the conditional en-
+tropy expected to be minimized. It is challenging to op-
+timize the above maximum & minimum items simultane-
+ously. Instead, we make a compromise to reformulate
+Eq. (5) as a bi-level issue [5, 20] that alternately optimizesthe two items, which is explicitly defined as:
+min
+θH(qS∗|qT),
+s.t.qS∗= arg max
+qSH(qS).(6)
+Such an objective involves two sub-problems, includ-
+ing an inner-level optimization to derive the current opti-
+mal query qS∗and an upper-level optimization to conduct
+knowledge transfer from the teacher to the student. Below,
+we show that the two sub-problems can be solved in the
+forward & backward network propagation’s.
+4.2. Distribution Rectification Distillation
+Inner-level optimization . We first detail the maximiza-
+tion of self-information entropy. According to the defini-
+tion of self information entropy, H(qS)can be implicitly
+expanded as:
+H(qS) =−Z
+qS
+i∈qSp(qS
+i)logp(qS
+i). (7)
+However, an explicit form of H(qS)can only be pa-
+rameterized with a regular distribution p(qS
+i). Luckily,
+the statistical results in Fig. 1 shows that the query distri-
+bution tends to follow a Gaussian distribution, which is
+also observed in [17]. This enables us to solve the inner-
+level optimization in a distribution alignment fashion. To
+this end, we first calculate the mean µ(qS)and variance
+σ(qS)of query qSwhose distribution is then modeled as
+qS∼ N (µ(qS), σ(qS)). Then, the self-information en-
+tropy of the student query can be proceeded as:
+H(qS) =−E[logN(µ(qS), σ(qS))]
+=−E[log[(2 πσ(qS)2)1
+2exp(−(qS
+i−µ(qS))2
+2σ(qS)2)]]
+=1
+2log 2πσ(qS)2.
+(8)
+The above objective reaches its maximum of H(qS∗) =
+(1/2) log 2 πe[σ(qS)2+ϵqS]when qS∗= [qS−
+µ(qS)]/[q
+σ(qS)2+ϵqS]where ϵqS= 1e−5is a small
+constant added to prevent a zero denominator. In practice,
+the mean and variance might be inaccurate due to query data
+bias. To solve this we use the concepts in batch normaliza-
+tion (BN) [13,34] where a learnable shifting parameter βqS
+is added to move the mean value. A learnable scaling pa-
+rameter γqSis multiplied to move the query to the adaptive
+position. In this situation, we rectify the information en-
+tropy of the query in the student as follows:
+qS∗=qS−µ(qS)q
+σ(qS)2+ϵqSγqS+βqS,(9)in which case the maximum self-information entropy of
+student query becomes H(qS∗) = (1 /2) log 2 πe[(σ2
+qS+
+ϵqS)/γ2
+qS]. Therefore, in the forward propagation, we
+can obtain the current optimal query qS∗via Eq. (9), af-
+ter which, the upper-level optimization is further executed
+as detailed in the following contents.
+Upper-level optimization . We continue minimizing the
+conditional information entropy between the student and the
+teacher. Following DETR [4], we denote the ground-truth
+labels by yGT={cGT
+i, bGT
+i}Ngt
+i=1as a set of ground-truth
+objects where Ngtis the number of foregrounds, cGT
+iand
+bGT
+irespectively represent the class and coordinate (bound-
+ing box) for the i-th object. In DETR, each query is associ-
+ated with an object. Therefore, we can obtain Nobjects for
+teacher and student as well, denoted as yS={cS
+j, bS
+j}N
+j=1
+andyT={cT
+j, bT
+j}N
+j=1.
+The minimization of the conditional information entropy
+requires the student and teacher objects to be in a one-to-one
+matching. However, it is problematic for DETR due primar-
+ily to the sparsity of prediction results and the instability
+of the query’s predictions [16]. We propose a foreground-
+aware query matching to rectify “well-matched” queries to
+solve this. Concretely, we match the ground-truth bounding
+boxes with this student to find the maximum coincidence
+as:
+Gi= max
+1≤j≤NGIoU( bGT
+i, bS
+j), (10)
+where GIoU( ·)is the generalized intersection over union
+function [32]. Each Gireflects the “closeness” of student
+proposals to the i-th ground-truth object. Then, we re-
+tain highly qualified student proposals around at least one
+ground truth to benefit object recognition [38] as:
+bS
+j=
+bS
+j,GIoU( bGT
+i, bS
+j)> τG i,∀i
+∅,otherwise ,(11)
+where τis a threshold controlling the proportion of distilled
+queries. After removing object-empty ( ∅) queries in ˜qS,
+we form a distillation-desired query set of students denoted
+as˜qSassociated with its object set ˜yS={˜cS
+j,˜bS
+j}˜N
+j=1.
+Correspondingly, we can obtain a teacher query set ˜yT=
+{˜cT
+j,˜bT
+j}˜N
+j=1. For the j-th student query, its corresponding
+teacher query is matched as:
+˜cT
+j,˜bT
+j= arg max
+˜cT
+k,˜bT
+kNX
+k=1µ1GIoU( ˜bS
+j, bT
+k)−µ2∥˜bS
+j−bT
+k∥1,
+(12)
+where µ1= 2 andµ2= 5 control the matching function,
+values of which is to follow [4].
+Finally, the upper-level optimization after rectification in
+Eq. (6) becomes:
+min
+θH(˜qS∗|˜qT). (13)Optimizing Eq. (13) is challenging. Alternatively, we
+minimize the norm distance between ˜qS∗and˜qT, optima
+of which, i.e.,˜qS∗=˜qT, is exactly the same with that in
+Eq. (13). Thus, the final loss for our distribution rectifica-
+tion distillation loss becomes:
+LDRD(˜qS∗,˜qT) =E[∥˜DS∗−˜DT∥2], (14)
+where we use the Euclidean distance of co-attented feature
+˜D(see Eq. 3) containing the information query ˜qfor opti-
+mization.
+In backward propagation, the gradient updating drives
+the student queries toward their teacher hints. Therefore we
+accomplish our distillation. The overall training losses for
+our Q-DETR model are:
+L=LGT(yGT,yS) +λLDRD(˜qS∗,˜qT), (15)
+where LGTis the common detection loss for missions such
+as proposal classification and coordinate regression [4], and
+λis a tradeoff hyper-parameter.
+5. Experiments
+In this section, we evaluate the performance of the pro-
+posed Q-DETR mode using popular DETR [4] and SMCA-
+DETR [11] models. To the best of our knowledge, there
+is no publicly available source code on quantization-aware
+training of DETR methods at this point, so we implement
+the baseline and LSQ [8] methods ourselves.
+5.1. Datasets and Implementation Details
+Datasets . We first conduct the ablative study and
+hyper-parameter selection on the PASCAL VOC dataset
+[9], which contains natural images from 20 different
+classes. We use the VOC trainval2012 , and VOC
+trainval2007 sets to train our model, which contains
+approximately 16k images, and the VOC test2007 set
+to evaluate our Q-DETR, which contains 4952 images.
+We report COCO-style metrics for the VOC dataset: AP,
+AP50(default VOC metric), and AP 75. We further con-
+duct the experiments on the COCO 2017 [18] object de-
+tection tracking. Specifically, we train the models on
+COCO train2017 and evaluate the models on COCO
+val2017 . We list the average precision (AP) for IoUs ∈
+[0.5 : 0.05 : 0 .95], designated as AP, using COCO’s stan-
+dard evaluation metric. For further analyzing our method,
+we also list AP 50, AP 75, APs, APm, and AP l.
+Implementation Details . Our Q-DETR is trained with
+the DETR [4] and SMCA-DETR [11] framework. We se-
+lect the ResNet-50 [12] and modify it with Pre-Activation
+structures and RPReLU [25] function following [23]. Py-
+Torch [30] is used for implementing Q-DETR. We run the
+experiments on 8 NVIDIA Tesla A100 GPUs with 80GB
+memory. We use ImageNet ILSVRC12 [15] to pre-train
+0.0 0.2 0.4 0.6 0.8 1.0
+Value of 
+7778798081828384AP50
+DETR-R101 (teacher)
+DETR-R50 (student)
+=1.0
+=1.5
+=2.0
+=2.5
+=3.0
+(a) Effect of τandλ.
+0.39 0.40 0.41 0.42 0.43 0.44 0.45 0.46
+I(X;E)020406080I(yGT;E,q)
+T eacher (DETR-R101)
+Baseline
++DA
++FQM
+Q-DETR (b) Mutual information curves.
+Figure 5. (a) We select τandλusing 4-bit Q-DETR-R50 on VOC.
+(b) The mutual information curves of I(X;E)andI(yGT;E,q)
+(Eq. 4) on the information plane. The red curves represent the
+teacher model (DETR-R101). The orange, green, red, and purple
+lines represent the 4-bit baseline, 4-bit baseline + DA, 4-bit base-
+line + FQM, and 4-bit baseline + DA + FQM (4-bit Q-DETR).
+the backbone of a quantized student. The training protocol
+is the same as the employed frameworks [4, 11]. Specif-
+ically, we use a batch size of 16. AdamW [28] is used
+to optimize the Q-DETR, with the initial learning rate of
+1e−4. We train for 300/500 epochs for the Q-DETR on
+VOC/COCO dataset, and the learning rate is multiplied by
+0.1 at the 200/400-th epoch, respectively. Following the
+SMCA-DETR, we train the Q-SMCA-DETR for 50 epochs,
+and the learning rate is multiplied by 0.1 at the 40-th epoch
+on both the VOC and COCO datasets. We utilize a multi-
+distillation strategy, where we save the encoder and decoder
+network as real-valued at the first stage. Then we train the
+fully quantized DETR at the second stage, where we load
+the weight from the checkpoint of first stage. We select
+real-valued DETR-R101 (84.5% AP 50on VOC and 43.5%
+AP on COCO) and SMCA-DETR-R101 (85.3% AP 50on
+VOC and 44.4% AP on COCO) as teacher network.
+5.2. Ablation Study
+Hyper-parameter selection . As mentioned above, we
+select hyper-parameters τandλin this part using the 4-bit
+Q-DETR model. We show the model performance (AP 50)
+with different setups of hyper-parameters {τ, λ}in Fig. 5
+(a), where we conduct ablative experiments on the baseline
++ DA (AP 50=78.8%). As can be seen, the performances in-
+crease first and then decrease with the increase of τfrom
+left to right. Since τcontrols the proportion of selected
+distillation-desired queries, we show that the full-imitation
+(τ= 0) performs worse than the vanilla baseline with no
+distillation ( τ= 1), showing query selection is necessary.
+The figure also shows that the performances increase first
+and then decrease with the increase of τfrom left to right.
+The Q-DETR obtains better performances with τset as 0.5
+and 0.6. With the varying value of λ, we find {λ, τ}=
+{2.5, 0.6 }boost the performance of Q-DETR most, achiev-
+ing 82.7% AP on VOC test2007 . Based on the ablative
+study above, we set hyper-parameters τandλas 0.6 and 2.5Table 1. Evaluating the components of Q-DETR-R50 on the VOC
+dataset. #Bits (W-A-Attention) denotes the bit-width of weights,
+activations, and attention activations. DA denotes the distribution
+alignment module. FQM denotes foreground-aware query match-
+ing.
+Method #Bits AP 50#Bits AP 50#Bits AP 50
+Real-valued 32-32-32 83.3 - - - -
+Baseline 4-4-8 78.0 3-3-8 76.8 2-2-8 69.7
++DA 4-4-8 78.8 3-3-8 78.0 2-2-8 71.6
++FQM 4-4-8 81.5 3-3-8 80.9 2-2-8 74.9
++DA+FQM
+(Q-DETR)4-4-8 82.7 3-3-8 82.1 2-2-8 76.4
+for the experiments in this paper.
+Effectiveness of components . We show quantitative im-
+provements of components in Q-DETR in Tab. 1. As shown
+in Tab. 1, the quantized DETR baseline suffers a severe per-
+formance drop on AP 50(13.6%, 6.5%, and 5.3% with 2/3/4-
+bit, respectively). DA and FQM improve the performance
+when used alone, and the two techniques further boost the
+performance considerably when combined. For example,
+the DA improves the 2-bit baseline by 1.9%, and the FQM
+achieves a 5.2% performance improvement. While com-
+bining the DA and FQM, the performance improvement
+achieves 6.7%.
+Information analysis . We further show the information
+plane following [39] in Fig. 5(b). We adopt the test AP 50
+to quantify I(yGT;E,q). We employ a reconstruction de-
+coder to decode the encoded feature Eto reconstruct the
+input and quantify I(X;E)using the ℓ1loss. As shown
+in Fig. 5(b), the curve of the larger teacher DETR-R101 is
+usually on the right of the curve of small student models,
+which indicates a greater ability of information representa-
+tion. Likewise, the purple line (Q-DETR-R50) is usually on
+the right of the three left curves, showing the information
+representation improvements with the proposed methods.
+5.3. Results on PASCAL VOC
+We first compare our method with the 2/3/4-bit baseline
+and LSQ [8] based on the same frameworks for object de-
+tection task with the VOC dataset. We also report the de-
+tection performance of the 8-bit post-training quantization
+networks, such as percentile [19], VT-PTQ [26]. We use the
+input resolution following [4], i.e.1333×800. We mainly
+discuss the AP 50(default VOC metric) in the following.
+We evaluate the proposed Q-DETR on DETR-R50 mod-
+els in Tab. 2. For the DETR-R50 model, compared with
+the 8-bit PTQ method, our 4-bit Q-DETR achieves a much
+larger compression ratio than 8-bit VT-PTQ, but with a bit
+of performance improvement (82.7% vs.82.3%). Also, the
+proposed method boosts the performance of 2/3/4-bit base-
+line by 6.7%, 5.3%, and 4.7% with the same architectureTable 2. We report AP, AP 50, and AP 75(%) with state-of-
+the-art quantization methods on DETR and SMCA-DETR using
+VOC test2007 . #Bits (W-A-Attention) denotes the bit-width of
+weights, activations, and attention activations.
+Model Method #Bits AP AP 50AP75
+DETR-R50Real-valued 32-32-32 59.5 83.3 64.7
+Percentile8-8-854.7 79.2 60.1
+VT-PTQ 57.6 82.3 63.1
+LSQ
+4-4-849.7 76.9 53.0
+Baseline 51.3 78.0 54.1
+Q-DETR 57.1 82.7 61.5
+LSQ
+3-3-847.0 75.3 49.1
+Baseline 49.2 76.8 51.8
+Q-DETR 56.8 82.1 61.2
+LSQ
+2-2-842.6 68.2 44.8
+Baseline 44.0 69.7 45.8
+Q-DETR 50.7 76.4 54.1
+SMCA-DETR
+-R50Real-valued 32-32-32 56.7 83.7 62.0
+Percentile8-8-854.7 79.2 60.1
+VT-PTQ 55.9 83.0 61.3
+LSQ
+4-4-849.6 78.6 53.4
+Baseline 50.7 79.5 55.4
+Q-DETR 56.2 83.3 61.6
+LSQ
+3-3-847.7 76.5 51.7
+Baseline 49.9 77.5 53.6
+Q-DETR 54.3 82.6 59.5
+LSQ
+2-2-842.3 69.7 44.8
+Baseline 43.9 70.4 46.1
+Q-DETR 50.2 76.7 52.6
+and bit-width, which significantly validates the effective-
+ness of our method.
+Besides, our method generates convincing results on
+SMCA-DETR. As shown in Tab. 2, the performance of the
+proposed Q-DETR with SMCA-DETR-R50 outperforms
+the 2/3/4-bit Baseline method by 6.3% , 5.1% and 3.8% on
+AP50, a large margin. Compared with 8-bit post-training
+quantization methods, our method achieves a significantly
+higher compression rate and comparable performance.
+5.4. Results on COCO
+We further show comparison on the large-scale COCO
+[18] dataset. We compare our method with the 2/3/4-bit
+baseline and LSQ [8] based on the same frameworks. We
+also report the detection performance of the 8-bit post-
+training quantization networks, such as percentile [19] , VT-
+PTQ [26]. The AP with different IoU thresholds, and AP of
+objects with varying scales are all reported in Tab. 3.
+Tab. 3 lists the comparison of several quantization ap-
+proaches and detection frameworks in computing complex-
+ity, storage cost. Our Q-DETR significantly accelerates
+computation and reduces storage requirements for variousTable 3. Comparison with state-of-the-art quantization methods using DETR and SMCA-DETR on COCO val2017 . #Bits (W-A-
+Attention) denotes bit-width of weights, activations, and attention activations.
+Model Method #Bits Size (MB) OPs (G) AP AP 50 AP75 APsAPm APl
+DETR-R50Real-valued 32-32-32 159.32 85.51 42.0 62.4 44.2 20.5 45.8 61.1
+Percentile8-8-8 39.83 23.0138.6 - - - - -
+VT-PTQ 41.2 - - - - -
+LSQ
+4-4-8 19.92 13.0233.3 53.7 33.9 12.8 37.0 51.6
+Baseline 34.1 55.3 35.4 14.3 38.0 53.8
+Q-DETR 39.4 60.2 41.4 17.7 43.4 59.9
+LSQ
+3-3-8 15.03 7.6131.0 52.3 32.1 11.3 33.9 48.5
+Baseline 32.3 52.2 32.9 12.3 35.4 50.3
+Q-DETR 36.1 55.9 37.5 14.6 39.4 55.2
+LSQ
+2-2-8 10.03 5.3224.7 44.6 26.5 6.3 25.3 42.7
+Baseline 26.6 46.6 26.5 8.4 28.2 44.4
+Q-DETR 31.4 51.3 31.6 11.6 34.3 49.6
+SMCA-DETR-R50Real-valued 32-32-32 164.75 86.65 41.0 62.2 43.6 21.9 44.3 59.1
+Percentile8-8-8 41.19 23.6637.5 58.5 40.1 17.6 39.1 55.9
+VT-PTQ 40.2 61.0 42.6 20.3 42.9 57.7
+LSQ
+4-4-8 20.59 13.4833.9 55.0 35.0 13.2 37.2 51.4
+Baseline 35.0 56.4 36.4 15.6 38.3 52.5
+Q-DETR 38.3 59.7 39.8 17.7 41.7 56.8
+LSQ
+3-3-8 15.68 8.0530.1 52.6 31.4 11.9 33.4 46.6
+Baseline 31.8 53.7 32.6 12.6 35.2 49.8
+Q-DETR 35.0 56.3 36.9 15.0 39.0 53.1
+LSQ
+2-2-8 10.84 4.5423.9 42.2 24.2 9.4 26.2 37.5
+Baseline 25.4 44.3 25.2 8.4 27.2 40.3
+Q-DETR 30.5 51.8 31.8 12.0 33.2 48.0
+detectors. We follow [40] to calculate memory usage, by
+adding 32 ×the number of real-valued weights and a×the
+number of quantized weights in the a-bit networks. The
+number of operations (OPs) is calculated in the same way
+as [40]. Current CPUs can handle both bit-wise XNOR and
+bit-count operations in parallel. The respective number of
+FLOPs adds {1
+32,1
+16,1
+8}of the number of {2,3,4}-bit mul-
+tiplications equals the OPs following [24].
+We summarize the experimental results on COCO
+val2017 of Q-DETR-R50 from lines 2 to 17 in Tab. 3.
+For the DETR-R50 model, compared with the 8-bit PTQ
+method, our 4-bit Q-DETR achieves a much larger accel-
+eration than the 8-bit VT-PTQ but with an acceptable per-
+formance gap. Also, the proposed method boosts the per-
+formance of 2/3/4-bit baseline by 4.8%, 3.8% and 5.1%
+AP with the same architecture and bit-width, which is
+significant on the large-scale COCO dataset. Compared
+with the real-valued counterparts, the proposed 2/3/4-bit Q-
+DETR achieves computation acceleration and storage sav-
+ings by 16.07 ×/11.23×/6.57×and 15.88 ×/10.60×/7.99×.
+The above results are of great significance in the real-time
+inference of object detection. All of the improvements have
+impacts on object detection.
+For the SMCA-DETR-R50 model, we observe similarperformance improvements and compression ratios. For
+example, the 4-bit Q-SMCA-DETR-R50 theoretically ac-
+celerates 6.42 ×with only a 2.7% performance gap com-
+pared with the real-valued counterpart, which is significant
+for real-time DETR methods.
+6. Conclusion
+This paper introduces a novel method for training quan-
+tized DETR (Q-DETR) with knowledge distillation to rec-
+tify the query distribution. Q-DETR generalizes the infor-
+mation bottleneck (IB) principle and leads a bi-level dis-
+tribution rectification distillation. We effectively employ
+a distribution alignment module to solve inner-level and a
+foreground-aware query matching scheme to solve upper
+level. As a result, Q-DETR significantly boosts perfor-
+mance of low-bit DETR. Extensive experiments show that
+Q-DETR surpasses state-of-the-arts in DETR quantization.
+7. Acknowledgements
+This work was supported by National Natural Science
+Foundation of China under Grant 62141604, 62076016,
+Beijing Natural Science Foundation L223024.References
+[1] Yoshua Bengio, Nicholas L ´eonard, and Aaron Courville.
+Estimating or propagating gradients through stochastic
+neurons for conditional computation. arXiv preprint
+arXiv:1308.3432 , 2013. 3
+[2] Yash Bhalgat, Jinwon Lee, Markus Nagel, Tijmen
+Blankevoort, and Nojun Kwak. Lsq+: Improving low-bit
+quantization through learnable offsets and better initializa-
+tion. In Proc. of CVPR Workshops , pages 696–697, 2020. 2,
+3
+[3] Yaohui Cai, Zhewei Yao, Zhen Dong, Amir Gholami,
+Michael W Mahoney, and Kurt Keutzer. Zeroq: A novel
+zero shot quantization framework. In Proc. of CVPR , pages
+13169–13178, 2020. 2
+[4] Nicolas Carion, Francisco Massa, Gabriel Synnaeve, Nicolas
+Usunier, Alexander Kirillov, and Sergey Zagoruyko. End-to-
+end object detection with transformers. In Proc. of ECCV ,
+pages 213–229, 2020. 1, 3, 4, 5, 6, 7
+[5] Beno ˆıt Colson, Patrice Marcotte, and Gilles Savard. An
+overview of bilevel optimization. Annals of operations re-
+search , 153(1):235–256, 2007. 4
+[6] Zhigang Dai, Bolun Cai, Yugeng Lin, and Junying Chen.
+Up-detr: Unsupervised pre-training for object detection with
+transformers. In Proc. of CVPR , pages 1601–1610, 2021. 3
+[7] Misha Denil, Babak Shakibi, Laurent Dinh, Marc’Aurelio
+Ranzato, and Nando De Freitas. Predicting parameters in
+deep learning. In Proc. of NeurIPS , pages 2148–2156, 2013.
+1
+[8] Steven K Esser, Jeffrey L McKinstry, Deepika Bablani,
+Rathinakumar Appuswamy, and Dharmendra S Modha.
+Learned step size quantization. arXiv preprint
+arXiv:1902.08153 , 2019. 2, 6, 7
+[9] Mark Everingham, Luc Van Gool, Christopher KI Williams,
+John Winn, and Andrew Zisserman. The pascal visual object
+classes (voc) challenge. International Journal of Computer
+Vision , 88(2):303–338, 2010. 1, 2, 4, 6
+[10] Jun Fang, Ali Shafiee, Hamzah Abdel-Aziz, David Thorsley,
+Georgios Georgiadis, and Joseph H Hassoun. Post-training
+piecewise linear quantization for deep neural networks. In
+Proc. of ECCV , pages 69–86, 2020. 2
+[11] Peng Gao, Minghang Zheng, Xiaogang Wang, Jifeng Dai,
+and Hongsheng Li. Fast convergence of detr with spatially
+modulated co-attention. In Proc. of ICCV , pages 3621–3630,
+2021. 3, 6
+[12] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In Proc. of
+CVPR , pages 770–778, 2016. 1, 6
+[13] Sergey Ioffe and Christian Szegedy. Batch normalization:
+Accelerating deep network training by reducing internal co-
+variate shift. In Proc. of ICML , pages 448–456, 2015. 5
+[14] Sangil Jung, Changyong Son, Seohyung Lee, Jinwoo Son,
+Jae-Joon Han, Youngjun Kwak, Sung Ju Hwang, and
+Changkyu Choi. Learning to quantize deep networks by op-
+timizing quantization intervals with task loss. In Proc. of
+CVPR , pages 4350–4359, 2019. 2[15] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton.
+Imagenet classification with deep convolutional neural net-
+works. In Proc. of NeurIPS , pages 1097–1105, 2012. 6
+[16] Feng Li, Hao Zhang, Shilong Liu, Jian Guo, Lionel M Ni,
+and Lei Zhang. Dn-detr: Accelerate detr training by intro-
+ducing query denoising. In Proc. of CVPR , pages 13619–
+13627, 2022. 3, 5
+[17] Yanjing Li, Sheng Xu, Baochang Zhang, Xianbin Cao, Peng
+Gao, and Guodong Guo. Q-vit: Accurate and fully quantized
+low-bit vision transformer. In Proc. of NeurIPS , pages 1–12,
+2022. 1, 2, 5
+[18] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays,
+Pietro Perona, Deva Ramanan, Piotr Doll ´ar, and C Lawrence
+Zitnick. Microsoft coco: Common objects in context. In
+Proc. of ECCV , pages 740–755, 2014. 6, 7
+[19] Yang Lin, Tianyu Zhang, Peiqin Sun, Zheng Li, and
+Shuchang Zhou. Fq-vit: Post-training quantization for fully
+quantized vision transformer. In Proc. of IJCAI , pages 1173–
+1179, 2021. 7
+[20] Risheng Liu, Jiaxin Gao, Jin Zhang, Deyu Meng, and
+Zhouchen Lin. Investigating bi-level optimization for learn-
+ing and vision from a unified perspective: A survey and be-
+yond. IEEE Transactions on Pattern Analysis and Machine
+Intelligence , 2021. 4
+[21] Shilong Liu, Feng Li, Hao Zhang, Xiao Yang, Xianbiao Qi,
+Hang Su, Jun Zhu, and Lei Zhang. Dab-detr: Dynamic an-
+chor boxes are better queries for detr. pages 1–19, 2022. 3
+[22] Wei Liu, Dragomir Anguelov, Dumitru Erhan, Christian
+Szegedy, Scott Reed, Cheng-Yang Fu, and Alexander C
+Berg. Ssd: Single shot multibox detector. In Proc. of ECCV ,
+pages 21–37, 2016. 1
+[23] Zechun Liu, Kwang-Ting Cheng, Dong Huang, Eric P
+Xing, and Zhiqiang Shen. Nonuniform-to-uniform quantiza-
+tion: Towards accurate quantization via generalized straight-
+through estimation. In Proc. of CVPR , pages 4942–4952,
+2022. 6
+[24] Zechun Liu, Wenhan Luo, Baoyuan Wu, Xin Yang, Wei Liu,
+and Kwang-Ting Cheng. Bi-real net: Binarizing deep net-
+work towards real-network performance. International Jour-
+nal of Computer Vision , 128(1):202–219, 2020. 8
+[25] Zechun Liu, Zhiqiang Shen, Marios Savvides, and Kwang-
+Ting Cheng. Reactnet: Towards precise binary neural net-
+work with generalized activation functions. In Proc. of
+ECCV , pages 143–159, 2020. 1, 3, 6
+[26] Zhenhua Liu, Yunhe Wang, Kai Han, Wei Zhang, Siwei Ma,
+and Wen Gao. Post-training quantization for vision trans-
+former. Proc. of NeurIPS , pages 1–12, 2021. 1, 7
+[27] Zechun Liu, Baoyuan Wu, Wenhan Luo, Xin Yang, Wei Liu,
+and Kwang-Ting Cheng. Bi-real net: Enhancing the perfor-
+mance of 1-bit cnns with improved representational capabil-
+ity and advanced training algorithm. In Proc. of ECCV , pages
+722–737, 2018. 2, 3
+[28] Ilya Loshchilov and Frank Hutter. Decoupled weight decay
+regularization. In Proc. of ICLR , pages 1–18, 2017. 6
+[29] Depu Meng, Xiaokang Chen, Zejia Fan, Gang Zeng,
+Houqiang Li, Yuhui Yuan, Lei Sun, and Jingdong Wang.
+Conditional detr for fast training convergence. In Proc. of
+ICCV , pages 3651–3660, 2021. 2[30] Adam Paszke, Sam Gross, Soumith Chintala, Gregory
+Chanan, Edward Yang, Zachary DeVito, Zeming Lin, Al-
+ban Desmaison, Luca Antiga, and Adam Lerer. Automatic
+differentiation in pytorch. In Proc. of NeurIPS Workshops ,
+pages 1–4, 2017. 6
+[31] Shaoqing Ren, Kaiming He, Ross Girshick, and Jian Sun.
+Faster r-cnn: Towards real-time object detection with region
+proposal networks. IEEE Transactions on Pattern Analysis
+and Machine Intelligence , 39(6):1137–1149, 2016. 1
+[32] Hamid Rezatofighi, Nathan Tsoi, JunYoung Gwak, Amir
+Sadeghian, Ian Reid, and Silvio Savarese. Generalized in-
+tersection over union: A metric and a loss for bounding box
+regression. In Proc. of CVPR , pages 658–666, 2019. 5
+[33] Adriana Romero, Nicolas Ballas, Samira Ebrahimi Kahou,
+Antoine Chassang, Carlo Gatta, and Yoshua Bengio. Fitnets:
+Hints for thin deep nets. In Proc. of ICLR , pages 1–13, 2015.
+1
+[34] Shibani Santurkar, Dimitris Tsipras, Andrew Ilyas, and
+Aleksander Madry. How does batch normalization help op-
+timization? In Proc. of NeurIPS , pages 1–11, 2018. 5
+[35] Ravid Shwartz-Ziv and Naftali Tishby. Opening the
+black box of deep neural networks via information.
+arXiv:1703.00810 , 2017. 4
+[36] Naftali Tishby, Fernando C Pereira, and William Bialek.
+The information bottleneck method. arXiv preprint
+physics/0004057 , 2000. 4
+[37] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. In Proc. of NeurIPS ,
+pages 1–11, 2017. 3
+[38] Tao Wang, Li Yuan, Xiaopeng Zhang, and Jiashi Feng. Dis-
+tilling object detectors with fine-grained feature imitation. In
+Proc. of CVPR , pages 4933–4942, 2019. 5
+[39] Yulin Wang, Zanlin Ni, Shiji Song, Le Yang, and Gao Huang.
+Revisiting locally supervised learning: an alternative to end-
+to-end training. In Proc. of ICLR , pages 1–21, 2021. 7
+[40] Ziwei Wang, Ziyi Wu, Jiwen Lu, and Jie Zhou. Bidet: An
+efficient binarized object detector. In Proc. of CVPR , pages
+2049–2058, 2020. 4, 8
+[41] Zheng Xie, Zhiquan Wen, Jing Liu, Zhiqiang Liu, Xixian
+Wu, and Mingkui Tan. Deep transferring quantization. In
+Proc. of ECCV , pages 625–642, 2020. 2
+[42] Sheng Xu, Yanjing Li, Tiancheng Wang, Teli Ma, Baochang
+Zhang, Peng Gao, Yu Qiao, Jinhu L ¨u, and Guodong Guo.
+Recurrent bilinear optimization for binary neural networks.
+InProc. of ECCV , pages 19–35, 2022. 1
+[43] Sheng Xu, Yanjing Li, Bohan Zeng, Teli Ma, Baochang
+Zhang, Xianbin Cao, Peng Gao, and Jinhu L ¨u. Ida-det:
+An information discrepancy-aware distillation for 1-bit de-
+tectors. In Proc. of ECCV , pages 346–361, 2022. 1
+[44] Sheng Xu, Junhe Zhao, Jinhu Lu, Baochang Zhang, Shumin
+Han, and David Doermann. Layer-wise searching for 1-bit
+detectors. In Proc. of CVPR , pages 5682–5691, 2021. 1
+[45] Shuchang Zhou, Yuxin Wu, Zekun Ni, Xinyu Zhou, He Wen,
+and Yuheng Zou. Dorefa-net: Training low bitwidth convo-
+lutional neural networks with low bitwidth gradients. arXiv
+preprint arXiv:1606.06160 , 2016. 2[46] Chenzhuo Zhu, Song Han, Huizi Mao, and William J Dally.
+Trained ternary quantization. In Proc. of ICLR , pages 1–10,
+2017. 2
+[47] Xizhou Zhu, Weijie Su, Lewei Lu, Bin Li, Xiaogang Wang,
+and Jifeng Dai. Deformable detr: Deformable transformers
+for end-to-end object detection. In Proc. of ICLR , pages 1–
+16, 2020. 3
+[48] Bohan Zhuang, Chunhua Shen, Mingkui Tan, Lingqiao Liu,
+and Ian Reid. Towards effective low-bitwidth convolutional
+neural networks. In Proc. of CVPR , pages 7920–7928, 2018.
+2

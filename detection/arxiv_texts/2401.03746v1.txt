@@ -1,0 +1,2249 @@
+Physics-based vs. data-driven 24-hour probabilistic forecasts
+of precipitation for northern tropical Africa
+Eva-Maria Walz∗†Peter Knippertz‡Andreas H. Fink‡
+Gregor K¨ ohler§Tilmann Gneiting†∗
+January 9, 2024
+Abstract
+Numerical weather prediction (NWP) models struggle to skillfully predict tropical pre-
+cipitation occurrence and amount, calling for alternative approaches. For instance, it has
+been shown that fairly simple, purely data-driven logistic regression models for 24-hour
+precipitation occurrence outperform both climatological and NWP forecasts for the West
+African summer monsoon. More complex neural network based approaches, however, re-
+main underdeveloped due to the non-Gaussian character of precipitation. In this study,
+we develop, apply and evaluate a novel two-stage approach, where we first train a U-Net
+convolutional neural network (CNN) model on gridded rainfall data to obtain a deter-
+ministic forecast and then apply the recently developed, nonparametric Easy Uncertainty
+Quantification (EasyUQ) approach to convert it into a probabilistic forecast. We evaluate
+CNN+EasyUQ for one-day ahead 24-hour accumulated precipitation forecasts over north-
+ern tropical Africa for 2011–2019, with the Integrated Multi-satellitE Retrievals for GPM
+(IMERG) data serving as ground truth. In the most comprehensive assessment to date we
+compare CNN+EasyUQ to state-of-the-art physics-based and data-driven approaches such
+as a monthly probabilistic climatology, raw and postprocessed ensemble forecasts from the
+European Centre for Medium-Range Weather Forecasts (ECMWF), and traditional statisti-
+cal approaches that use up to 25 predictor variables from IMERG and the ERA5 reanalysis.
+Generally, statistical approaches perform about en par with post-processed ECMWF ensem-
+ble forecasts. The CNN+EasyUQ approach, however, clearly outperforms all competitors
+for both occurrence and amount. Hybrid methods that merge CNN+EasyUQ and physics-
+based forecasts show slight further improvement. Thus, the CNN+EasyUQ approach can
+likely improve operational probabilistic forecasts of rainfall in the tropics, and potentially
+even beyond.
+1 Introduction
+Despite the continuous improvement of numerical weather prediction (NWP) models, precip-
+itation forecasts in the tropics remain a great challenge. Several studies (Haiden et al., 2012;
+∗Institute for Stochastics, Karlsruhe Institute of Technology (KIT), Karlsruhe, Germany
+†Computational Statistics (CST) group, Heidelberg Institute for Theoretical Studies, Heidelberg, Germany
+‡Institute of Meteorology and Climate Research, Karlsruhe Institute of Technology (KIT), Karlsruhe, Germany
+§German Cancer Research Cancer (DKFZ), Heidelberg, Germany
+1arXiv:2401.03746v1  [physics.ao-ph]  8 Jan 2024Vogel et al., 2020) have shown that NWP models have difficulties in outperforming climatological
+forecasts. A possible explanation is the exceptional high degree of convective organization over
+tropical Africa (Nesbitt et al., 2006; Roca et al., 2014), a process that is difficult to capture with
+the convective parameterization of NWP models (Vogel et al., 2018), although recent develop-
+ments show some promise (Becker et al., 2021). Statistical postprocessing, spatial averaging, or
+temporal aggregation lead to improvements in the skill of raw NWP ensemble grid point forecasts
+in tropical Africa (Vogel et al., 2020; Stellingwerf et al., 2021; Gebremichael et al., 2022; Ageet
+et al., 2023), yet in regions of particularly poor performance of the operational forecast systems,
+viz. West and Central Equatorial Africa, the forecast gain over climatology is limited.
+The overall poor performance of current operational systems motivates the development of al-
+ternative approaches. Vogel et al. (2020) implement a fairly simple purely data-driven logis-
+tic regression model for 24-hour precipitation occurrence, which outperforms climatology and
+NWP forecasts for the summer monsoon season in West Africa. The predictor variables are de-
+signed by exploiting spatial-temporal coherence patterns as developed and investigated further
+in Rasheeda Satheesh et al. (2023). To this end, the rainfall at each grid point is correlated with
+the rainfall at all other locations from 1, 2, and 3 days before using the coefficient of predictive
+ability (CPA) measure (Gneiting and Walz, 2022). The locations showing highest CPA for 1, 2,
+and 3 days before, respectively, are selected as predictor variables in the logistic regression model.
+The good performance of this simple logistic model, which is related to coherent, tropical wave
+driven spatial propagation of precipitation features in West Africa (Rasheeda Satheesh et al.,
+2023), motivates the development of more sophisticated data-driven models and the usage of
+additional weather quantities linked to rainfall occurrence and amount.
+Vogel et al. (2021) and Rasheeda Satheesh et al. (2023) have only investigated the skill of prob-
+ability forecasts for the binary problem of precipitation occurrence. In this paper, the more
+challenging problem of producing accurate probabilistic forecasts for accumulated precipitation,
+a non-negative real-valued variable, is considered. Precipitation accumulation is generally consid-
+ered the “most difficult weather variable to forecast” (Ebert-Uphoff and Hilburn, 2023). Indeed,
+precipitation accumulation follows a mixture distribution with a point mass at zero — namely,
+for no precipitation — and a continuous part on the positive real numbers. Therefore, despite the
+sweeping rise of data-driven weather prediction (Ben Bouall` egue et al., 2023) and rapid progress
+in data-driven nowcasting of precipitation (Ayzel et al., 2020; Lagerquist et al., 2021; Ravuri
+et al., 2021; Schroeder de Witt et al., 2021; Espeholt et al., 2022; Zhang et al., 2023), the devel-
+opment of machine learning based methods for probabilistic quantitative precipitation forecasts
+— at least for times larger than 12 hours — has been lagging. For example, precipitation was
+“not investigated” (Bi et al., 2023, p. 537) by the Pangu-Weather team and “left out of the
+scope” of the GraphCast development, because “precipitation is sparse and non-Gaussian and
+would have possibly required different modeling decisions than the other variables” (Lam et al.,
+2023, p. 1421). We address these challenges by developing a novel two-stage CNN+EasyUQ
+approach, where we first train a U-Net convolutional neural network (CNN) model to obtain a
+single-valued deterministic forecast, and then use the Easy Uncertainty Quantification (EasyUQ)
+approach developed by Walz et al. (2024) to convert the deterministic forecast into a probabilistic
+forecast.
+The paper is structured as followed. Section 2 introduces the data used in the analysis. Then,
+an overview of weather quantities which are known to be linked to precipitation and thus are
+candidates for predictor variables is provided in section 3. Different types of forecasting models
+are described in section 4. Importantly, we compare the CNN+EasyUQ forecasts to a compre-
+hensive suite of state of the art methods that include physics-based raw NWP ensemble forecasts,
+2postprocessed NWP forecasts, data-driven statistical forecasts based on logistic regression and
+distributional index models (DIMs), and combined statistical-dynamical (hybrid) approaches.
+Results from this comparison are presented in section 5 with the main conclusion and outlook
+in section 6.
+2 Data and methods
+In this study, we use data from three different sources. The arguably best currently available
+high-resolution, gauge-calibrated, gridded precipitation product, the Integrated Multi-Satellite
+Retrievals for GPM (Global Precipitation Measurement) (IMERG; Huffman et al., 2020), serves
+as ground truth for precipitation. The European Centre for Medium-Range Weather Forecasts
+(ECMWF) Reanalysis Version 5 (ERA5; Hersbach et al., 2020) product is used to obtain esti-
+mates of other weather quantities. Finally, NWP forecasts, namely the high resolution (HRES)
+run and the full ECMWF ensemble prediction system (EPS) are downloaded from ECMWF’s Me-
+teorological Archival and Retrieval System (MARS; https://www.ecmwf.int/en/forecasts/
+access-forecasts/access-archive-datasets ).
+The evaluation domain, visualized in Figure 1, is northern tropical Africa, represented by 19 ×61
+grid boxes centered at 0◦to 18◦N and 25◦W to 35◦E, respectively, similar to the setup in
+Vogel et al. (2020) and Rasheeda Satheesh et al. (2023). Five distinct seasons are considered
+as identified previously (Fink et al., 2017; Maranan et al., 2018): December–February (DJF),
+which is the dry season with occasional showers along the Guinea Coast; the March–April (MA)
+period, which features highly organized Mesoscale Convective Systems (MCSs) at the Guinea
+coast and the coastal hinterland; May–June (MJ), the major rainy season along most parts of
+the Guinea Coast; July–September (JAS), the major rainy season in the Sahel and the little
+dry season at the coast; and October–November (ON), the second, weaker rainy season at the
+Guinea Coast. To avoid cutting seasonal periods at the beginning or the end of the time period
+under investigation, the time period considered starts 1 December 2000 and ends 30 November
+2019. Importantly, the analysis and evaluation are performed over land only, and we frequently
+identify a grid box with the grid point at its center. From now on, when we refer to grid boxes
+or grid points, we only mean boxes or points on land.
+2.1 GPM IMERG rainfall data
+We use the GPM IMERG V06B final version (Hou et al., 2014; Huffman et al., 2020) to calculate
+24-hour accumulated precipitation from 06 – 06 UTC for the period under investigation. GPM
+IMERG has a temporal resolution of 30 minutes and a spatial resolution of 0 .1◦×0.1◦. The data
+were regridded to a resolution of 1◦×1◦using first-order conservative remapping. As we also
+consider 24-hour rainfall occurrence, we threshold at 0.2 mm to obtain a binary event variable
+representing precipitation occurrence.
+The GPM IMERG algorithm uses both radar-calibrated microwave radiance from polar-orbiting
+satellites and infrared radiance from geostationary satellites. In the final version, the precipita-
+tion totals are calibrated with rain gauge measurements provided by the Global Precipitation
+Climatology Centre (GPCC; Schneider et al., 2005). The degree to which the original estimates
+are adjusted by the gauge calibration process within a given region is generally determined by
+the number of available rain gauges, which is highly variable across the Tropics.
+320
+ 10
+ 0 10 20 30
+Longitude051015Latitude
+025100300900150021002700Figure 1: Overview of the study area. Following Rasheeda Satheesh et al. (2023), we consider an
+evaluation domain over northern tropical Africa that comprises 19 ×61 grid boxes with centers
+spanning from 0◦to 18◦N in latitude and 25◦W to 35◦E in longitude, respectively. The time
+period considered ranges from 1 December 2000 to 30 November 2019, with 24-hour forecasts of
+precipitation amount and precipitation occurrence for 1 December 2010 to 30 November 2019
+being evaluated. The analysis is over land only, and shading indicates altitude in meters, based
+on the ERA5 land–sea mask.
+2.2 Predictor variables from ERA5
+Our study considers a range of meteorological variables, specified in section 3.2, as predictor
+variables for statistical models. Specifically, we use the ERA5 reanalysis (Hersbach et al., 2020),
+which provides a complete and consistent coverage of the study domain by combining model data
+with observations. For this study the resolution of the data is 1◦×1◦just like for GPM IMERG.
+In contrast to 24-hour accumulated precipitation, the considered ERA5 weather quantities are
+instantaneous values at 00 UTC, thus six hours before the 24-hour accumulation period for
+GPM IMERG starts. This way, observed ambient conditions well before the rainfall begins get
+considered. For an operational implementation of the respective statistical methods, operational
+analysis data would need to be used, as ERA5 is not available in near-real time, but we do not
+expect this to make a big difference to our results.
+2.3 Physics-based forecasts from ECMWF
+We now describe the NWP forecasts used in this study, namely, the ECMWF high resolution
+(HRES) model and ensemble prediction system (EPS; Molteni et al., 1996). Owing to the high
+resolution and the initialization with the most accurate analysis product, the HRES model is
+arguably the leading global deterministic NWP forecast available. As an operational product,
+HRES has changed considerably over time in frequent updates ( https://confluence.ecmwf.
+int/display/FCST/Changes+to+the+forecasting+system ). The ECMWF EPS consists of one
+control run and 50 perturbed members. Like the HRES model, the control run is based on
+the most accurate initial state of the atmosphere. The perturbed members start from slightly
+different initial conditions and use perturbed physics options.
+The forecasts are available from MARS in a grid resolution of 0 .25◦×0.25◦and are first-order
+conservatively remapped to a resolution of 1◦×1◦. HRES forecasts for total precipitation are
+obtained by summing forecasts for large scale precipitation and convective precipitation, which
+4are available from April 2001 on. For the EPS, total precipitation is available from April 2006
+on. To cover an equal number of seasons, we use data starting in December 2001 and December
+2006, respectively. To obtain forecasts for 24-hour precipitation amount the difference between
+forecasts of accumulated precipitation initialized at 00 UTC with lead times of 30 and 6 hours
+is computed. To compute the EPS forecast probability for the occurrence of precipitation, the
+member forecasts are thresholded at 0.2 mm and the respective binary outcomes are averaged.
+2.4 Easy Uncertainty Quantification (EasyUQ)
+Forecasts ought to take the form of probability distributions to account for uncertainty. In
+NWP probabilistic forecasts have become common practice with the operational implementa-
+tion of ensemble systems (Molteni et al., 1996; Bauer et al., 2015). To quantify uncertainty
+in very general settings, Walz et al. (2024) introduced EasyUQ, an easy-to-implement method
+which transforms real-valued deterministic model output into calibrated statistical distributions.
+EasyUQ is trained on pairs of deterministic forecasts and corresponding outcomes and is thus
+independent of the type of model used to generate the single-valued forecasts. In particular,
+EasyUQ can be applied to the output of any NWP, statistical, or machine learning model that
+generates deterministic forecasts. The EasyUQ forecast distributions are discrete and have mass
+exclusively at outcome values in the training set. Therefore, the forecast distributions adapt nat-
+urally to the specifics of precipitation accumulation, which follows a mixture distribution with
+a point mass at zero and a continuous part on the positive real numbers,1without any need for
+tuning.
+In its basic form, which we use in this study, EasyUQ is a special case of Isotonic Distributional
+Regression (IDR; Henzi et al., 2021). In contrast to NWP ensemble systems, which have large
+computational costs and require the use of supercomputers (Bauer et al., 2015), the application
+of EasyUQ to deterministic model output has obvious advantages in terms of the efficient usage
+of computational resources (Walz et al., 2024).
+2.5 Evaluation metrics
+In our study, we compare methods for probabilistic forecasts of precipitation amount, where the
+outcome is real-valued, and probability forecasts of precipitation occurrence, where the outcome
+is binary. In both cases, we follow extant practice and use proper scoring rules (Gneiting and
+Raftery, 2007).
+In the setting of probability forecasts, we use the Brier score (BS) to quantify predictive perfor-
+mance based on a collection of pairs ( p1, y1), . . . , (pn, yn) of predictive probabilities and associated
+binary outcomes. Specifically, we compute the mean score
+BS =1
+nnX
+i=1BS(pi, yi) =1
+nnX
+i=1(pi−yi)2. (1)
+In the case of precipitation amount, we use the continuous ranked probability score (CRPS) for
+an assessment based on a collection of pairs ( F1, y1), . . . , (Fn, yn) of probabilistic forecasts and
+1Typically, rainfall amounts are reported in small but fixed increments, so strictly speaking, the distribution
+on the positive real numbers is discrete as well. The EasyUQ technique adapts to the level of discretization in the
+observational record at hand, without any need for user intervention. However, if continuous forecast distributions
+on the positive real axis are desirable, adaptations of the Smooth EasyUQ technique developed by Walz et al.
+(2024) can be employed.
+5associated real-valued outcomes. Comparisons are in terms of the mean score
+CRPS =1
+nnX
+i=1CRPS( Fi, yi) =1
+nnX
+i=1Z∞
+−∞(Fi(z)− 1{z≥yi})2dz, (2)
+where Fiis interpreted as a cumulative distribution function. To facilitate the assessment of
+forecast performance relative to a baseline, skill scores can be used, defined as the quantity
+(Sbase−Sfcst)/Sbase, where Sfcstis the mean score of the forecast at hand and Sbaseis the mean
+score of the baseline. A positive (negative) Brier or CRPS skill score corresponds to predictive
+performance better (worse) than the baseline.
+For a more informative, diagnostic comparison between forecast methods, we apply the CORP
+decomposition of Dimitriadis et al. (2021) and the isotonicity-based decomposition of Arnold
+et al. (2023) to a mean score S from (1) or (2), respectively. The decompositions express S in
+terms of interpretable components, in that
+S = MCB −DSC + UNC , (3)
+where the miscalibration (MCB) component quantifies the (lack of) calibration or reliability of the
+forecasts (the lower, the better), and the discrimination (DSC) term refers to the discrimination
+ability or resolution of the forecasts (the higher, the better), whereas the uncertainty (UNC)
+component is independent of the forecasts and a property of the outcomes only. For details, we
+refer to the original work of Dimitriadis et al. (2021) and Arnold et al. (2023).
+3 Predictor variables for statistical forecasts
+In this section we discuss and analyze potential predictor variables for data-driven statistical
+forecasting methods. We distinguish predictor variables computed from IMERG data based on
+spatio-temporal rainfall correlation, and predictor variables based on ERA5. The initial selection
+of the variables stems from meteorological expertise.
+3.1 Correlated rainfall predictors from IMERG
+Vogel et al. (2021) introduced a logistic regression model to produce probability forecasts for the
+binary outcome of precipitation occurrence. As predictors, they used precipitation data with a
+lag of one and two days at locations with maximum positive and minimum negative Spearman’s
+rank correlation coefficient. Rasheeda Satheesh et al. (2023) noted that due to propagating rain-
+fall systems positive dependencies carry the most useful information, occasionally reaching three
+days backwards in time. Moreover, they suggested a replacement of Spearman’s rank correlation
+coefficient by the recently developed coefficient of predictive ability (CPA; Gneiting and Walz,
+2022) measure. In general, CPA is asymmetric, with the predictor variable and the outcome
+taking clearly identified roles, as for the classical Area Under the Receiver Operating Character-
+istic (ROC) Curve (AUC) measure, to which CPA reduces when the outcomes are binary. When
+both the predictor variable and the outcome are continuous variables, CPA becomes symmetric
+and equals Spearman’s rank correlation coefficient, up to a linear transformation (Gneiting and
+Walz, 2022). AUC or CPA values above 0.5 correspond to positive dependencies, and values
+below 0.5 to negative dependencies.
+6Given these insights, this current study uses three correlated precipitation predictor variables,
+by identifying grid points with maximum CPA at temporal lags of one, two, and three days.
+Following Rasheeda Satheesh et al. (2023), correlated locations are identified within an enlarged
+region that comprises 68◦W to 50◦E and 0◦to 20◦N, as compared to the evaluation domain
+depicted in Figure 1, which ranges from 25◦W to 35◦E and 0◦to 18◦N.
+3.2 Predictor variables from ERA5 reanalysis
+In addition to the correlated precipitation information, various meteorological variables from
+ERA5 are considered as predictors (Table 1). For a summary of how environmental conditions
+affect convection, see Maranan et al. (2018). Unless noted otherwise, the variables are instanta-
+neous quantities at 00 UTC. The first four variables in Table 1 are vertically integrated measures
+of water in different forms. TCWV has been shown to be a promising predictor for precipitation
+by Lafore et al. (2017a); Schroeder de Witt et al. (2021) use cloud information such as TCLW and
+TCC in their global statistical model. The second group comprises the three classical measures
+of convective instability; CAPE (the theoretical maximum of thermodynamic energy that can
+be converted into kinetic energy of vertical motion), CIN (the energy barrier that needs to be
+overcome to reach the level of free convection), and KX (based on dry static vertical stability in
+the 850–500 hPa layer, absolute humidity at 850 hPa, and relative humidity at 700h pa). CAPE
+and CIN have a complex relationship with precipitation and should be considered together and in
+concert with other parameters (Lafore et al., 2017b). Galvin (2010) demonstrates the usefulness
+of KX in assessing convective rainfall probability in relation to African Easterly Waves (AEWs).
+The third group (2T, 2D, SPT) represents near-surface conditions. The former two are closely
+related to the equivalent potential temperature of a starting convective air parcel, thereby in-
+fluencing the level of cumulus condensation and free convection and thus CIN and CAPE, and
+have been shown to impact the intensity of convection in West Africa (Nicholls and Mohr, 2010).
+SPT, the tendency from 00 UTC of the day for which the prediction is made to 00 UTC of the
+previous day, can be related to AEW propagation and rainfall (Regula, 1936; Hubert, 1936). The
+fourth group characterises thermodynamic conditions in the boundary layer and free troposphere
+between 925 hPa and 300 hPa. For temperature, we consider 850 hPa and 500 hPa representing
+lower-tropospheric stability (as in KX). As moisture generally shows complex vertical structures,
+925, 700, 600, and 500 hPa are chosen for specific humidity. For relative humidity, the mid-
+to upper-tropospheric levels of 500 hPa and 300 hPa were selected to indicate deep moistening,
+which facilitates cloud formation and reduces detrimental effects of entrainment on convective
+development. Mid-tropospheric relative humidity controls both rainfall enhancement by slow
+moving tropical waves (Schlueter et al., 2019) and evaporation of rainfall, and thus convective
+downdrafts and mesoscale organization of convection (Klein et al., 2021). The last two entries
+in Table 1 are the circulation-related variables SHR (normalized difference of horizontal wind
+at 600 and 925 hPa) and Ψ700 representing mid-tropospheric streamlines. SHR influences the
+potential for mesoscale organization and longevity through separating the areas of convective
+up- and downdrafts as well as the generation of cold pools (Rotunno et al., 1988; Lafore et al.,
+2017a). Anomalies in Ψ700 indicate variations in the African Easterly Jet (AEJ), e.g., passages
+of troughs and ridges of AEWs (Kiladis et al., 2006).
+7Table 1: Predictor variables from ERA5, all at 00 UTC.
+Meteorological Variable Acronym
+Total column water vapour TCWV
+Vertically integrated moisture divergence VIMD
+Total column cloud liquid water TCLW
+Total cloud cover TCC
+Convective available potential energy CAPE
+Convective inhibition CIN
+K-index KX
+2m temperature 2T
+2m dewpoint temperature 2D
+24h surface pressure tendency SPT
+Temperature at 850 hPa T850
+Temperature at 500 hPa T500
+Specific humidity at 925 hPa Q925
+Specific humidity at 700 hPa Q700
+Specific humidity at 600 hPa Q600
+Specific humidity at 500 hPa Q500
+Relative humidity at 500 hPa R500
+Relative humidity at 300 hPa R300
+Shear SHR
+Streamfunction at 700 hPa Ψ700
+3.3 Statistical analysis of predictor variables
+Thus far, the selection of predictor variables has been based on meteorological expertise and
+findings from other publications. Here, we use the aforementioned AUC (for rainfall occurrence)
+and CPA (for amount) measures of Gneiting and Walz (2022) (see Section 3.1) for a deeper
+analysis. In Figures 2 and 3 we show AUC and CPA values for the 20 ERA5 variables from
+Table 1. Both are computed in a co-located fashion for each grid point in the evaluation domain
+(Figure 1) and the resulting distributions are represented by boxplots.
+Figure 2a shows AUC values for the dry season DJF. Given the overall low precipitation amount
+during this period, the box plots often stretch over large ranges, indicating marked differences be-
+tween grid points, and also large differences between the variables. Stable positive relations (i.e.,
+AUC above 0.5) are found for moisture (TCWV, Q500, Q600, Q700, R500), cloud (TCLW, TCC),
+and instability variables (KX, CAPE), demonstrating a clear dependence on mid-tropospheric
+conditions, while low-level (Q925, 2D) and upper-level (R300) variables show a more ambiguous
+behavior. Other well-defined relations are positive with 2T, and negative with T500 and VIMD.
+As the variables are taken at 00 UTC, the relation to 2T may reflect warmer nights under moister
+and cloudier skies. CIN, SPT, and Ψ700 show weak AUC values close to 0.5. AUC values for
+T850 cover a wide range and stretch across 0.5, indicating that its impact depends strongly on
+the situation.
+The corresponding analysis for MA (Figure 2b) shows an overall less noisy behavior and AUC
+values more in line with the spatially averaged annual value of CPA that determines the order
+8TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+0.000.250.500.751.00a) DJF
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+b) MA
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+c) MJTCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+0.000.250.500.751.00d) JAS
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+e) ON
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+0.000.250.500.751.00
+f) Mean AUC by season
+DJF
+MA
+MJ
+JAS
+ONFigure 2: Boxplots of grid point AUC values between ERA5 variables from Table 1 and precipi-
+tation occurrence in season a) DJF, b) MA, c) MJ, d) JAS, and e) ON. The arrangement of the
+predictor variables on the horizontal axis is in the order of the spatially averaged CPA value for
+precipitation accumulation, when CPA is computed without splitting into seasons. The orange
+marks and the line plots in panel f) indicate the mean AUC value over grid points for the season
+at hand. The box colour from dark to light blue indicates the ranking of the seasonal mean AUC
+value. In combination this allows to identify differences between yearly vs. seasonal perspectives.
+of the variables in all panels of Figures 2 and 3. Compared to DJF, a more stable relation to
+low-level moisture (Q700, Q925, 2D) is visible. There is a stronger relation to CAPE with little
+changes in CIN. Other remarkable changes are less dependence on cold T500, and even more
+ambiguous relations to T850 and Ψ700. The pre-monsoon season MJ (Figure 2c), when rainfalls
+begin to move inland, shows many similarities to MA but the point-to-point variability is smaller
+and AUC values tend to be closer to 0.5, while their order mostly agrees to that based on annual
+CPAs. Remarkable differences to MA are less dependence on 2T and clearer relations to T850
+and Ψ700 ( <0.5). The latter may indicate a dependence of rainfall on the existence of cyclonic
+perturbations such as AEWs. The general magnitude of AUC values close to 0.5 is likely a
+reflection of the overall improved conditions for convection, which makes individual storms less
+dependent on particular circumstances, thereby creating a higher degree of stochasticity (see
+also discussion in Rasheeda Satheesh et al. (2023)). This trend continues going into the main
+monsoon season JAS (Figure 2d), when most variables show AUC values close to 0.5. The
+narrower boxplots indicate less local variability during a period when rains penetrate deeply into
+the continent. As expected, in the post-monsoon season ON (Figure 2e), conditions resemble
+those discussed for MA (Figure 2b), even with slightly larger amplitudes. Remarkable differences
+to MA are that rainfall occurrence depends more on CIN and 2T, possibly because in ON the
+9TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+0.000.250.500.751.00a) DJF
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+b) MA
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+c) MJTCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+0.000.250.500.751.00d) JAS
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+e) ON
+TCWV
+Q700
+KX
+Q925
+D2
+TCLW
+Q500
+Q600
+R500
+CAPE
+TCC
+R300
+CIN
+2T
+SHR
+SPT
+T500
+T850
+VIMD
+700
+0.000.250.500.751.00
+f) Mean CPA by season
+DJF
+MA
+MJ
+JAS
+ONFigure 3: As Figure 2 but for CPA and precipitation amount.
+solar angle is already flatter and the daytime heating is further dampened by the higher moisture
+availability after the rainy season. As for DJF, rain depends on cold T500 and the relation to
+T850 is highly variable and can take both directions, however, with a clear tendency to cooler
+conditions when rain occurs. ON also shows the clearest relation to cyclonic perturbations as
+reflected in AUC values below 0.5 for Ψ700. These may grow in importance relative to other
+mechanisms, as triggering by daytime heating weakens. Finally, Figure 2f shows a summary plot
+of mean AUC values for all five seasons. This plot underlines the similar behavior of MJ and
+JAS (with a consistently higher amplitude for MJ), as well as of MA and ON (with a consistently
+higher amplitude for ON). DJF often shows the highest magnitude, as rain depends strongly on
+unusual conditions to occur, but given the many dry days, the overall behavior appears quite
+noisy.
+The corresponding analysis for CPA is shown in Figure 3. Overall there are many similarities to
+Figure 2, indicating that variables that work as predictors for occurrence also work for amount.
+This is particularly true for the wet part of the year (MJ, JAS and ON), where plots look largely
+identical (Figure 3c–e). For MA (Figure 3b), there is still large agreement across all variables
+but the magnitude of CPA values is smaller and the box plots are narrower than for AUC.
+This indicates that in this somewhat marginal rainfall season, amount is harder to predict than
+occurrence. This trend is even more evident for the dry DJF season (Figure 3a), when some
+boxplots become very narrow and magnitudes fall underneath those of ON on average, as shown
+by the summary plot (Figure 3f).
+For an improved understanding of the ranges in the boxplots, Figure 4 shows the spatial pattern
+of CPA of selected meteorological variables exemplarily for the peak monsoon season JAS. Con-
+sistent with the leftmost boxplot in Figure 3d, CPA values for TCWV are at or above 0.5 almost
+1020
+ 10
+ 0 10 20 30
+Longitude051015Latitudea) TCWV
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudeb) KX
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudec) R500
+20
+ 10
+ 0 10 20 30
+Longitude051015Latituded) CIN
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudee) T850
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudef) 700
+0.2 0.4 0.6 0.8Figure 4: Spatial pattern of CPA between the ERA5 predictor a) TCWV, b) KX, c) R500, d)
+CIN, e) T850, and f) Ψ700 from Table 1 and precipitation amount in season JAS.
+everywhere in the study region (Figure 4a), while featuring an interesting three-tier structure.
+Over northern parts of the domain, where moisture is a general limiting factor, CPA values are
+high, especially over the dry eastern Sahel. Further south, along the main rain belt and stretch-
+ing into the Congo Basin, CPA values are close to 0.5, indicating limitations through convective
+triggering or stability rather than moisture availability. To the south of the rain belt, i.e., along
+the Guinea Coast and over the East African highlands, moisture appears to become a limiting
+factor again. A very similar pattern but with a smaller range emerges for KX (Figure 4b). The
+largest differences to TCWV are found along the Guinea Coast, where conditions are often close
+to moist neutral requiring lifting mechanism to produce rain (cf. Figure 1.31 in Fink et al., 2017).
+Similar but slightly northward shifted structures are found for CAPE (Appendix A, Figure A1c).
+A much larger range (0.35–0.75) but with a similar three-tier structure is found for R500 and CIN
+(Figure 4c,d). One would expect that a moister mid-troposphere and less convective inhibition
+(recall that CIN is negatively oriented) enhances rainfall amounts and so the behavior within the
+rain belt is somewhat counter-intuitive. The most likely explanation is that in areas of abundant
+moisture and often neutral stratification, large rainfall amounts can most effectively be generated
+by organized convective systems that require some barrier to accumulate CAPE over the following
+day and a relatively dry mid-troposphere to allow rainfall evaporation and downdrafts, which in
+turn can trigger new convection through cold pools (cf. Table 11.2 in Lafore et al. (2017b)). It
+is interesting to note that CPA for TCC is similarly structured as R500, showing CPA values
+well below 0.5 in the rain belt (Appendix A, Figure A1a). Finally, CPA values for T850 and
+Ψ700 are both characterised by a marked north-south division around 12◦N (Figure 4e,f). The
+patterns indicate that in the north, high rainfall amounts are accompanied by lower T850, likely
+indicating a northward progression of the moist and cool monsoon layer, while in the south warm
+11TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00Figure 5: Spatially averaged Spearman’s rank correlation coefficient in season JAS between the
+ERA5 variables from Table 1.
+air at 850 hPa may indicate more instability on the following day. With respect to Ψ700 low
+values in the north indicate that rainfall is accompanied by more cyclonic conditions, likely due
+to the trough passage of AEWs, while in the south weak anticyclonic conditions prevail.
+Most meteorological variables from Table 1 show spatial patterns akin to those in Figure 4,
+though some feature hard to interpret local signals that entail a wider range of CPA values (e.g.,
+2T and SHR, see Appendix A, Figure A1b,d). It is also worth mentioning that corresponding
+spatial structures for AUC largely agree with CPA (not shown). Comparing JAS with the other
+four seasons, we find a high consistency in the discussed patterns that largely shift north- and
+southward with the seasonal evolution of the West African monsoon system (not shown).
+For the construction of statistical models, correlations between predictor variables matter, as
+they hinder interpretation and may yield unstable statistical parameters. Figure 5 visualizes
+Spearman’s rank correlation coefficients in JAS for the 20 predictor variables from Table 1. We
+compute Spearman’s coefficient at each grid point, and then average over grid points. Note that
+here, we want the correlation coefficient to be symmetric (in contrast to the asymmetric relation
+between target and predictor variables). This analysis has been conducted for all five seasons
+(Appendix A, Figure A2), but due to the large similarities between them, we discuss the peak
+monsoon season JAS only.
+Not surprisingly, there are generally high correlations between the moisture variables (TCWV,
+Q500, Q600, Q700, Q925, 2D, TCLW, R500, R300, and TCC), where it is noteworthy that
+R500 is more strongly correlated to Q500 than T500. KX and CAPE show considerably differ-
+ent patterns, with KX being highly correlated with the moisture variables but surprisingly also
+associated with cold T850, which to some extent counteracts the impact of moister conditions.
+CAPE is most sensitive to low-level moisture and associated with warm T850, as does CIN but
+to a smaller degree. A positive SPT is weakly associated with a moister and warmer atmosphere,
+consistent with the southerly flow behind an AEW trough, where the moister atmosphere sup-
+presses longwave cooling. SHR, 2T, and T500 show overall weak and unsystematic correlations,
+12Table 2: Overview of probabilistic forecast methods for precipitation accumulation, including
+general type, brief description, acronym, and availability of training data. Methods marked with
+an asterisk∗yield PoP forecasts only; for methods marked∗∗we do not present results for PoP
+forecasts. The final column notes from which year and month onward training data are available
+and used. See text for details.
+Type Description Acronym Training
+Climatological monthly probabilistic climatology MPC 2000 12
+Physics-based ECMWF ensemble prediction system EPS NA
+isotonic regression applied to EPS EPS+ISO∗2006 12
+EMOS applied to EPS EPS+EMOS∗∗2006 12
+EasyUQ applied to HRES HRES+EasyUQ 2001 12
+Statistical logistic regresssion, baseline (5 predictors) Logit-base∗2000 12
+same, full model (25 predictors) Logit-full∗2000 12
+distributional index model, baseline (5 predictors) DIM-base∗∗2000 12
+same, full model (25 predictors) DIM-full∗∗2000 12
+Machine learning EasyUQ applied to convolutional neural network CNN+EasyUQ 2000 12
+Hybrid mixture of HRES+EasyUQ and CNN+EasyUQ Hybrid NA
+in agreement with the difficult to interpret spatial patterns for CPA discussed above. Finally,
+T850, VIMD, and Ψ700 are consistently negatively correlated with the moisture variables and
+KX, with the exception of 2D. While the relation to VIMD is straightforward, T850 may indicate
+north-south movements of the monsoon layer, bringing overall moister or drier conditions. The
+negative correlation between moisture variables and Ψ700 reflects the wet conditions associated
+with cyclonic disturbances, e.g., AEW troughs or vortices.
+4 Physics-based and data-driven forecast methods
+Forecasts for precipitation occurrence and precipitation amount ought to be probabilistic to
+account for the chaotic nature of the atmosphere, thus for the former they should output a
+probability of precipitation (PoP) and for the latter a probability distribution. We investigate
+forecasts for precipitation occurrence and precipitation amount separately, which allows to con-
+nect our results to Vogel et al. (2021) and Rasheeda Satheesh et al. (2023), where the binary
+setting was considered only. Furthermore, we can compare between the comparably easy task
+of producing PoP forecasts and the more challenging task of constructing probabilistic forecasts
+for precipitation amount. To assess the skill of statistical and machine learning models it is
+essential to use baseline models to which to compare the forecast performance. In the follow-
+ing subsections, different types of forecasting models are presented that are physics-based NWP
+models, purely data-driven statistical or machine learning techniques, or mixtures of both. Table
+2 provides an overview of all considered approaches.
+As discussed in section 2, our evaluation period for 24-hour forecasts of precipitation amount
+and precipitation occurrence ranges from 1 December 2010 to 30 November 2019. The DJF
+season runs across two subsequent calendar years and we generally assign it to the second year.
+Reporting a yearly seasonal or overall mean instead of a single mean score over the complete
+evaluation period allows for a more distinct comparison between forecasting models and provides
+insights into the temporal evolution of forecast skill.
+13Except for the ECMWF ensemble prediction system (EPS), all types of forecasting methods
+require training data and some form of training procedure.2In this study, we use annually
+growing, expanding training sets that resemble operational settings, where only past data are
+available.3The initial training period ranges from the first day of the month in the right most
+column of Table 2 (hereinafter, the start date) to 30 November 2010, and the thus trained
+methods are used to generate day-ahead 24-hour forecasts for the period from 1 December 2010
+to 30 November 2011. Then, we successively add one more year to the training period, ranging
+now from the start date through 30 November in year 2010+ x, and use the thus trained methods
+to generate forecasts for the 12-month period that begins on 1 December in year 2010 + x, where
+x∈ {1, . . . , 8}. This procedure is followed until training is on data through 30 November 2018
+and the thus trained methods are used to generate forecasts for 1 December 2018 through 30
+November 2019. Thus, there are nine evaluation folds in total, which we associate with calendar
+years 2011, . . . , 2019, respectively.
+4.1 Climatological forecasts
+Arguably, the simplest possible type of probabilistic forecast is a climatology constructed from
+past observations. Here we use GPM IMERG to construct a monthly probabilistic climatology
+(MPC). The MPC forecast for a specific valid date is an ensemble constructed by using all
+past observations from the month at hand. For example, for a test date in January 2014, the
+MPC forecast is constructed based on data from January 2001 to January 2013, which yields
+an ensemble of size 31 ×13 = 403. To obtain the MPC PoP forecast, the relative frequency of
+ensemble members with rainfall exceeding 0.2 mm is computed.
+4.2 Physics-based forecasts
+Our comparison includes raw and postprocessed probabilistic forecasts from physics-based nu-
+merical weather prediction (NWP) models run by the ECMWF (section 2.3). The postprocessed
+forecasts require training, for which we use expanding training sets with start dates listed in
+Table 2 as described above. Training is performed at each grid point individually.
+4.2.1 Operational ECMWF NWP ensemble
+The operational ECMWF ensemble prediction system (EPS) comprises 51 NWP runs, namely,
+a control member and 50 perturbed members. Just as for the climatological MPC approach, the
+EPS PoP forecast is the relative frequency of members that exceed 0.2 mm.
+4.2.2 Statistically postprocessed ECMWF NWP ensemble
+Statistical postprocessing is used to correct for systematic biases in raw ensemble forecasts.
+Here we use Ensemble Model Output Statistics (EMOS), originally developed by Gneiting et al.
+2Our Hybrid model combines the CNN+EasyUQ and HRES+EasyUQ forecasts in a way that does not require
+additional training.
+3Nonparametric statistical methods such as IDR and especially machine learning approaches benefit from
+having as much (relevant) training data available as possible. Subject to this caveat, the predictive performance
+generally does not depend very much on the details of the training scheme. For example, we also implemented the
+EPS+EMOS technique using a rolling training period of the most recent 730 days and obtained similar results.
+14(2005), to generate full predictive probability distributions by linking ensemble information to
+distributional parameters. The optimal coefficients are found by optimizing a performance metric
+on training data.
+In the binary case, we recalibrate the EPS PoP by using nonparametric isotonic regression
+(Zadrozny and Elkan, 2002), here referred to as EPS+ISO. For precipitation amount, we apply
+the EMOS technique proposed by Scheuerer (2014) which models positive rainfall accumula-
+tions with generalized extreme value distributions, to generate the EPS+EMOS forecast. While
+EPS+EMOS induces a PoP forecast, the predictive performance is very similar, though typi-
+cally slightly inferior, to EPS+ISO. Therefore, we do not report results for the respective PoP
+forecasts (cf. Table 2).
+4.2.3 EasyUQ on the HRES model
+The high resolution (HRES) model from ECMWF generates a deterministic NWP forecast. We
+use the EasyUQ technique, introduced in section 2.4, to transform this single-valued forecast
+into a postprocessed predictive distribution, to yield the HRES+EasyUQ forecast.
+4.3 Statistical forecasts
+Statistical approaches use training data to learn relationships between a target variable and one
+or more predictor variables. Here, the target variable is precipitation amount at a given grid
+point, which in the case of precipitation occurrence is thresholded at 0.2 mm. We use logistic
+regression to obtain PoP forecasts and Distributional single Index Models (DIMs; Henzi et al.,
+2023) for probabilistic forecasts of precipitation amount, based on predictor variables from section
+3. Statistical models require training, and we use annually expanding training sets with start
+date in December 2000 (Table 2) as described above. Training is performed at each grid point
+individually.
+The analysis in section 3 provides a thorough understanding of the influence of the selected
+variables from Table 1 on precipitation occurrence and amount, and enables to link them to
+typical seasonal weather phenomena. However, overall, the effect of meteorological variables on
+precipitation is similar across seasons when taking into account the latitudinal shifts associated
+with the monsoon system. As a consequence, we found little difference in model performance
+between fitting models on seasonal data versus the whole available training period, as temporal
+effects such as seasonal changes can be captured by predictor variables that encode the day of
+the year. Therefore, instead of fitting seasonal models, we train models that apply year-round.
+We distinguish baseline models with two predictors that encode the day of the year and three
+correlated rainfall predictors (section 3.1) from full models that additionally use 20 predictor
+variables from ERA5 (section 3.2). To prevent a statistical model from overfitting, regularization
+techniques can be applied. However, in this experiment the performance of the statistical models,
+which use modest numbers of at most 25 predictor variables only, does not improve when using
+the regularization techniques we tested. Consequently, we refrain from performing any feature
+selection beyond the choices made in section 3, which were driven by meteorological expertise
+and extant literature in atmospheric physics.
+154.3.1 Logistic regression
+We use logistic regression (Logit) models to generate statistical PoP forecasts. Specifically, let
+mbe the number of predictor variables, which we denote by x1, . . . , x m, and let pbe the PoP
+forecast. The logistic regression model then is of the form
+logit( p) = logp
+1−p=α0+mX
+j=1αjxj, (4)
+where the statistical coefficients α0, α1, . . . , α mare estimated from training data. Our baseline
+model (Logit-base) originates from Vogel et al. (2021) and Rasheeda Satheesh et al. (2023) and
+uses m= 5 predictor variables, namely, three correlated rainfall predictors x1, x2, and x3at
+temporal lags of one, two, and three days, respectively, as described in section 3.1, and two
+variables x4= sin(2 πd/365) and x5= cos(2 πd/365) that depend solely on the day of the year d.
+The full model (Logit-full) extends to m= 25 predictor variables in eq. (4), now including the
+twenty ERA5 variables from Table 1.
+4.3.2 Distributional index models
+To produce probabilistic forecasts for accumulated precipitation we use the Distributional (sin-
+gle) Index Model (DIM) approach introduced by Henzi et al. (2023), which combines the clas-
+sical single index model with Isotonic Distributional Regression (IDR; Henzi et al., 2021). In a
+nutshell, an index is learned that represents the conditional mean of the target variable, here
+log-transformed precipitation accumulation, and then a predictive distribution is estimated non-
+parametrically under a stochastic ordering constraint. As before, let x1, . . . , x mbe predictor
+variables, and let ybe the target, namely, precipitation accumulation. The index model assumes
+the relationship
+log
+y+1
+100
+=β0+mX
+j=1βjxj, (5)
+where the statistical coefficients β0, β1, . . . , β mare learned from training data. Subsequent to
+the training of the index model, the nonparametric IDR distributions are estimated on the same
+training data, augmented with the fitted index values. We distinguish a baseline model (DIM-
+base, m= 5) and an extended model (DIM-full, m= 25 in eq. (5)), for which we use the same
+sets of predictor variables as in the Logit approach from section 4.3.1.
+Note that PoP forecasts can be extracted from the DIM-base and DIM-full distributions. These
+yield similar, though slightly inferior, results than the Logit-base and Logit-full PoP forecasts,
+respectively, and so we do not report the respective scores (cf. Table 2).
+4.4 Machine learning based forecasts: CNN+EasyUQ
+The aforementioned statistical models are applied at each grid point individually. Thus, including
+spatial information has to be done by manually engineering features accordingly, such as the
+correlated rainfall predictors in section 3.1. In contrast, Convolutional Neural Network (CNN)
+models operate directly on the two-dimensional input space and can learn spatial relations from
+the data without the need to extract spatial information beforehand. CNN models are most
+16commonly used for image tasks, where the input usually is a two- or three-dimensional array
+of pixel values. The gridded weather data over our evaluation domain can be envisaged as
+two-dimensional pseudo images of size 19 ×61. These dimensions correspond to latitude and
+longitude, respectively, spanning the study domain (Figure 1) from 0◦to 18◦N and 25◦W
+to 35◦E, respectively, with a grid resolution of 1◦×1◦. With a suitable architecture, a single
+CNN model produces a two-dimensional array with forecasts for all grid points at once, instead of
+training models at each grid point individually. Due to their inherent inductive bias towards local
+neighborhood connectivity, CNNs are well-suited for predicting precipitation on the 19 ×61 grids,
+as they effectively exploit spatial correlations and structures within a grid, recognizing patterns
+within local areas that may be indicative of specific weather conditions. For this reason, the three
+correlated rainfall predictors from section 3.1 are replaced by 19 ×61 grids of IMERG precipitation
+accumulations (section 2.1) at temporal lags of one, two, and three days, respectively.
+Motivated by their successful application in related meteorological tasks (Ayzel et al., 2020; Weyn
+et al., 2020; Lagerquist et al., 2021; Chapman et al., 2022; Otero and Horton, 2023), we employ
+a CNN architecture in the form of the U-Net (Ronneberger et al., 2015). The architecture of
+the U-Net consists of a contracting (downsampling) path and an expansive (upsampling) path,
+which are symmetric in terms of individual layer properties, giving it a U-like shape. We make
+use of max pooling operations for downsampling and transposed convolutions for upsampling
+layers. A crucial feature of the U-Net is skip connections between layers of the same size in
+the contracting and expanding paths. Applied to the precipitation data grid, these connections
+allow the network to use information from multiple resolutions, combining the context from the
+contracting path with the localization information from the expansive path. This allows to model
+longer spatial range dependencies in the data. To avoid overfitting, we also make use of Dropout
+(Srivastava et al., 2014) throughout the network architecture.
+To transform the deterministic precipitation forecasts of the CNN model into probabilistic
+forecasts, the EasyUQ technique introduced in Section 2.4 is applied at each grid point in-
+dividually, subsequent to the training of the index model, and based on the same training
+data as for the neural network, augmented with the deterministic CNN output. As noted,
+the resulting CNN+EasyUQ forecast distributions are discrete and have mass exclusively at
+outcomes observed during training. Code for the implementation of the CNN+EasyUQ ap-
+proach in Python (Python Software Foundation, 2023) is publicly available under https:
+//github.com/evwalz/precipitation . Once more we emphasize that, while our usage of
+EasyUQ in concert with the CNN model is novel, we employ standard choices, such as quadratic
+loss and 3x3 convolutional kernels, for the neural network architecture and neural network train-
+ing.
+4.5 Hybrid approaches
+NWP models represent the physical laws of atmospheric dynamics through a set of differential
+equations. Statistical or machine learning based approaches, on the other hand, do not encode
+physical laws but learn patterns based exclusively on past data. A hybrid model is a combination
+of both approaches and thus can benefit from both the physical expertise embodied in NWP
+output and the flexibility of data-driven approaches. In this paper, we base hybrid approaches
+on the deterministic HRES forecast from section 4.2.3 and the deterministic CNN forecast from
+section 4.4. We consider three approaches to obtain probabilistic forecasts from the deterministic
+HRES and CNN forecasts. First, the NWP forecast can be used as an additional gridded feature
+in the CNN model, followed by grid point based application of EasyUQ. Secondly, we can apply
+17IDR using both deterministic forecasts as input features. Lastly, a simple approach is to use a
+weighted or unweighted average of the predictive distributions generated by HRES+EasyUQ and
+CNN+EasyUQ. We found experimentally that the first two approaches do not improve predictive
+ability, generally showing similar forecast performance than the CNN+EasyUQ forecast. The
+last approach in its most basic form of an equal average between the HRES+EasyUQ and
+CNN+EasyUQ distributions, which does not require any additional training, shows slight forecast
+improvements. It is therefore selected and referred to as the Hybrid model.
+5 Forecast evaluation
+In this section we report major findings from the forecasting experiment. The discussion concen-
+trates on the peak monsoon season JAS, but we provide results for the other seasons in additional
+figures in Appendix A. As described at the start of section 4, our experiment uses expanding
+training sets to learn the forecasting models, and we frequently report annual results from the
+evaluation folds for 2011, . . . , 2019. As evaluation metrics, the mean Brier score (BS) from
+eq. (1) and the mean continuous ranked probability score (CRPS) from eq. (2) are used.
+5.1 Effects of variable selection in statistical models
+To better understand the influence of the number of predictor variables on the forecast perfor-
+mance of the statistical models, namely, the Logit PoP forecast (section 4.3.1) and the DIM
+forecast for precipitation accumulation (section 4.3.2), a visual analysis is provided in Figure 6.
+Starting with the mean score of the base model, which has five predictor variables, one more
+variable is successively added and the corresponding mean score is shown, until the full model
+with 25 predictor variables is reached. The variables are selected in the order of the distance
+between 0.5 and the mean AUC respectively CPA computed without splitting into seasons.4
+Figure 6a shows that the addition of TCWV to the Logit base model yields an improvement
+of the BS on the order of 5% in all years. Small further improvements of less than 1% are
+obtained by adding mid-level humidity (Q700) and static stability (KX). The addition of further
+variables yields minor improvement only, with the exception of 2m temperature (2T), which
+leads to an improvement comparable to Q700 and KX, despite AUC values barely above 0.5
+(Figure 2d). Qualitatively, improvements in CRPS per predictor regarding precipitation amount
+(Figure 6b) show similar results, yet the percentage improvements are smaller such that adding
+variables other than TCWV and Q700 barely improves performance. Generally, the performance
+difference between years is large, and the ranking of the years differs between the BS, where the
+lowest values are seen for 2017, and the CRPS, where they are seen for 2013. Results for seasons
+other than JAS are qualitatively similar, except that the overall level of the scores varies strongly
+between seasons (Appendix A, Figures A3 and A4).
+5.2 Comparative evaluation of predictive performance
+Figure 7a visualizes the mean Brier score (BS) in season JAS for the PoP forecasting models
+from Table 2. Similar to the results in Vogel et al. (2021), the ECMWF ensemble prediction
+system (EPS) shows inferior or, in later years, comparable performance than MPC, and both EPS
+4An AUC or CPA value of 0.5 suggests a useless feature.
+18BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.1400.1450.1500.1550.1600.165
+a) BS for JAS
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+R500
+CAPE
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+T500
+SPT3.13.23.33.43.5
+b) CRPS for JAS
+2011
+2012
+2013
+2014
+2015
+2016
+2017
+2018
+2019
+MeanFigure 6: a) Mean Brier score (BS) for the Logit PoP forecast under successive addition of the
+predictor variables displayed on the horizontal axis. The base model includes three correlated
+rainfall predictors and two time features. The BS is averaged over space and season JAS for
+evaluation folds from 2011 to 2019. b) Corresponding display for the DIM forecast of precipitation
+accumulation and the CRPS.
+and MPC are outperformed by a simple logistic regression approach based on correlated rainfall
+predictors only (Logit-base). The inclusion of ERA5 predictors into the logistic regression model
+(Logit-full) leads to a clear improvement beyond the post-processed EPS-ISO PoP forecast.
+Surprisingly, the HRES+EasyUQ forecast shows better performance than the ensemble-based
+EPS+ISO forecast. The CNN+EasyUQ PoP forecast outperforms all other methods, except for
+the Hybrid forecast, which shows nearly the same performance.
+The mean CRPS for the forecasting models for precipitation accumulation from Table 2 is dis-
+played in Figure 7b. Through 2014, EPS clearly shows the lowest forecast skill; thereafter, its
+skill improves and gets close to the performance of MPC and DIM-base. Unlike the Logit-
+full PoP forecast, DIM-full does not outperform the post-processed EPS+EMOS forecast. The
+HRES+EasyUQ approach yields better scores than EPS+EMOS, probably due to the flexibility
+of the EasyUQ forecast distributions. The CNN+EasyUQ approach shows a forecast improve-
+ment within the evaluation period, and the Hybrid model performs similar or slightly better for
+some years. As can be seen by the dotted line giving the JAS area-averaged rainfall, the mean
+CRPS co-varies with the total rainfall amount, thus the years with the best performance are
+usually also the driest.
+Figures A5 and A6 in Appendix A show analogous evaluation results for all five seasons. Through-
+out, the CNN+EasyUQ and Hybrid forecasts perform similarly to each other, and outperform
+their competitors by considerable margins.
+5.3 Spatial structure of predictive performance
+For an understanding of spatial patterns of forecast performance, skill score plots of the forecast
+approaches considered here with MPC as reference forecast are shown in Figure 8 for precipitation
+occurrence and in Figure 9 for precipitation accumulation, both for the JAS peak monsoon season
+and across evaluation folds.
+192011 2012 2013 2014 2015 2016 2017 2018 20190.120.140.160.18a) BS for JAS
+MPC
+EPS
+EPS+ISO
+HRES+EasyUQLogit-base
+Logit-full
+CNN+EasyUQ
+Hybrid
+2011 2012 2013 2014 2015 2016 2017 2018 20192.62.83.03.23.43.63.84.0b) CRPS for JAS
+MPC
+EPS
+EPS+EMOS
+HRES+EasyUQDIM-base
+DIM-full
+CNN+EasyUQ
+Hybrid
+100200300400500600
+mmTotal accumulated precipitationFigure 7: a) Mean Brier score (BS) for PoP forecasts from Table 2, averaged over space and
+season JAS for evaluation folds from 2011 to 2019. b) Corresponding display for the continuous
+ranked probability score (CRPS) and probabilistic forecasts of precipitation amount, along with
+spatially averaged total accumulated precipitation for JAS, in the unit of millimeters.
+With respect to the PoP forecasts for rainfall occurrence, EPS shows negative skill relative to
+MPC over the southern parts of the study domain, particularly over the relatively dry areas
+along the Guinea coast, over Gabon and southern Cameroon, where rainfall tends to be rather
+localized and short-lived such that precipitation occurrence is hard to predict (Figure 8a). Sene-
+gal/Mauritania and Chad/Sudan are the only areas with considerable positive skill, while the rest
+of the domain ranges close to zero. Applying statistical postprocessing (EPS+ISO, Figure 8b)
+removes the large negative skill along the Guinea Coast but shows remaining issues in a stretch
+from Nigeria to South Sudan with mostly weakly negative skill. Remarkably, postprocessing de-
+teriorates skill around the highlands in Guinea/Sierra Leone and westernmost Ethiopia. Over the
+Sahel, in contrast, the postprocessing leads to an overall improvement and consistently positive
+skill. A possible reason is the stronger influence of predictable features such as AEWs or midlati-
+tude perturbations here in contrast to the more stochastic rains in the south (Rasheeda Satheesh
+et al., 2023). The comparison between the EPS+ISO and HRES+EasyUQ (Figure 8c) demon-
+strates that for forecasts at individual sites there is no added value in running an NWP ensemble
+system, even after postprocessing. The structures are fairly consistent (e.g., with problematic
+regions in Guinea/Sierra Leone, the Central African Republic, South Sudan, and Ethiopia) but
+the values are consistently more positive for the HRES+EasyUQ technique, which is based on
+HRES model alone, as opposed to using an ensemble.
+Moving to the data-based approaches (Figure 8d—g) we see consistent improvement over most
+areas of the study domain, though PoP forecasts for western Ethiopia remain a challenge, pos-
+sibly related to the rough topography in this area. While in the simpler Logit-base approach
+(Figure 8d) some areas of negative skill remain, the inclusion of additional predictors in Logit-full
+(Figure 8e) leads to a consistent improvement and thus positive skill almost everywhere in the
+study region. It is also noteworthy that the Logit models generate overall smoother skill fields
+compared to the physics-based approaches. Finally, the CNN+EasyUQ and Hybrid methods
+(Figure 8f,g) outperform all other approaches to a large extent, reaching up to 40% improvement
+relative to the climatological benchmark MPC. The improvement relative to EPS is particular
+impressive over the Guinea coastal region (e.g., Ivory Coast and Ghana), where EPS performs
+much worse than MPC, and illustrates the ability of the CNN to learn complex physical rela-
+tionships that determine local rainfall probability. The inclusion of NWP information from the
+2020
+ 10
+ 0 10 20 30
+Longitude051015Latitudea) EPS
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudeb) EPS+ISO
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudec) HRES+EasyUQ
+20
+ 10
+ 0 10 20 30
+Longitude051015Latituded) Logit-base
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudee) Logit-full
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudef) CNN+EasyUQ
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudeg) Hybrid
+0.4
+ 0.2
+ 0.0 0.2 0.4Figure 8: Spatial structure of the Brier skill score for probability forecasts of precipitation
+occurrence with a) EPS, b) EPS+ISO, c) HRES+EasyUQ, d) Logit-base, e) Logit-full, f)
+CNN+EasyUQ, and g) the Hybrid forecast from Table 2, relative to MPC as baseline, for season
+JAS and combined evaluation folds from 2011 to 2019.
+HRES model in the Hybrid approach yields small improvements in some places but no clear ad-
+vance relative to CNN+EasyUQ. This demonstrates that knowing the ambient conditions shortly
+before the beginning of the 24-hour forecast period is much more important than knowledge of
+the forecast evolution during that period.
+The corresponding analysis for rainfall amount (Figure 9) reveals many parallels to rainfall
+probability. EPS (Figure 9a) stands out as having many areas of negative CRPS skill, with an
+overall similar structure to the occurrence analysis (Figure 8a). Postprocessing (EPS+EMOS,
+Figure 9b) cures many issues of EPS, leading to mostly weakly positive skill, but does not perform
+as well as the computationally much less expensive HRES+EasyUQ technique (Figure 9c). Here
+the skill fields for amount are overall smoother than for occurrence with less contrast between
+the Sahel and the southern areas. The DIM models (replacing the Logit models for amount)
+show negligible further advance. The skill of DIM-base (Figure 9d) is close to zero everywhere
+with a negative area in the southeast and positive elsewhere, while the inclusion of additional
+predictors (DIM-full, Figure 9e) slightly improves skill over most areas. Finally, as for occurrence,
+the machine learning based CNN+EasyUQ and Hybrid methods (Figure 9f,g) outperform all
+2120
+ 10
+ 0 10 20 30
+Longitude051015Latitudea) EPS
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudeb) EPS+EMOS
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudec) HRES+EasyUQ
+20
+ 10
+ 0 10 20 30
+Longitude051015Latituded) DIM-base
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudee) DIM-full
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudef) CNN+EasyUQ
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudeg) Hybrid
+0.4
+ 0.2
+ 0.0 0.2 0.4Figure 9: Spatial structure of the CRPS skill score for probabilistic forecasts of precipitation
+accumulation with a) EPS, b) EPS+EMOS, c) HRES+EasyUQ, d) DIM-base, e) DIM-full, f)
+CNN+EasyUQ, and g) the Hybrid forecast from Table 2, relative to MPC as baseline, for season
+JAS and combined evaluation folds from 2011 to 2019.
+other approaches to a large extent with positive CRPS skill of up to 30%. Here the Hybrid
+approach leads to a more considerable improvement relative to CNN+EasyUQ, yielding fairly
+equal skill improvement across the entire, quite heterogeneous domain. These improvements are
+more prominent in areas where the physics-based HRES model may better represent the time
+evolution of dynamical features such as AEWs and extratropical influences.
+5.4 Calibration and discrimination ability
+We now assess the calibration and discrimination ability of the forecasts. Following Vogel et al.
+(2021) and Rasheeda Satheesh et al. (2023), reliability diagrams for the PoP forecasts from Table
+2 at the grid point closest to Niamey (13◦N, 2◦E) are presented in Figure 10.5The panels use
+the CORP approach of Dimitriadis et al. (2021) and show the decomposition (2.5) of the mean
+Brier score (BS) into miscalibration (MCB), discrimination (DSC), and uncertainty (UNC) com-
+ponents. Instead of considering each evaluation fold separately, the decomposition is computed
+5Python code for computation and plotting https://github.com/evwalz/corp_reldiag .
+220.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0Conditional event probabilityBS = 0.225
+MCB = 0.002
+DSC = 0.004
+UNC = 0.226a) MPC
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0BS = 0.202
+MCB = 0.023
+DSC = 0.047
+UNC = 0.226b) EPS
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0BS = 0.197
+MCB = 0.008
+DSC = 0.037
+UNC = 0.226c) EPS-ISO
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0BS = 0.189
+MCB = 0.008
+DSC = 0.046
+UNC = 0.226d) HRES+EasyUQ
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0Conditional event probabilityBS = 0.218
+MCB = 0.013
+DSC = 0.021
+UNC = 0.226e) Logit-base
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0BS = 0.197
+MCB = 0.008
+DSC = 0.037
+UNC = 0.226f) Logit-full
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0BS = 0.159
+MCB = 0.008
+DSC = 0.075
+UNC = 0.226g) CNN+EasyUQ
+0.0 0.2 0.4 0.6 0.8 1.0
+Forecast probability0.00.20.40.60.81.0BS = 0.154
+MCB = 0.007
+DSC = 0.080
+UNC = 0.226h) HybridFigure 10: Reliability diagrams for PoP forecasts at the grid point closest to Niamey (13◦N,
+2◦E) with a) MPC, b) EPS, c) EPS+ISO, d) HRES+EasyUQ, e) Logit-base, f) Logit-full, g)
+CNN+EasyUQ, and h) the Hybrid approach from Table 2, for season JAS and combined evalu-
+ation folds from 2011 to 2019, with 90% consistency bands under the assumption of calibration
+(Dimitriadis et al., 2021). The panels also show the mean Brier score (BS) and its miscalibration
+(MCB), discrimination (DSC), and uncertainty (UNC) components from eq. (3). The histograms
+along the horizontal axis show the distribution of the forecast probabilities.
+once on forecasts in the peak monsoon season JAS from all nine evaluation years together. If the
+reliability curve is close to the diagonal, a PoP forecast is calibrated (reliable). Deviations from
+the diagonal indicate some type of miscalibration: S-shaped curves indicate underconfidence (PoP
+too close to center), inverse S-shaped curves correspond to overconfidence (PoP too extreme),
+and curves that are below (above) the diagonal indicate biased PoP. The climatological MPC PoP
+forecast has a very limited range of forecast values and lacks discrimination ability, but shows
+excellent calibration. The poor calibration of the raw ENS PoP is corrected by post-processing
+(ENS+ISO). In agreement with the findings in Vogel et al. (2021) and Rasheeda Satheesh et al.
+(2023), the Logit-base PoP forecast is well calibrated and has moderate discrimination ability.
+In comparison, Logit-full shows a lower BS (more skillful PoP forecasts) reflected in both bet-
+ter calibration and improved discrimination ability. The CNN+EasyUQ and Hybrid techniques
+show superior performance — they are similarly well calibrated as EPS-ISO and Logit-full but
+show considerably higher discrimination ability.
+To assess the calibration of the probabilistic forecasts for accumulated precipitation at the grid
+point closest to Niamey, Figure 11 shows Probability Integral Transform (PIT) histograms. For
+the MPC and EPS ensemble forecast, a universal PIT (uPIT) histogram is shown (Vogel et al.,
+2018); for the other methods, the randomized version of the PIT is used (Gneiting and Resin,
+2023, eq. (1)). A uniform histogram indicates calibrated forecasts while a U-shaped (hump-
+shaped) histogram suggests underdispersed (overdispersed) forecasts, meaning that the forecasts
+are overconfident (underconfident). Skewed histograms indicate biases. The ECMWF ensemble
+(EPS) is underdispersed, which is corrected for in the EPS+EMOS forecast, though a bias
+230.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75DensityCRPS = 3.545
+MCB = 0.091
+DSC = 0.154
+UNC = 3.608a) MPC
+0.00 0.25 0.50 0.75 1.000.00.51.01.52.02.53.03.54.0CRPS = 3.685
+MCB = 0.913
+DSC = 0.836
+UNC = 3.608b) EPS
+0.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75 CRPS = 3.425
+MCB = 0.413
+DSC = 0.596
+UNC = 3.608c) EPS+EMOS
+0.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75 CRPS = 3.352
+MCB = 0.295
+DSC = 0.551
+UNC = 3.608d) HRES+EasyUQ
+0.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75DensityCRPS = 3.573
+MCB = 0.287
+DSC = 0.322
+UNC = 3.608e) DIM-base
+0.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75 CRPS = 3.416
+MCB = 0.309
+DSC = 0.501
+UNC = 3.608f) DIM-full
+0.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75 CRPS = 3.010
+MCB = 0.456
+DSC = 1.054
+UNC = 3.608g) CNN+EasyUQ
+0.00 0.25 0.50 0.75 1.000.000.250.500.751.001.251.501.75 CRPS = 2.930
+MCB = 0.612
+DSC = 1.290
+UNC = 3.608h) HybridFigure 11: Probability Integral Transform (PIT) histograms for probabilistic forecasts of pre-
+cipitation accumulation at the grid point closest to Niamey (13◦N, 2◦E) with a) MPC, b) EPS,
+c) EPS+EMOS, d) HRES+EasyUQ, e) DIM-base, f) DIM-full, g) CNN+EasyUQ, and h) the
+Hybrid approach from Table 2, for season JAS and combined evaluation folds from 2011 to 2019.
+The panels also show the mean continuous ranked probability score (CRPS) and its miscali-
+bration (MCB), discrimination (DSC), and uncertainty (UNC) components from eq. (3). The
+vertical scale of the histograms is shared across forecasts, except for EPS.
+remains. The other forecasts show PIT histograms that are nearly uniform. The associated
+decomposition (3) of the mean CRPS demonstrates the superior calibration of the climatological
+MPC forecast and the outstanding discrimination ability and overall predictive performance of
+the CNN+EasyUQ and Hybrid approaches.
+Finally, we use the decomposition of the mean Brier score (BS) or mean continuous ranked
+probability score (CRPS) into miscalibration (MCB), discrimination (DSC), and uncertainty
+(UNC) components for a spatially aggregated quantitative assessment. We compute the de-
+composition (3) at each grid point based on forecasts in the peak monsoon season JAS from
+all nine evaluation years, and the score components are then averaged across grid points. The
+miscalibration–discrimination (MCB–DSC) plots for the mean BS (Figure 12a) and mean CRPS
+(Figure 12b) provide a spatially consolidated comparison of the forecast methods. In both cases,
+the climatological MPC forecast shows the lowest MCB and the lowest DSC component. The
+ECMWF raw ensemble (EPS) has higher MCB than all other methods, and the miscalibration is
+taken care of by post-processing (EPS+ISO, EPS+EMOS). As regards the statistical forecasts,
+the inclusion of the ERA5 predictors (Logit-full, DIM-full) models in addition to the correlated
+rainfall predictors (Logit-basic, DIM-basic) improves DSC while MCB remains similar. The
+superiority of the CNN+EasyUQ forecast stems from its elevated discrimination ability. The
+Hybrid forecast shows slightly improved skill relative to CNN+EasyUQ, and trades better cali-
+bration for even higher discrimination ability. These findings are stable and apply across all five
+seasons (Appendix A, Figures A7 and A8).
+240.12
+0.13
+0.14
+0.15
+0.16
+0.17
+0.18
+0.19MPCEPSEPS+ISOHRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17
+MCBDSCa) BS decomposition for JAS
+2.2
+2.4
+2.6
+2.8
+3
+3.2
+3.4
+3.6
+3.8
+4
+MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32
+MCBDSCb) CRPS decomposition for JASFigure 12: Miscalibration (MCB), discrimination (DSC), and uncertainty (UNC) components
+of a) the mean Brier score (BS) for probability forecasts of precipitation occurrence, and b)
+the mean continuous ranked probability score (CRPS) for probabilistic forecasts of precipitation
+accumulation in the unit of millimeters, as described in Table 2. The score decomposition in (3)
+is applied at each grid point, based on the combined evaluation folds from 2011 to 2019, and the
+mean score and score components are then averaged over grid points. Parallel lines correspond
+to equal mean scores.
+6 Conclusions
+In this work the predictability of one-day ahead, 24-hour precipitation occurrence and amount
+over northern tropical Africa is investigated on the basis of conventional and new data-driven
+tools. Our study builds on previous papers with focus on forecasting rainfall occurrence for the
+summer season JAS, which compared the performance of climatological, raw and postprocessed
+ECMWF ensemble forecasts, and a simple logistic regression model based on correlated rainfall
+predictors. This binary forecasting problem is revisited in this paper with major adaptions.
+Instead of TRMM, GPM IMERG is used as ground truth data source. Forecasts are produced
+for the entire year instead of just the summer season (JAS) and ERA5 predictor variables are used
+to augment the logistic regression model. To this end, an extensive analysis of weather variables
+from ERA5 is performed to investigate and understand their relation to and their influence on
+precipitation. The meteorological interpretation of these dependencies is obtained by combining
+previously conducted research and results from statistical analysis performed in this work.
+A key contribution of our work is that we additionally investigate the more challenging problem
+of producing probabilistic forecasts for accumulated precipitation. Since the climatology and
+the NWP model output in this paper are in the form of ensembles, they can be readily used
+as probabilistic forecasts for precipitation amount. To produce data-driven statistical forecasts,
+the Distributional Index Model (DIM) is introduced, which is simple but very effective and
+thus can serve as a persuasive baseline. To account for the recent rise of machine learning in
+weather forecasting, a CNN model is presented which has the additional benefit of inherently
+exploiting spatial relations. To obtain a probabilistic output, we couple the CNN model with the
+25recently introduced EasyUQ approach, to yield the CNN+EasyUQ technique. These different
+forecasting approaches provide a detailed forecasting benchmark covering the range of simple to
+sophisticated models and ideas from NWP, statistics, and machine learning in an unprecedented
+way.
+The CNN+EasyUQ technique outperforms its competitors by a large margin, except for the
+Hybrid forecast, which is a simple arithmetic average of the HRES+EasyUQ and CNN+EasyUQ
+forecast distribution that yields minor further improvement. It is interesting to place our results
+for one-day ahead, 24-hour forecasts in the context of recent advances in data-based precipitation
+forecasts. For nowcasts at prediction horizons up to 12 hours, progress has been persuasive (Ayzel
+et al., 2020; Lagerquist et al., 2021; Ravuri et al., 2021; Espeholt et al., 2022; Zhang et al., 2023).
+In stark contrast, recent developments in neural network based weather forecasts at prediction
+horizons of days ahead have provided scant only attention to rainfall (Bi et al., 2023; Rasp et al.,
+2023), arguably due to the recognition that “precipitation is sparse and non-Gaussian” (Lam
+et al., 2023, p. 6). The CNN+EasyUQ technique provides an elegant and computationally highly
+efficient way of addressing the non-Gaussianity of precipitation accumulation. In very recent
+work, Andrychowicz et al. (2023) find that the data-driven MetNet-3 approach outperforms the
+ECMWF and NOAA raw ensembles in terms of CRPS for hourly precipitation accumulation
+over the continental United States at lead times up to 20 hours, but not beyond. However,
+unlike our study, which compares the CNN+EasyUQ forecast with state of the art competitors,
+Andrychowicz et al. (2023) do not compare MetNet-3 to postprocessed NWP ensemble forecasts,
+nor to statistical forecasts of the type considered in our paper.
+The reproduction of the results in this paper requires access to GPM IMERG precipitation
+data, predictor variables from ERA5, and ECMWF NWP forecasts. The first two sources are
+freely accessible, which makes results for MPC, the statistical approaches (Logit and DIM), and
+our key innovation, the CNN+EasyUQ technique, readily reproducible. For the more elaborate
+CNN+EasyUQ approach, code in Python (Python Software Foundation, 2023) is available at
+https://github.com/evwalz/precipitation . The raw ECMWF EPS, the postprocessed ver-
+sions thereof, the HRES+EasyUQ forecast, and the Hybrid model require access to ECMWF
+NWP forecasts which are freely available using the TIGGE (The International Grand Global
+Ensemble) archive ( ?) instead of MARS from ECMWF.
+In view of its outstanding performance in this study, the CNN+EasyUQ approach can likely
+improve operational probabilistic forecasts of day ahead, 24-hour rainfall in northern tropical
+Africa. To make real-time forecasts feasible, one would need to use the IMERG Early Run
+(https://gpm.nasa.gov/taxonomy/term/1357 ) in lieu of IMERG, which is an option that re-
+mains to be tested. To obtain ensemble forecasts of entire, spatio-temporally coherent pre-
+cipitation fields, rather than forecasts at individual locations and fixed prediction horizons, the
+HRES+EasyUQ and CNN+EasyUQ approaches can be coupled with empirical copula techniques
+(Clark et al., 2004; Schefzik et al., 2013), for which we encourage follow-up studies.
+While our study is limited in geographic scope, we feel that data-driven approaches of this
+type have potential to revolutionize rainfall forecasts throughout the tropics. Furthermore, the
+results of comparative studies by Little et al. (2009) for the United Kingdom and Andrychowicz
+et al. (2023) for the continental United States admit the speculation that the CNN+EasyUQ
+technique can improve probabilistic forecasts of 24-hour precipitation in the extratropics as well.
+Finally, a very interesting and relevant research question is whether similar advances in predictive
+performance are feasible at prediction horizons larger than a day ahead.
+26Acknowledgements
+We thank Sebastian Lerch and Marlon Maranan for comments and discussion. The work of
+Eva-Maria Walz was funded by the German Research Foundation (DFG) through grant number
+257899354. Tilmann Gneiting is grateful for support by the Klaus Tschira Foundation.
+References
+Ageet, S., A. H. Fink, M. Maranan, and B. Schulz, 2023: Predictability of rainfall over equato-
+rial East Africa in the ECMWF ensemble reforecasts on short to medium-range time scales.
+Weather and Forecasting ,38, 2613–2630.
+Andrychowicz, M., L. Espeholt, D. Li, S. Merchant, A. Merose, F. Zyda, S. Agrawal, and
+N. Kalchbrenner, 2023: Deep learning for day forecasts from sparse observations. Preprint,
+arXiv:2306.06079.
+Arnold, S., E.-M. Walz, J. Ziegel, and T. Gneiting, 2023: Decompositions of the mean continuous
+ranked probability score. Preprint, arXiv:2311.14122.
+Ayzel, G., T. Scheffer, and M. Heistermann, 2020: RainNet v1.0: A convolutional neural network
+for radar-based precipitation nowcasting. Geoscientific Model Development ,13, 2631–2644.
+Bauer, P., A. Thorpe, and G. Brunet, 2015: The quiet revolution of numerical weather prediction.
+Nature ,525, 47–55.
+Becker, T., P. Bechtold, and I. Sandu, 2021: Characteristics of convective precipitation over trop-
+ical Africa in storm-resolving global simulations. Quarterly Journal of the Royal Meteorological
+Society ,147, 4388–4407.
+Ben Bouall` egue, Z., and Coauthors, 2023: The rise of data-driven weather forecasting: A first
+statistical assessment of machine-learning based weather forecasts in an operational-like con-
+text. Preprint, arXiv:2307.10128.
+Bi, K., L. Xie, H. Zhang, X. Chen, X. Gu, and Q. Tian, 2023: Accurate medium-range global
+weather forecasting with 3D neural networks. Nature ,619, 533–538.
+Chapman, W. E., L. Delle Monache, S. Alessandrini, A. C. Subramanian, F. M. Ralph, S.-P.
+Xie, S. Lerch, and N. Hayatbini, 2022: Probabilistic predictions from deterministic atmospheric
+river forecasts with deep learning. Monthly Weather Review ,150, 215–234.
+Clark, M., S. Gangopadhyay, L. Hay, B. Rajagopalan, and R. Wilby, 2004: The Schaake shuffle:
+A method for reconstructing space–time variability in forecasted precipitation and temperature
+fields. Journal of Hydrometeorology ,5, 243–262.
+Dimitriadis, T., T. Gneiting, and A. Jordan, 2021: Stable reliability diagrams for probabilistic
+classifiers. Proceedings of the National Academy of Sciences of the United States of America ,
+118, e2016191 118.
+Ebert-Uphoff, I., and K. Hilburn, 2023: The outlook for AI weather prediction. Nature ,619,
+473–474.
+27Espeholt, L., and Coauthors, 2022: Deep learning for twelve hour precipitation forecasts. Nature
+Communications ,13, 5145.
+Fink, A. H., and Coauthors, 2017: Mean climate and seasonal cycle. Meteorology of Tropical West
+Africa: The Forecasters’ Handbook , D. J. Parker, and M. Diop-Kane, Eds., Wiley, Chichester,
+1–39.
+Galvin, J., 2010: Two easterly waves in West Africa in summer 2009. Weather ,65, 219–227.
+Gebremichael, M., H. Yue, and V. Nourani, 2022: The accuracy of precipitation forecasts at
+timescales of 1–15 days in the Volta river basin. Remote Sensing ,14, 937.
+Gneiting, T., and A. E. Raftery, 2007: Strictly proper scoring rules, prediction, and estimation.
+Journal of the American Statistical Association ,102, 359–378.
+Gneiting, T., A. E. Raftery, A. H. Westveld, and T. Goldman, 2005: Calibrated probabilistic
+forecasting using ensemble model output statistics and minimum CRPS estimation. Monthly
+Weather Review ,133, 1098–1118.
+Gneiting, T., and J. Resin, 2023: Regression diagnostics meets forecast evaluation: Conditional
+calibration, reliability diagrams, and coefficient of determination. Electronic Journal of Statis-
+tics,17, 3226–3286.
+Gneiting, T., and E.-M. Walz, 2022: Receiver operating characteristic (ROC) movies, universal
+ROC (UROC) curves, and coefficient of predictive ability (CPA). Machine Learning ,111,
+1–29.
+Haiden, T., M. Rodwell, D. Richardson, A. Okagaki, T. Robinson, and T. Hewson, 2012: In-
+tercomparison of global model precipitation forecast skill in 2010/11 using the SEEPS score.
+Monthly Weather Review ,140, 2720–2733.
+Henzi, A., G.-R. Kleger, and J. F. Ziegel, 2023: Distributional (single) index models. Journal of
+the American Statistical Association ,118, 489–503.
+Henzi, A., J. F. Ziegel, and T. Gneiting, 2021: Isotonic distributional regression. Journal of the
+Royal Statistical Society: Series B (Statistical Methodology) ,83, 963–969.
+Hersbach, H., and Coauthors, 2020: The ERA5 global reanalysis. Quarterly Journal of the Royal
+Meteorological Society ,146, 1999–2049.
+Hou, A. Y., and Coauthors, 2014: The Global Precipitation Measurement mission. Bulletin of
+the American Meteorological Society ,97, 701–722.
+Hubert, H., 1936: Origine Africaine d’un cyclone tropical Atlantique. Annales de physique du
+globe de la France d’outre-mer ,6, 97–115.
+Huffman, G. J., and Coauthors, 2020: Integrated Multi-satellite Retrievals for the Global Precip-
+itation Measurement (GPM) mission (IMERG). Satellite Precipitation Measurement: Volume
+1, V. Levizzani, C. Kidd, D. B. Kirschbaum, C. D. Kummerow, K. Nakamura, and F. J. Turk,
+Eds., Springer, Cham, 343–353.
+Kiladis, G. N., C. D. Thorncroft, and N. M. Hall, 2006: Three-dimensional structure and dy-
+namics of African easterly waves. Part I: Observations. Journal of Atmospheric Sciences ,63,
+2212–2230.
+28Klein, C., F. Nkrumah, C. M. Taylor, and E. A. Adefisan, 2021: Seasonality and trends of drivers
+of mesoscale convective systems in southern West Africa. Journal of Climate ,34, 71–87.
+Lafore, J. P., and Coauthors, 2017a: Deep convection. Meteorology of Tropical West Africa: The
+Forecasters’ Handbook , D. J. Parker, and M. Diop-Kane, Eds., Wiley, Chichester, 90–129.
+Lafore, J. P., and Coauthors, 2017b: West African synthetic analysis and forecast: WASA/F.
+Meteorology of Tropical West Africa: The Forecasters’ Handbook , D. J. Parker, and M. Diop-
+Kane, Eds., Wiley, Chichester, 423–451.
+Lagerquist, R., J. Q. Stewart, I. Ebert-Uphoff, and C. Kumler, 2021: Using deep learning to
+nowcast the spatial coverage of convection from Himawari-8 satellite data. Monthly Weather
+Review ,149, 3897–3921.
+Lam, R., and Coauthors, 2023: Learning skillful medium-range global weather forecasting. Sci-
+ence,382, 1416–1421.
+Little, M. A., P. E. McSharry, and J. W. Taylor, 2009: Generalized linear models for site-specific
+density forecasting of U.K. daily rainfall. Monthly Weather Review ,137, 1029–1045.
+Maranan, M., A. Fink, and P. Knippertz, 2018: Rainfall types over southern West Africa:
+Objective identification, climatology and synoptic environment. Quarterly Journal of the Royal
+Meteorological Society ,144, 1628–1648.
+Molteni, F., R. Buizza, T. N. Palmer, and T. Petroliagis, 1996: The ECMWF ensemble prediction
+system: Methodology and validation. Quarterly Journal of the Royal Meteorological Society ,
+122, 73–119.
+Nesbitt, S. W., R. Cifelli, and S. A. Rutledge, 2006: Storm morphology and rainfall characteristics
+of TRMM precipitation features. Monthly Weather Review ,134, 2702–2721.
+Nicholls, S., and K. Mohr, 2010: An analysis of the environments of intense convective systems
+in West Africa. Monthly Weather Review ,138, 3721–3739.
+Otero, N., and P. Horton, 2023: Intercomparison of deep learning architectures for the pre-
+diction of precipitation fields with a focus on extremes. Water Resources Research ,59,
+e2023WR035 088.
+Python Software Foundation, 2023: Python language reference . Python Software Foundation,
+URL https://python.org/.
+Rasheeda Satheesh, A., P. Knippertz, A. Fink, E.-M. Walz, and T. Gneiting, 2023: Sources of
+predictability of synoptic-scale rainfall variability during the West African summer monsoon.
+Quarterly Journal of the Royal Meteorological Society ,149, 3721–3737.
+Rasp, S., and Coauthors, 2023: WeatherBench 2: A benchmark for the next generation of data-
+driven global weather models. Preprint, arXiv:2308.15560.
+Ravuri, S., and Coauthors, 2021: Skilful precipitation nowcasting using deep generative models
+of radar. Nature ,597, 672–677.
+Regula, H., 1936: Druckschwankungen und Tornados an der Westk¨ uste von Afrika. Annalen der
+Hydrographie und maritimen Meteorologie ,64, 107–111.
+29Roca, R., J. Aublanc, P. Chambon, T. Fiolleau, and N. Viltard, 2014: Robust observational
+quantification of the contribution of mesoscale convective systems to rainfall in the Tropics.
+Journal of Climate ,27, 4952–4958.
+Ronneberger, O., P. Fischer, and T. Brox, 2015: U-Net: Convolutional networks for biomed-
+ical image segmentation. Medical Image Computing and Computer-Assisted Intervention —
+MICCAI 2015, Part III , Springer, 234–241.
+Rotunno, R., J. Klemp, and M. Weismann, 1988: A theory for strong, long-lived squall lines.
+Journal of the Atmospheric Sciences ,45, 463–485.
+Schefzik, R., T. L. Thorarinsdottir, and T. Gneiting, 2013: Uncertainty quantification in complex
+simulation models using ensemble copula coupling. Statistical Science ,28, 616–640.
+Scheuerer, M., 2014: Probabilistic quantitative precipitation forecasting using ensemble model
+output statistics. Quarterly Journal of the Royal Meteorological Society ,140, 1086–1096.
+Schlueter, A., A. H. Fink, P. Knippertz, and P. Vogel, 2019: A systematic comparison of tropical
+waves over Northern Africa. Part I: Influence on rainfall. Journal of Climate ,32, 1501–1523.
+Schneider, U., T. Fuchs, A. Meyer-Christoffer, and B. Rudolf, 2005: Global precipitation
+analysis products of the GPCC. Deutscher Wetterdienst, URL https://opendata.dwd.de/
+climate environment/GPCC/PDF/GPCC intro products v2015.pdf.
+Schroeder de Witt, C., C. Tong, V. Zantedeschi, D. De Martini, A. Kalaitzis, M. Chantry,
+D. Watson-Parris, and P. Bilinski, 2021: RainBench: Towards data-driven global precipitation
+forecasting from satellite imagery. Proceedings of the AAAI Conference on Artificial Intelli-
+gence , Vol. 35, 14 902–14 910.
+Srivastava, N., G. Hinton, A. Krizhevsky, I. Sutskever, and R. Salakhutdinov, 2014: Dropout: A
+simple way to prevent neural networks from overfitting. Journal of Machine Learning Research ,
+15, 1929–1958.
+Stellingwerf, S., E. Riddle, T. Hopson, J. Knievel, B. Brown, and M. Gebremichael, 2021: Op-
+timizing precipitation forecasts for hydrological catchments in Ethiopia using statistical bias
+correction and multi-modeling. Earth and Space Science ,8, 2019EA000 933.
+Vogel, P., P. Knippertz, A. H. Fink, A. Schlueter, and T. Gneiting, 2018: Skill of global raw
+and postprocessed ensemble predictions of rainfall over northern tropical Africa. Weather and
+Forecasting ,33, 369–388.
+Vogel, P., P. Knippertz, A. H. Fink, A. Schlueter, and T. Gneiting, 2020: Skill of global raw and
+postprocessed ensemble predictions of rainfall in the Tropics. Weather and Forecasting ,35,
+2367–2385.
+Vogel, P., P. Knippertz, T. Gneiting, A. Fink, M. Klar, and A. Schlueter, 2021: Statistical
+forecasts for the occurrence of precipitation outperform global models over northern tropical
+Africa. Geophysical Research Letters ,48, 2020GL091 022.
+Walz, E.-M., A. Henzi, J. Ziegel, and T. Gneiting, 2024: Easy Uncertainty Quantification
+(EasyUQ): Generating predictive distributions from single-valued model output. SIAM Re-
+view, in press, arXiv:2212.08376.
+30Weyn, J. A., D. R. Durran, and R. Caruana, 2020: Improving data-driven global weather pre-
+diction using deep convolutional neural networks on a cubed sphere. Journal of Advances in
+Modeling Earth Systems ,12, e2020MS002 109.
+Zadrozny, B., and C. Elkan, 2002: Transforming classifier scores into accurate multiclass probabil-
+ity estimates. Proceedings of the Eighth ACM SIGKDD International Conference on Knowledge
+Discovery and Data Mining , 694–699.
+Zhang, Y., M. Long, K. Chen, L. Xing, R. Jin, M. I. Jordan, and J. Wang, 2023: Skilful
+nowcasting of extreme precipitation with NowcastNet. Nature ,619, 526–532.
+31A Additional Figures
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudea) TCC
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudeb) 2T
+20
+ 10
+ 0 10 20 30
+Longitude051015Latitudec) CAPE
+20
+ 10
+ 0 10 20 30
+Longitude051015Latituded) SHR
+0.2 0.4 0.6 0.8
+Figure A1: As Figure 4 but for a) TCC, b) 2T, c) CAPE, and d) SHR.
+32TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+a) DJF
+TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+b) MA
+TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+c) MJTCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+d) JAS
+TCWV
+KX
+Q500
+Q600
+Q700
+Q925
+D2
+TCLW
+R300
+R500
+TCC
+CAPE
+CIN
+SPT
+SHR
+2T
+T500
+T850
+VIMD
+700
+e) ON
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00Figure A2: As Figure 5 but in season a) DJF, b) MA, c) MJ, d) JAS, and e) ON.
+33BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.060.080.100.120.140.16
+a) DJF
+2011
+2012
+2013
+2014
+20152016
+2017
+2018
+2019
+Mean
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.060.080.100.120.140.16
+b) MA
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.060.080.100.120.140.16
+c) MJBASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.060.080.100.120.140.16
+d) JAS
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.060.080.100.120.140.16
+e) ON
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.060.080.100.120.140.16
+f) Across SeasonsFigure A3: As Figure 6a for the Logit PoP forecast, but in season a) DJF, b) MA, c) MJ, d)
+JAS, and e) ON, and f) across seasons for evaluation folds from 2011 to 2019.
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.51.01.52.02.53.03.5
+a) DJF
+2011
+2012
+2013
+2014
+20152016
+2017
+2018
+2019
+Mean
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.51.01.52.02.53.03.5
+b) MA
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.51.01.52.02.53.03.5
+c) MJBASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.51.01.52.02.53.03.5
+d) JAS
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.51.01.52.02.53.03.5
+e) ON
+BASE
+TCWV
+Q700
+KX
+Q925
+TCLW
+D2
+Q500
+Q600
+CAPE
+R500
+TCC
+700
+VIMD
+R300
+CIN
+T850
+2T
+SHR
+SPT
+T5000.51.01.52.02.53.03.5
+f) Across Seasons
+Figure A4: As Figure 6b for the DIM forecast of precipitation accumulation, but in season a)
+DJF, b) MA, c) MJ, d) JAS, and e) ON, and f) across seasons for evaluation folds from 2011 to
+2019, in the unit of millimeters.
+342011 2012 2013 2014 2015 2016 2017 2018 20190.040.060.080.100.120.140.160.18a) DJF
+2011 2012 2013 2014 2015 2016 2017 2018 20190.040.060.080.100.120.140.160.18b) MA
+2011 2012 2013 2014 2015 2016 2017 2018 20190.040.060.080.100.120.140.160.18c) MJ
+2011 2012 2013 2014 2015 2016 2017 2018 20190.040.060.080.100.120.140.160.18d) JAS
+2011 2012 2013 2014 2015 2016 2017 2018 20190.040.060.080.100.120.140.160.18e) ON
+2011 2012 2013 2014 2015 2016 2017 2018 20190.040.060.080.100.120.140.160.18f) Across SeasonsMPC
+EPS
+EPS+ISO
+HRES+EasyUQLogit-base
+Logit-full
+CNN+EasyUQ
+HybridFigure A5: Mean Brier score (BS) for PoP forecasts from Table 2 in season a) DJF, b) MA, c)
+MJ, d) JAS, e) ON, and f) across seasons, for evaluation folds from 2011 to 2019.
+2011 2012 2013 2014 2015 2016 2017 2018 20190.51.01.52.02.53.03.5a) DJF
+2011 2012 2013 2014 2015 2016 2017 2018 20190.51.01.52.02.53.03.5b) MA
+2011 2012 2013 2014 2015 2016 2017 2018 20190.51.01.52.02.53.03.5c) MJ
+2011 2012 2013 2014 2015 2016 2017 2018 20190.51.01.52.02.53.03.5d) JAS
+2011 2012 2013 2014 2015 2016 2017 2018 20190.51.01.52.02.53.03.5e) ON
+2011 2012 2013 2014 2015 2016 2017 2018 20190.51.01.52.02.53.03.5f) Across SeasonsMPC
+EPS
+EPS+EMOS
+HRES+EasyUQDIM-base
+DIM-full
+CNN+EasyUQ
+Hybrid
+Figure A6: As Figure A5 but for the continuous ranked probability score (CRPS) and proba-
+bilistic forecasts of precipitation accumulation in the unit of millimeters.
+350.05
+0.055
+0.06
+0.065
+0.07
+0.075
+0.08
+0.085
+0.09
+MPCEPS EPS+ISOHRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.08UNC = 0.08UNC = 0.08UNC = 0.08UNC = 0.08UNC = 0.08UNC = 0.08UNC = 0.08
+MCBDSCa) DJF
+0.08
+0.09
+0.1
+0.11
+0.12
+0.13
+0.14
+0.15 MPCEPSEPS+ISO
+HRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.13UNC = 0.13UNC = 0.13UNC = 0.13UNC = 0.13UNC = 0.13UNC = 0.13UNC = 0.13
+MCBDSCb) MA
+0.13
+0.14
+0.15
+0.16
+0.17
+0.18
+0.19
+0.2MPCEPS EPS+ISOHRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.18UNC = 0.18UNC = 0.18UNC = 0.18UNC = 0.18UNC = 0.18UNC = 0.18UNC = 0.18
+MCBDSCc) MJ
+0.12
+0.13
+0.14
+0.15
+0.16
+0.17
+0.18
+0.19MPCEPSEPS+ISOHRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17UNC = 0.17
+MCBDSCd) JAS
+0.08
+0.09
+0.1
+0.11
+0.12
+0.13MPCEPS EPS+ISOHRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14
+MCBDSCe) ON
+8
+0.09
+0.1
+0.11
+0.12
+0.13
+0.14
+0.15 MPCEPS EPS+ISOHRES+EasyUQ
+Logit−baseLogit−fullCNN+EasyUQHybrid UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14UNC = 0.14
+MCBDSCf) Across SeasonsFigure A7: Miscalibration (MCB), discrimination (DSC), and uncertainty (UNC) component of
+the mean Brier score (BS) in season a) DJF, b) MA, c) MJ, d) JAS, e) ON, and f) across seasons
+for PoP forecasts from Table 2. The CORP decomposition of Dimitriadis et al. (2021) is applied
+at each grid point, based on the combined evaluation folds from 2011 to 2019, and the mean
+score and the score components are then averaged over grid points. Parallel lines correspond to
+equal mean scores.
+360.27
+0.3
+0.33
+0.36
+0.39
+0.42
+0.45
+0.48
+0.51
+0.54MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 0.4UNC = 0.4UNC = 0.4UNC = 0.4UNC = 0.4UNC = 0.4UNC = 0.4UNC = 0.4UNC = 0.40UNC = 0.40UNC = 0.40UNC = 0.40UNC = 0.40UNC = 0.40UNC = 0.40UNC = 0.40
+MCBDSCa) DJF
+0.8
+0.9
+1
+1.1
+1.2
+1.3
+1.4
+1.5
+1.6MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 1.21UNC = 1.21UNC = 1.21UNC = 1.21UNC = 1.21UNC = 1.21UNC = 1.21UNC = 1.21
+MCBDSCb) MA
+1.4
+1.6
+1.8
+2
+2.2
+2.4
+2.6
+2.8
+3MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 2.29UNC = 2.29UNC = 2.29UNC = 2.29UNC = 2.29UNC = 2.29UNC = 2.29UNC = 2.29
+MCBDSCc) MJ
+2.2
+2.4
+2.6
+2.8
+3
+3.2
+3.4
+3.6
+3.8
+4
+MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32UNC = 3.32
+MCBDSCd) JAS
+1
+1.1
+1.2
+1.3
+1.4
+1.5
+1.6
+1.7
+1.8
+MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 1.53UNC = 1.53UNC = 1.53UNC = 1.53UNC = 1.53UNC = 1.53UNC = 1.53UNC = 1.53
+MCBDSCe) ON
+1.1
+1.2
+1.3
+1.4
+1.5
+1.6
+1.7
+1.8
+1.9
+2
+2.1
+2.2
+2.3MPCEPS
+EPS+EMOS
+HRES+EasyUQ
+DIM−baseDIM−fullCNN+EasyUQHybridUNC = 1.78UNC = 1.78UNC = 1.78UNC = 1.78UNC = 1.78UNC = 1.78UNC = 1.78UNC = 1.78
+MCBDSCf) Across SeasonsFigure A8: As Figure A7 but for the mean continuous ranked probability score (CRPS) and
+probabilistic forecasts of precipitation accumulation in the unit of millimeters. The isotonicity-
+based decomposition of Arnold et al. (2023) is used.
+37

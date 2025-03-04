@@ -1,0 +1,978 @@
+GACER: G ranularity-A ware C oncurrE ncy
+Regulation for Multi-Tenant Deep Learning
+Yongbo Yu1, Fuxun Yu2, Mingjia Zhang2, Di Wang2,
+Tolga Soyata1, Chenchen Liu3, Xiang Chen1
+1George Mason University,2Microsoft,3University of Maryland
+{yyu25,xchen26}@gmu.edu
+ABSTRACT
+As deep learning continues to advance and is applied to in-
+creasingly complex scenarios, the demand for concurrent de-
+ployment of multiple neural network models has arisen. This
+demand, commonly referred to as multi-tenant computing,
+is becoming more and more important. However, even the
+most mature GPU-based computing systems struggle to ade-
+quately address the significant heterogeneity and complexity
+among concurrent models in terms of resource allocation and
+runtime scheduling. And this usually results in considerable
+resource utilization and throughput issues. To tackle these is-
+sues, this work proposes a set of optimization techniques that
+advance the granularity of computing management from both
+the spatial and temporal perspectives, specifically tailored
+to heterogeneous model compositions for deep learning in-
+ference and training. These techniques are further integrated
+asGACER — an automated optimization framework that
+provides high-utilization, high-throughput, and low-latency
+multi-tenant computing support. And our experiments demon-
+strate that GACER significantly improves the overall resource
+utilization and consistently achieves outstanding speedups
+compared to native GPU computing frameworks and existing
+state-of-the-art optimization works.
+1 INTRODUCTION
+The explosive success of deep learning techniques in vari-
+ous cognitive tasks, such as image classification and speech
+recognition, has made neural network models the hot spot of
+computing systems research. One of the primary drivers be-
+hind this trend is the support provided by GPUs, which offer
+excellent computing capacity and parallelism capability [ 1,2].
+Despite of the active emergence of various ASIC- and FPGA-
+based accelerators or systems, GPUs remain the most widely
+adopted platform in practice, accounting for >85% market
+share in both cloud and edge applications [3].
+While, for a long time in the past, due to substantial pa-
+rameters of neural network models, many research works
+tended to adopt a generic setting: one GPU instance could
+only host a single model. And even many recent outstandingefforts have not stepped out of this rut (e.g., MetaFlow [ 4],
+IOS [ 5]). However, cutting-edge developments have gradually
+revolutionized this setting: With the miniaturization of neural
+networks and the massification of GPUs, it is now possible for
+a single GPU to host multiple models simultaneously [ 6,7].
+Furthermore, the need for concurrent model processing also
+scales up with multi-task or multi-modality intelligence in-
+tegration, such as in autonomous driving [ 8,9]. Along with
+this trend, GPU manufacturers like NVIDIA actively pro-
+mote related software and hardware techniques [ 10–12]. Thus,
+“multi-tenant ” deep learning computing becomes more and
+more prominent, especially for GPU-based systems.
+However, multi-tenant deep learning presents a greater chal-
+lenge than conventional single-tenant deployment regarding
+computing management. This is due to the increased hetero-
+geneity and complexity of the concurrency of multiple neural
+network models, which can vary in operator composition,
+structural design, and model scale [ 13,14]. Unfortunately,
+these issues are not well addressed in current GPU comput-
+ing, even with emerging supporting techniques from manu-
+facturers: (1) When it comes to resource allocation, current
+techniques for issuing concurrent models into the GPU either
+result in using fixed hardware resource budgets or competing
+models for resources in a greedy manner. These approaches at
+the model level can lead to wastage of hardware capabilities
+or resource contention and corresponding overhead [ 15–17].
+(2) When it comes to runtime scheduling, though many recent
+works have dived into the operator level, most of them either
+cannot handle multi-tenant scenarios or have overlooked the
+multi-tenant coordination overhead, leading to ineffective and
+unscalable runtime management [5, 18].
+Given these observations, the primary motivation for multi-
+tenant deep learning optimization is to develop a fine-grained
+and feasible coordination computing framework to resolve
+resource contention and enhance complementary resource
+utilization across different model tenants with minimal regu-
+lation overhead. Therefore, several optimization expectations
+for multi-tenant deep learning can be derived: (1) From a
+spatial perspective, the resource allocation scheme requires
+unprecedented operator-level granularity to adapt to the dy-
+namics of intra-model operators and therefore complement
+1arXiv:2304.11745v1  [cs.DC]  23 Apr 2023intra-model resource requirements [ 18,19]. (2) From a tempo-
+ral perspective, the granularity of multi-tenant runtime sched-
+uling should not only deepen to the operator level, but also
+improve the manageability to regulate the runtime overhead
+and balance the overall performance given different deploy-
+ment complexities [ 14,18]. These two optimization expecta-
+tions from both the spatial and temporal perspectives point
+to the same optimization focus of this work: To advance the
+current multi-tenant concurrency regulation granularity and
+co-optimize the spatial and temporal domains for optimal
+computing performance .
+Centering on this research focus, our work extensively ex-
+amines the entire GPU-based system stacks and conducts
+a comprehensive analysis on current multi-tenant comput-
+ing issues with state-of-the-art techniques. Subsequently, we
+propose a set of optimization techniques that advance the
+granularity of computing management in both the spatial
+and temporal management domains, significantly improving
+runtime performance for both deep learning inference and
+training. The contributions of this work are as follows:
+•We reveal computing issues in multi-tenant deep learning
+and formulate corresponding processes for GPU-based sys-
+tems and deep neural network (DNN) tenants. And this
+allows us to further identify multi-tenant optimization ob-
+jectives and approaches.
+•In the spatial domain, we propose a set of novel operator
+resizing and decomposition methods combined with emerg-
+ing GPU techniques to enhance the granularity and flexibil-
+ity of multi-tenant resource allocation. It fully resolves the
+model contention and exploits resource utilization.
+•In the temporal domain, we improve multi-tenant sched-
+uling at the operator level by optimizing related operator
+issuing and CPU-GPU synchronization mechanisms. Ad-
+ditionally, we identify specific scheduling overheads and
+regulate corresponding optimization trade-offs to improve
+the runtime performance comprehensively.
+•The proposed techniques are integrated into an automated
+optimization framework — GACER , which leverages a low-
+cost search method to identify the particular spatial and
+temporal deployment configuration for both offline and
+online multi-tenant deep learning scenarios.
+GACER could consistently provide high-utilization and
+high-throughput computing support to multi-tenant deep learn-
+ing on GPUs. Compared to conventional computing frame-
+work without specific multi-tenant support (e.g., TVM), GACER
+could consistently achieve almost ∼70% speeds up. And com-
+paring to state-of-the-art multi-tenant optimization works, it
+could also achieve ∼30% acceleration with ∼40% resource
+utilization enhancement, and demonstrate outstanding capa-
+bilities for even more complex deployment scenarios.
+DataDataDataConvConvConvReluConvNormNormConvReluReluPool
+GPUMemoryDNN-AoperatorDNN-BoperatorDNN-CoperatorMulti-TenantDFGsMulti-StreamsGPUDeployment
+DLFrameworkModelCompilerOperatorDFGSMSMSMSMSMSMSMSMSMSMSMSMCUDA StreamCUDA StreamCUDA StreamCPU ThreadCPU ThreadCPU ThreadGPUResourcePoolFigure 1: Multi-Tenant Deep Learning with GPUs
+2 PRELIMINARY
+2.1 Multi-Tenant Deep Learning
+This paper focuses on a generic multi-tenant deep learning
+deployment setting on GPUs [20], as shown in Fig. 11:
+Multi-Tenant Heterogeneity: When multiple heteroge-
+neous DNN models are deployed on a single GPU, and each
+is compiled into a data flow graph (DFG) that defines the com-
+puting sequence of a series of different operators by layers
+(e.g., Conv, ReLu, etc.). And each operator has a particular
+computational pattern and resource requirements, including
+computing resources measured by the occupancy of streaming
+multi-processors (SM), and memory resources measured by
+memory bandwidth utilization. Despite the particular operator
+design, the resource consumption of each operator is mainly
+determined by the batched job sizes.
+Multi-Tenant Deployment: The DFG compilation is gen-
+erally performed on the CPU side, and the DFG of each DNN
+tenant is wrapped into a processing thread for later GPU de-
+ployment. It’s worth noting that the simultaneous multi-thread
+wrapping process has much less overhead than initializing
+operators one at a time. On the GPU side, each thread is
+assigned to a specific GPU computing stream [ 11] with a ded-
+icated resource portion from the GPU’s SM pool. As shown
+in Fig. 1, such a concurrent multi-tenant deployment signifi-
+cantly differs from traditional time-sliced deployment, where
+only one model runs at a time.
+Resource Sharing and Contention: As multiple models
+are deployed concurrently and share the same GPU pool,
+resource sharing has become a major research focus. And
+various resource allocation and management schemes have
+been proposed to improve the complementary resource uti-
+lization across different model tenants, as will be reviewed in
+the next section. However, such resource-sharing mechanisms
+also lead to potential resource contention [ 18] among tenants
+when they compete for limited GPU resources, which can
+1Note that the techniques proposed in this paper are applicable to both the
+training and inference phases of multi-tenant deep learning. Hence, we will
+not make special distinctions in the following descriptions.
+2Table 1: Granularity and Performance of Recent Works on Multi-Tenant DL Computing Optimization
+Techniques Approaches Granularity Remaining IssuesSpatialMulti-Instance GPU
+(MIG) [12]•Physical GPU Instance Partition
+•Instance-based Tenant Allocation•Model Level•Fixed Instance Budget
+•Reconfiguration Overhead
+Multi-Process Service
+(MPS) [10]•Virtualized GPU Resource Partition
+•Dynamic Process Resource Budget•Model Level•Resource Contention
+•Context Switch Overhead
+Gslice[17], Salus[21]•Multi-Tenant with MPS
+•Batching Configuration
+•Overhead Optimization•Model Level•Coarse-Grained OptimizationTemporalTime-Sliced Sharing
+(EdgeBatch [22], Gpipe [23])•Runtime Singe-Tenant Switch•Sub-Model/
+Model Level•Tenant Switch Overhead
+Multi-Stream
+(MS) [11]•Post-Compilation Stream Resource Allocation
+•CPU-GPU Synchronization based Scheduling•Model Level•Resource Contention
+•Greedy Runtime Management
+Operator Scheduling
+(IOS[5], AutoMT[18])•DFG-based Scheduling with MS
+•Resource Contention Optimization•Operator Level•Unregulated Resource Allocation
+•Runtime Regulation Overhead
+result in certain performance issues such as latency increment
+and throughput reduction. And when we further take into
+account the heterogeneity between DNN tenants, multi-tenant
+computing support becomes even more challenging.
+2.2 Multi-Tenant Computing Support
+Table 1 reviews state of the art for multi-tenant computing.
+Emerging GPU Techniques: New GPU architecture fea-
+tures proposed by NVIDIA, such MIG [ 12] and MPS [ 10],
+have enabled GPUs to divide the SM pool into multiple con-
+current portions for multi-tenant deployment. While these
+methods provide GPUs with spatial resource management
+capabilities, they often suffer from reconfiguration overhead
+and a lack of certain runtime flexibility.
+Unlike MIG and MPS, which partition resources first and
+then deploy tenants, MS enables tenant-oriented dynamic
+resource allocation at runtime, facilitating post-compilation
+resource budget adjustment for multi-tenant models. Further-
+more, MS supports frequent CPU-GPU synchronizations,
+which enable DFG reordering along stream issuing, thus pro-
+viding the scheduling management capability from a tem-
+poral perspective. However, coordinating such multi-tenant
+GPU support is often overwhelming. Facing the multi-tenant
+complexity, MS usually simply adopted a greedy manner
+of runtime management, resulting in considerable resource
+contention and inappropriate scheduling cases [18].
+State-of-the-Art Optimization Works: Based on these
+emerging techniques, many optimization works have been
+proposed. In the spatial domain, some studies have combined
+model-level workload/resource adaption with MIG or MPS
+to implement software-hardware co-optimization for enhanc-
+ing multi-tenant resource sharing [ 17,21]. In the temporal
+domain, very recent works have expanded the computing gran-
+ularity of MS into the operator level. However, these works
+are still not comprehensive. Most of them either cannot han-
+dle multi-tenant scenarios or have overlooked the multi-tenant
+coordination overhead, leading to ineffective and unscalable
+runtime management [5, 18].2.3 Multi-Tenant Computing Granularity
+In addition to reviewing the basic mechanisms, pros and cons
+of different techniques, Table 1 also provides a comparison of
+the optimization granularity. While these works have enabled
+multi-tenant deep learning on GPUs, most are still limited to
+a coarse granularity (esp. at the model level) and focus on a
+singular optimization domain (either spatial or temporal).
+Fig 2 presents a brief comparison to demonstrate the impact
+of optimization granularity: (1) When multi-tenant DNNs are
+deployed with only model-level granularity, SMs are parti-
+tioned based on an average model resource requirement, as in
+the case of MPS and MIG. However, when considering indi-
+vidual operators by layer during runtime, the specific resource
+requirements may vary, resulting in resource underutilization
+with smaller operators or insufficient resources with larger
+ones, requiring additional GPU cycles. (2) As shown in Fig 2,
+a more fine-grained resource allocation at the operator level
+could overcome the fixed resource budgets and accommo-
+date the varying resource requirements at individual model
+layers. However, due to the significant heterogeneity of multi-
+tenant models, significant resource contention can still occur.
+Although this could be addressed by the algorithm and com-
+piling optimization (e.g., TVM [ 24]) or runtime scheduling
+(e.g., AutoMT [ 18]), additional efforts are still required to
+refine the dynamic resource allocations and related overhead.
+AModelBCOperator-LevelGPUDeploymentModel-LevelGPUDeploymentAModelBCActual GPUResource Pool•FixedResource Budgets•No Resource Sharing•ResourceUnder-Utilization•NoRuntimeManagement•Fine-grainedResource Alloc.•DynamicResource Sharing•ResourceContention•NoRuntimeManagementInsufficientSMResourcesUnused SMUndeployableTenantduetoContention
+Figure 2: Comparison of Different Granularity
+3DFGStage:1st2nd3rdDataConvConvConvConvConvReluReluPoolNormNorm
+DNN-ADNN-BDNN-CDataDataReluMulti-Tenant DNN Compiling
+A CPUThreadStream1Stream2CUDA
+UnderUtilizationParallelConflictIssuesShowninNVIDIANsightSpatial ResourceUnderutilization
+Concurrency ConflictDue to Large OperatorIdeal Operator Resizingfor Partial AllocationResource Utilization by the Out-of-Order OperatorTemporalResource Underutilization
+DataConvConvConvConvConvReluDataDataReluResize&DecompositionReorderingProblemIllustrationT0T2T1Figure 3: GPU Resource Utilization Analysis from Spatial and Temporal Perspectives
+3 DESIGN ANALYSIS AND MOTIV ATION
+Therefore, this work focuses on advancing the manageabil-
+ity and efficiency of multi-tenant deep learning and at the
+fine-grained operator-level and expanding the spatio-temporal
+optimization space for comprehensive performance escalation.
+This section presents a detailed analysis of GPU resource uti-
+lization during multi-tenant DNN deployment and discusses
+the underlying design methodology of this work.
+3.1 Persistent Resource Utilization Issues
+Fig. 3 highlights common multi-tenant computing issues that
+arise when deploying heterogeneous DNN models on a GPU
+with MS techniques and the ideal operator-level resource
+allocation. In this process, each operator is compiled with a
+defined resource budget and subsequently issued in a greedy
+order, as illustrated by the gray arrows in the DFG compiling
+figure. Such a subsequently issuing will allocate operators
+from different model tenants into individual CUDA streams
+to share the computing resource at each cycle.
+Despite the utilization of the best available multi-tenant de-
+ployment settings above, resource underutilization issues still
+inevitable. In most deployment scenarios, even with operator-
+level resource allocation in place, the total resource require-
+ments from concurrent tenants of a DFG stage will not exactly
+match the available GPU resource volume. As mentioned ear-
+lier, when there is a deficiency of any of the required resources
+(e.g., SM or memory) to deploy a model tenant’s operator, the
+operator is moved to the next cycle. To illustrate this persis-
+tent issue, the lower-left figure displays an empirical example
+using the NVIDIA Nsight [ 25]. As shown there: In some
+GPU cycles, the concurrently deployed operators are unable
+to fully utilize the SM pool; and in some other cycles, concur-
+rent operator deployment cannot be established for parallel
+processing, resulting in even worse resource underutilization.
+3.2 Design Motivation and Challenges
+Here we refer to the unused portion of the GPU resources as
+“residue”, and a GPU SM pool-oriented example is shown inthe right part of Fig. 3, which is further analyzed from both
+spatial and temporal perspectives.
+Spatial Residue Optimization by Operator Resizing: As
+aforementioned, a spatial optimization approach could be ad-
+justing the deployed model tenant workload to accommodate
+resource availability with less contention [ 21]. And it will be
+even more effective when pushing the granularity from the
+model level to the operator level for operator resizing.
+However, certain challenges arise: (1) Batching operation
+is always applied to an entire model in the current frameworks
+(e.g., PyTorch [ 26]). Since the total workload of individual
+operators is invariant, operator resizing can only follow the
+path of decomposing the workload into relatively small op-
+erator units. However, conventional operator decomposition
+remains at the model compilation stage and cannot satisfy the
+computational dynamics of multi-tenant scenarios, requiring
+a necessary framework modification. (2) Meanwhile, in multi-
+tenant scenarios, the optimization complexity also scales up
+to determine the appropriate operator for resizing, taking into
+account the runtime overhead. Thus, a comprehensive multi-
+tenant-specific optimization scheme is also required.
+Temporal Residue Optimization by Operator Reorder-
+ing/Scheduling: As shown in Fig. 3, the DFG reordering
+indicated by the green arrows could also exploit the underuti-
+lized GPU residual. In addition to conventional scheduling
+issues, such as layer dependency, new challenges are posed:
+(1) Multi-tenant scheduling involves multiple operators across
+various DFG settings, resulting in unprecedented dynamic
+complexity. Although the CPU-GPU synchronization pro-
+vided by MS could achieve model reordering, specific library-
+level optimization is required to decompose the model DFG to
+the operator level for finer granularity. (2) Not coincidentally,
+significant DFG reconfiguration delay would be introduced,
+requiring an effective overhead regulation scheme.
+Spatial and Temporal Co-optimization It is important to
+note that in a residue case, both spatial and temporal opti-
+mization methods can be adopted. Therefore, determining
+the trade-off between these methods is critical in selecting
+4the appropriate one. Furthermore, a series of optimization
+procedures through multi-tenant computation process are in-
+terdependent. In other words, the solution of one residue may
+affect the subsequent ones, making the previously determined
+locally optimal solution inefficient. Hence, this complexity
+renders spatial and temporal co-optimization as the most cru-
+cial aspect of this work.
+4 GRANULARITY-A WARE
+MULTI-TENANT REGULATION
+4.1 Problem Formulation
+Resource and Tenant Formulation: We abstract the to-
+tal GPU SM resource pool 𝑆𝐺𝑃𝑈=100% . And we map the
+operator workload 𝑊(𝑂𝐵)to the SM occupancy, where 𝑂is
+the operator, 𝐵is the batch size of 𝑂We analyze DNN opera-
+tors with different batch settings and formulate a lookup table
+for convenience, and give some examples of convolution and
+batchnorm operators in Fig. 4. The execution time 𝑇required
+by operators 𝑂also varies, and some operators need to span
+multiple time cycles for processing, so we also formulate the
+operator execution time.
+Multi-Tenant Runtime Deployment: Multi-tenant DNN
+consists of several parallel tenants, and all tenants consist of 𝑁
+models:𝑀1,𝑀 2,...,𝑀𝑛. And each model 𝑀can be represented
+by a DFG with a series of operators 𝑂. So we have the model
+operator list 𝑀𝑛=[𝑂𝑛,1,𝑂𝑛,2,...,𝑂𝑛,𝑖].
+The aforementioned formulation primarily illustrates the
+spatial mapping of resources and tenants, wherein a resource
+pool is utilized. This temporal deployment during runtime
+may be expressed for each cycle as follows:
+𝑆𝑇0:[𝑂1,1], 𝑆𝑇1:[𝑂2,1,𝑂3,1],
+𝑆𝑇2:[𝑂1,2,𝑂1,3,𝑂2,2,𝑂3,2],...,𝑆𝑇𝑡:[𝑂𝑛,𝑖,...]
+𝑤ℎ𝑒𝑟𝑒𝑆𝑇0,𝑆𝑇1,...,𝑆𝑇𝑡<=𝑆𝐺𝑃𝑈.(1)
+In each time cycle, the aggregate SM occupancy 𝑆𝑇of oper-
+ators must be maintained below the 𝑆𝐺𝑃𝑈. This necessitates
+the deployment of certain operators across multiple time cy-
+cles, as exemplified by the notation 𝑆𝑇0→𝑇3:[𝑂1,1]. This time
+cycle deployment essentially reflects the operator execution
+sequence𝑆𝑇0→𝑆𝑇𝑡.
+Optimization Objective: Upon the GPU resource and ten-
+ant formulation above, the residual resource in time cycle 𝑆𝑇
+025507510 0
+Time(um)
+SMOccupancy(%)
+Conv1BatchNorm1Conv2BatchNorm2020 040 060 0
+Figure 4: Resource Utilization and Time Profilingmentioned in Section 3.3 could be formulated as follow:
+𝑅𝑆𝑇=𝑆𝐺𝑃𝑈−𝑆𝑇=𝑆𝐺𝑃𝑈−∑︁
+𝑂 𝑖𝑛𝑆 𝑇𝑊(𝑂𝐵𝑛,𝑖
+𝑛,𝑖). (2)
+And we subsequently sum the 𝑅𝑆𝑇across all cycles to compute
+the total residue 𝑅.
+𝑅=∑︁
+𝑆𝑇0→𝑆𝑇𝑡(𝑆𝐺𝑃𝑈−∑︁
+𝑂 𝑖𝑛𝑆 𝑇𝑊(𝑂𝐵𝑛,𝑖)
+𝑛,𝑖). (3)
+𝑅has two variables: operator batch size 𝐵𝑛,𝑖and operator exe-
+cution sequence 𝑆𝑇0→𝑆𝑇𝑡, which are both in operator-level
+granularity. Therefore, we could optimize two sub-objective,
+finding the appropriate 𝐵and𝑆𝑇0→𝑆𝑇𝑡to minimize the 𝑅.
+These could be translated into two sub-objective, finding the
+appropriate 𝐵and𝑆𝑇to minimize the 𝑅.
+𝜏(𝐵𝑛,𝑖, 𝑆𝑇0→𝑆𝑇𝑡)→𝑀𝑖𝑛𝑅, (4)
+where𝜏is an approximation approach.
+Based on the two variables of Eq. 4, we need to extend
+the spatial and temporal granularity of the multi-tenant DNN
+to the operator level for solving 𝑅. In the following context,
+we introduce the spatial and temporal regulation methods to
+adjust𝐵𝑛,𝑖and𝑆𝑇0→𝑆𝑇𝑡to fine granularity and present an
+optimal search strategy for 𝜏implementation.
+4.2 Spatial Granularity Regulation
+Regulation with Operator Resizing: Instead of deploy-
+ing all workloads of a certain operator to the GPU in the same
+time cycle, they can be resized into multiple smaller copies
+by decomposing the operator through batch size direction.
+𝑂𝐵
+𝑛,𝑖chunk−−−−−−−→𝑂𝐵1
+𝑛,𝑖,𝑂𝐵2
+𝑛,𝑖,...,𝑂𝐵𝑗
+𝑛,𝑖,where∑︁
+1to𝑗𝐵𝑗=𝐵.(5)
+The decomposed operators can be deployed to different time
+cycles, thus, we could only deploy part of the workload in
+a single time cycle. Therefore, the first objective could be
+translated into finding the batch size 𝑙𝑖𝑠𝑡𝐵𝑛,𝑖=[𝐵1,𝐵2,...𝐵𝑗]
+of each operator 𝑂𝑛,𝑖. By controlling the number 𝑗, we can
+control the spatial granularity of each operator deployment.
+Regulation with Operator Decomposition The current
+DNN model API structure employs a single batch size for all
+layers, resulting in a model-level granularity that fails to con-
+sider varying workloads in each layer. To address this issue,
+we used PyTorch’s "torch.chunk()" and "torch.cat()" functions
+to rewrite the API model definition. By decomposing heavy
+workload operators into smaller ones and concatenating the
+resulting micro-batches, we can effectively control runtime re-
+source consumption without sacrificing model accuracy. This
+approach increases spatial granularity and allows for finer-
+grained parallelism. Resizing the batch size in this manner
+enables us to adjust the workload at a more granular level,
+leading to optimized performance.
+5CCBBCCCCBBCCCCBBCCBBTimeline(a)(b)(c) Latency Reduction CCBBCCCCBBCCCCBBCCBBCCBBCCCCBBCCCCBBCCBBNotParalleledHigh-utilizationSynchronizationPointerFigure 5: Reordering with Synchronization Pointers
+Resizing Regulation Overhead Analysis: The resizing
+regulation needs to introduce additional decomposing and
+concatenation operations which also bring additional over-
+head. This makes the decomposed operator also have the
+trade-off between residue reduction and additional overhead.
+Therefore, the decomposed operator should be near the large
+residue in order to bring enough gain. However, not all op-
+erators in multi-tenant DL computing require decomposing
+along the batch direction. We design a mask list whose length
+is equal to the total number of operators in all DFGs, and each
+element in the mask is corresponding to an operator. If the
+𝑚𝑎𝑠𝑘(𝑂𝑛,𝑖)is 0, that indicates 𝑂𝑛,𝑖is no need to decompose,
+otherwise, a 𝑙𝑖𝑠𝑡𝐵𝑛,𝑖is generated for 𝑂𝑛,𝑖to represent how it
+was decomposed. During the optimization process, we will
+gradually find which operators need to be decomposed.
+Overall Spatial Regulation: Based on the above overhead
+analysis, we calculate the biggest residue 𝑀𝑎𝑥(𝑅𝑆𝑇)using
+Eq. 2 and decompose the operator with the largest size fol-
+lowing this time cycle. After that, we decompose a batch that
+matches the residue size and update the mask list and 𝑙𝑖𝑠𝑡𝐵
+and update the decomposed operators to the DFG. And we
+check the dependence to make sure the decomposed operator
+could be deployed in this residue. However, due to the un-
+equal length of some segments in the same cluster, operators
+in the tail of the longest segment have to execute individually
+and inevitably generate a larger residue. These residues do
+not need to be optimized, so we skip them.
+Overall, the first sub-objective of spatial granularity regula-
+tion could be translated into finding the decomposition mask
+matrix and corresponding decomposition strategy 𝑙𝑖𝑠𝑡𝐵.
+4.3 Temporal Granularity Regulation
+In the temporal domain, we break through multiple DFGs
+into fine-grained operator segments, and therefore operator
+scheduling across multiple different models is implemented.
+Operator Level DFG Reordering: In order to reorder
+the operator execution sequence 𝑆𝑇0→𝑆𝑇𝑡, we insert some
+pointers in DFG, and divide each DFG into several segments
+with different granularity (e.g. operator, stage, and the whole
+model), so that we could implement inter-model concurrent
+scheduling with different granularity. And then, we control
+which segments can be deployed simultaneously. By chang-
+ing which segment the operator is located in, the order of
+CPUThreadsGPUStreamsGPUWaiting
+SynchronizationFigure 6: CPU-GPU Synchronization Overhead
+execution of the operator is relatively changed. As shown in
+Fig 5, we use some demo models to show what is the pointer
+and how operator reordering could improve the parallelism
+performance, and each model is deployed in each stream. For
+simplicity, each sequence only consists of one type of the two
+operators𝐶(e.g., Conv) and 𝐵(e.g., BatchNorm). As shown
+in Fig 5 (b), by inserting the pointer to reorder the execution
+sequence, the first operator 𝐶in stream 2 is able to perform
+concurrency with 𝐵in stream 1.
+We formulate this process as follows, and taking stream 1
+in Fig. 5 (c) as an example, the model 𝑀1has 12 operators and
+is divided into three segments using two pointers. And then,
+the same index segments from different models are divided
+into the same cluster which can be deployed simultaneously,
+such as the cluster in Equation 6 𝑆𝑇3→𝑇8. The operators in the
+same cluster can occupy multiple time cycles (assuming that
+all operators occupy only one cycle in this case).
+𝑆𝑇0→𝑇2:[𝑂1,1,𝑂1,2],[𝑁𝑜𝑛𝑒],
+𝑆𝑇3→𝑇8:[𝑂1,3,...,𝑂 1,8],[𝑂2,1,...,𝑂 2,4],
+𝑆𝑇9→𝑇12:[𝑂1,9,...,𝑂 1,12],[𝑂2,5,...,𝑂 2,8].(6)
+Since the total time cycle of each DFG is not the same in
+the multi-tenant DL scenarios. Therefore, we do not need and
+cannot ensure that each segment is of equal length. We object
+to minimizing the overall time cycle occupied, which means
+that a smaller residue is generated.
+Therefore, the operator execution sequence 𝑆𝑇0→𝑆𝑇𝑡reg-
+ulation could be translated to find the best segments and the
+optimal scheduling strategy. We use a synchronization pointer
+to detach each model’s full sequence into several operator seg-
+ments and establish a pointer matrix 𝑀𝑎𝑡𝑟𝑖𝑥𝑃=[𝑃1,𝑃2,...𝑃𝑛].
+Each model 𝑀has a list𝑃, and each𝑃annotates the appropri-
+ate positions where we detach the DFG.
+𝑀1:[𝑂1,1,𝑂1,2,...,𝑂 1,12]+𝑃1:(2,8)=𝑆𝑒𝑔(𝑀1).(7)
+Each number in 𝑃represents the position at which the pointer
+is inserted. Thus, the second sub-objective could be translated
+into finding the pointer matrix 𝑀𝑎𝑡𝑟𝑖𝑥𝑃for each DFG. Each
+𝑃has the same number of pointers.
+Runtime Synchronization Modification at Library Level:
+The synchronization pointer is a GPU synchronization mech-
+anism, that ensures that operators continue to be deployed
+only after previously issued operators have completed their
+6computation. Through these pointers, we could control which
+operators could be deployed simultaneously. However, the
+current DNN model structure makes the scheduler only take
+the whole model as a scheduling unit, which causes course-
+grained temporal granularity. This prevents us from playing
+the role of optimizing temporal granularity with synchronous
+pointers. Therefore, we also redesign the DNN API at the
+library level. Based on the PyTorch framework, we use the
+"model.named_modules()" method to get all the model layer
+objects and use "nn.Sequential" to refine all the objects into
+a list of DFG objects. Based on the above two operations,
+we are able to implement operator reordering and thus fine-
+grained scheduling of operators.
+Temporal Regulation Overhead Analysis: However, the
+reordering method uses synchronization operation which is
+the runtime control, so this inevitably introduces scheduling
+overhead as shown in Fig. 6. The GPU waits until the CPU
+finishes synchronizing the pointer and then sends a new op-
+erator to GPU. This situation can lead to a lot of GPU wait
+time, resulting in additional residual resources. Adding a large
+number of pointers leads to frequent GPU waits, which can
+seriously slow down the overall efficiency of the GPU. So for
+different scenarios, we also need to trade off the gains and
+overheads that come with temporal granularity.
+Overall Temporal Regulation: Based on the above over-
+head analysis, we readjust the computation of the residue so
+that the solution process can achieve granularity awareness.
+This waiting time is equivalent to introducing an additional
+residue of𝑆𝐺𝑃𝑈∗GPU synchronization wait time 𝑇𝑆𝑊. In the
+same computer system, this overhead is relatively stable and
+we can obtain roughly accurate values by profiling. Therefore,
+we can add the following term to Eq. 4 to adjust the objective
+function to be aware of the overhead caused by fine-grained
+scheduling.
+𝑅=∑︁
+𝑆𝑇0→𝑆𝑇𝑡(𝑆𝐺𝑃𝑈−∑︁
+𝑂 𝑖𝑛𝑆 𝑇𝑊(𝑂𝐵𝑛,𝑖
+𝑛,𝑖))+|𝑃𝑛|∗𝑆𝐺𝑃𝑈∗𝑇𝑆𝑊,(8)
+where|𝑃𝑛|is the number of pointers. When |𝑃𝑛|is larger, the
+antecedent term has a greater potential to obtain a smaller
+residue but will make the posterior term larger. This makes it
+profitable to fill only larger residues, which tend to occur in
+the first few time cycles of larger operators.
+4.4 Granularity-Aware Joint Optimization
+Search Framework for Joint Optimization: Based on
+the formulation and regulation design, we propose our granularity-
+aware framework to minimize 𝑅by finding the optimal strat-
+egy from the search space of the mask, 𝑙𝑖𝑠𝑡𝐵, and𝑀𝑎𝑡𝑟𝑖𝑥𝑃.
+We have three claims in our framework. (1) We do joint
+optimization of spatial and temporal granularity. And the
+adjustable factors in search space are coupled for the effectof residue, so finding the globally optimal solution is NP-
+hard. Therefore, we greedily alternate between spatial and
+temporal regulation until we reach the optimal concurrency
+strategy. (2) When doing joint optimization, we do not only
+consider the SM resource pool, but we can also extend this
+approach to other resources, such as GPU memory bandwidth.
+(3) Our framework also needs to be aware that fine-grained
+granularity optimization brings gain while also introducing
+overhead. we need to implement different granularity for
+different scenarios.
+We propose a search approach that could consider all three
+claims and further propose a framework based on this search
+method as shown in Algorithm 1. We first initialize the ele-
+ments in𝑚𝑎𝑠𝑘(𝑂)and𝑀𝑎𝑡𝑟𝑖𝑥𝑃to 0 and calculate the residue
+using Eq. 8. For spatial granularity, we use the spatial reg-
+ulation method in section 4.2. For temporal regulation, we
+implement a coordinate descent search algorithm, which takes
+the pointer number in 𝑀𝑎𝑡𝑟𝑖𝑥𝑃as different coordinates. Then
+the optimal pointer number for each list 𝑃is searched alter-
+nately, during which other 𝑃lists are kept as the previous
+optimal one. The Spatial and Temporal search method is exe-
+cuted alternately. After a certain round of temporal execution,
+we switch to the spatial regulation search method in section
+4.2 and update the DFG. And the decomposed operators are
+inserted between the pointers, without affecting the scheme
+of the existing 𝑀𝑎𝑡𝑟𝑖𝑥𝑃.
+Algorithm 1 Granularity-Aware Search
+Require:𝑁DFGs, the initialized mask list, 𝑙𝑖𝑠𝑡𝐵and
+𝑀𝑎𝑡𝑟𝑖𝑥𝑃, the rounds of search 𝑋.
+Ensure: The optimal mask list, 𝑙𝑖𝑠𝑡𝐵, and𝑀𝑎𝑡𝑟𝑖𝑥𝑃
+1:Initialize a dictionary 𝐷{𝑅:𝑀𝑎𝑡𝑟𝑖𝑥𝑃}to record residue
+𝑅and the corresponding 𝑃.
+2:forrounds =𝑥to𝑋do
+3: formodel𝑖=1to𝑁do
+4: forthe𝑗in𝑃𝑗do
+5: Calculate𝑅using equation 8
+6: Append𝑅:𝑀𝑎𝑡𝑟𝑖𝑥𝑃to the records 𝐷.
+7: Update the𝑃𝑗of𝑀𝑎𝑡𝑟𝑖𝑥𝑃with the smallest 𝑅.
+8:Sort the records 𝐷by the𝑅.
+9:ifthe smallest 𝑅in𝐷|𝑃𝑛|>𝑅in𝐷|𝑃𝑛|−1then
+10: return𝑀𝑎𝑡𝑟𝑖𝑥𝑃with the smallest 𝑅in𝐷|𝑃𝑛|−1.
+11:Add pointer in 𝑀𝑎𝑡𝑟𝑖𝑥𝑃
+12:Go back to Step 2
+Our framework — GACER , is a functional addition to
+the mainstream framework with good scalability and can be
+extended to a variety of applications at a low cost.
+Search Cost Analysis for Offline/Online Deployment
+Since our automated optimization framework is a modeling-
+based search method, there is no need to profile the searched
+7strategy each time, so our automatic optimization framework
+is low-cost. In offline deployment, we can know all the multi-
+tenant deployment scenarios and can store the searched strate-
+gies in the device and use them directly when new requests
+appear. For online deployment, GACER could yield near-
+optimal schedule solutions within a short time, and our search
+cost is acceptable for tasks that care about throughput and are
+not sensitive to real-time.
+5 PERFORMANCE EV ALUATION
+In this section, we evaluate the proposed system performance,
+including end-to-end speedup and GPU utilization enhance-
+ment targeting multi-tenant batched-job tasks [ 27], in which
+each task has its own model batch size.
+5.1 Experimental Setting and Metric
+Model Selection: We construct diverse multi-tenant DNN
+scenarios by leveraging three different types of applications
+collected from PyTorch: Vision models (including AlexNet
+(Alex), VGG16 (V16), ResNet18 (R18), ResNet34 (R34),
+ResNet50 (R50), ResNet101 (R101), MobileNetV3 (M3)
+and DenseNet (D121)), language model (LSTM [ 28]), and
+transformer-based recommendation model (BST [ 29]), which
+are commonly used for various applications such as photo
+auto-editing, image tagging, and video/voice processing. These
+models have distinctive depths and varying numbers of op-
+erators, resulting in unique computational and memory re-
+quirements for each model. Therefore, different model com-
+binations based on the above models present varied resource
+utilization imbalances, thus requiring highly adaptive deploy-
+ment and scheduling optimization strategies.
+Task and Benchmark: We consider the multi-tenant ex-
+ecution of the aforementioned DNNs and create workloads
+with varied batch sizes for each model. For convolutional
+networks, we use an image scale of 224*224*3 with dif-
+ferent batch size. For the language model, we use the text
+dataset ML2020spring which is used for emotion classifi-
+cation. And we use the Amazon dataset 𝐵𝑜𝑜𝑘 [30] as the
+benchmark dataset for the recommendation model. For gen-
+erality, we also evaluate four types of NVIDIA GPUs from
+desktop-level to high-end ones: 1080Ti, P6000, and Titan V .
+Baseline Methods: Several popular baseline resource allo-
+cation optimization and scheduling strategies are considered.
+•CuDNN-Seq [ 31]: The default strategy of PyTorch +
+CuDNN, which runs the models sequentially.
+•TVM-Seq [ 24]: A operator-level optimization method to
+search for the optimal kernel for each operator. However, it
+can only run these kernels sequentially.
+•Stream-Parallel [ 11]: The concurrent execution strategy
+from native GPU multi-stream support. It assigns models todifferent streams and leverages the default GPU scheduler to
+schedule the execution sequence.
+•MPS [ 10]: We distribute the resources to each model
+based on the models’ FLOPS.
+Evaluation Metric: In our experiments, we use the end-to-
+end execution latency of multi-tenant DNNs and monitored
+GPU resource utilization as the optimization objectives.
+5.2 Speed-Up Evaluation
+We first compare the overall latency of the baselines and
+our methods GACER . To demonstrate each design compo-
+nent’s effectiveness, we decompose and evaluate our method
+step by step, i.e., using spatial granularity regulation ( Spa-
+tial), the method only using temporal granularity regulation
+(Temporal ), and the combined optimization ( GACER ). The
+results are shown in Fig. 7. All latency is normalized by the
+CuDNN-Seq baseline to show the relative acceleration ratio.
+We use five multi-tenant DNN combination settings, which
+cover a wide range of concurrency scenarios. For example,
+ALEX+VGG+R18 is a relatively simple one (10 ∼30 op-
+erators), and the number of operators of R101+D121+M3
+can exceed 200. R34+LSTM+BST is a complex multi-tenant
+scenario, which includes a vision model, language model, and
+recommendation model with diverse resource requirements.
+Overall GACER Speed-up: Based on the results, it can
+be observed that our framework GACER could consistently
+yield 1.37×∼ 1.66×speed-up compared to the sequential
+baselines across all five model combinations. The Stream-
+Parallel solution also yields a certain speed-up than CuDNN-
+Seq, but the acceleration ratio is much less usually 1.24 ×
+∼1.51×. Also, the MPS acceleration effect is very unstable,
+specifically due to that fixed resource allocation cannot satisfy
+many particularly unbalanced model workload scenarios.
+Speed-up with Spatial Granularity Regulation: The spa-
+tial granularity regulation is more advantageous for mod-
+els with large operator workloads. In particular, when the
+workloads of multiple parallel models are large, such as
+R50+V16+M3 in Fig. 7, where both R50 and V16 both have
+large operator workloads, the decomposition of V16 can re-
+duce more residue and obtain significant speedups. On the
+contrary, for the combination of R34+LSTM+BST, the latter
+two models have a low SM occupation, so the workload de-
+composition has less optimization space for the residue and
+almost no performance gain compared to Stream-Parallel.
+Speed-up with Temporal Granularity Regulation: On
+the other hand, the temporal granularity regulation gives more
+significant speedup for model combinations with more lay-
+ers. The most obvious scenario is R101+D121+M3, in which
+all three models have more layers and complex operators
+8111111.091.111.181.11.121.241.21.381.41.521.11.251.31.31.441.321.251.511.481.521.351.341.491.61.621.371.41.551.651.66
+012
+ALE X+V16+R18D121+V16+LSTMR50+V16+M3R101+D121+M3R34+LSTM+BSTAcceleration RatioCuDNN-SeqTVM-SeqStream-ParallelResizingReorderingGACERMPSFigure 7: Runtime Performance of GACER (with Titan V)
+1020406080100
+CuDN N-SeqSt ream-Para llelGACERSMOccupancy(%)0100200300400500(1.6X)High-Utilization
+Figure 8: Analysis on GPU Utilization Enhancement
+in terms of timing and resource consumption. Therefore, di-
+viding them into multiple operator clusters allows for better
+residue reduction within each concurrent cluster.
+5.3 GPU Utilization Evaluation
+We further profiled and checked the GPU runtime statistics to
+analyze the overall GPU utilization within different scenarios.
+We use the achieved SM Occupancy from NVIDIA NSight
+Profiler as an indicator metric of GPU utilization informa-
+tion. Fig. 8 demonstrates the utilization statistics comparison
+between CuDNN-Seq, Stream-Parallel, and our method on
+the R101+D121+M3. As is observed, our method obtains
+about 60% utilization enhancement over the sequence method
+and almost 40% enhancement than Stream-Parallel, which is
+consistent with our speed-up performance. GACER runs with
+a more even utilization and has less inefficient intervals due
+to the fact that our method fills the residue well.
+5.4 Framework Generality Analysis
+We then evaluate the generality of our method with differ-
+ent GPU platforms. We perform operator profiling on dif-
+ferent GPU platforms to obtain operator information lookup
+tables. Then we use our search framework to get the optimal
+regulation solution. We test five multi-tenant setups on dif-
+ferent GPUs: the NVIDIA P6000 and the NVIDIA 1080Ti.
+The P6000 GPU is the last version before Titan-V and has
+a slightly lower peak computing performance (12.6 vs. 14.9
+TFLOPS). The 1080Ti is a relatively early platform, with a
+calculated peak performance of only 10.4 TFLPOS. As theoverall performance is shown in Table 2. C is CuDNN-Seq,
+and S is Stream-Parallel. Since these two platforms do not
+support MPS, it is not compared here. We set the batch size
+of each vision model to 8, the language model to 128, and the
+recommended model to 64, and we only test model inference
+here. Our scheduling framework GACER also yields signifi-
+cant performance gain (1.38 ×∼1.58×acceleration on P6000
+and 1.32×∼1.70×acceleration on 1080Ti) on the different
+GPU platforms.
+5.5 Framework Granularity Awareness
+In this section, we conduct in-depth overhead profiling and
+analysis to demonstrate the full-spectrum system optimization
+trade-offs and how the GACER framework decides coarse-
+to-fine temporal and spatial granularity to achieve optimal
+performance.
+Temporal Granularity Trade-off: We compare the per-
+formance of multi-tenant DL computing under different sched-
+uling granularity, including model-wise (Stream-Parallel),
+segment-wise (with a different number of pointers), and operator-
+wise. One interesting finding is that, as the scheduling granu-
+larity gets finer (from model to segment, and then operator),
+the latency performance tends to go through an improving
+and decreasing trend, forming a latency "sweet-zone" in the
+middle granularity as shown in Fig. 9.
+We choose three scenarios of model combinations and exe-
+cute them in different scheduling granularity. The "segment-
+2" means that we divide each model into 2 separate segments
+for scheduling. As shown in Fig. 9, although the "sweet-zone"
+always appears in the middle, the optimal granularity varies,
+which requires an adaptive granularity decision. Based on the
+results, we can find that complex model combination tends
+to benefit more from more fine-grained segments to get the
+best performance, e.g. R101+D121+M3. This is because they
+have more operators and thus the insertion of pointers usually
+has larger optimization space and freedom. In contrast, the
+second combination is relatively simple and achieves opti-
+mal performance with the optimization of a small number of
+pointers. And too much scheduling can lead to performance
+degradation due to synchronization overhead.
+9Table 2: GPU Generality Evaluation (ms)
+Models C-P6000 C-1080Ti S-P6000 S-1080Ti GACER -P6000 GACER -1080Ti
+ALEX+V16+R18 18.74 19.56 14.99( 1.25x ) 15.28( 1.28x ) 13.48( 1.39x ) 14.81( 1.32x )
+D121+V16+LSTM 17.83 18.02 14.73( 1.21x ) 15.27( 1.18x ) 12.92( 1.38x ) 13.54( 1.33x )
+R50+V16+M3 28.54 32.88 20.88( 1.37x ) 23.48( 1.40x ) 19.02( 1.50x ) 21.07( 1.56x )
+R101+D121+M3 40.51 44.89 29.35( 1.38x ) 32.06( 1.40x ) 25.63( 1.58x ) 27.37( 1.64x )
+R34+LSTM+BST 12.35 14.50 8.23( 1.50x ) 10.13( 1.43x ) 7.97( 1.55x ) 8.51( 1.70x )
+Table 3: Different Spatial Granularity Performance
+S1 S2 S3 S4 S5 Latency
+1V16(32) R18(32) - - - 80 ms
+2V16(16) V16(16) R18(32) - - 66 ms
+3V16(24) V16(8) R18(32) - - 72 ms
+4V16(32) R18(16) R18(16) - - 78 ms
+5V16(8) V16(8) V16(8) V16(8) R18(32) 85 ms
+Note: S1∼S5 are the different streams, the number in “( )” is the batch
+size, and each row is a combination of parallel models.
+Spatial Granularity Trade-off: In this part, we analyze
+the parallel performance of some model combinations un-
+der different spatial granularity. For the baseline, we use
+two streams to parallel a VGG16 (V16) and ResNet18 (R18)
+model both with batch size 32. In order to improve the granu-
+larity of resource allocation, we decompose the batch of some
+operators in two models separately. We decompose all the
+convolution operators and the following Relu operators which
+are the main structure of these models The performance of
+different cases is shown in the Table. 3.
+The spatial granularity also has a "sweet zone" phenom-
+enon, and the optimal strategy is not the most fine-grained.
+This is because the decomposition and concatenation have the
+execution overhead and also increase more operators which
+could introduce more CPU operators issuing overhead. An-
+other valuable phenomenon is the decomposition of the op-
+erator with a higher SM occupation can bring more benefits.
+This phenomenon is particularly evident in the decomposition
+1Latency(ms)1015202530
+Model-wiseSegment -2Segment -3Segment -4Segment -5Segment -6Segment -7operator-wise
+Figure 9: Different Temporal Granularity PerformanceTable 4: GACER Search Overhead
+#Search Rounds 100 500 1000 2000 10000
+R34+V16+LSTM 0.90s 4.61s 9.65s 20.56s 1min43s
+R50+V16+M3 1.60s 7.9s 16.1s 33.0s 2min52s
+R34+LSTM+BST 0.88s 4.8s 9.8s 20.3s 1min30s
+of the VGG convolutional layers. Most of the layers of V16
+are computationally intensive convolutional layers, and these
+convolutional layers tend to occupy a large amount of SM
+resources during computation. When computing the convolu-
+tional layers of V16, a large number of SMs are occupied and
+it is difficult for the operator from R18 to co-deploy, resulting
+in a large residue. The operator decomposition allows the
+convolutional layers in V16 to be more flexible to parallel
+with the operators in R18, thus achieving a huge performance
+improvement, such as the case in Table. 3 2.
+5.6 Framework Overhead Analysis
+In this section, we analyze the overhead of our search algo-
+rithm, our framework could usually yield near-optimal sched-
+ule solutions within a short search time. The framework’s
+search running time overhead is demonstrated in Table 4. We
+profile the coordinate descent search with different search
+rounds from 100 to 10000. The results show that the run-
+ning overhead of our framework stays in the range of several
+seconds to at most a few minutes. Also, since it is possible
+to pre-execute this automated search algorithm offline for a
+given multi-tenant scenario, we consider this offline tuning
+overhead to be very acceptable. Such a search overhead is also
+acceptable for some online tasks that are not very real-time,
+such as training.
+6 CONCLUSION
+In this work, we focus on multi-tenant deep learning for GPU-
+based systems and reveal several computing issues. We find
+that the granularity of computing management in both the
+spatial and temporal management domains is extremely im-
+portant. However, there is a lack of a library and framework
+10for granularity optimization. Based on the optimization of
+granularity, we proposed GACER , an automated optimization
+framework that provides high-utilization, high-throughput,
+and low-latency multi-tenant deep learning computing sup-
+port. This framework is a revolutionary approach to multi-
+tenant deployment and can provide a solid foundation for the
+future development of multi-tenant deep learning.
+REFERENCES
+[1]John D Owens, Mike Houston, David Luebke, Simon Green, John E
+Stone, and James C Phillips. Gpu computing. Proceedings of the IEEE ,
+96(5):879–899, 2008.
+[2]Stephen W Keckler, William J Dally, Brucek Khailany, Michael Gar-
+land, and David Glasco. Gpus and the future of parallel computing.
+IEEE micro , 31(5):7–17, 2011.
+[3]Market Reports. Global data center accelerator market size, status
+and forecast 2020-2025, 2021. https://www.mynewsdesk.com/
+brandessence/pressreleases/data-center-accelerator-market-size-
+2021-cagr-38-dot-7-percent-3112488.
+[4]Zhihao Jia, James Thomas, Todd Warszawski, Mingyu Gao, Matei
+Zaharia, and Alex Aiken. Optimizing dnn computation with relaxed
+graph substitutions. Proceedings of Machine Learning and Systems , 1:
+27–39, 2019.
+[5]Yaoyao Ding, Ligeng Zhu, Zhihao Jia, Gennady Pekhimenko, and Song
+Han. Ios: Inter-operator scheduler for cnn acceleration. Proceedings of
+Machine Learning and Systems , 3:167–180, 2021.
+[6]Shaohui Lin, Rongrong Ji, Chenqian Yan, Baochang Zhang, Liujuan
+Cao, Qixiang Ye, Feiyue Huang, and David Doermann. Towards op-
+timal structured cnn pruning via generative adversarial learning. In
+Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition , pages 2790–2799, 2019.
+[7]Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry Kalenichenko,
+Weijun Wang, Tobias Weyand, Marco Andreetto, and Hartwig Adam.
+Mobilenets: Efficient convolutional neural networks for mobile vision
+applications. arXiv preprint arXiv:1704.04861 , 2017.
+[8]Shaoshan Liu, Liangkai Liu, Jie Tang, Bo Yu, Yifan Wang, and Weisong
+Shi. Edge computing for autonomous driving: Opportunities and chal-
+lenges. Proceedings of the IEEE , 107(8):1697–1716, 2019.
+[9] Stylianos Mystakidis. Metaverse. Encyclopedia , 2(1):486–497, 2022.
+[10] NVIDIA. Multi-Process Service, 2021. URL https://docs.nvidia.com/
+deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf.
+[11] NVIDIA. Multi-Stream, 2020. URL https://on-demand.gputechconf.
+com/gtc/2014/presentations/S4158-cuda-streams-best-practices-
+common-pitfalls.pdf.
+[12] NVIDIA. Nvidia multi instance gpu (mig), 2020. URL https://docs.
+nvidia.com/datacenter/tesla/mig-user-guide/.
+[13] Yongbo Yu, Fuxun Yu, Zirui Xu, Di Wang, Minjia Zhang, Ang Li,
+Shawn Bray, Chenchen Liu, and Xiang Chen. Powering multi-task fed-
+erated learning with competitive gpu resource sharing. In Companion
+Proceedings of the Web Conference 2022 , pages 567–571, 2022.
+[14] Yujeong Choi, Yunseong Kim, and Minsoo Rhu. Lazy batching: An
+sla-aware batching system for cloud machine learning inference. In
+2021 IEEE International Symposium on High-Performance Computer
+Architecture (HPCA) , pages 493–506. IEEE, 2021.
+[15] Oscar Koller, Necati Cihan Camgoz, Hermann Ney, and Richard Bow-
+den. Weakly supervised learning with multi-stream cnn-lstm-hmms to
+discover sequential parallelism in sign language videos. IEEE transac-
+tions on pattern analysis and machine intelligence , 42(9):2306–2320,
+2019.[16] Woosuk Kwon, Gyeong-In Yu, Eunji Jeong, and Byung-Gon Chun.
+Nimble: Lightweight and parallel gpu task scheduling for deep learning.
+Advances in Neural Information Processing Systems , 33:8343–8354,
+2020.
+[17] Aditya Dhakal, Sameer G Kulkarni, and KK Ramakrishnan. Gslice:
+Controlled spatial sharing of gpus for a scalable inference platform. In
+Proceedings of the 11th ACM Symposium on Cloud Computing , pages
+492–506, 2020.
+[18] Fuxun Yu, Shawn Bray, Di Wang, Longfei Shangguan, Xulong Tang,
+Chenchen Liu, and Xiang Chen. Automated runtime-aware scheduling
+for multi-tenant dnn inference on gpu. In 2021 IEEE/ACM International
+Conference On Computer Aided Design (ICCAD) , pages 1–9. IEEE,
+2021.
+[19] Qiumin Xu, Hyeran Jeon, Keunsoo Kim, Won Woo Ro, and Mu-
+rali Annavaram. Warped-slicer: Efficient intra-sm slicing through
+dynamic resource partitioning for gpu multiprogramming. In 2016
+ACM/IEEE 43rd Annual International Symposium on Computer Archi-
+tecture (ISCA) , pages 230–242. IEEE, 2016.
+[20] Seungbeom Choi, Sunho Lee, Yeonjae Kim, Jongse Park, Youngjin
+Kwon, and Jaehyuk Huh. Multi-model machine learning inference
+serving with gpu spatial partitioning. arXiv preprint arXiv:2109.01611 ,
+2021.
+[21] Peifeng Yu and Mosharaf Chowdhury. Fine-grained gpu sharing primi-
+tives for deep learning applications. Proceedings of Machine Learning
+and Systems , 2:98–111, 2020.
+[22] Daniel Zhang, Nathan Vance, Yang Zhang, Md Tahmid Rashid, and
+Dong Wang. Edgebatch: Towards ai-empowered optimal task batching
+in intelligent edge systems. In 2019 IEEE Real-Time Systems Sympo-
+sium (RTSS) , pages 366–379. IEEE, 2019.
+[23] Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao
+Chen, Mia Chen, HyoukJoong Lee, Jiquan Ngiam, Quoc V Le, Yonghui
+Wu, et al. Gpipe: Efficient training of giant neural networks using
+pipeline parallelism. Advances in neural information processing sys-
+tems, 32, 2019.
+[24] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Lianmin Zheng, Eddie
+Yan, Haichen Shen, Meghan Cowan, Leyuan Wang, Yuwei Hu, Luis
+Ceze, et al.{TVM}: An automated{End-to-End}optimizing compiler
+for deep learning. In 13th USENIX Symposium on Operating Systems
+Design and Implementation (OSDI 18) , pages 578–594, 2018.
+[25] NVIDIA. NVIDIA Nsight Systems, 2020. URL https://on-
+demand.gputechconf.com/gtc/2014/presentations/S4158-cuda-
+streams-best-practices-common-pitfalls.pdf.
+[26] META. Pytorch, 2020. URL https://pytorch.org.
+[27] Sheng-Chun Kao and Tushar Krishna. Magma: An optimization frame-
+work for mapping multiple dnns on multiple accelerator cores. In
+2022 IEEE International Symposium on High-Performance Computer
+Architecture (HPCA) , pages 814–830. IEEE, 2022.
+[28] Yong Yu, Xiaosheng Si, Changhua Hu, and Jianxun Zhang. A review of
+recurrent neural networks: Lstm cells and network architectures. Neural
+Computation , 31(7):1235–1270, 2019.
+[29] Qiwei Chen, Huan Zhao, Wei Li, Pipei Huang, and Wenwu Ou. Behav-
+ior sequence transformer for e-commerce recommendation in alibaba.
+InProceedings of the 1st International Workshop on Deep Learning
+Practice for High-Dimensional Sparse Data , pages 1–4, 2019.
+[30] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao
+Ma, Yanghui Yan, Junqi Jin, Han Li, and Kun Gai. Deep interest
+network for click-through rate prediction. In Proceedings of the 24th
+ACM SIGKDD international conference on knowledge discovery &
+data mining , pages 1059–1068, 2018.
+[31] NVIDIA. Nvidia CuDNN Documentation,, 2020. URL https://docs.
+nvidia.com/deeplearning/cudnn/developer-guide/index.html.
+11

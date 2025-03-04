@@ -1,0 +1,2168 @@
+arXiv:2303.12606v3  [cs.PL]  14 Apr 2023129
+DynamicPartial OrderReductionforChecking Correctness
+againstTransactionIsolation Levels
+AHMEDBOUAJJANI, Université Paris Cité,CNRS, IRIF, France
+CONSTANTIN ENEA, LIX, EcolePolytechnique, CNRS and InstitutPolytechnique deParis, France
+ENRIQUEROMÁN-CALVO, Université Paris Cité, CNRS,IRIF, France
+Modern applications, such as social networking systems and e-commerce platforms are centered around
+usinglarge-scaledatabasesforstoringandretrieving dat a.Accesses tothedatabasearetypicallyenclosedin
+transactions thatallowcomputationsonshared datatobeis olatedfromotherconcurrent computationsand
+resilient tofailures. Moderndatabases tradeisolationfo rperformance. Theweaker theisolationlevel is, the
+morebehaviors a databaseis allowed toexhibit and it is upto thedeveloper to ensure that their application
+cantoleratethosebehaviors.
+Inthiswork,weproposestatelessmodelcheckingalgorithm sforstudyingcorrectnessofsuchapplications
+that rely on dynamic partial order reduction. These algorit hms work for a number of widely-used weak
+isolation levels, including Read Committed, Causal Consis tency, Snapshot Isolation and Serializability. We
+showthattheyarecomplete,soundandoptimal,andrunwithp olynomialmemoryconsumptioninallcases.
+Wereportonanimplementationofthesealgorithmsinthecon textofJavaPathﬁnderappliedtoanumberof
+challenging applicationsdrawnfrom theliteratureof dist ributedsystems and databases.
+CCS Concepts: • Theoryof computation →Veriﬁcation by modelchecking ;Distributedcomputing
+models;•Softwareand itsengineering →Formalsoftware veriﬁcation .
+AdditionalKeyWordsandPhrases:ApplicationsofStorageS ystems,TransactionalDatabases,WeakIsolation
+Levels, Dynamic Partial-Order Reduction
+ACM Reference Format:
+Ahmed Bouajjani, Constantin Enea, and Enrique Román-Calvo . 2023. Dynamic Partial Order Reduction for
+Checking Correctness against Transaction Isolation Level s.Proc. ACM Program. Lang. 7, PLDI, Article 129
+(June 2023), 42pages.https://doi.org/10.1145/3591243
+1 INTRODUCTION
+Datastorageisnolongeraboutwritingdatatoasinglediskwitha singlepointofaccess.Modern
+applicationsrequire not justdata reliability, but alsohigh -throughputconcurrentaccesses.Appli-
+cationsconcerningsupplychains,banking,etc.usetraditionalrel ationaldatabasesforstoringand
+processing data, whereas applications such as social networki ng software and e-commerce plat-
+formsusecloud-basedstoragesystems(suchasAzureCosmos DB[Paz2018],AmazonDynamoDB
+[DeCandia et al.2007 ],FacebookTAO[ Bronsonet al.2013 ],etc.).
+Providing high-throughput processing, unfortunately, comes a t an unavoidable cost of weak-
+ening the consistency guarantees oﬀered to users: Concurrently-co nnected clients may end up
+observing diﬀerent versions of the same data. These “anomalies” can be prevented by using a
+strongisolation level suchasSerializability [Papadimitriou1979 ],whichessentially oﬀersasingle
+Authors’addresses:AhmedBouajjani, UniversitéParisCité,CNRS, IRIF,France,abou@irif.fr;ConstantinEnea,LIX,Ecole
+Polytechnique,CNRSandInstitutPolytechniquedeParis,France,cene a@lix.polytechnique.fr;EnriqueRomán-Calvo, Uni-
+versitéParis Cité,CNRS, IRIF,France,calvo@irif.fr.
+Permission to make digital or hard copies of part or all of this work f or personal or classroom use is granted without fee
+provided that copies are not made or distributed for proﬁt or comme rcial advantage and that copies bear this notice and
+thefullcitation on theﬁrstpage. Copyrights forthird-party co mponents ofthisworkmust behonored.For allotheruses,
+contact theowner/author(s).
+© 2023Copyright heldby theowner/author(s).
+2475-1421/2023/6-ART129
+https://doi.org/10.1145/3591243
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:2 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+version of the data to all clients at any point in time. However, s erializability requires expensive
+synchronizationandincursahighperformancecost.Asaconsequenc e,moststoragesystemsuse
+weaker isolation levels, such as Causal Consistency [AkkoorathandBieniusa 2016 ;Lamport1978 ;
+Lloyd et al.2011 ],SnapshotIsolation [Berenson et al.1995 ],ReadCommitted [Berenson et al.1995 ],
+etc.forbetterperformance.Inarecentsurvey ofdatabaseadm inistrators[ Pavlo2017 ],86%ofthe
+participantsrespondedthatmostorallofthetransactionsinth eirdatabasesexecuteatReadCom-
+mitted level.
+A weaker isolation level allows for more possible behaviors than stronger isolation levels. It
+is up to the developers then to ensure that their application c an tolerate this larger set of be-
+haviors. Unfortunately,weak isolation levels are hard to unde rstand or reason about [ Adya 1999 ;
+Brutschyet al.2017 ]andresultingapplicationbugscancauselossofbusiness[ Warszawskiand Bailis
+2017].
+Model Checking Database-Backed Applications. This paper addresses the problem of model
+checking code for correctness against a given isolation level. Model checking [Clarkeet al. 1983 ;
+Queille andSifakis 1982 ] explores the state space of a given program in a systematic m anner and
+it provides high coverage of program behavior. However, it f aces the infamous state explosion
+problem,i.e., the numberofexecutionsgrows exponentiallyin t henumber ofconcurrentclients.
+Partialorderreduction (POR)[Clarkeet al.1999 ;Godefroid1996 ;Peled1993 ;Valmari1989 ]isan
+approachthatlimitsthenumberofexploredexecutionswithou tsacriﬁcingcoverage.PORrelieson
+anequivalencerelationbetweenexecutionswheree.g.,twoex ecutionsareequivalentifonecanbe
+obtained from the other by swapping consecutive independent (non-co nﬂicting) execution steps.
+It guarantees that at least one execution from each equivalence class is explored. OptimalPOR
+techniquesexplore exactlyone execution from eachequivalenc eclass. Beyond this classic notion
+of optimality, POR techniques may aim for optimality by avoid ing visiting states from which the
+exploration is blocked .Dynamic partial order reduction (DPOR) [ FlanaganandGodefroid 2005 ]
+hasbeenintroducedtoexploretheexecutionspace(andtracki ngtheequivalencerelationbetween
+executions) on-the-ﬂy without relying on a-priori static analy ses. This is typically coupled with
+statelessmodelchecking(SMC)[ Godefroid1997 ]whichexploresexecutionsofaprogramwithout
+storing visited states, thereby,avoiding excessive memoryc onsumption.
+There isa large bodyofwork on (D)POR techniquesthat address their soundness when check-
+ing a certain class of speciﬁcations for a certain class of prog rams, as well as their completeness
+and their theoretical optimality (see Section 8). Most often these works consider shared memory
+concurrentprogramsexecuting under astrongly consistent memorym odel.
+In the last few years, some works have studied DPOR in the case of shared memory programs
+running under weak memory models such as TSO or Release-Acquire, e.g. [Abdullaet al. 2017a ,
+2016,2018;Kokologiannakiset al. 2019 ]. While these algorithms are sound and complete, they
+have exponential space complexity when they are optimal. More recently, Kokologiannakiset al.
+[2022] deﬁned a DPOR algorithm that has a polynomial space complexit y, in addition of being
+sound,completeandoptimal.Thisalgorithmcanbeappliedfor arangeofsharedmemorymodels.
+Whilethe worksmentionedabove concernsharedmemoryprograms ,weare notaware ofany
+publishedworkaddressingthecaseofdatabasetransactionalp rogramsrunningunderweakisola-
+tionlevels.Inthispaper,weaddressthiscaseandproposenew statelessmodelcheckingalgorithms
+relyingonDPORtechniquesfordatabase-backedapplications. Weassumethatallthetransactions
+inanapplicationexecuteunderthe sameisolationlevel,whichhappensquitefrequentlyinpractice
+(asmentioned above,most database applicationsare run onthed efault isolation level ofthe data-
+base).Our work generalizes the approach introduced by [ Kokologiannakiset al. 2022 ]. However,
+this generalization to the transactional case, covering the mos t relevant isolation levels, is not a
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:3
+straightforwardadaptationof[ Kokologiannakiset al.2022 ].Ensuringoptimalitywhilepreserving
+the other properties, e.g., completeness and polynomial memor y complexity, is very challenging.
+Next,we explain the main steps andfeatures ofour work.
+FormalizingIsolationLevels. Ouralgorithmsrelyontheaxiomaticdeﬁnitionsofisolationl evels
+introduced by Biswas and Enea [2019]. These deﬁnitions use logical constraints called axiomsto
+characterizetheset ofexecutionsofadatabase (e.g.,key-v alue store) thatconformtoa particular
+isolationlevel(extensibletoSQLqueries[ Biswas et al.2021 ]).Theseconstraintsrefertoaspeciﬁc
+set of relations between events/transactions in an execution th at describe control-ﬂow or data-
+ﬂowdependencies:aprogramorder pobetweeneventsinthesametransaction,asessionorder so
+betweentransactionsinthesamesession1,andawrite-read wr(read-from)relationthatassociates
+eachreadeventwithatransactionthatwritesthevaluereturne dbytheread.Theserelationsalong
+with the events in an execution are calleda history. A history describesonly the interaction with
+the database,omitting application-side events (e.g.,comput ingvalues written to the database).
+ExecutionEquivalence. DPOR algorithms are parametrized by an equivalence relation on exe-
+cutions, most often, Mazurkiewicz equivalence [ Mazurkiewicz 1986 ]. In this work, we consider
+a weaker equivalence relation, also known as read-from equivalence [Abdullaet al. 2019 ,2018;
+Chalupaet al.2018 ;Kokologiannakiset al.2022 ,2019;KokologiannakisandVafeiadis2020 ],which
+considers that two executions are equivalent when their histor ies are precisely the same (they
+contain the same set of events, and the relations po,so, andwrare the same). In general, reads-
+from equivalence is coarser than Mazurkiewicz equivalence, a nd its equivalence classes can be
+exponentially-smaller thanMazurkiewicz tracesin certain c ases[Chalupaet al.2018 ].
+SMCAlgorithms. OurSMCalgorithmsenumerate executionsofa given programunde r agiven
+isolationlevel /u1D43C.Theyare sound,i.e.,enumerateonly feasibleexecutions(admittedbytheprogram
+under/u1D43C),complete, i.e., they output a representative of each read-from equiva lence class, and op-
+timal,i.e., they output exactly one completeexecution fromeachread-fromequivalence class.F or
+isolation levels weaker than and including Causal Consistency, t hey satisfy a notion of strong op-
+timalitywhich says that additionally, the enumeration avoids states f rom which the execution is
+“blocked”,i.e., it cannot be extended to a complete execution o f the program. For Snapshot Isola-
+tion and Serializability, we show that there exists no algorithm in the same class (to be discussed
+below)that canensure sucha strong notion ofoptimality. Allth ealgorithmsthat we propose are
+polynomialspace,asopposedto manyDPOR algorithmsintroduce d in the literature.
+As a starting point, we deﬁne a generic class of SMC algorithms, ca lledswapping based , gener-
+alizingtheapproachadoptedby[ Kokologiannakiset al.2022 ,2019],whichenumeratehistoriesof
+program executions. These algorithms focus on the interactio n with the database assuming that
+theotherstepsinatransactionconcernlocalvariablesvisib le onlywithinthescopeoftheenclos-
+ing session. Executions are extended according to a generic schedu ler function N/e.sc/x.sc/t.scand every
+read event produces several exploration branches, one for ever y write executed in the past that
+it can read from.Events in an execution canbe swapped to produ ce new exploration “roots” that
+lead to diﬀerent histories. Swapping events is required for com pleteness, to enumerate histories
+where a read /u1D45Freads from a write /u1D464that is scheduled by N/e.sc/x.sc/t.scafter/u1D45F. To ensure soundness, we
+restrict the deﬁnition of swapping so that it produces a histor y that is feasible by construction
+(extendinganexecutionwhichispossiblyinfeasiblemayviola tesoundness).Suchanalgorithmis
+optimal w.r.t. theread-from equivalence whenit enumeratese achhistory exactlyonce.
+We deﬁne a concrete algorithm in this class that in particular, satisﬁes the stronger notion of
+optimalitymentionedaboveforeveryisolationlevel /u1D43Cwhichispreﬁx-closed andcausally-extensible ,
+e.g.,Read Committed andCausal Consistency . Preﬁx-closure means that every preﬁx of a history
+1A sessionis a sequentialinterfaceto thestoragesystem. Itcorres ponds towhatis alsocalleda connection .
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:4 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+/u1D465∈Vars/u1D44E∈LVars
+Prog::=Sess|Sess||Prog
+Sess::=Trans|Trans;Sess
+Trans::=begin;Body;commitBody::=Instr|Instr;Body
+Instr::=InstrDB|/u1D44E:=/u1D452|if(/u1D719(/vec/u1D44E)){Instr}
+InstrDB::=/u1D44E:=read(/u1D465) |write(/u1D465,/u1D44E) |abort
+Fig. 1. Program syntax. The set of global variables is denoted by Vars while LVars denotes the set of local
+variables.Weuse /u1D719todenoteBooleanexpressionsoverlocalvariables,and /u1D452todenoteexpressionsoverlocal
+variablesinterpreted asvalues.Weuse /vec·to denote vectorsofelements.
+that satisﬁes /u1D43C, i.e., a subset of transactions and all their predecessors in th e causal relation, i.e.,
+(so∪wr)+, is also consistent with /u1D43C, and causal extensibility means that any pending transaction
+in a history that satisﬁes /u1D43Ccan be extended with one more event to still satisfy /u1D43C, and if this is a
+read event, then, it can read-from a transaction that precedes i t in the causal relation. To ensure
+strong optimality, this algorithm uses a carefully chosen co ndition for restricting the application
+ofevent swaps, whichmakestheproof ofcompletenessin partic ular,quite non-trivial.
+We show that isolation levels such as Snapshot Isolation and Se rializability are notcausally-
+extensible and that there exists no swapping based SMC algorithm which is sound, complete,
+and strongly optimal at the same time (independent of memory consum ption bounds). This im-
+possibility proof uses a program to show that any N/e.sc/x.sc/t.scscheduler and any restriction on swaps
+would violate either completeness or strong optimality. Howe ver, we deﬁne an extension of the
+previous algorithm which satisﬁes the weaker notion of optim ality, while preserving soundness,
+completeness,andpolynomialspacecomplexity.Thisalgorith mwillsimplyenumerateexecutions
+according to a weaker preﬁx-closed and causally-extensible is olation level, and ﬁlter executions
+according to the stronger isolation levels Snapshot Isolation and Serializability at the end, before
+outputting.
+WeimplementedthesealgorithmsintheJavaPathﬁnder(JPF)mo delchecker[ Visser et al.2004 ],
+and evaluated them on a number of challenging database-backed ap plications drawn from the
+literature ofdistributed systems and databases.
+Our contributions andoutline are summarizedas follows:
+§3identiﬁes a class of isolation levels called preﬁx-closed and causally-extensible that admit
+eﬃcient SMC.
+§4deﬁnesagenericclassofswappingbasedSMCalgorithmsbasedon DPORwhichareparametrized
+by agiven isolation level.
+§5deﬁnes a swapping based SMC algorithm which is sound, complete, strongly-optimal, and
+polynomialspace,forany isolation level that ispreﬁx-close d and causally-extensible.
+§6shows that there exists no swapping based algorithm for Snapsho t Isolation and Serializ-
+ability, which is sound, complete, and strongly-optimal at the same time, and proposes a
+swapping basedalgorithmwhichsatisﬁes “plain” optimality.
+§7reportson an implementation and evaluation ofthese algorith ms.
+Section2recallstheformalizationofisolationlevelsofBiswasandE nea[Biswas and Enea2019 ;
+Biswas et al.2021 ],whileSections 8and9concludewithadiscussionofrelatedworkandconclud-
+ingremarks. Additionalformalization,proofs,andexperimentaldatacanbe foundinthetechnical
+report [Bouajjaniet al.2023a ].
+2 TRANSACTIONAL PROGRAMS
+2.1 ProgramSyntax
+Figure1liststhedeﬁnitionofasimpleprogramminglanguagethatweuse torepresentapplications
+runningontopofadatabase.Aprogramisasetof sessionsrunninginparallel,eachsessionbeing
+composedofasequenceof transactions . Eachtransactionisdelimitedby beginandeither commit
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:5
+orabortinstructions, andits bodycontainsinstructions thataccessthe da tabaseand manipulate
+a setLVarsof localvariables. We use symbols /u1D44E,/u1D44F,etc.to denote elementsof LVars.
+For simplicity, we abstract the database state as a valuatio n to a set Varsofglobalvariables2,
+ranged over using /u1D465,/u1D466.alt, etc. The instructions accessing the database correspond to rea ding the
+valueofaglobalvariableandstoringit intoalocalvariable /u1D44E(/u1D44E:=read(/u1D465)),writing thevalue of
+alocalvariable /u1D44Etoaglobalvariable /u1D465(write(/u1D465,/u1D44E)),oranassignmenttoalocalvariable /u1D44E(/u1D44E:=/u1D452).
+The set of values of global or local variables is denoted by Vals. Assignments to local variables
+use expressions /u1D452over local variables, which are interpreted as values and whos e syntax is left
+unspeciﬁed. Each of these instructions can be guarded by a Boole an condition /u1D719(/vec/u1D44E)over a set of
+local variables/vec/u1D44E(their syntax is not important). Our results assume bounded prog rams, as usual
+in SMC algorithms, and therefore, we omit other constructs lik ewhileloops. SQL statements
+(SELECT, JOIN, UPDATE) manipulating relational tables can be c ompiled to reads or writes of
+variablesrepresenting rowsin atable (see forinstance, [ Biswaset al.2021 ;Rahmaniet al.2019 ]).
+2.2 Isolation Levels
+Wepresenttheaxiomaticframeworkintroducedby Biswas andEnea [2019]fordeﬁningisolation
+levels.Isolationlevelsaredeﬁnedaslogicalconstraints,ca lledaxioms,overhistories,whicharean
+abstract representation of the interaction between a program andthe database in anexecution.
+2.2.1 Histories. Programsinteractwithadatabasebyissuingtransactionsforme dofbegin,commit,
+abort,readandwriteinstructions.Theeﬀectofexecutingonesuchinstruction isrepr esented us-
+ing anevent/a\}bracketle{t/u1D452,type/a\}bracketri}htwhere/u1D452is anidentiﬁer andtypeis atype. There are ﬁve types of events:
+begin,commit,abort,read(/u1D465)forreadingtheglobalvariable /u1D465,andwrite(/u1D465,/u1D463)forwritingvalue /u1D463
+to/u1D465.Edenotes theset ofevents. For a read/write event /u1D452, we usevar(/u1D452)to denote the variable /u1D465.
+Atransaction log/a\}bracketle{t/u1D461,/u1D438,po/u1D461/a\}bracketri}htis an identiﬁer /u1D461and a ﬁnite set of events /u1D438along with a strict
+total order po/u1D461on/u1D438, calledprogram order (representing the order between instructions in the
+body of a transaction). The minimal element of po/u1D461is abeginevent. A transaction log without
+neithera commitnoranaborteventiscalled pending.Otherwise,itiscalled complete.Acomplete
+transactionlogwitha commitevent iscalled committed andabortedotherwise.Ifa commitoran
+abortevent occurs,thenitismaximalin po/u1D461;commitandabortcannotoccurinthesamelog.The
+set/u1D438of events in a transaction log /u1D461is denoted by events(/u1D461). Note that a transaction is aborted
+because it executed an abortinstruction. Histories do not include transactions aborted by the
+databasebecausetheireﬀectshouldnotbevisibletoothertr ansactionsandtheabortisnotunder
+thecontrolofthe program.Forsimplicity, wemayusetheterm transaction instead oftransaction
+log.
+Isolation levels diﬀer in the values returned by read events wh ich are not preceded by a write
+on the same variable in the same transaction. We assume in the following that every transaction
+inaprogramisexecutedunderthesameisolationlevel. Foreveryisolationlevelthatweareaware
+of,ifareadofaglobalvariable /u1D465isprecededbyawriteto /u1D465inpo/u1D461,thenitshouldreturnthevalue
+written bythe last write to /u1D465before the read (w.r.t. po/u1D461).
+Theset of read(/u1D465)events in a transaction log /u1D461that arenotprecededby a write to /u1D465inpo/u1D461,for
+some/u1D465, is denoted by reads(/u1D461). Also, if /u1D461doesnotcontain an abortevent, the set of write(/u1D465,_)
+events in /u1D461that arenotfollowed by other writes to /u1D465inpo/u1D461, for some /u1D465, is denoted by writes(/u1D461).
+If a transaction contains multiple writes to the same variable, then only the last one (w.r.t. po/u1D461)
+can be visible to other transactions (w.r.t. any isolation leve l that we are aware of). If /u1D461contains
+an abort event, then we deﬁne writes(/u1D461)to be the empty set. Thisis because the eﬀect of aborted
+2In the context of a relational database, global variables corres pond to ﬁelds/rows of a table while in the context of a
+key-valuestore, theycorrespond tokeys.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:6 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+/u1D4611 /u1D4613/u1D4612writes/u1D465
+wr/u1D465(so∪wr)+
+co
+/u1D4611≠/u1D4612∧/a\}bracketle{t/u1D4611,/u1D4613/a\}bracketri}ht∈wr/u1D465∧
+/u1D4612writes/u1D465∧
+/a\}bracketle{t/u1D4612,/u1D4613/a\}bracketri}ht∈(so∪wr)+
+⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co
+(a) CausalConsistency/u1D4611 /u1D4613/u1D4612writes/u1D465
+/u1D4614
+wr/u1D465co∗
+(so∪wr) co
+/u1D4611≠/u1D4612∧/a\}bracketle{t/u1D4611,/u1D4613/a\}bracketri}ht∈wr/u1D465∧
+/u1D4612writes/u1D465∧
+/a\}bracketle{t/u1D4612,/u1D4613/a\}bracketri}ht∈co∗◦(wr∪so)
+⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co
+(b)Prefix/u1D4611 /u1D4613
+writes/u1D466.alt/u1D4612writes/u1D465
+/u1D4614writes/u1D466.alt
+wr/u1D465co∗
+coco
+/u1D4611≠/u1D4612∧ /a\}bracketle{t/u1D4611,/u1D4613/a\}bracketri}ht∈wr/u1D465∧
+/u1D4612writes/u1D44E∧/u1D4613writes/u1D466.alt∧
+/u1D4614writes/u1D466.alt∧/a\}bracketle{t/u1D4612,/u1D4614/a\}bracketri}ht∈co∗
+∧/a\}bracketle{t/u1D4614,/u1D4613/a\}bracketri}ht∈co
+⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co
+(c) Conflict/u1D4611 /u1D4613/u1D4612writes/u1D465
+wr/u1D465co
+co
+/u1D4611≠/u1D4612∧ /a\}bracketle{t/u1D4611,/u1D4613/a\}bracketri}ht∈wr/u1D465∧
+/u1D4612writes/u1D465∧ /a\}bracketle{t/u1D4612,/u1D4613/a\}bracketri}ht∈co
+⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co
+(d)Serializability
+Fig.2. Axiomsdefiningisolationslevels(alllogicalvariab lesrepresentingtransactions,e.g., /u1D4611,areuniversally
+quantified). The reflexive and transitive, resp., transitiv e, closure of a relation /u1D45F/u1D452/u1D459is denoted by /u1D45F/u1D452/u1D459∗, resp.,
+/u1D45F/u1D452/u1D459+.Also,◦denotesthecomposition oftworelations,i.e., /u1D45F/u1D452/u1D4591◦/u1D45F/u1D452/u1D4592={/a\}bracketle{t/u1D44E,/u1D44F/a\}bracketri}ht|∃/u1D450./a\}bracketle{t/u1D44E,/u1D450/a\}bracketri}ht∈/u1D45F/u1D452/u1D4591∧/a\}bracketle{t/u1D450,/u1D44F/a\}bracketri}ht∈/u1D45F/u1D452/u1D4592}.
+transactions (its set of writes) should not be visible to other t ransactions. The extension to sets
+of transaction logs is deﬁned as usual. Also, we say that a transa ction log /u1D461writes/u1D465, denoted by
+/u1D461writes/u1D465,whenwrites(/u1D461)contains some write(/u1D465,_)event.
+Ahistorycontainsasetoftransactionlogs(withdistinctidentiﬁers)ord eredbya(partial) session
+ordersothat represents the order between transactions in the same sess ion. It also includes a
+write-read relation (also called read-from) that deﬁnes read values by a ssociating each read to a
+transaction that wrote that value. Read events do notcontain a value, and their return value is
+deﬁnedasthevaluewrittenbythetransactionassociatedbyth ewrite-readrelation. Let/u1D447beaset
+oftransaction logs. Forawrite-read relation wr⊆writes(/u1D447)×reads(/u1D447)andvariable /u1D465,wr/u1D465isthe
+restriction of wrto reads of /u1D465,wr/u1D465=wr∩(writes(/u1D447)×{/u1D452|/u1D452isaread(/u1D465)event}).We extend the
+relations wrandwr/u1D465to pairs of transactions by /a\}bracketle{t/u1D4611,/u1D4612/a\}bracketri}ht∈wr,resp.,/a\}bracketle{t/u1D4611,/u1D4612/a\}bracketri}ht∈wr/u1D465,iﬀ there exists a
+write(/u1D465,_)event/u1D464in/u1D4611andaread(/u1D465)event/u1D45Fin/u1D4612s.t./a\}bracketle{t/u1D464,/u1D45F/a\}bracketri}ht∈wr,resp.,/a\}bracketle{t/u1D464,/u1D45F/a\}bracketri}ht∈wr/u1D465.Analogously,
+wrandwr/u1D465canbeextendedtotuplesformedofatransaction(containingawri te)andareadevent.
+We say that the transaction log /u1D4611isreadbythe transaction log /u1D4612when/a\}bracketle{t/u1D4611,/u1D4612/a\}bracketri}ht∈wr.
+Deﬁnition2.1. Ahistory/a\}bracketle{t/u1D447,so,wr/a\}bracketri}htisasetoftransactionlogs /u1D447alongwithastrictpartial session
+orderso,andawrite-read relationwr⊆writes(/u1D447)×reads(/u1D447)such that
+•the inverse of wris atotal function,
+•if(/u1D464,/u1D45F)∈wr,then/u1D464and/u1D45Fare a write and respectively, a read,ofthe same variable, and
+•so∪wris acyclic(here we use theextension of wrto pairsof transactions).
+Every history includes a distinguished transaction writing the initial values of all global vari-
+ables.Thistransaction precedesalltheothertransactionsin so.We useℎ,ℎ1,ℎ2,...torangeover
+histories.
+The set of transaction logs /u1D447in a history ℎ=/a\}bracketle{t/u1D447,so,wr/a\}bracketri}htis denoted by tr(ℎ), andevents(ℎ)is
+the union of events(/u1D461)for/u1D461∈/u1D447.For a history ℎand an event /u1D452inℎ,tr(ℎ,/u1D452)isthe transaction /u1D461in
+ℎthat contains /u1D452.Also,writes(ℎ)=/uniontext.1
+/u1D461∈tr(ℎ)writes(/u1D461)andreads(ℎ)=/uniontext.1
+/u1D461∈tr(ℎ)reads(/u1D461).
+We extend sotopairs ofevents by (/u1D4521,/u1D4522)∈soif(tr(ℎ,/u1D4521),tr(ℎ,/u1D4522))∈so.Also,po=/uniontext.1
+/u1D461∈/u1D447po/u1D461.
+2.2.2 Axiomatic Framework. A history satisﬁes a certain isolation level if there is a str ict total
+ordercoon its transactions, called commit order , which extends the write-read relation and the
+session order, and which satisﬁes certain properties. These properties, called axioms, relate the
+commit order with the soandwrrelations in a history and are deﬁned as ﬁrst-order formulas of
+the form:
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:7
+∀/u1D465,∀/u1D4611≠/u1D4612,∀/u1D4613.
+/a\}bracketle{t/u1D4611,/u1D4613/a\}bracketri}ht∈wr/u1D465∧/u1D4612writes/u1D465∧/u1D719(/u1D4612,/u1D4613)⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co (1)
+where/u1D719isapropertyrelating /u1D4612and/u1D70F(i.e.,thereadorthetransactionreadingfrom /u1D4611)thatvaries
+from one axiom to another.3Note that an aborted transaction /u1D461cannot take the role of /u1D4611nor/u1D4612
+in equation 1as the set writes(/u1D461)is empty. Intuitively, this axiom schema states the following : in
+orderfor/u1D70Ftoreadspeciﬁcally /u1D4611’swriteon /u1D458,itmustbethecasethatevery /u1D4612thatalsowrites /u1D458and
+satisﬁes/u1D719(/u1D4612,/u1D70F)was committed before /u1D4611. The property /u1D719relates/u1D4612and/u1D70Fusing the relations in a
+historyandthecommitorder.Figure 2showstwoaxiomswhichcorrespondtotheirhomonymous
+isolationlevels: CausalConsistency (CC)andSerializability (SER).Theconjunctionoftheothertwo
+axioms Conﬂict and Preﬁx deﬁnes Snapshot Isolation (SI).Read Atomic (RA) is a weakening of CC
+where(so∪wr)+isreplacedwith so∪wr.ReadCommitted (RC)isdeﬁnedsimilarly.Notethat SER
+is stronger than SI(i.e., every history satisfying SERsatisﬁesSIas well),SIis stronger than CC,
+CCisstronger than RA,andRAis stronger than RC.
+write(/u1D465,1) /u1D4611read(/u1D465)
+write(/u1D465,2)/u1D4612
+read(/u1D465)
+read(/u1D466.alt)/u1D4613read(/u1D465)
+write(/u1D466.alt,1)/u1D4614wr/u1D465
+wr/u1D465wr/u1D465
+wr/u1D466.alt
+Fig.3. CausalConsistencyviolation.Boxes
+group events from the sametransaction.For instance, the axiom deﬁning Causal Consis-
+tency [Lamport 1978 ] states that for any transaction /u1D4611
+writing a variable /u1D465that is read in a transaction /u1D4613, the
+set of(wr∪so)+predecessors of /u1D4613writing/u1D465must pre-
+cede/u1D4611in commitorder ((wr∪so)+is usuallycalledthe
+causalorder). A violation of this axiom can be found in
+Figure3:thetransaction /u1D4612writing 2to /u1D465isa(wr∪so)+
+predecessor of the transaction /u1D4613reading 1 from /u1D465be-
+cause the transaction /u1D4614,writing 1 to /u1D466.alt, reads/u1D465from/u1D4612and/u1D4613reads/u1D466.altfrom/u1D4614.Thisimplies that /u1D4612
+should precede in commit order the transaction /u1D4611writing 1 to /u1D465, which is inconsistent with the
+write-read relation ( /u1D4612readsfrom /u1D4611).
+TheSerializability axiomrequiresthatforanytransaction /u1D4611writingtoavariable /u1D465thatisread
+inatransaction /u1D4613,thesetof copredecessorsof /u1D4613writing/u1D465mustprecede /u1D4611incommitorder.This
+ensures that eachtransaction observes the eﬀectsofall the copredecessors.
+Deﬁnition 2.2. For an isolation level /u1D43Cdeﬁned by a set of axioms /u1D44B, a history ℎ=/a\}bracketle{t/u1D447,so,wr/a\}bracketri}ht
+satisﬁes/u1D43Ciﬀ there is astrict total order cos.t.wr∪so⊆coand/a\}bracketle{tℎ,co/a\}bracketri}htsatisﬁes/u1D44B.
+A history that satisﬁes an isolation level /u1D43Cis called/u1D43C-consistent. For two isolation levels /u1D43C1and
+/u1D43C2,/u1D43C1isweaker than /u1D43C2whenevery /u1D43C1-consistent history isalso /u1D43C2-consistent.
+2.3 ProgramSemantics
+We deﬁne a small-step operational semantics for transactional pr ograms, which is parametrized
+by an isolation level /u1D43C.The semantics keepsa history of previously executed databa se accesses in
+order to maintain consistency with /u1D43C.
+For readability, we deﬁne a program asa partial function P:SessId⇀Sessthat associates ses-
+sionidentiﬁersin SessIdwithconcretecodeasdeﬁnedinFigure 1(i.e.,sequencesoftransactions).
+Similarly,thesessionorder soinahistoryisdeﬁnedasapartialfunction so:SessId⇀Tlogs∗that
+associatessessionidentiﬁerswithsequencesoftransactionl ogs.Twotransactionlogsareordered
+bysoif one occursbeforethe other in some sequence so(/u1D457)with/u1D457∈SessId.
+Theoperationalsemanticsis deﬁnedasa transition relation ⇒/u1D43Cbetweenconﬁgurations , which
+are deﬁned astuples containingthe following:
+•historyℎstoring theevents generatedby database accessesexecutedin t hepast,
+3Theseformulas are interpretedon tuples /a\}bracketle{tℎ,co/a\}bracketri}htof ahistory ℎanda commit order coon thetransactions in ℎas usual.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:8 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+init
+read(/u1D465)
+read(/u1D466.alt)write(/u1D465,2)
+read(/u1D465)wr/u1D465so∩wr/u1D466.altso
+wr/u1D465so
+(a) A history.init
+read(/u1D465)
+read(/u1D466.alt)write(/u1D465,2)
+wr/u1D465so∩wr/u1D466.altso
+(b)Aprefix.init
+read(/u1D465)
+read(/u1D466.alt)read(/u1D465)soso∩wr/u1D466.alt
+(c) Notaprefix.
+Fig. 4. Explaining the notion of prefix of a history. initdenotes the transaction log writing initial values.
+Boxes group events from the sametransaction.
+•avaluationmap/vec/u1D6FEthatrecordslocalvariablevaluesinthecurrenttransaction ofeachsession
+(/vec/u1D6FEassociatesidentiﬁers of sessions with valuationsof localvar iables),
+•a map/vec/u1D435that stores the codeofeachlive transaction (mappingsession identiﬁers tocode),
+•sessions/transactions Pthat remain to beexecutedfrom theoriginal program.
+The relation⇒/u1D43Cis deﬁned using a set of rules as expected.Starting a new transacti on in a ses-
+sion/u1D457is enabled as long as this session has no live transactions ( /vecB(/u1D457)=/u1D716) and results in adding
+a transaction log with a single beginevent to the history and scheduling the body of the transac-
+tion (adding it to/vecB(/u1D457)).Local steps, i.e., checkinga Boolean condition or computat ion with local
+variables,usethelocalvariablevaluationsandadvancetheco deasexpected.Readinstructionsof
+some globalvariable /u1D465canhave two possible behaviors: (1)if the read followsawri te on/u1D465in the
+same transaction, then it returns the value written by the last w rite on/u1D465in that transaction, and
+(2) otherwise, the read reads from another transaction /u1D461′which is chosen non-deterministically
+aslongasextendingthecurrenthistorywiththewrite-read depe ndencyassociatedtothischoice
+leads to a history that still satisﬁes /u1D43C.Depending on the isolation level, there may not exist a
+transaction /u1D461′the read can read from. For other instructions, e.g., commitandabort, the history
+is simply extended with the corresponding events while ending the t ransaction execution in the
+case ofabort.
+Aninitialconﬁgurationfor program Pcontainsthe program P,a history ℎ=/a\}bracketle{t{/u1D4610},∅,∅/a\}bracketri}htwhere
+/u1D4610is a transaction log containing writes that write the initial valu e for all variables, and empty
+current transaction code ( B=/u1D716). An execution of a program Punder an isolation level /u1D43Cis a
+sequence of conﬁgurations /u1D4500/u1D4501.../u1D450/u1D45Bwhere/u1D4500is an initial conﬁguration for P, and/u1D450/u1D45A⇒/u1D43C/u1D450/u1D45A+1,
+for every 0≤/u1D45A</u1D45B. We say that /u1D450/u1D45Bis/u1D43C-reachable from/u1D4500. The history of such an execution is
+the history ℎin the last conﬁguration /u1D450/u1D45B. A conﬁguration is called ﬁnalif it contains the empty
+program( P=∅).Lethist/u1D43C(P)denote the set of allhistories ofan executionof Punder/u1D43Cthat ends
+in a ﬁnal conﬁguration.
+3 PREFIX-CLOSEDAND CAUSALLY-EXTENSIBLEISOLATION LEVELS
+We deﬁne two properties of isolation levels, preﬁx-closure a nd causal extensibility, which enable
+eﬃcient DPOR algorithms(asshown in Section 5).
+3.1 PrefixClosure
+For a relation /u1D445⊆/u1D434×/u1D434, the restriction of /u1D445to/u1D434′×/u1D434′, denoted by /u1D445↓/u1D434′×/u1D434′, is deﬁned by
+{(/u1D44E,/u1D44F):(/u1D44E,/u1D44F)∈/u1D445,/u1D44E,/u1D44F∈/u1D434′}. Also, a set /u1D434′is called/u1D445-downward closed when it contains /u1D44E∈/u1D434
+every time it contains some /u1D44F∈/u1D434with(/u1D44E,/u1D44F)∈/u1D445.
+Apreﬁxofatransactionlog /a\}bracketle{t/u1D461,/u1D438,po/u1D461/a\}bracketri}htisatransactionlog /a\}bracketle{t/u1D461,/u1D438′,po/u1D461↓/u1D438′×/u1D438′/a\}bracketri}htsuchthat /u1D438′ispo/u1D461-
+downwardclosed.A preﬁxofahistory ℎ=/a\}bracketle{t/u1D447,so,wr/a\}bracketri}htisahistory ℎ′=/a\}bracketle{t/u1D447′,so↓/u1D447′×/u1D447′,wr↓/u1D447′×/u1D447′/a\}bracketri}ht
+suchthatevery transactionlogin /u1D447′isapreﬁx ofadiﬀerent transactionlogin /u1D447butcarryingthe
+sameid,events(ℎ′)⊆events(ℎ),andevents(ℎ′)is(po∪so∪wr)∗-downwardclosed.Forexample,
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:9
+init
+read(/u1D465)
+read(/u1D466.alt)write(/u1D465,2)
+wr/u1D465soso
+(a)Extensible history.init
+read(/u1D465)
+read(/u1D466.alt)write(/u1D465,2)
+write(/u1D466.alt,2)
+wr/u1D465so∩wr/u1D466.altso
+(b)Non-extensible history.
+Fig.5. Explaining causalextensibility. initdenotesthetransactionlog
+writing initial values.Boxes group events from the sametran saction.init
+write(/u1D467,1)
+read(/u1D465)
+write(/u1D466.alt,1)write(/u1D467,2)
+read(/u1D466.alt)
+write(/u1D465,2)wr/u1D465 wr/u1D466.alt
+Fig. 6. A counter-example to
+causalextensibility for SIandSER.
+Theso-edges from initto the
+other transactions are omi/t_ted for
+legibility.
+the history pictured in Fig. 4bis a preﬁx of the one in Fig. 4awhile the history in Fig. 4cis not.
+The transactionson thebottom ofFig. 4chave awrpredecessor in Fig. 4awhichisnot included.
+Deﬁnition 3.1. An isolation level /u1D43Cis calledpreﬁx-closed when every preﬁx of an /u1D43C-consistent
+history is also /u1D43C-consistent.
+Every isolation level /u1D43Cdiscussed above is preﬁx-closed because if a history ℎis/u1D43C-consistent
+with acommitorder co,thenthe restriction of coto the transactionsthat occurin apreﬁx ℎ′ofℎ
+satisﬁes the correspondingaxiom(s)when interpreted over ℎ′.
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc3.2. Read Committed, Read Atomic, Causal Consistency, Snapshot Isolation, and Serial-
+izability arepreﬁxclosed.
+3.2 CausalExtensibility
+Westart withanexampletoexplaincausalextensibility. Let usconsiderthehistories ℎ1andℎ2in
+Figures5aand5b,respectively, withouttheevents read(/u1D466.alt)andwrite(/u1D466.alt,2)writteninblueboldfont.
+These histories satisfy Read Atomic.Thehistory ℎ1can be extended by adding the event read(/u1D466.alt)
+and thewrdependency wr(init,read(/u1D466.alt))while still satisfying Read Atomic. On the other hand,
+the history ℎ2can notbe extended with the event write(/u1D466.alt,2)while still satisfying Read Atomic.
+Intuitively,ifthereadingtransactiononthebottomreads /u1D465fromthetransactionontheright,then
+it should read /u1D466.altfrom the same transaction because this is more “recent” than initw.r.t. session
+order.Theessentialdiﬀerencebetweenthesetwoextensionsist hattheﬁrstconcernsatransaction
+whichismaximalin (so∪wr)+whilethesecondno.Theextensionof ℎ2concernsthetransaction
+ontherightinFigure 5bwhichisa wrpredecessorofthereadingtransaction.Causalextensibility
+willrequirethatatleastthe (so∪wr)+maximal(pending)transactionscanalwaysbeextendedwith
+any event while still preserving consistency. The restriction to (so∪wr)+maximal transactions
+is intuitively related to the fact that transactions should not r ead from non-committed (pending)
+transactions, e.g.,the reading transaction in ℎ2should not read fromthe still pending transaction
+that writes /u1D465andlater /u1D466.alt.
+Formally, let ℎ=/a\}bracketle{t/u1D447,so,wr/a\}bracketri}htbe a history. A transaction /u1D461is called(so∪wr)+-maximal in ℎifℎ
+does not contain any transaction /u1D461′such that(/u1D461,/u1D461′)∈(so∪wr)+. We deﬁne a causal extension of
+a pendingtransaction /u1D461inℎwith an event /u1D452asa history ℎ′suchthat:
+•/u1D452is addedto /u1D461asa maximalelement of po/u1D461,
+•if/u1D452is a read event and /u1D461does notcontain a write to var(/u1D452), thenwris extended with some
+tuple(/u1D461′,/u1D452)such that(/u1D461′,/u1D461)∈(so∪wr)+inℎ(if/u1D452is a read event and /u1D461doescontain awrite
+tovar(/u1D452), then the value returned by /u1D452is the value written by the latest write on var(/u1D452)
+before/u1D452in/u1D461;thedeﬁnitionofthereturnvalueinthiscaseisuniqueanddoes notinvolve wr
+dependencies),
+•the other elementsof ℎremain unchanged inℎ′.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:10 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+init
+write(/u1D465,1)
+write(/u1D466.alt,1)/u1D4611
+write(/u1D465,2)/u1D4612write(/u1D465,3)/u1D4613
+read(/u1D466.alt)
+···/u1D4614sosowr/u1D466.altso so
+(a)History ℎ.init
+write(/u1D465,1)
+write(/u1D466.alt,1)/u1D4611
+write(/u1D465,2)/u1D4612write(/u1D465,3)/u1D4613
+read(/u1D466.alt)
+read(/u1D465)/u1D4614sosowr/u1D466.alt,wr/u1D465so so
+(b)/u1D4614reads/u1D465and/u1D466.altfrom/u1D4611.init
+write(/u1D465,1)
+write(/u1D466.alt,1)/u1D4611
+write(/u1D465,2)/u1D4612write(/u1D465,3)/u1D4613
+read(/u1D466.alt)
+read(/u1D465)/u1D4614wr/u1D466.altso∩wr/u1D465sososo
+(c)/u1D4614reads/u1D465from/u1D4613,/u1D466.altfrom/u1D4611.
+Fig.7. Two causalextensions ofthe history ℎon the le/f_twith the read (/u1D465)eventwri/t_ten in blue.
+For example, Figure 7band7cpresent two causal extensions with a read(/u1D465)event of the trans-
+action/u1D4614in the history ℎin Figure 7a. The new read event reads from transaction /u1D4611or/u1D4613which
+were already related by (so∪wr)+to/u1D4614. An extension of ℎwhere the new read event reads from
+/u1D4612isnota causalextension because (/u1D4612,/u1D4614)∉(so∪wr)+.
+Deﬁnition 3.3. An isolation level /u1D43Cis calledcausally-extensible if for every /u1D43C-consistent history
+ℎ, every(so∪wr)+-maximal pending transaction /u1D461inℎ, and every event /u1D452, there exists a causal
+extension ℎ′of/u1D461with/u1D452that is/u1D43C-consistent.
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc3.4. Causal Consistency, Read Atomic, and Read Committed are cau sally-extensible.
+Snapshot Isolation and Serializability are notcausally extensible. Figure 6presents a counter-
+example to causal extensibility: the causal extension of the h istoryℎthat does notcontain the
+write(/u1D465,2)writteninblueboldfontwiththiseventdoesnotsatisfyneither SnapshotIsolationnor
+Serializability although ℎdoes.Note that thecausal extension with awrite event isunique .(Note
+that both ℎand this causal extension satisfy Causal Consistency and therefo re, as expected, this
+counter-exampledoesnot applyto isolation levels weaker tha n CausalConsistency.)
+4 SWAPPING-BASEDMODEL CHECKING ALGORITHMS
+We deﬁne a class of stateless model checking algorithms for enum erating executions of a given
+transactional program, that we call swapping-based algorithms . Section 5will describe a concrete
+instance that applies to isolation levels that are preﬁx-clos ed andcausallyextensible.
+These algorithms are deﬁned by the recursive function /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc listed in Algorithm 1. The
+function /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc receives as input a program P, anordered history ℎ<, which is a pair(ℎ,<)
+Algorithm 1 /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scalgorithm
+1:function /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc(P,ℎ<,locals)
+2:/u1D457,/u1D452,/u1D6FE←N/e.sc/x.sc/t.sc(P,ℎ<,locals)
+3:locals′←locals[/u1D452/u\i∈1A6.e\dl→/u1D6FE]
+4:if/u1D452=⊥andV/a.sc/l.sc/i.sc/d.sc(ℎ)then
+5:outputℎ,locals′
+6:elseiftype(/u1D452)=readthen
+7:for all/u1D461∈V/a.sc/l.sc/i.sc/d.scW/r.sc/i.sc/t.sc/e.sc/s.sc(ℎ,/u1D452)do
+8: ℎ′
+<←ℎ<⊕/u1D457/u1D452⊕wr(/u1D461,/u1D452)
+9: /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc(P,ℎ′
+<,locals′)
+10: /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scS/w.sc/a.sc/p.sc/s.sc(P,ℎ′
+<,locals′)
+11:else
+12:ℎ′
+<←ℎ<⊕/u1D457/u1D452
+13:/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc(P,ℎ′
+<,locals′)
+14:/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scS/w.sc/a.sc/p.sc/s.sc(P,ℎ′
+<,locals′)ofahistoryandatotalorder <onalltheeventsin ℎ,
+andamapping localsthatassociateseachevent /u1D452in
+ℎwiththevaluationoflocalvariablesinthetransac-
+tionof/u1D452(tr(ℎ,/u1D452))justbeforeexecuting /u1D452.Foranor-
+deredhistory(ℎ,<)withℎ=/a\}bracketle{t/u1D447,so,wr/a\}bracketri}ht,weassume
+that<isconsistent with po,so,andwr,i.e.,/u1D4521</u1D4522
+if(tr(ℎ,/u1D4521),tr(ℎ,/u1D4522))∈(so∪wr)+or(/u1D4521,/u1D4522)∈po.
+Initially,theorderedhistoryandthemapping locals
+are empty.
+The function /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc starts by calling N/e.sc/x.sc/t.sc
+to obtain an event representing the next database
+access in some pending transaction of P, or a
+begin/commit/abortevent for starting or ending a
+transaction.Thiseventisassociatedtosomesession
+/u1D457. For example, a typical implementation of N/e.sc/x.sc/t.sc
+would choose one of the pending transactions (in
+some session /u1D457), execute all local instructions until
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:11
+thenextdatabaseinstructioninthattransaction(ap-
+plying the transition rules /i.sc/f.sc/hyphen.sc/t.sc/r.sc/u.sc/e.sc,/i.sc/f.sc/hyphen.sc/f.sc/a.sc/l.sc/s.sc/e.sc, and/l.sc/o.sc/c.sc/a.sc/l.sc) and return the event /u1D452corresponding to
+that database instruction and the current local state /u1D6FE.N/e.sc/x.sc/t.scmay also return⊥if the program
+ﬁnished. If N/e.sc/x.sc/t.screturns⊥, then the function V/a.sc/l.sc/i.sc/d.sccan be used to ﬁlter executions that satisfy
+theintendedisolationlevelbeforeoutputtingthecurrenthist oryandlocalstates (theuseof V/a.sc/l.sc/i.sc/d.sc
+will becomerelevant in Section 6).
+Otherwise,theevent /u1D452isaddedtotheorderedhistory ℎ<.If/u1D452isareadevent,then V/a.sc/l.sc/i.sc/d.scW/r.sc/i.sc/t.sc/e.sc/s.sc
+computesaset ofwrite events /u1D464in thecurrenthistorythat arevalid for /u1D452,i.e.,addingtheevent /u1D452
+alongwiththe wrdependency(/u1D464,/u1D452)leadstoahistorythatstillsatisﬁestheintendedisolationl evel.
+Concerningnotations,let ℎbeahistorywhere soisrepresentedasafunction so:SessId⇀Tlogs∗
+(as in §2.3). For event /u1D452,ℎ⊕/u1D457/u1D452is the history obtained from ℎby adding /u1D452to the last transaction
+inso(/u1D457)as the last event in po(i.e., ifso(/u1D457)=/u1D70E;/a\}bracketle{t/u1D461,/u1D438,po/u1D461/a\}bracketri}ht, then the session order so′ofℎ⊕/u1D457/u1D452is
+deﬁned by so′(/u1D458)=so(/u1D458)for all/u1D458≠/u1D457andso(/u1D457)=/u1D70E;/a\}bracketle{t/u1D461,/u1D438∪{/u1D452},po/u1D461∪{(/u1D452′,/u1D452):/u1D452′∈/u1D438}/a\}bracketri}ht). This is
+extended to ordered histories: (ℎ,<)⊕/u1D457/u1D452is deﬁned as(ℎ⊕/u1D457/u1D452,<·/u1D452)where<·/u1D452means that /u1D452is
+added as the last element of <.Also,ℎ⊕/u1D457(/u1D452,begin)is a history where/a\}bracketle{t/u1D461,{/a\}bracketle{t/u1D452,begin/a\}bracketri}ht},∅/a\}bracketri}htwith/u1D461a
+fresh id is appendedto so(/u1D457),andℎ⊕wr(/u1D461,/u1D452)isdeﬁned byadding (/u1D461,/u1D452)tothe write-read of ℎ.
+Algorithm 2 /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scS/w.sc/a.sc/p.sc/s.sc
+1:function /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scS/w.sc/a.sc/p.sc/s.sc (P,ℎ<,locals)
+2:/u1D459←C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc (ℎ<)
+3:for all(/u1D6FC,/u1D6FD)∈/u1D459do
+4:ifO/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ<,/u1D6FC,/u1D6FD,locals)then
+5: /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc(P,S/w.sc/a.sc/p.sc(ℎ<,/u1D6FC,/u1D6FD,locals))Once an event is added to the current history,
+the algorithm may explore other histories ob-
+tained by re-ordering events in the current one.
+Such re-orderings are required for completeness.
+New read events can only read from writes exe-
+cuted in the past whichlimits the set of explored
+histories to the scheduling imposed by N/e.sc/x.sc/t.sc.
+Without re-orderings, writes scheduled later by
+N/e.sc/x.sc/t.sccannot be read by read events executed in the past, although this may be permitted by
+the isolation level.
+The function /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scS/w.sc/a.sc/p.sc/s.sc callsC/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc to compute pairs of sequences of
+events/u1D6FC,/u1D6FDthat should be re-ordered; /u1D6FCand/u1D6FDarecontiguous and disjoint subsequences of the
+total order <,and/u1D6FCshould end before /u1D6FD(since/u1D6FDwill be re-ordered before /u1D6FC). Typically, /u1D6FCwould
+containa read event /u1D45Fand/u1D6FDa write event /u1D464suchthatre-ordering the two enables /u1D45Fto read from
+/u1D464. Ensuring soundness and avoiding redundancy, i.e., exploring the sam e history multiple times,
+may require restricting the application of such re-orderings . This is modeledby the Boolean con-
+dition called O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc .Ifthiscondition holds,the new exploredhistories are compu tedbythe
+functionS/w.sc/a.sc/p.sc. This function returns local states as well, which are necessar y for continuing the
+exploration.We assume that S/w.sc/a.sc/p.sc(ℎ<,/u1D6FC,/u1D6FD,locals)returnspairs(ℎ′
+<′,locals′)suchthat
+(1)ℎ′containsat leasttheevents in /u1D6FCand/u1D6FD,
+(2)ℎ′without the events in /u1D6FCis a preﬁx of ℎ,and
+(3) if aread /u1D45Fin/u1D6FCreadsfromdiﬀerent writes in ℎandℎ′(thewrrelationsof ℎandℎ′associate
+diﬀerent transactionsto /u1D45F),then/u1D45Fis the last event in its transaction (w.r.t. po).
+Theﬁrstconditionmakesthere-ordering“meaningful”whilethe lasttwoconditionsensurethat
+the history ℎ′is feasible by construction, i.e., it can be obtained using the op erational semantics
+deﬁned in Section 2.3. Feasibility of ℎ′is ensured by keeping preﬁxes of transaction logs from ℎ
+andalltheir wrdependenciesexceptpossiblyforreadeventsin /u1D6FC(secondcondition).Inparticular,
+forevents in /u1D6FD,it implies that ℎ′containsalltheir(po∪so∪wr)∗predecessors.Also,thechange
+of a read-from dependency is restricted to the last read in a tra nsaction (third condition) because
+changingthe value returned by aread maydisable later events in t hesame transaction4.
+4Diﬀerent wrdependenciesfor previous readscan beexploredinother stepsof t healgorithm.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:12 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+Aconcrete implementation of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sciscalled:
+•/u1D43C-soundif it outputs onlyhistories in hist/u1D43C(P)forevery program P,
+•/u1D43C-complete if it outputs every history in hist/u1D43C(P)forevery program P,
+•optimalif it doesnot output thesame history twice,
+•strongly optimal if it is optimal and never engages in fruitless explorations, i.e .,/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scis
+never called (recursively) on a history ℎthat does not satisfy /u1D43C, and every call to /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc
+results in anoutput oranother recursive callto /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc.
+5 SWAPPING-BASEDMODEL CHECKING FOR PREFIX-CLOSED AND
+CAUSALLY-EXTENSIBLEISOLATION LEVELS
+Wedeﬁneaconcreteimplementationof /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc,denotedas /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc ,thatis/u1D43C-sound,/u1D43C-complete,
+andstronglyoptimalforanyisolationlevel /u1D43Cthatispreﬁx-closedandcausally-extensible.Theiso-
+lation level /u1D43Cis a parameter of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc .Thespace complexity of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc is polynomialin
+the size of the program. An important invariant of this implement ation is that it explores histo-
+ries with at most one pending transaction and this transaction is maximal in session or der. This
+invariantisusedtoavoidfruitlessexplorations:since /u1D43Cisassumedtobecausally-extensible,there
+always exists an extension of the current history with one more e vent that continues to satisfy
+/u1D43C.Moreover, this invariant is suﬃcient to guarantee completeness i n the sense deﬁned above of
+exploring allhistories of “full”programexecutions(that end in a ﬁnal conﬁguration).
+Section5.1describes the implementations of N/e.sc/x.sc/t.scandV/a.sc/l.sc/i.sc/d.scW/r.sc/i.sc/t.sc/e.sc/s.sc used to extend a given
+execution, Section 5.2describes the functions C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc andS/w.sc/a.sc/p.scused to compute
+re-ordered executions, and Section 5.3describes the O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc restriction on re-ordering. We
+assumethatthefunction V/a.sc/l.sc/i.sc/d.scisdeﬁnedassimply V/a.sc/l.sc/i.sc/d.sc(ℎ)::=/u1D461/u1D45F/u1D462/u1D452(noﬁlterbeforeoutputting).
+Section5.4discusses correctnessarguments.
+5.1 Extending Histories According to An Oracle Order
+The function N/e.sc/x.sc/t.scgenerates events representing database accesses to extend an exe cution, ac-
+cordingtoan arbitrarybutﬁxed orderbetweenthetransactionsintheprogramcalled oracleorder .
+Weassumethattheoracleorder,denotedby <or,isconsistentwiththeorderbetweentransactions
+in the same session of the program.The extension of <orto events is deﬁned as expected. For ex-
+ample,assumingthateachsessionhasanid,anoracleorderca nbedeﬁnedbyanorderonsession
+idsalongwiththesessionorder so:transactionsfromsessionswithsmalleridsareconsideredﬁrs t
+and theorder between transactions in the same session follows so.
+N/e.sc/x.sc/t.screturns a new event of the transaction that is not already complete d and that is minimal
+accordingto <or.Inmore detail, if /u1D457,/u1D452,/u1D6FEisthe output of N/e.sc/x.sc/t.sc(P,ℎ<,locals),then either:
+•the last transaction log /u1D461of session /u1D457(w.r.t.so) inℎis pending, and /u1D461is the smallest among
+pending transaction logsin ℎw.r.t.<or
+•ℎcontainsnopendingtransactionlogsandthenexttransactionofsessi ons/u1D457isthesmallest
+amongnot yet started transactions in the programw.r.t. <or.
+Thisimplementationof N/e.sc/x.sc/t.scisdeterministicanditprioritizesthecompletionofpendingtr ans-
+actions. The latter is useful to maintain the invariant that any hi story explored by the algorithm
+hasatmostonependingtransaction.Preserving thisinvariantrequi resthatthehistoriesgiven as
+inputtoN/e.sc/x.sc/t.scalsohaveatmostonependingtransaction.Thisisdiscussedfurth erwhenexplaining
+the processofre-ordering events in Section 5.2.
+For example, consider the program in Figure 8a, an oracle order which orders the twotransac-
+tionsinthe leftsessionbefore the transaction in the rightsession, and the history ℎin Figure 8b.
+Sincethelocalstateofthependingtransactionontheleftstore s3tothelocalvariable /u1D44E(asaresult
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:13
+begin;
+a = read(x);
+if(a == 3)
+write(/u1D466.alt,1);
+commit
+begin;
+b = read(x);
+c = read(y);
+commitbegin;
+d = read(x);
+write(/u1D465,3);
+commit
+(a) Program (2 sessions) .init
+read(/u1D465)
+write(/u1D466.alt,1)/u1D4611read(/u1D465)
+write(/u1D465,3)/u1D4613
+read(/u1D465)
+read(/u1D466.alt)/u1D4612or orwr
+or
+sowr
+(b)An incomplete history.init
+read(/u1D465)
+write(/u1D466.alt,1)/u1D4611read(/u1D465)
+write(/u1D465,3)/u1D4613
+read(/u1D465)
+read(/u1D466.alt)/u1D4612ororwr
+or
+sowr
+(c)An extension.
+Fig.8. Aprogramwithtwosessions(a),ahistory ℎ(b),andanextensionof ℎwithaneventreturnedby N/e.sc/x.sc/t.sc
+(c). Theso-edges from initto the other transactions are omi/t_ted for legibility. We use e dges labeled by or
+torepresentthe oracleorder <or.Events in grayare notyet addedto the history.
+begin;
+write(/u1D465,1);
+write(/u1D466.alt,1);
+commitbegin;
+a = read(y);
+commit
+begin;
+b = read(x);
+commit
+(a) Program (2 sessions) .init
+write(/u1D465,1)
+write(/u1D466.alt,1)read(/u1D466.alt)
+read(/u1D465)so
+sowr/u1D466.alt
+so
+(b)Currenthistory.init
+write(/u1D465,1)
+write(/u1D466.alt,1)read(/u1D466.alt)
+read(/u1D465)so
+sowr/u1D466.alt
+so
+wr/u1D465
+(c)One extension.init
+write(/u1D465,1)
+write(/u1D466.alt,1)read(/u1D466.alt)
+read(/u1D465)so
+sowr/u1D466.alt
+so wr/u1D465
+(d)Another extension.
+Fig. 9. Extensions ofa history byadding a readevent. Eventsin grayarenot yetaddedto the history.
+of the previous read(/u1D465)event) and the Booleancondition in ifholds,N/e.sc/x.sc/t.scwill return the event
+write(/u1D466.alt,1)when calledwith ℎ.
+According to Algorithm 1, if the event returned by N/e.sc/x.sc/t.scis not a read event, then it is simply
+added to the current history as the maximal element of the order <(cf. the deﬁnition of ⊕/u1D457on
+ordered histories). If it is a read event, then adding this event may result in multiple histories
+dependingonthechosen wrdependency.Forexample,inFigure 9,extendingthehistoryinFigure
+9bwith the read(/u1D465)event could result in two diﬀerent histories, pictured in Figu re9cand9d,
+depending on the write with whom this read event is associated by wr. However, under CC, the
+latter history is inconsistent. The function V/a.sc/l.sc/i.sc/d.scW/r.sc/i.sc/t.sc/e.sc/s.sc limits the choicesto those that preserve
+consistency with the intended isolation level /u1D43C,i.e.,
+V/a.sc/l.sc/i.sc/d.scW/r.sc/i.sc/t.sc/e.sc/s.sc(ℎ,/u1D452)≔{/u1D461∈commTrans(ℎ)|ℎ⊕/u1D457/u1D452⊕wr(/u1D461,/u1D452)satisﬁes/u1D43C}
+wherecommTrans(ℎ)is theset ofcommittedtransactions in ℎ.
+5.2 Re-OrderingEvents inHistories
+After extending the current history with one more event, /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc may be called recursively on
+otherhistoriesobtainedbyre-orderingeventsinthecurrentone (anddroppingsomeotherevents).
+Re-orderingeventsmustpreservetheinvariantofproducinghist orieswithatmostonepending
+transaction. To explain the use of this invariant in avoiding frui tless explorations, let us consider
+theprograminFigure 10aassuminganexplorationunderReadCommitted.Theoracleorde rgives
+prioritytothetransactionontheleft.Assumethatthecurre nthistory reachedbytheexploration
+is the one pictured in Figure 10b(the last added event is write(/u1D465,2)). Swapping write(/u1D465,2)with
+read(/u1D465)wouldresultinthehistorypicturedinFigure 10c.Toensurethatthisswapproducesanew
+history which was not explored in the past, the wr/u1D465dependency of read(/u1D465)is changed towards
+thewrite(/u1D465,2)transaction (we detail this later). By the deﬁnition of /n.sc/e.sc/x.sc/t.sc(and the oracle order),
+this history shall be extended with read(/u1D466.alt), and this read event will be associated by wr/u1D466.altto the
+only available write(/u1D466.alt,_)event from init. This is pictured in Figure 10d. The next exploration
+step will extend the history with write(/u1D466.alt,2)(the only extension possible) which however, results
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:14 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+begin;
+a = read(x);
+b = read(y);
+commitbegin;
+write(/u1D465,2);
+write(/u1D466.alt,2);
+commit
+(a) Program (2sessions) .init
+read(/u1D465)
+read(/u1D466.alt)/u1D4611
+write(/u1D465,2)
+write(/u1D466.alt,2)/u1D4612wr
+(b)Current.init
+read(/u1D465)
+read(/u1D466.alt)/u1D4612write(/u1D465,2)
+write(/u1D466.alt,2)/u1D4611
+wr/u1D465
+(c)Reorder.init
+read(/u1D465)
+read(/u1D466.alt)/u1D4612write(/u1D465,2)
+write(/u1D466.alt,2)/u1D4611
+wr/u1D465wr/u1D466.alt
+(d)Extended.init
+read(/u1D465)
+read(/u1D466.alt)/u1D4612write(/u1D465,2)
+write(/u1D466.alt,2)/u1D4611
+wr/u1D465wr/u1D466.alt
+(e)Inconsistent.
+Fig.10. Exampleofinconsistencya/f_terswappingtwoevents.Al lso-edgesfrom inittotheothertransactions
+areomi/t_tedforlegibility.Thehistoryorder <isrepresentedbythetoptobo/t_tomorderineachfigure.Event s
+in gray arenot yetaddedtothe history.
+begin;
+a = read(x);
+if(a == 0){
+abort
+}
+write(/u1D466.alt,1)
+commit
+begin;
+b = read(x);
+commitbegin;
+write(/u1D466.alt,3);
+commit
+begin;
+write(/u1D465,4);
+commit
+(a) Program (2sessions) .init
+read(/u1D465)
+abort/u1D4611
+read(/u1D465)/u1D4612
+write(/u1D466.alt,3)/u1D4613
+write(/u1D465,4)/u1D4614so
+sowr/u1D465wr/u1D465
+(b)Current.init
+read(/u1D465)
+abort/u1D4611
+read(/u1D465)/u1D4612write(/u1D466.alt,3)/u1D4613
+write(/u1D465,4)/u1D4614so
+sowr/u1D465
+wr/u1D465
+(c) Swap/u1D4612and/u1D4614.init
+read(/u1D465)
+write(/u1D466.alt,1)/u1D4611
+read(/u1D465)/u1D4612write(/u1D466.alt,3)/u1D4613
+write(/u1D465,4)/u1D4614
+soso
+wr/u1D465
+(d)Swap /u1D4611and/u1D4614.
+Fig.11. Re-orderingevents.All so-edgesfrom inittoothertransactionsareomi/t_tedforlegibility.Thehistor y
+order<isrepresentedbythetoptobo/t_tomorderineachfigure.Event singrayaredeletedfromthehistory.
+inahistorythatdoes notsatisfyReadCommitted,thereby,therecursiveexploratio nbranchbeing
+blocked.ThecoreissueisrelatedtothehistoryinFigure 10dwhichhasapendingtransactionthat
+isnot(so∪wr)+-maximal.Beingabletoextendsuchatransactionwhilemaintaini ngconsistency
+is not guaranteed by Read Committed (and any other isolation leve l we consider). Nevertheless,
+causal extensibility guarantees the existence of an extension f or pending transactions that are
+(so∪wr)+-maximal.We enforce this requirement by restricting the explo red histories to have at
+most onepending transaction.Thispending transaction will necessar ily be(so∪wr)+-maximal.
+Toenforcehistorieswithatmostonependingtransaction,thefunct ionC/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc ,
+whichidentiﬁeseventstoreorder,hasanon-emptyreturnvalueo nlywhenthelastaddedeventis
+commit(the end of a transaction)5.Therefore, in such a case, it returns pairs of some transaction
+log preﬁx ending in a read /u1D45Fand the last completed transaction log /u1D461, such that the transaction
+log containing /u1D45Fand/u1D461arenotcausally dependent (i.e., related by (so∪wr)∗)(the transaction
+log preﬁx ending in /u1D45Fand/u1D461play the role of the subsequences /u1D6FCand respectively, /u1D6FDin the de-
+scriptionof C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc fromSection 4).Tosimplifythenotation,wewillassumethat
+C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc returns pairs(/u1D45F,/u1D461).
+C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc (ℎ<)≔{(/u1D45F,/u1D461)∈E×/u1D447|/u1D45F∈reads(/u1D447)∧/u1D461writesvar(/u1D45F)∧tr(ℎ,/u1D45F)</u1D461
+∧ (tr(ℎ,/u1D45F),/u1D461)∉(so∪wr)∗∧/u1D461iscomplete andit includesthe last event in <}
+5Abortedtransactionshavenovisibleeﬀectonthestateofthedatab asesoswappinganabortedtransactioncannotproduce
+a newmeaningful history.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:15
+begin;
+write(/u1D465,2)
+commitbegin;
+a=read(/u1D465);
+commit
+begin;
+b=read(/u1D465);
+commitbegin;
+write(/u1D465,4);
+commit
+(a) Program (4 sessions)init
+write(/u1D465,2)/u1D4611
+read(/u1D465)/u1D4612
+read(/u1D465)/u1D4613
+write(/u1D465,2)/u1D4614wr
+(b)Before readinginit
+write(/u1D465,2)/u1D4611
+read(/u1D465)/u1D4612
+read(/u1D465)/u1D4613
+write(/u1D465,4)/u1D4614wr wr
+(c)/u1D4613readsinitinit
+write(/u1D465,2)/u1D4611
+read(/u1D465)/u1D4612
+read(/u1D465)/u1D4613
+write(/u1D465,4)/u1D4614wr
+wr
+(d)/u1D4613reads/u1D4611init
+write(/u1D465,2)/u1D4611
+read(/u1D465)/u1D4612
+read(/u1D465)/u1D4613write(/u1D465,4)/u1D4614
+wr
+(e)A/f_terswap.
+Fig. 12. Re-ordering events versus optimality. We assume an oracle order orders transaction from le/f_t to
+right,toptobo/t_tomintheprogram.Alltransactionlogsarehi story-orderedtoptobo/t_tomaccordingtotheir
+position in the figure. Events in grayare notyet addedto the history.
+Forexample,fortheprograminFigure 11aandhistory ℎinFigure11b,C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc (ℎ)
+would return(/u1D45F1,/u1D4614)and(/u1D45F2,/u1D4614)where/u1D45F1and/u1D45F2are theread(/u1D465)events in /u1D4611and/u1D4612respectively.
+For a pair(/u1D45F,/u1D461), the function S/w.sc/a.sc/p.scproduces a new history ℎ′which contains all the events
+ordered before /u1D45F(w.r.t.<), the transaction /u1D461and all its(so∪wr)∗predecessors, and the event /u1D45F
+readingfrom /u1D461.Alltheothereventsareremoved.Notethatthe popredecessorsof /u1D45Ffromthesame
+transaction are ordered before /u1D45Fby<and they will be also included in ℎ′. Thehistory ℎ′without
+/u1D45Fis a preﬁx of the input history ℎ. By deﬁnition, the only pending transaction in ℎ′is the one
+containingtheread /u1D45F.Theorderrelationisupdatedbymovingthetransactioncontai ningtheread
+/u1D45Fto be thelast; it remainsunchangedforthe rest ofthe events.
+S/w.sc/a.sc/p.sc(ℎ<,/u1D45F,/u1D461,locals)≔/parenleftbig(ℎ′=(ℎ\/u1D437)⊕wr(/u1D461,/u1D45F),<′),locals′/parenrightbig,wherelocals′=locals↓events(ℎ′)
+/u1D437={/u1D452|/u1D45F</u1D452∧(tr(ℎ,/u1D452),/u1D461)∉(so∪wr)∗}and<′=/parenleftbig<↓(events(ℎ′)\events(tr(ℎ′,/u1D45F)))/parenrightbig·tr(ℎ′,/u1D45F)
+Above,ℎ\/u1D437isthepreﬁxof ℎobtainedbydeletingalltheeventsin /u1D437fromitstransactionlogs;a
+transactionlogisremovedaltogetherifitbecomesempty.Al so,ℎ′′⊕wr(/u1D461,/u1D45F)denotesan updateof
+thewrrelationof ℎ′′whereanypair(_,/u1D45F)isreplacedby(/u1D461,/u1D45F).Finally,<′′·tr(ℎ′,/u1D45F)isanextension
+ofthe total order <′′obtained by appendingthe events in tr(ℎ′,/u1D45F)accordingto programorder.
+ContinuingwiththeexampleofFigure 11,whenswapping /u1D45F1and/u1D4614,alltheeventsintransaction
+/u1D4612belong to /u1D437and they will be removed. This is shown in Figure 11d. Note that transaction /u1D4611
+abortedin Figure 11bwhile it will commitin Figure 11d(becausethe value read from /u1D465changed).
+Whenswapping /u1D45F2and/u1D4614,no event but the commitin /u1D4612will bedeleted (Figure 11c).
+5.3 EnsuringOptimality
+Simply extending histories according to N/e.sc/x.sc/t.scand making recursive callson re-ordered histories
+whenever they are /u1D43C-consistent guarantees soundness and completeness, but it does not g uaran-
+tee optimality. Intuitively, the source of redundancy is relat ed to the fact that applying S/w.sc/a.sc/p.scon
+diﬀerent histories maygive the sameresult.
+Asa ﬁrst example,consider the programin Figure 12awith 2transactions that only read some
+variable/u1D465and 2 transactions that only write to /u1D465,each transaction in a diﬀerent session. Assume
+that/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc reaches the ordered history in Figure 12bandN/e.sc/x.sc/t.scis about to return the second
+reading transaction. /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scwill be calledrecursively onthe two histories in Figure 12cand Fig-
+ure12dthatdiﬀerinthewritethatthislastreadisreadingfrom(the initialwriteortheﬁrstwrite
+transaction). On both branchesof the recursion, N/e.sc/x.sc/t.scwill extend the history with the last write
+transactionwritteninblueboldfont.Forbothhistories,swa ppingthislastwritewiththeﬁrstread
+on/u1D465willresultinthehistoryinFigure 12e(cf.thedeﬁnitionof C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc andS/w.sc/a.sc/p.sc).
+Thus, both branches of the recursion will continue extending the s ame history and optimality is
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:16 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+begin;
+a=read(/u1D465);
+commitbegin;
+b=read(/u1D466.alt);
+commit
+begin;
+write(/u1D466.alt,3);
+commitbegin;
+write(/u1D465,4);
+commit
+(a) Program (4 sessions) .init
+read(/u1D465)/u1D4611
+read(/u1D466.alt)/u1D4612
+write(/u1D466.alt,3)/u1D4613
+write(/u1D465,4)/u1D4614wrwr
+(b)Currenthistory.init
+read(/u1D465)/u1D4611
+read(/u1D466.alt)/u1D4612write(/u1D466.alt,3)/u1D4613
+write(/u1D465,4)/u1D4614wrwr
+(c)Swap/u1D4612and/u1D4613.init
+read(/u1D465)/u1D4611write(/u1D465,4)/u1D4614
+wr
+(d)Swap /u1D4611and/u1D4614.
+Fig.13. Re-orderingthe samereadon diﬀerentbranchesofth e recursion.
+violated. The source of non-optimality is related to wrdependencies that are removedduring the
+S/w.sc/a.sc/p.sccomputation.Thehistories inFigure 12candFigure 12ddiﬀer inthe wrdependencyinvolv-
+ing the last read, but this diﬀerence was discarded during the S/w.sc/a.sc/p.sccomputation. To avoid this
+behavior, S/w.sc/a.sc/p.scis enabled only on histories where the discarded wrdependencies relate to some
+“ﬁxed” set of writes, i.e., latest6writes w.r.t. <thatguarantee consistency by causal extensibility
+(see the deﬁnition of readLatest /u1D43C(_,_,) below). By causal extensibility, a read /u1D45Fcan always read
+from a write which already belongs to its “causal past”, i.e., predecessors in(so∪wr)∗excluding
+thewrdependency for /u1D45F. For every discarded wrdependency, it is required that the read reads
+from the latest such write w.r.t. <.In this example, re-ordering is enabled only when the second
+read(/u1D465)reads from the initial write; write(/u1D465,2)does not belong to its “causal past” (when the wr
+dependencyofthe read itself isexcluded) .
+Therestrictionaboveisnotsuﬃcient,becausethetwohistori esforwhich S/w.sc/a.sc/p.scgivesthesame
+result maynot be generatedduring the same recursive call (ford iﬀerentwrchoiceswhen adding
+a read). For example, consider the program in Figure 13athat has four sessions each containing
+a single transaction. /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc may compute the history ℎpictured in Figure 13b. Before adding
+transaction /u1D4614,/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc can re-order /u1D4613and/u1D4612and then extend with /u1D4614and arrive at the history
+ℎ1in Figure 13c. Also, after adding /u1D4614, it can re-order /u1D4611and/u1D4614and arrive at the history ℎ2in
+Figure13d. However, swapping the same /u1D4611and/u1D4614inℎ1leads to the same history ℎ2, thereby,
+having two recursive branchesthat end up with the same input and vi olate optimality. Swapping
+/u1D4611and/u1D4614inℎ1shouldnotbeenabledbecausethe read(/u1D466.alt)toberemovedby S/w.sc/a.sc/p.schasbeenswapped
+in the past. Removing it makes it possible that this recursive branch explores that wrchoice for
+read(/u1D466.alt)again.
+TheO/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc condition restricting re-orderings requires that the re-orde red history be /u1D43C-
+consistent andthatevery read deletedby S/w.sc/a.sc/p.scorthere-orderedread /u1D45F(whosewrdependencyis
+modiﬁed)readsfromalatestvalidwrite, cf.theexampleinFigure 12,anditisnotalreadyswapped,
+cf.the example in Figure 13(the set/u1D437isdeﬁned as in S/w.sc/a.sc/p.sc):
+O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ<,/u1D45F,/u1D461,locals)≔the history returned by S/w.sc/a.sc/p.sc(ℎ<,/u1D45F,/u1D461,locals)satisﬁes/u1D43C
+∧∀/u1D45F′∈reads(ℎ)∩(/u1D437∪{/u1D45F}).¬/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ<,/u1D45F′)∧readLatest /u1D43C(ℎ<,/u1D45F′,/u1D461)
+Aread/u1D45Freadsfroma causallylatestvalidtransaction,denotedas readLatest /u1D43C(ℎ<,/u1D45F,),ifreading
+from any other later transaction /u1D461′w.r.t.<which is in the “causal past” of tr(ℎ<,/u1D45F)violates the
+isolation level /u1D43C.Formally,assuming that /u1D461/u1D45Fis the transaction such that (/u1D461/u1D45F,/u1D45F)∈wrinℎ,
+readLatest /u1D43C(ℎ<,/u1D45F,/u1D461)≔/u1D461/u1D45F=max
+</braceleftbigg/u1D461′writesvar(/u1D45F)∧(/u1D461′,tr(ℎ<,/u1D45F))∈(so∪wr)∗inℎ′
+∧ℎ′⊕/u1D45F⊕wr(/u1D461′,/u1D45F)|=/u1D43C/bracerightbigg
+6Weuse latestwritesbecause theyare uniquely deﬁned.Inprinciple, otherways of identifyingsome unique setof writes
+could beused.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:17
+whereℎ′=ℎ\{/u1D452|/u1D45F≤/u1D452∧(tr(ℎ,/u1D452),/u1D461)∉(so∪wr)∗}.
+We say that a read /u1D45Fisswappedinℎ<when (1) /u1D45Freads from a transaction /u1D461that is a successor
+in the oracle order <or(the transaction was added by N/e.sc/x.sc/t.scafter the read), which is now a pre-
+decessor7in the history order <, (2) there is no transaction /u1D461′that is before /u1D45Fin both<orand<,
+andwhichisa(so∪wr)+successor of /u1D461,and(3)/u1D45Fisthe ﬁrst readin itstransaction toread from /u1D461.
+Formally,assuming that /u1D461is the transaction suchthat (/u1D461,/u1D45F)∈wr,
+/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ<,/u1D45F)≔/u1D461</u1D45F∧/u1D461>or/u1D45F∧∀/u1D461′∈ℎ./u1D461′<ortr(ℎ,/u1D45F)⇒(/u1D45F</u1D461′∨(/u1D461,/u1D461′)∉(so∪wr)+)
+∧∀/u1D45F′∈reads(ℎ).(/u1D461,/u1D45F′)∈wr⇒(/u1D45F′,/u1D45F)∉po
+Condition(1)statesaquitestraightforwardfactaboutswap s:/u1D45Fcouldnothavebeeninvolvedina
+swapifitreadsfromapredecessorintheoracleorderwhichm eansthatitwasaddedby N/e.sc/x.sc/t.scafter
+thetransactionit readsfrom.Conditions(2)and(3)areusedtoe xcludespuriousclassiﬁcationsas
+swappedreads.Concerningcondition(2),supposethatinahisto ryℎweswapatransaction /u1D461with
+respect a (previous) read event /u1D45F. Later on, the algorithm may add a read /u1D45F′reading also from /u1D461.
+Condition(2)forbids /u1D45F′tobedeclaredasswapped.Indeed,taking /u1D461/u1D45F(ℎ,/u1D45F)asaninstantiation of /u1D461′,
+/u1D461/u1D45F(ℎ,/u1D45F)is before/u1D45F′in both</u1D45C/u1D45Fand<and it reads fromthe same transaction as /u1D45F′, thereby,being
+a(so∪wr)+successor of the transaction read by /u1D45F′. Condition (3) forbids that, after swapping /u1D45F
+and/u1D461inℎ,later read events fromthe same transaction as /u1D45Fcanbe considered asswapped.
+Showing that /u1D43C-completeness holds despite discarding re-orderings is quite challenging. Intu-
+itively, it can be shown that if some S/w.sc/a.sc/p.scisnotenabled in some history ℎ<for some pair(/u1D45F,/u1D461)
+although the result would be /u1D43C-consistent (i.e., O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ<,/u1D45F,/u1D461,locals)does not hold because
+some deleted read is swapped or does not read from a causally la test transaction), then the algo-
+rithm explores another history ℎ′which coincides with ℎexcept for those deleted reads who are
+now reading fromcausallylatest transactions. Then, ℎ′would satisfy O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ<,/u1D45F,/u1D461,locals),
+and moreover applying S/w.sc/a.sc/p.sconℎ′for the pair(/u1D45F,/u1D461)would lead to the same result as applying
+S/w.sc/a.sc/p.sconℎ, thereby,ensuring completeness.
+5.4 Correctness
+Thefollowingtheoremstates the correctnessof the algorithm presented in this section:
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc5.1. Foranypreﬁx-closedandcausallyextensibleisolationlev el/u1D43C,/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc is/u1D43C-sound,
+/u1D43C-complete, strongly optimal, andpolynomial space.
+/u1D43C-soundness is a consequence of the V/a.sc/l.sc/i.sc/d.scW/r.sc/i.sc/t.sc/e.sc/s.sc andO/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc deﬁnitions which guaran-
+tee that all histories given to recursive calls are /u1D43C-consistent, and of the S/w.sc/a.sc/p.scdeﬁnition which
+ensurestoonlyproducefeasiblehistories(whichcanbeobtai nedusingtheoperationalsemantics
+deﬁnedinSection 2.3).Thefactthatthisalgorithmneverengagesinfruitlessexpl orationsfollows
+easily fromcausal-extensibility whichensures that any curre nthistory canbeextended with any
+event returned by N/e.sc/x.sc/t.sc.Polynomialspace is also quite straightforward since the forallloopsin
+Algorithm 1have a linear number of iterations: the number of iterations of the loop in/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc,
+resp.,/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scS/w.sc/a.sc/p.sc/s.sc ,isboundedbythenumberofwrite,resp.,read,eventsinthecur renthistory
+(whichis smaller than the size of the program; recall that we assume bounded programswith no
+loopsasusualinSMCalgorithms).Ontheotherhand,theproof sof/u1D43C-completenessandoptimality
+are quite complex.
+/u1D43C-completeness means that for any given program P, the algorithm outputs every history ℎin
+hist/u1D43C(P). The proof of /u1D43C-completeness deﬁnes a sequence of histories produced by the al gorithm
+starting with an empty history and ending in ℎ, for every such history ℎ. It consists of several
+steps:
+7The/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scmaintains theinvariant that everyreadfollowsthetransaction it reads fromin thehistory order <.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:18 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+(1)Deﬁne acanonical total order <for every unordered partial history ℎ, such that if the algo-
+rithmreaches ℎ<′,forsomeorder <′,then<and<′coincide.Thiscanonicalorder isuseful
+in future proof steps asit allows to extend several deﬁnitions t o arbitrary histories that are
+not necessarily reachable,suchas O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc or/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc.
+(2)Deﬁne the notion of or-respectfulness , an invariant satisﬁed by every (partial) ordered his-
+tory reached by the algorithm. Brieﬂy, a history is or-respectful if it has only one pending
+transaction and for every two events /u1D452,/u1D452′such that /u1D452<or/u1D452′, either/u1D452</u1D452′or there is a
+swapped event /u1D452′′in between.
+(3)Deﬁne a deterministic function /p.sc/r.sc/e.sc/v.scwhichtakes asinput a partial history (not necessarily
+reachable), such that if ℎis reachable, then /p.sc/r.sc/e.sc/v.sc(ℎ)returns the history computed by the
+algorithm just before ℎ(i.e., the previous history in the call stack). Prove that if a history ℎ
+isor-respectful,then /p.sc/r.sc/e.sc/v.sc(ℎ)is alsoor-respectful.
+(4)Deduce that if ℎisor-respectful, then there is a ﬁnite collection of or-respectful histories
+/u1D43Bℎ={ℎ/u1D456}/u1D45B
+/u1D456=0such that ℎ/u1D45B=ℎ,ℎ0=∅,andℎ/u1D456=/p.sc/r.sc/e.sc/v.sc(ℎ/u1D456+1)for each/u1D456.Theor-respectfulness
+invariantandthecausal-extensibilityoftheisolationlevela rekeytobeingabletoconstruct
+such a collection.In particular, they are used to prove that ℎ/u1D456has at most the same number
+ofswappedeventsas ℎ/u1D456+1andincaseofequality, ℎ/u1D456containexactlyoneeventlessthan ℎ/u1D456+1,
+whichimplies that the collectionisindeed ﬁnite.
+(5)Provethatif ℎisor-respectfuland /p.sc/r.sc/e.sc/v.sc(ℎ)isreachable,then ℎisalsoreachable.Concludeby
+induction that every history in /u1D43Bℎisreachable,as ℎ0is the initial state and ℎ/u1D456=/p.sc/r.sc/e.sc/v.sc(ℎ/u1D456+1).
+The proof of strong optimality relies on arguments employed fo r/u1D43C-completeness. It can be
+shown that if the algorithm would reach a (partial) history ℎtwice, then for one of the two ex-
+plorationbranches,thehistory ℎ′computedjustbefore ℎwouldbediﬀerent from /p.sc/r.sc/e.sc/v.sc(ℎ),which
+contradictsthe deﬁnition of /p.sc/r.sc/e.sc/v.sc(ℎ).
+In terms of time complexity, the /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(/u1D43C)algorithm achieves polynomial time between
+consecutiveoutputsforisolation levels /u1D43Cwherechecking /u1D43C-consistency ofahistoryispolynomial
+time, e.g., RC,RA,andCC.
+6 SWAPPING-BASEDMODEL CHECKING FOR SNAPSHOT ISOLATION AND
+SERIALIZABILITY
+For/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc , the part of strong optimality concerning notengaging in fruitless explorations
+was a direct consequence of causal extensibility (of the isolat ion level). However, isolation levels
+such as SI and SER are notcausally extensible (see Section 3.2). Therefore,the question we inves-
+tigate in this section is whether there exists another implem entation of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scthat can ensure
+strong optimality along with /u1D43C-soundness and /u1D43C-completeness for /u1D43Cbeing SI or SER. We answer
+thisquestion in thenegative, andasa result,propose anSMCal gorithmthatextends /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc
+byjust ﬁltering histories before outputting to be consistent wi th SIor SER.
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc 6.1. If/u1D43Cis Snapshot Isolation or Serializability, there exists no /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scalgorithm that
+is/u1D43C-sound,/u1D43C-complete, and strongly optimal.
+TheproofofTheorem 6.1deﬁnesaprogramwithtwotransactionsandshowsthatanyconcrete
+instance of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scin Alg.1cannot beboth /u1D43C-completeand strongly optimal.
+Given this negative result, we deﬁne an implementation of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc for an isolation level /u1D43C∈
+{/u1D446/u1D43C,/u1D446/u1D438/u1D445}thatensuresoptimalityinsteadofstrongoptimality,alongwit hsoundness,completeness,
+andpolynomialspacebound.Thus,let /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(/u1D43C0)beaninstanceof /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc parametrized
+by/u1D43C0∈{RC,RA,CC}.Wedeﬁneanimplementationof /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scfor/u1D43C,denotedby /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(/u1D43C0,/u1D43C),
+whichis exactly /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(/u1D43C0)except thatinstead of V/a.sc/l.sc/i.sc/d.sc(ℎ)::=/u1D461/u1D45F/u1D462/u1D452,it uses
+V/a.sc/l.sc/i.sc/d.sc(ℎ)≔ℎsatisﬁes/u1D43C
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:19
+/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(/u1D43C0,/u1D43C)enumeratesexactlythesamehistoriesas /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(/u1D43C0)exceptthatitoutputs
+onlyhistories consistent with /u1D43C.Thefollowingis a direct consequenceof Theorem 5.1.
+C/o.sc/r.sc/o.sc/l.sc/l.sc/a.sc/r.sc/y.sc6.2. Foranyisolationlevels /u1D43C0and/u1D43Csuchthat /u1D43C0ispreﬁx-closedandcausallyextensible,
+and/u1D43C0isweaker than /u1D43C,/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(/u1D43C0,/u1D43C)is/u1D43C-sound,/u1D43C-complete, optimal, andpolynomial space.
+7 EXPERIMENTAL EVALUATION
+Weevaluateanimplementationof /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc and/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗inthecontextoftheJavaPathﬁnder
+(JPF) [Visser et al. 2004 ] model checker for Java concurrent programs. As benchmark, we u se
+bounded-size client programs of a number of database-backed ap plications drawn from the lit-
+erature. Theexperimentswere performedon anApple M1with 8c oresand 16GBof RAM.
+7.1 Implementation
+Weimplementedouralgorithmsasanextensionofthe DFSearch classinJPF.Forperformancerea-
+sons,we implementedan iterative version ofthese algorithms whereroughly,inputs torecursive
+calls are maintained as a collection of histories instead of rel ying on the call stack. For checking
+consistencyofahistory with agiven isolation level, we imple mentedthealgorithmsproposedby
+Biswas andEnea [2019].
+Our tool takes as input a Java program and isolation levels as pa rameters. We assume that the
+program uses a ﬁxed API for interacting with the database, simi lar to a key-value store inter-
+face.This API consists of speciﬁc methodsfor starting/ending a transaction, and reading/writing
+aglobalvariable.TheﬁxedAPIisrequiredforbeingabletoma intainthedatabasestateseparately
+fromtheJVMstate(thestateoftheJavaprogram)andupdateth ecurrenthistoryineachdatabase
+access. This relies on a mechanism for “transferring” values re ad from the database state to the
+JVMstate.
+7.2 Benchmark
+We consider a set of benchmarks inspired by real-world applicat ions and evaluate them under
+diﬀerent typesofclient programsandisolation levels.
+Shopping Cart [ Sivaramakrishnan et al. 2015 ]allows users to add, get and remove items from
+their shopping cartand modifythequantities ofthe items prese nt in the cart.
+Twitter [Difallah et al. 2013 ]allows users to follow other users, publish tweets and get the ir
+followers,tweets and tweets published byother followers.
+Courseware [ Nairet al. 2020 ]managestheenrollmentofstudents incoursesin aninstitution. It
+allows to open,close and delete courses,enroll students and get a ll enrollments. One student can
+onlyenroll to acourse if it isopen andits capacityhasnot reache da ﬁxedlimit.
+Wikipedia[ Difallah etal. 2013 ]allowsuserstogetthecontentofapage(registeredornot),add
+orremove pagesto their watchinglist andupdate pages.
+TPC-C[TPC2010]modelsanonlineshoppingapplicationwithﬁvetypesoftransact ions:reading
+the stockofa product,creating a new order,getting its status, paying it and delivering it.
+SQL tables are modeled using a “set” global variable whose cont ent is the set of ids (primary
+keys) of the rows present in the table, and a set of global variab les, one variable for each row in
+thetable(thenameofthevariableistheprimarykeyofthatro w).SQLstatementssuchasINSERT
+andDELETEstatementsaremodeledaswritesonthat“set”varia blewhileSQLstatementswitha
+WHEREclause(SELECT,JOIN,UPDATE)arecompiledtoareadof thetable’ssetvariablefollowed
+byreads orwrites ofvariables that represent rows in the tabl e (similarly to[ Biswas et al.2021 ]).
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:20 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+0 5 10 15 20
+Number of benchmarks020406080100120Time (min) CC
+CC+SI
+CC+SER
+RA+CC
+RC+CC
+true+CC
+DFS(CC)
+(a)Running time.0 5 10 15 20
+Number of benchmarks051015202530Memory (GB)CC
+CC+SI
+CC+SER
+RA+CC
+RC+CC
+true+CC
+DFS(CC)
+(b)Memory consumption.0 5 10 15 20
+Number of benchmarks050100150200250Number of histories ( ×103)CC
+CC+SI
+CC+SER
+RA+CC
+RC+CC
+true+CC
+DFS(CC)
+(c)End states.
+Fig.14. Cactusplotscomparingdiﬀerentalgorithmsinterm softime,memory,andendstates.Forreadabil-
+ity, we use CCto denote /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc underCC,/u1D43C1+/u1D43C2stands for /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(/u1D43C1,/u1D43C2), andtrueis the trivial
+isolation levelwhereeveryhistoryisconsistent. Diﬀerencesbetween CC,CC+SIandCC+SERareverysmall
+and their graphics overlap. Moreover, DFS(CC)denotes a standard DFS traversal of the semantics defined
+in Section 2.3. These plots exclude benchmarks that timeout ( 30mins):3benchmarks for CC,/a\}bracketle{tSI,CC/a\}bracketri}htand
+/a\}bracketle{tSER,CC/a\}bracketri}htand6,17,20and20benchmarkstimeoutfor /a\}bracketle{tRA,CC/a\}bracketri}ht,/a\}bracketle{tRC,CC/a\}bracketri}ht,/a\}bracketle{ttrue,CC/a\}bracketri}htandDFS(CC)respectively.
+7.3 Experimental Results
+Wedesignedthreeexperimentswherewecomparetheperformance ofabaseline modelchecking
+algorithm, /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc and/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗for diﬀerent (combinations of) isolation levels, and we
+explore the scalability of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc when increasing the number of sessions and transactions
+persession,respectively.Foreachexperimentwereportrunning time,memoryconsumption,and
+the number of end states, i.e., histories of complete executio ns and in the case of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗,
+before applying the V/a.sc/l.sc/i.sc/d.scﬁlter. As the number of end states for a programon a certain isol ation
+level increases, the runningtime ofour algorithmsnaturallyincr eases aswell.
+The ﬁrst experiment compares the performance of our algorithm s for diﬀerent combinations
+of isolation levels and a baseline model checking algorithm tha t performs no partial order reduc-
+tion.Weconsiderasbenchmarkﬁve (independent) clientprograms8foreachapplicationdescribed
+above (25 in total), each program with 3 sessions and 3 transactions per session. Running time,
+memoryconsumption,andnumberofendstatesarereportedinFig. 14ascactusplots[ Brain et al.
+2017].
+To justify the beneﬁts of partial order reduction, we implement a baseline model checking al-
+gorithmDFS(CC)that performs a standard DFS traversal of the execution tree w .r.t. the formal
+semanticsdeﬁnedinSection 2.3forCC(forfairness,werestrictinterleavingssoatmostonetrans-
+actionispendingat atime).Thisbaseline algorithmmayexplor e thesame history multipletimes
+sinceitincludesnopartialorderreductionmechanism.Interms oftime,DFS(CC)behavespoorly:
+ittimeoutsfor20outofthe25programsanditislesseﬃcientev enwhenitterminates.Weconsider
+a timeout of 30 mins. In comparison the strongly optimal algori thm/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)(underCC)
+ﬁnishesin in3′26′′secondsinaverage(countingtimeouts). DFS(CC)issimiliarto /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)
+in terms of memory consumption. The memory consumption of DFS(CC)is381MBin average,
+comparedto 508MBfor/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)(JPFforcesa minimumconsumption of 256MB).
+To show the beneﬁts of strongoptimality, we compare /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)which is strongly opti-
+mal with “plain” optimal algorithms /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(/u1D43C0,CC)for diﬀerent levels /u1D43C0. As shown in Fig-
+ure14(a),/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)is more eﬃcient time-wise than every “plain” optimal algorith m, and
+the diﬀerence in performance grows as /u1D43C0becomesweaker. In the limit, when /u1D43C0is the trivial iso-
+lation level truewhere every history is consistent, /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(true,CC)timeouts for 20out of
+8For an application that deﬁnesa numberof transactions, a client progr am consists of a numberof sessions, each session
+containing a sequence of transactions deﬁnedby theapplication.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:21
+1 2 3 4 5
+Number of sessions0481216202428Time (mins)
+02468101214
+Memory (GB)Avg. time
+Avg. memory
+(a) Increasing sessions.1 2 3 4 5
+Number of transactions per session0481216202428Time (mins)
+02468101214
+Memory (GB)Avg. time
+Avg. memory
+(b)Increasing transactions persession.
+Fig. 15. Evaluating the scalability of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)for TPC-C and Wikipedia client programs when in-
+creasingtheirsize.Theseplotsincludebenchmarksthatti meout(30mins):4,9and10for3,4and5sessions
+respectivelyin Figure 15a,and5,8and10for3,4and5transactions persessionsrespectivelyin Figure 15b.
+the 25 programs. The average speedup (average of individual s peedups) of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)w.r.t.
+/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(RA,CC),/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(RC,CC)and/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(true,CC)is3,18and15. respectively
+(we excludetimeout caseswhen computingspeedups).All algo rithmsconsumearound 500MBof
+memoryin average.
+FortheSIandSERisolationlevelsthatadmitnostronglyoptimal /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scalgorithm,weobserve
+that the overhead of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(CC,SI)or/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(CC,SER)relative to /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)is
+negligible(thecorrespondinglinesinFigure 14areessentiallyoverlapping).Thisisduetothefact
+that the consistency checking algorithms of Biswas andEnea [2019] are polynomial time when
+the numberofsessions is ﬁxed,which makesthemfast at least on histories with few sessions.
+In our second experiment, we investigate the scalability of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc when increasing the
+number of sessions. For each /u1D456∈[1,5], we consider 5 (independent) client programs for TPC-C
+and 5 for Wikipedia (10 in total) with /u1D456sessions, each session containing 3 transactions. We start
+with10programswith5sessions,andremove sessionsonebyonetoo btainprogramswithfewer
+sessions. We take CCas isolation level. The plot in Figure 15ashows average running time and
+memoryconsumptionforeachnumber /u1D456∈[1,5]ofsessions.Asexpected,increasingthenumberof
+sessionsisabottleneckrunningtimewise becausethenumberofhis toriesincreasessigniﬁcantly.
+However, memory consumption does not grow with the same trend, c f. the polynomial space
+bound.
+Finally, we evaluate the scalability of /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc(CC)when increasing the number of trans-
+actions per session. We consider 5 (independent) TPC-C client programs and 5 (independent)
+Wikipedia programswith 3 sessions and /u1D456transactions per session, for each /u1D456∈[1,5]. Figure15b
+showsaveragerunningtimeandmemoryconsumptionforeachnumber /u1D456∈[1,5]oftransactions
+persession.Increasingthenumberoftransactionspersessionisa bottleneckforthesamereasons.
+8 RELATED WORK
+CheckingCorrectnessofDatabase-BackedApplications. Onelineofworkisconcernedwith
+thelogicalformalizationofisolationlevels[ Adyaet al.2000 ;Berenson et al.1995 ;Biswas and Enea
+2019;Cerone et al. 2015 ;X3 1992]. Our work relies on the axiomatic deﬁnitions of isolation lev -
+els introduced by Biswas and Enea [2019], which have also investigated the problem of checking
+whethera given history satisﬁes a certain isolation level. Our SMCalgorithmsrely onthese algo-
+rithmsto checkconsistency of ahistory with a given isolation level.
+Anotherlineofworkfocusesontheproblemofﬁnding“anomalies”: behaviorsthatarenotpos-
+sible under serializability. This is typically done via a stat ic analysis of the application code that
+buildsastatic dependencygraphthatover-approximates thed ata dependenciesin allpossible ex-
+ecutions of the application [ Bernardiand Gotsman 2016 ;Cerone and Gotsman 2018 ;Fekete et al.
+2005;Ganet al. 2020 ;Jorwekaret al. 2007 ;Warszawski andBailis 2017 ]. Anomalies with respect
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:22 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+to a given isolation level then correspond to a particular cla ss of cycles in this graph. Static de-
+pendency graphs turn out to be highly imprecise in representing f easible executions, leading to
+falsepositives.Anothersourceoffalsepositivesisthatan anomalymightnotbeabugbecausethe
+applicationmayalreadybedesignedtohandlethenon-serializa blebehavior[ Brutschyet al.2018 ;
+Ganet al.2020 ].Recentworkhastriedtoaddresstheseissuesbyusingmorepr eciselogicalencod-
+ings of the application [ Brutschyet al. 2017 ,2018], or by using user-guided heuristics [ Ganet al.
+2020].Anotherapproachconsists ofmodelingtheapplication logic and theisolation level in ﬁrst-
+orderlogicandrelyingonSMTsolverstosearchforanomalies[ Kakiet al.2018 ;Nagarand Jagannathan
+2018;Ozkan2020 ],ordeﬁningspecializedreductionstoassertionchecking[ Beillahiet al.2019a ,b].
+Ourapproach,basedonSMC,doesnotgeneratefalsepositivesb ecausewesystematicallyenumer-
+ate onlyvalid executionsofa programwhichallowsto checkfor user-deﬁned assertions.
+Severalworkshavelookedattheproblemofreasoningaboutthe correctnessofapplicationsexe-
+cutingunderweakisolationandintroducingadditionalsynchroniza tionwhennecessary[ Balegaset al.
+2015;Gotsmanet al.2016 ;Liet al.2014 ;Nair et al.2020 ].Thesearebasedonstaticanalysisorlog-
+ical proofarguments.Theissue ofrepairing applicationsis or thogonalto our work.
+MonkeyDB[ Biswas et al.2021 ]isamockstoragesystemfortestingstorage-backedapplica tions.
+Whilebeingabletoscaletolargercode,ithastheinherentincom pletenessoftesting.Asopposedto
+MonkeyDB,ouralgorithmsperformasystematicandcompleteex plorationofexecutionsandcan
+establish correctness at least in some bounded context, and they avoid redundancy, enumerating
+equivalent executionsmultiple times.Such guaranteesare bey ond the scopeof MonkeyDB.
+Dynamic PartialOrderReduction. Abdullaet al. [2017b] introduced the conceptof source sets
+which provided the ﬁrst strongly optimal DPOR algorithm for M azurkiewicz trace equivalence.
+Other works study DPOR techniques for coarser equivalence rel ations, e.g., [ Abdullaet al. 2019 ;
+Agarwalet al.2021 ;Aroniset al.2018 ;Chalupaet al.2018 ;Chatterjeeet al.2019 ].Inallcases,the
+space complexityis exponential whenstrong optimality isensur ed.
+Other works focus on extending DPOR to weak memory models eithe r by targeting a speciﬁc
+memory model [ Abdullaet al. 2017a ,2016,2018;Norrisand Demsky 2013 ] or by being paramet-
+ric with respect to an axiomatically-deﬁned memory model [ Kokologiannakiset al. 2022 ,2019;
+Kokologiannakisand Vafeiadis 2020 ]. Some of these works can deal with the coarser reads-from
+equivalence,e.g.,[ Abdullaet al.2018 ;Kokologiannakiset al.2022 ,2019;Kokologiannakisand Vafeiadis
+2020].Our algorithmsbuild on the work of Kokologiannakiset al. [2022] which for the ﬁrst time,
+proposesaDPORalgorithmwhichisbothstronglyoptimalandpo lynomialspace.Thedeﬁnitions
+ofdatabaseisolationlevelsarequitediﬀerent withrespect toweakmemorymodels,whichmakes
+these previous works not extensible in a direct manner. These deﬁ nitions include a semantics
+fortransactions which are collectionsof reads and writes, and this poses new diﬃc ult challenges.
+Forinstance,reasoningaboutthecompletenessandthe(strong)opt imalityofexistingDPORalgo-
+rithmsforshared-memoryisagnostictothescheduler( N/e.sc/x.sc/t.scfunction)whilethestrongoptimality
+ofour/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc algorithmreliesontheschedulerkeepingatmostonetransacti onpendingata
+time.Inaddition,unlikeTruSt, /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc ensuresthatnoswappedeventscanbeswappedagain
+andthatthehistoryorder <isanextensionof so∪wr.Thismakesourcompletenessandoptimality
+proofsradicallydiﬀerent. Moreover,even fortransactionalprogramswith oneaccesspert ransac-
+tion, where SERandSCare equivalent, TruSt under SCand/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗(/u1D43C0,SER)do not coincide,
+forany/u1D43C0∈{RC,RA,CC}. Inthis case, TruSt enumeratesonly SC-consistent histories at the cost of
+solving anNP-completeproblemat eachstep while the /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc∗step cost ispolynomialtime
+at the price of not being strongly-optimal. Furthermore, we identify isolation levels ( SIandSER)
+for which it is impossible to ensure both strong optimality and p olynomial space bounds with a
+swapping-based algorithm,a type ofquestion thathasnot been investigated in previous work.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:23
+9 CONCLUSIONS
+WepresentedeﬃcientSMCalgorithmsbasedonDPORfortransacti onalprogramsrunningunder
+standard isolation levels. These algorithms are instances of a generic schema, called swapping-
+basedalgorithms,whichisparametrizedbyanisolation lev el.Ouralgorithmsaresoundandcom-
+plete,andpolynomialspace.Additionally,weidentiﬁedaclass ofisolationlevels,including RC,RA,
+andCC,forwhichouralgorithmsarestrongly optimal,andwe showed t hatswapping-based algo-
+rithmscannotbestronglyoptimalforstrongerlevels SIandSER(butjustoptimal).Fortheisolation
+levels we considered, there is an intriguing coincidence between the existence of a strongly opti-
+malswapping-basedalgorithmandthecomplexityofcheckingif agivenhistoryisconsistentwith
+thatlevel.Indeed,checkingconsistencyispolynomialtimefor RC,RA,andCC,andNP-completefor
+SIandSER.Investigatingfurthertherelationshipbetweenstrongoptima lityandpolynomial-time
+consistency checksis aninteresting direction forfuture work.
+ACKNOWLEDGEMENTS
+Wethankanonymousreviewersfortheirfeedback,andAyalZaksfo rshepherdingourpaper.This
+workwaspartially supported bythe projectAdeCoDSofthe Fr enchNational Research Agency.
+DATA AVAILABILITY STATEMENT
+Theimplementation is open-sourceand canbe foundin [ Bouajjaniet al.2023b ].
+REFERENCES
+Parosh Aziz Abdulla, Stavros Aronis, Mohamed Faouzi Atig, Bengt J onsson, Carl Leonardsson, and Konstanti-
+nos Sagonas. 2017a. Stateless model checking for TSO and PSO. Acta Informatica 54, 8 (2017), 789–818.
+https://doi.org/10.1007/s00236-016-0275-0
+Parosh Aziz Abdulla, Stavros Aronis, Bengt Jonsson, and Konstantinos Sa gonas. 2017b. Source Sets: A Foundation for
+Optimal DynamicPartial OrderReduction. J.ACM64,4(2017),25:1–25:49. https://doi.org/10.1145/3073408
+Parosh Aziz Abdulla, Mohamed Faouzi Atig, Bengt Jonsson, Magnus Lå ng, Tuan Phong Ngo, and Konstantinos Sagonas.
+2019. Optimal statelessmodel checking for reads-from equivale nce under sequential consistency. Proc. ACM Program.
+Lang.3,OOPSLA(2019),150:1–150:29. https://doi.org/10.1145/3360576
+Parosh Aziz Abdulla, Mohamed Faouzi Atig, Bengt Jonsson, and Carl L eonardsson. 2016. Stateless Model Checking for
+POWER.In ComputerAidedVeriﬁcation-28thInternationalConferenc e,CAV2016,Toronto,ON,Canada,July17-23,2016,
+Proceedings,PartII (LectureNotesinComputerScience,Vo l.9780), SwaratChaudhuriandAzadehFarzan(Eds.).Springer,
+134–156. https://doi.org/10.1007/978-3-319-41540-6_8
+Parosh Aziz Abdulla, Mohamed Faouzi Atig, Bengt Jonsson, and Tuan P hong Ngo. 2018. Optimal stateless model
+checking under the release-acquire semantics. Proc. ACM Program. Lang. 2, OOPSLA (2018), 135:1–135:29.
+https://doi.org/10.1145/3276505
+A.Adya. 1999. Weak Consistency: AGeneralizedTheoryand Optimistic Impl ementations forDistributed Transactions . Tech-
+nical Report. USA.
+Atul Adya, Barbara Liskov, and Patrick E. O’Neil.2000. Generalize d Isolation LevelDeﬁnitions. In Proceedings of the 16th
+International Conference on Data Engineering, San Diego, C alifornia, USA, February 28 - March 3, 2000 , David B. Lomet
+andGerhard Weikum(Eds.).IEEEComputer Society, 67–78. https://doi.org/10.1109/ICDE.2000.839388
+PratyushAgarwal,KrishnenduChatterjee,ShreyaPathak,Andre asPavlogiannis,andViktorToman.2021. StatelessModel
+Checking Under a Reads-Value-From Equivalence. In Computer Aided Veriﬁcation - 33rd International Conferenc e, CAV
+2021, Virtual Event, July 20-23, 2021, Proceedings, Part I ( Lecture Notes in Computer Science, Vol. 12759) , AlexandraSilva
+andK. Rustan M.Leino(Eds.).Springer,341–366. https://doi.org/10.1007/978-3-030-81685-8_16
+DeepthiDevakiAkkoorathandAnnetteBieniusa.2016. Antidote:thehighly-availablegeo-replicateddatabasew ithstrongest
+guarantees . Technical Report. https://pages.lip6.fr/syncfree/attachments/article/59/a ntidote-white-paper.pdf
+Stavros Aronis,BengtJonsson, MagnusLång,andKonstantinos Sagonas. 201 8. OptimalDynamicPartialOrderReduction
+with Observers. In Tools and Algorithms for the Construction and Analysis of Sy stems - 24th International Conference,
+TACAS2018, HeldasPartoftheEuropeanJoint Conferenceson TheoryandPracticeofSoftware,ETAPS2018, Thessaloniki,
+Greece, April 14-20, 2018, Proceedings, Part II (Lecture No tes in Computer Science, Vol. 10806) , Dirk Beyer and Marieke
+Huisman (Eds.).Springer,229–248. https://doi.org/10.1007/978-3-319-89963-3_14
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:24 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+ValterBalegas,SérgioDuarte,CarlaFerreira,RodrigoRodrigu es,NunoM.Preguiça,MahsaNajafzadeh,andMarcShapiro.
+2015. Putting consistency back intoeventualconsistency. In Proceedings oftheTenthEuropeanConferenceonComputer
+Systems, EuroSys 2015, Bordeaux, France, April 21-24, 2015 , Laurent Réveillère, Tim Harris, and Maurice Herlihy (Eds.).
+ACM,6:1–6:16. https://doi.org/10.1145/2741948.2741972
+Sidi Mohamed Beillahi,Ahmed Bouajjani, and Constantin Enea. 2019a. Ch ecking Robustness Against Snapshot Isolation.
+InComputer Aided Veriﬁcation - 31st International Conferenc e, CAV 2019, New York City, NY, USA, July 15-18, 2019, Pro-
+ceedings, Part II (Lecture Notes in Computer Science, Vol. 1 1562), Isil Dillig and Serdar Tasiran (Eds.). Springer, 286–304.
+https://doi.org/10.1007/978-3-030-25543-5_17
+Sidi Mohamed Beillahi, Ahmed Bouajjani, and Constantin Enea. 2019b. Ro bustness Against Transactional Causal Con-
+sistency. In 30th International Conference on Concurrency Theory, CONC UR 2019, August 27-30, 2019, Amsterdam, the
+Netherlands (LIPIcs, Vol. 140) , Wan J. Fokkink and Rob van Glabbeek (Eds.). Schloss Dagstuhl - L eibniz-Zentrum für
+Informatik,30:1–30:18. https://doi.org/10.4230/LIPIcs.CONCUR.2019.30
+Hal Berenson, Philip A. Bernstein, Jim Gray, Jim Melton, Elizabeth J. O’N eil, and Patrick E. O’Neil. 1995. A Critique
+of ANSI SQL Isolation Levels. In Proceedings of the 1995 ACM SIGMOD International Conferenc e on Management of
+Data, San Jose, California, USA, May 22-25, 1995 , Michael J. Carey and Donovan A. Schneider (Eds.). ACM Press, 1–10 .
+https://doi.org/10.1145/223784.223785
+Giovanni Bernardi and Alexey Gotsman. 2016. Robustness against Consist ency Models with Atomic Visibility. In
+27th International Conference on Concurrency Theory, CONC UR 2016, August 23-26, 2016, Québec City, Canada (LIPIcs,
+Vol. 59), Josée Desharnais and Radha Jagadeesan (Eds.). Schloss Dagstu hl - Leibniz-Zentrum für Informatik, 7:1–7:15.
+https://doi.org/10.4230/LIPIcs.CONCUR.2016.7
+RanadeepBiswasandConstantinEnea.2019.Onthecomplexityofcheck ingtransactionalconsistency. Proc.ACMProgram.
+Lang.3,OOPSLA(2019),165:1–165:28. https://doi.org/10.1145/3360591
+Ranadeep Biswas, Diptanshu Kakwani, Jyothi Vedurada, Constantin Enea , and Akash Lal. 2021. MonkeyDB: ef-
+fectively testing correctness under weak isolation levels. Proc. ACM Program. Lang. 5, OOPSLA (2021), 1–27.
+https://doi.org/10.1145/3485546
+Ahmed Bouajjani, Constantin Enea, and Enrique Román-Calvo. 2023a. Dyna mic Partial Order Reduction for Checking
+Correctness Against Transaction Isolation Levels. arXiv: 2303.12606 [cs.PL]
+Ahmed Bouajjani, Constantin Enea, and Enrique Román-Calvo. 2023b. Transactional JPF .
+https://doi.org/10.5281/zenodo.7824546
+Martin Brain, James H. Davenport, and Alberto Griggio. 2017. Benchma rking Solvers, SAT-style. In Proceedings of the
+2nd International Workshop on Satisﬁability Checking and S ymbolic Computation co-located with the 42nd Internationa l
+SymposiumonSymbolicandAlgebraicComputation(ISSAC201 7),Kaiserslautern,Germany,July29,2017 (CEURWorkshop
+Proceedings,Vol.1974) ,MatthewEnglandandVijayGanesh(Eds.).CEUR-WS.org. http://ceur-ws.org/Vol-1974/RP3.pdf
+Nathan Bronson, Zach Amsden, George Cabrera, Prasad Chakka, Pe ter Dimov, Hui Ding, Jack Ferris, Anthony Giar-
+dullo,Sachin Kulkarni, Harry C.Li, MarkMarchukov, Dmitri Petro v,Lovro Puzar,Yee Jiun Song, and Venkateshwaran
+Venkataramani. 2013. TAO: Facebook’s Distributed Data Store for the Social Graph. In 2013 USENIX Annual Technical
+Conference,San Jose,CA,USA, June26-28, 2013 , AndrewBirrellandEmin Gün Sirer(Eds.).USENIXAssociation, 49–60 .
+https://www.usenix.org/conference/atc13/technical-sessions/ presentation/bronson
+Lucas Brutschy, Dimitar K. Dimitrov, Peter Müller, and Martin T. Ve chev. 2017. Serializability for eventual consistency:
+criterion,analysis,and applications. In Proceedings ofthe 44th ACMSIGPLAN Symposium onPrinciples ofProgramming
+Languages,POPL2017, Paris, France,January18-20, 2017 , Giuseppe Castagna andAndrewD.Gordon (Eds.).ACM,458–
+472.https://doi.org/10.1145/3009837.3009895
+Lucas Brutschy, Dimitar K. Dimitrov, Peter Müller, and Martin T. Ve chev. 2018. Static serializability analysis for causal
+consistency. In Proceedings of the 39th ACM SIGPLAN Conference on Programmi ng Language Design and Implemen-
+tation, PLDI 2018, Philadelphia, PA, USA, June 18-22, 2018 , Jeﬀrey S. Foster and Dan Grossman (Eds.). ACM, 90–104.
+https://doi.org/10.1145/3192366.3192415
+AndreaCerone,Giovanni Bernardi,andAlexeyGotsman. 2015. AFramewo rkforTransactional ConsistencyModelswith
+Atomic Visibility. In 26th International Conference on ConcurrencyTheory, CONC UR 2015, Madrid, Spain, September 1.4,
+2015 (LIPIcs,Vol.42) , Luca AcetoandDaviddeFrutos-Escrig (Eds.).SchlossDagstuh l-Leibniz-ZentrumfürInformatik,
+58–71.https://doi.org/10.4230/LIPIcs.CONCUR.2015.58
+Andrea Cerone and Alexey Gotsman. 2018. Analysing Snapshot Isolation. J. ACM 65, 2 (2018), 11:1–11:41.
+https://doi.org/10.1145/3152396
+Marek Chalupa, Krishnendu Chatterjee, Andreas Pavlogiannis, Nishant Sinha, and Kapil Vaidya. 2018. Data-centric dy-
+namic partial orderreduction. Proc.ACMProgram.Lang. 2,POPL(2018),31:1–31:30. https://doi.org/10.1145/3158119
+Krishnendu Chatterjee, Andreas Pavlogiannis, and Viktor Toman. 2019. V alue-centric dynamic partial order reduction.
+Proc.ACMProgram.Lang. 3,OOPSLA(2019),124:1–124:29. https://doi.org/10.1145/3360550
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:25
+EdmundM.Clarke,E.AllenEmerson,andA.PrasadSistla.1983.Au tomaticVeriﬁcationofFiniteStateConcurrentSystems
+Using Temporal Logic Speciﬁcations: A Practical Approach. In ConferenceRecordofthe Tenth Annual ACMSymposium
+on Principles of Programming Languages, Austin, Texas, USA , January 1983 , John R. Wright, Larry Landweber, Alan J.
+Demers,and TimTeitelbaum(Eds.).ACMPress,117–126. https://doi.org/10.1145/567067.567080
+Edmund M.Clarke,Orna Grumberg, Marius Minea,and Doron A. Peled.1 999. State Space Reduction Using Partial Order
+Techniques. Int. J. Softw.ToolsTechnol.Transf. 2,3 (1999),279–287. https://doi.org/10.1007/s100090050035
+Giuseppe DeCandia, Deniz Hastorun, Madan Jampani, Gunavardhan Kakul apati, Avinash Lakshman, Alex Pilchin,
+Swaminathan Sivasubramanian, Peter Vosshall, and Werner Vogels. 20 07. Dynamo: amazon’s highly available key-
+value store. In Proceedings of the 21st ACM Symposium on Operating Systems P rinciples 2007, SOSP 2007, Steven-
+son, Washington, USA, October 14-17, 2007 , Thomas C. Bressoud and M. Frans Kaashoek (Eds.). ACM, 205–220 .
+https://doi.org/10.1145/1294261.1294281
+Djellel Eddine Difallah, Andrew Pavlo, Carlo Curino, and Philippe Cud ré-Mauroux. 2013. OLTP-Bench: An
+Extensible Testbed for Benchmarking Relational Databases. Proc. VLDB Endow. 7, 4 (2013), 277–288.
+https://doi.org/10.14778/2732240.2732246
+Alan D. Fekete,Dimitrios Liarokapis, ElizabethJ. O’Neil,Patrick E .O’Neil,and Dennis E. Shasha. 2005. Making snapshot
+isolation serializable. ACMTrans. Database Syst. 30,2 (2005),492–528. https://doi.org/10.1145/1071610.1071615
+Cormac Flanagan and Patrice Godefroid. 2005. Dynamic partial-orde r reduction for model checking software.
+InProceedings of the 32nd ACM SIGPLAN-SIGACT Symposium on Pri nciples of Programming Languages, POPL
+2005, Long Beach, California, USA, January 12-14, 2005 , Jens Palsberg and Martín Abadi (Eds.). ACM, 110–121.
+https://doi.org/10.1145/1040305.1040315
+YifanGan,XueyuanRen,DrewRipberger,SpyrosBlanas,andYangWang. 2020. IsoDiﬀ:DebuggingAnomaliesCausedby
+WeakIsolation. Proc. VLDB Endow. 13,12(July 2020),27732786. https://doi.org/10.14778/3407790.3407860
+PatriceGodefroid.1996. Partial-OrderMethodsfortheVeriﬁcationofConcurrentSy stems-AnApproachtotheState-Explosion
+Problem.Lecture Notes inComputer Science, Vol.1032. Springer. https://doi.org/10.1007/3-540-60761-7
+Patrice Godefroid. 1997. Model Checking for Programming Languages using Verisoft. In Conference Record of POPL’97:
+The 24th ACM SIGPLAN-SIGACT Symposium on Principles of Prog ramming Languages, Papers Presented at the Sym-
+posium, Paris, France, 15-17 January 1997 , Peter Lee, Fritz Henglein, and Neil D. Jones (Eds.). ACM Press, 174– 186.
+https://doi.org/10.1145/263699.263717
+AlexeyGotsman, Hongseok Yang, Carla Ferreira, Mahsa Najafzade h, and Marc Shapiro. 2016. ’Cause I’m strong enough:
+reasoning about consistency choices in distributed systems. In Proceedings of the 43rd Annual ACM SIGPLAN-SIGACT
+Symposium onPrinciplesofProgramming Languages,POPL 201 6, St. Petersburg,FL, USA, January20 - 22, 2016 , Rastislav
+Bodík and Rupak Majumdar (Eds.).ACM,371–384. https://doi.org/10.1145/2837614.2837625
+Sudhir Jorwekar, Alan D. Fekete, Krithi Ramamritham, and S. Suda rshan. 2007. Automating the Detection of Snapshot
+Isolation Anomalies. In Proceedings of the 33rd International Conference on Very La rge Data Bases, University of Vienna,
+Austria,September23-27,2007 ,ChristophKoch,JohannesGehrke,MinosN.Garofalakis,DiveshSriv astava,KarlAberer,
+Anand Deshpande, Daniela Florescu, Chee Yong Chan, Venkatesh Ganti, Ca rl-Christian Kanne, Wolfgang Klas, and
+ErichJ. Neuhold(Eds.).ACM,1263–1274. http://www.vldb.org/conf/2007/papers/industrial/p1263-j orwekar.pdf
+Gowtham Kaki, Kapil Earanky, K. C.Sivaramakrishnan, and Suresh Jaga nnathan. 2018. Safe replication through bounded
+concurrency veriﬁcation. Proc. ACMProgram.Lang. 2,OOPSLA (2018),164:1–164:27. https://doi.org/10.1145/3276534
+Michalis Kokologiannakis, Iason Marmanis, Vladimir Gladstein, and Viktor Vafeiadis. 2022. Truly stateless, optimal dy-
+namic partial orderreduction. Proc.ACMProgram.Lang. 6,POPL(2022),1–28. https://doi.org/10.1145/3498711
+Michalis Kokologiannakis, Azalea Raad, and Viktor Vafeiadis. 2019. Mo del checking for weakly consistent li-
+braries. In Proceedings of the 40th ACM SIGPLAN Conference on Programmi ng Language Design and Implementa-
+tion, PLDI 2019, Phoenix, AZ, USA, June 22-26, 2019 , Kathryn S. McKinley and Kathleen Fisher (Eds.). ACM, 96–110.
+https://doi.org/10.1145/3314221.3314609
+Michalis Kokologiannakis and Viktor Vafeiadis. 2020. HMC: Model Check ing for Hardware Memory Models. In ASPLOS
+’20: Architectural Support forProgramming Languages and O perating Systems, Lausanne, Switzerland, March 16-20, 202 0,
+James R.Larus, Luis Ceze,andKarin Strauss (Eds.).ACM,1157–1 171.https://doi.org/10.1145/3373376.3378480
+Leslie Lamport. 1978. Time, Clocks, and the Ordering of Events in a Dis tributed System. Commun. ACM 21, 7 (1978),
+558–565. https://doi.org/10.1145/359545.359563
+Cheng Li, João Leitão, Allen Clement, Nuno M. Preguiça, Rodrigo Rodr igues, and Viktor Vafeiadis. 2014. Automating
+the Choice of Consistency Levels in Replicated Systems. In 2014 USENIX Annual Technical Conference, USENIX ATC
+’14, Philadelphia, PA, USA, June 19-20, 2014 , Garth Gibson and Nickolai Zeldovich(Eds.).USENIX Association, 2 81–292.
+https://www.usenix.org/conference/atc14/technical-sessions/ presentation/li_cheng_2
+Wyatt Lloyd, Michael J. Freedman, Michael Kaminsky, and David G. Ande rsen. 2011. Don’t settle for eventual: scalable
+causal consistency for wide-area storage with COPS. In Proceedings of the 23rd ACM Symposium on Operating Systems
+Principles2011, SOSP 2011, Cascais, Portugal,October23- 26, 2011, TedWobberandPeterDruschel(Eds.).ACM,401–416.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:26 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+https://doi.org/10.1145/2043556.2043593
+Antoni W. Mazurkiewicz. 1986. Trace Theory. In Petri Nets: Central Models and Their Properties, Advances i n Petri
+Nets 1986, Part II, Proceedings of an Advanced Course, Bad Ho nnef, Germany, 8-19 September 1986 (Lecture Notes in
+Computer Science, Vol. 255) , Wilfried Brauer, Wolfgang Reisig, and Grzegorz Rozenberg (Eds.). Springer, 279–324.
+https://doi.org/10.1007/3-540-17906-2_30
+Kartik Nagar and Suresh Jagannathan. 2018. Automated Detection of Serializability Violations Under Weak Consis-
+tency. In 29th International Conference on Concurrency Theory, CONC UR 2018, September 4-7, 2018, Beijing, China
+(LIPIcs, Vol. 118) , Sven Schewe and Lijun Zhang (Eds.). Schloss Dagstuhl - Leibniz-Ze ntrum für Informatik, 41:1–41:18.
+https://doi.org/10.4230/LIPIcs.CONCUR.2018.41
+Sreeja S. Nair, Gustavo Petri, and Marc Shapiro. 2020. Proving the S afety of Highly-Available Distributed Ob-
+jects. In Programming Languages and Systems - 29th European Symposiu m on Programming, ESOP 2020, Held as
+Part of the European Joint Conferences on Theory and Practic e of Software, ETAPS 2020, Dublin, Ireland, April
+25-30, 2020, Proceedings (Lecture Notes in Computer Scienc e, Vol. 12075) , Peter Müller (Ed.). Springer, 544–571.
+https://doi.org/10.1007/978-3-030-44914-8_20
+Brian Norris and Brian Demsky. 2013. CDSchecker: checking concurre nt data structures written with C/C++ atomics. In
+Proceedingsofthe2013ACMSIGPLANInternationalConferen ceonObjectOrientedProgrammingSystemsLanguages&Ap-
+plications,OOPSLA 2013,partofSPLASH2013, Indianapolis , IN,USA,October26-31, 2013 ,AntonyL.Hosking,PatrickTh.
+Eugster,and CristinaV. Lopes (Eds.).ACM,131–150. https://doi.org/10.1145/2509136.2509514
+Burcu Kulahcioglu Ozkan. 2020. Verifying Weakly Consistent Transact ional Programs Using Symbolic Execution.
+InNetworked Systems - 8th International Conference, NETYS 20 20, Marrakech, Morocco, June 3-5, 2020, Proceedings
+(Lecture Notes in Computer Science, Vol. 12129) , Chryssis Georgiou and Rupak Majumdar (Eds.). Springer, 261–278 .
+https://doi.org/10.1007/978-3-030-67087-0_17
+Christos H. Papadimitriou. 1979. The serializability of concurrent da tabase updates. J. ACM26, 4 (1979), 631–653.
+https://doi.org/10.1145/322154.322158
+Andrew Pavlo. 2017. What Are We Doing With Our Lives? Nobody Cares A bout Our Concurrency Control Research. In
+Proceedings of the 2017 ACM International Conference on Man agement of Data (Chicago, Illinois, USA) (SIGMOD ’17) .
+Association forComputing Machinery,NewYork, NY, USA,3. https://doi.org/10.1145/3035918.3056096
+Jos RolandoGuay Paz.2018. Microsoft AzureCosmosDBRevealed:AMulti-Modal Database Designed fortheCloud (1sted.).
+Apress,USA.
+DoronA.Peled.1993. AllfromOne,OneforAll:onModelCheckingU singRepresentatives.In ComputerAidedVeriﬁcation,
+5th International Conference, CAV ’93, Elounda, Greece, Ju ne 28 - July 1, 1993, Proceedings (Lecture Notes in Computer
+Science,Vol.697) , Costas Courcoubetis (Ed.).Springer,409–423. https://doi.org/10.1007/3-540-56922-7_34
+Jean-Pierre Queille and Joseph Sifakis. 1982. Speciﬁcation and veriﬁc ation of concurrent systems in CESAR. In In-
+ternational Symposium on Programming, 5th Colloquium, Tor ino, Italy, April 6-8, 1982, Proceedings (Lecture Notes
+in Computer Science, Vol. 137) , Mariangiola Dezani-Ciancaglini and Ugo Montanari (Eds.). Springer, 337– 351.
+https://doi.org/10.1007/3-540-11494-7_22
+Kia Rahmani, Kartik Nagar, Benjamin Delaware, and Suresh Jagannathan. 2019. CLOTHO: directed test gen-
+eration for weakly consistent database systems. Proc. ACM Program. Lang. 3, OOPSLA (2019), 117:1–117:28.
+https://doi.org/10.1145/3360543
+K. C. Sivaramakrishnan, Gowtham Kaki, and Suresh Jagannathan. 2015. D eclarative programming over eventually con-
+sistent data stores. In Proceedings of the 36th ACM SIGPLAN Conference on Programmi ng Language Design and Im-
+plementation, Portland, OR, USA, June 15-17, 2015 , David Grove and Stephen M. Blackburn (Eds.). ACM, 413–424.
+https://doi.org/10.1145/2737924.2737981
+TPC. 2010. . Technical Report. Transaction Processing Performance Council.
+http://www.tpc.org/tpc_documents_current_versions/pdf/t pc-c_v5.11.0.pdf
+Antti Valmari. 1989. Stubborn sets for reduced state space gene ration. In Advances in Petri Nets 1990 [10th International
+ConferenceonApplications and Theoryof Petri Nets, Bonn, G ermany, June 1989, Proceedings] (Lecture Notes in Computer
+Science,Vol.483) , Grzegorz Rozenberg(Ed.).Springer, 491–515. https://doi.org/10.1007/3-540-53863-1_36
+WillemVisser,CorinaS.Pasareanu,andSarfrazKhurshid.2004. Tes tinputgenerationwithjavaPathFinder.In Proceedings
+ofthe ACM/SIGSOFT International Symposium onSoftwareTes ting andAnalysis, ISSTA2004, Boston, Massachusetts, USA,
+July11-14,2004 ,GeorgeS.AvruninandGreggRothermel(Eds.).ACM,97–107. https://doi.org/10.1145/1007512.1007526
+ToddWarszawskiandPeterBailis.2017. ACIDRain:Concurrency-Rel ated Attacks on Database-Backed WebApplications.
+InProceedings of the 2017 ACM International Conference onMan agement of Data (Chicago, Illinois,USA) (SIGMOD ’17) .
+Association forComputing Machinery,NewYork, NY, USA,520. https://doi.org/10.1145/3035918.3064037
+ANSIX3.1992. 135-1992. AmericanNational Standard forInformationSyst ems-Database Language-SQL . TechnicalReport.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:27
+A AXIOMATIC LEVELS: READ COMMITTED AND READ ATOMIC.
+/u1D4611/u1D4612writes/u1D465
+/u1D6FC/u1D6FD
+wr/u1D465wr
+poco
+∀/u1D465,∀/u1D4611,/u1D4612,∀/u1D6FC./u1D4611≠/u1D4612∧
+/a\}bracketle{t/u1D4611,/u1D6FC/a\}bracketri}ht∈wr/u1D465∧/u1D4612writes/u1D465∧
+/a\}bracketle{t/u1D4612,/u1D6FC/a\}bracketri}ht∈wr◦po
+⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co
+(a) ReadCommi/t_ted/u1D4611 /u1D4613/u1D4612writes/u1D44E
+wr/u1D465so∪wr
+co
+∀/u1D465,∀/u1D4611,/u1D4612,∀/u1D4613./u1D4611≠/u1D4612∧
+/a\}bracketle{t/u1D4611,/u1D4613/a\}bracketri}ht∈wr/u1D465∧/u1D4612writes/u1D465∧
+/a\}bracketle{t/u1D4612,/u1D4613/a\}bracketri}ht∈so∪wr
+⇒/a\}bracketle{t/u1D4612,/u1D4611/a\}bracketri}ht∈co
+(b)ReadAtomic
+Fig. A.1. Axioms defining isolations levels. The reflexive and t ransitive, resp., transitive, closure of a rela-
+tion/u1D45F/u1D452/u1D459is denoted by /u1D45F/u1D452/u1D459∗, resp.,/u1D45F/u1D452/u1D459+. Also,◦denotes the composition of two relations, i.e., /u1D45F/u1D452/u1D4591◦/u1D45F/u1D452/u1D4592=
+{/a\}bracketle{t/u1D44E,/u1D44F/a\}bracketri}ht|∃/u1D450./a\}bracketle{t/u1D44E,/u1D450/a\}bracketri}ht∈/u1D45F/u1D452/u1D4591∧/a\}bracketle{t/u1D450,/u1D44F/a\}bracketri}ht∈/u1D45F/u1D452/u1D4592}.
+TheaxiomsdeﬁnedaboveinFigure A.1deﬁnethehomonymousisolationlevels ReadAtomic (also
+calledRepeatableRead in the literature) and Read Committed .
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:28 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+B RULES OF THEOPERATIONAL SEMANTICS (SECTION 2.3).
+/s.sc/p.sc/a.sc/w.sc/n.sc
+/u1D461fresh/u1D452freshP(/u1D457)=begin;Body;commit;S/vecB(/u1D457)=/u1D716
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ⊕/u1D457/a\}bracketle{t/u1D461,{/a\}bracketle{t/u1D452,begin/a\}bracketri}ht},∅/a\}bracketri}ht,/vec/u1D6FE[/u1D457/u\i∈1A6.e\dl→∅],/vecB[/u1D457/u\i∈1A6.e\dl→Body;commit],P[/u1D457/u\i∈1A6.e\dl→S]
+/i.sc/f.sc/hyphen.sc/t.sc/r.sc/u.sc/e.sc
+/u1D713(/vec/u1D465)[/u1D465/u\i∈1A6.e\dl→/vec/u1D6FE(/u1D457)(/u1D465):/u1D465∈/vec/u1D465]true/vecB(/u1D457)=if(/u1D713(/vec/u1D465)){Instr};B
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ,/vec/u1D6FE,/vecB[/u1D457/u\i∈1A6.e\dl→Instr;B],P
+/i.sc/f.sc/hyphen.sc/f.sc/a.sc/l.sc/s.sc/e.sc
+/u1D713(/vec/u1D465)[/u1D465/u\i∈1A6.e\dl→/vec/u1D6FE(/u1D457)(/u1D465):/u1D465∈/vec/u1D465]false/vecB(/u1D457)=if(/u1D713(/vec/u1D465)){Instr};B
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ,/vec/u1D6FE,/vecB[/u1D457/u\i∈1A6.e\dl→B],P
+/l.sc/o.sc/c.sc/a.sc/l.sc
+/u1D463=/vec/u1D6FE(/u1D457)(/u1D452)/vecB(/u1D457)=/u1D44E:=/u1D452;B
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ,/vec/u1D6FE[(/u1D457,/u1D44E)/u\i∈1A6.e\dl→/u1D463],/vecB[/u1D457/u\i∈1A6.e\dl→B],P
+/w.sc/r.sc/i.sc/t.sc/e.sc
+/u1D463=/vec/u1D6FE(/u1D457)(/u1D465)/u1D452fresh/vecB(/u1D457)=write(/u1D465,/u1D44E);Bℎ⊕/u1D457/a\}bracketle{t/u1D452,write(/u1D465,/u1D463)/a\}bracketri}htsatisﬁes/u1D43C
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ⊕/u1D457/a\}bracketle{t/u1D452,write(/u1D465,/u1D463)/a\}bracketri}ht,/vec/u1D6FE,/vecB[/u1D457/u\i∈1A6.e\dl→B],P
+/r.sc/e.sc/a.sc/d.sc/hyphen.sc/l.sc/o.sc/c.sc/a.sc/l.sc
+writes(last(ℎ,/u1D457))contains a write(/u1D465,/u1D463)event /u1D452fresh/vecB(/u1D457)=/u1D44E:=read(/u1D465);B
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ⊕/u1D457/a\}bracketle{t/u1D452,read(/u1D465)/a\}bracketri}ht,/vec/u1D6FE[(/u1D457,/u1D44E)/u\i∈1A6.e\dl→/u1D463],/vecB[/u1D457/u\i∈1A6.e\dl→B],P
+/r.sc/e.sc/a.sc/d.sc/hyphen.sc/e.sc/x.sc/t.sc/e.sc/r.sc/n.sc
+writes(last(ℎ,/u1D457))doesnot containa write(/u1D465,/u1D463)event /u1D452fresh/vecB(/u1D457)=/u1D44E:=read(/u1D465);B
+ℎ=(/u1D447,so,wr)/u1D461=last(ℎ,/u1D457)write(/u1D465,/u1D463)∈writes(/u1D461′)with/u1D461′∈commTrans(ℎ)and/u1D461≠/u1D461′
+ℎ′=(ℎ⊕/u1D457/a\}bracketle{t/u1D452,read(/u1D465)/a\}bracketri}ht)⊕wr(/u1D461′,/u1D452)ℎ′satisﬁes/u1D43C
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ′,/vec/u1D6FE[(/u1D457,/u1D44E)/u\i∈1A6.e\dl→/u1D463],/vecB[/u1D457/u\i∈1A6.e\dl→B],P
+/c.sc/o.sc/m.sc/m.sc/i.sc/t.sc
+/u1D452fresh/vecB(/u1D457)=commit
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ⊕/u1D457/a\}bracketle{t/u1D452,commit/a\}bracketri}ht,/vec/u1D6FE,/vecB[/u1D457/u\i∈1A6.e\dl→/u1D716],P/a.sc/b.sc/o.sc/r.sc/t.sc
+/u1D452fresh/vecB(/u1D457)=abort;/u1D435
+ℎ,/vec/u1D6FE,/vecB,P⇒/u1D43Cℎ⊕/u1D457/a\}bracketle{t/u1D452,abort/a\}bracketri}ht,/vec/u1D6FE,/vecB[/u1D457/u\i∈1A6.e\dl→/u1D716],P
+Fig.B.1. Anoperationalsemanticsfortransactionalprogra ms.Above, last(ℎ,/u1D457)denotesthelasttransaction
+log in the session order so(/u1D457)ofℎ, and commTrans(ℎ)denotes the set of transaction logs in ℎthat are
+commi/t_ted
+.
+FigureB.1uses the following notation. Let ℎbe a history that contains a representation of soas
+above.Weuse ℎ⊕/u1D457/a\}bracketle{t/u1D461,/u1D438,po/u1D461/a\}bracketri}httodenoteahistorywhere /a\}bracketle{t/u1D461,/u1D438,po/u1D461/a\}bracketri}htisappendedto so(/u1D457).Also,foran
+event/u1D452,ℎ⊕/u1D457/u1D452isthehistoryobtainedfrom ℎbyadding /u1D452tothelasttransactionlogin so(/u1D457)andasa
+lasteventintheprogramorderofthislog(i.e.,if so(/u1D457)=/u1D70E;/a\}bracketle{t/u1D461,/u1D438,po/u1D461/a\}bracketri}ht,thenthesessionorder so′of
+ℎ⊕/u1D457/u1D452isdeﬁnedby so′(/u1D458)=so(/u1D458)forall/u1D458≠/u1D457andso(/u1D457)=/u1D70E;/a\}bracketle{t/u1D461,/u1D438∪{/u1D452},po/u1D461∪{(/u1D452′,/u1D452):/u1D452′∈/u1D438}/a\}bracketri}ht).
+Finally, for a history ℎ=/a\}bracketle{t/u1D447,so,wr/a\}bracketri}ht,ℎ⊕wr(/u1D461,/u1D452)is the history obtained from ℎby adding(/u1D461,/u1D452)to
+the write-read relation.
+/s.sc/p.sc/a.sc/w.sc/n.scstarts anew transaction in a session /u1D457provided that thissession hasno live transaction
+(/vecB(/u1D457)=/u1D716). It adds a transaction log with a single beginevent to the history and schedules the
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:29
+body of the transaction. /i.sc/f.sc/hyphen.sc/t.sc/r.sc/u.sc/e.scand/i.sc/f.sc/hyphen.sc/f.sc/a.sc/l.sc/s.sc/e.sccheckthe truth value of a Boolean condition of an
+ifconditional. /l.sc/o.sc/c.sc/a.sc/l.scmodels the execution of an assignment to a local variable which does not
+impact the stored history. /r.sc/e.sc/a.sc/d.sc/hyphen.sc/l.sc/o.sc/c.sc/a.sc/l.sc and/r.sc/e.sc/a.sc/d.sc/hyphen.sc/e.sc/x.sc/t.sc/e.sc/r.sc/n.sc concern read instructions. /r.sc/e.sc/a.sc/d.sc/hyphen.sc/l.sc/o.sc/c.sc/a.sc/l.sc
+handles the case where the read follows a write on the variable /u1D465in the same transaction: the
+readreturnsthevaluewritten bythelastwrite on /u1D465inthattransaction.Otherwise, /r.sc/e.sc/a.sc/d.sc/hyphen.sc/e.sc/x.sc/t.sc/e.sc/r.sc/n.sc
+corresponds to reading a value written in another transaction /u1D461′. The transaction /u1D461′is chosen
+non-deterministically as long as extending the current history wit h the write-read dependency
+associated to this choice leads to a history that still satis ﬁes/u1D43C./r.sc/e.sc/a.sc/d.sc/hyphen.sc/e.sc/x.sc/t.sc/e.sc/r.sc/n.sc applies only when
+the executing transaction contains no write on the same variable. /c.sc/o.sc/m.sc/m.sc/i.sc/t.scconﬁrms the end of a
+transaction makingits writes visible while /a.sc/b.sc/o.sc/r.sc/t.scendsthe transaction’s execution immediately.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:30 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+C PROOF OF THEOREM 3.4
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc3.4. Causal Consistency, Read Atomic, and Read Committed are cau sally-extensible.
+P/r.sc/o.sc/o.sc/f.sc.Let/u1D43Cbe an isolation level in {CC,RA,RC}.We show that any commitorder cojustifying
+thatahistory ℎis/u1D43C-consistent canalsobeusedtojustifythatacausalextension ℎ′ofa(so∪wr)∗-
+maximal pending transaction /u1D461inℎwith an event /u1D452is/u1D43C-consistent as well. We consider a causal
+extension ℎ′where if/u1D452is a read event, then it reads from the last transaction /u1D461/u1D464incosuch that
+/u1D461/u1D464writesvar(/u1D452)and(/u1D461/u1D464,/u1D461)∈(so∪wr)+. Assume by contradiction that this is not the case. Let
+/u1D719CC(ℎ′,/u1D461′,/u1D452′)=/u1D461′(so∪wr)+tr(ℎ′,/u1D452′),/u1D719RA(ℎ′,/u1D461′,/u1D452′)=/u1D461′(so∪wr)tr(ℎ′,/u1D452′)and/u1D719RC(ℎ′,/u1D461′,/u1D452′)=
+/u1D461′(wr◦po)/u1D452′be sub-formulasof the axiomsdeﬁning the corresponding isolati on level. Then, ℎ′
+contains transactions /u1D4611,/u1D4612,/u1D4613such that /u1D4612writes some variable /u1D465,/u1D4613contains some read event /u1D452′,
+(/u1D4611,/u1D452′) ∈wr/u1D465and/u1D719/u1D43C(ℎ′,/u1D4612,/u1D452′)but(/u1D4611,/u1D4612)∈co. The assumption concerning coimplies that the
+extended transaction /u1D461is one of/u1D4611,/u1D4612,/u1D4613(otherwise, cowould notbe a “valid” commitorderfor ℎ).
+Since/u1D461is(so∪wr)+-maximalin ℎ,wehavethat /u1D461∉{/u1D4611,/u1D4612}.If/u1D452isnotareadevent,orif /u1D452isaread
+event diﬀerent from /u1D452′, then/u1D461≠/u1D4613, as/u1D4611,/u1D4612and/u1D4613would satisfy the same constraints in ℎ, which
+isimpossible bythehypothesis.Otherwise, if /u1D452=/u1D452′,thenthiscontradictsthechoicewemadefor
+thetransaction /u1D461/u1D464that/u1D452readsfrom.Since(/u1D4611,/u1D4612)∈coand/u1D4612writesvar(/u1D452),itmeansthat /u1D461/u1D464=/u1D4611is
+notmaximalw.r.t. coamongtransactionsthatwrite var(/u1D452)andprecede /u1D461in(so∪wr)+.Bothcases
+leadtoacontradiction,whichimpliesthat ℎ′is/u1D43C-consistent,andthereforethetheoremholds. /square
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:31
+D PROOF OF THEOREM 6.1
+begin;
+a = read( /u1D465);
+write(/u1D467,1);
+write(/u1D466.alt,1);
+...
+commitbegin;
+b = read( /u1D466.alt);
+write(/u1D467,2);
+write(/u1D465,2);
+...
+commit
+(a) Program (2 sessions) .init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465 wr/u1D466.alt
+(b)History ℎ.init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465
+init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D466.alt
+(c) Two histories. The top
+history is called ℎ1.
+init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465
+(d)History ℎ2.init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465
+(e)History ℎ3.init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465 wr/u1D466.alt
+(f) History ℎ11.
+init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465 wr/u1D466.alt
+(g) History ℎ21.init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465 wr/u1D466.alt
+(h)History ℎ31.init
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...
+read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...wr/u1D465
+wr/u1D466.alt
+(i) History ℎ32.init
+read(/u1D466.alt)
+write(/u1D467,2)
+write(/u1D465,2)
+...
+read(/u1D465)
+write(/u1D467,1)
+write(/u1D466.alt,1)
+...wr/u1D466.alt
+wr/u1D465
+(j) History ˆℎ.
+Fig. D.1. A program and some partial histories. Events in gre y are not yet added to the history. For ℎ3,ℎ31
+andℎ32, the number of events that follow write (/u1D466.alt,1)and write(/u1D465,2)is not important (we use black ...to
+signify that).
+∅ ℎ1ℎ2ℎ3
+ℎ11ℎ21ℎ31ℎ32
+ℎ ˆℎ/producttext1.1
+Fig.D.2. Summaryofallpossibleexecutionpathsfrom /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc.Blackarrowsrepresentalternativeexplored
+options depending on N/e.sc/x.sc/t.scwhile dashedarrowsaremandatory visitedhistories from su ch state.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:32 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc 6.1. If/u1D43Cis Snapshot Isolation or Serializability, there exists no /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scalgorithm that
+is/u1D43C-sound,/u1D43C-complete, and strongly optimal.
+P/r.sc/o.sc/o.sc/f.sc.We consider the program in Figure D.1a, and show that any concrete instance of the
+/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scfunction in Algorithm 1can not be both /u1D43C-complete and strongly optimal. This program
+contains two transactions, where only the ﬁrst three instructions i n each transaction are impor-
+tant. We show that if /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc is/u1D43C-complete, then it will necessarily be called recursively on a
+historyℎlike in Figure D.1bwhich does not satisfy /u1D43C, thereby violating strong optimality. In the
+historyℎ, bothSnapshot Isolation andSerializability forbid the two reads reading initial values
+while the writes following them are also executed (committed ). A diagram of the proof can be
+seen in Figure D.2.
+Assumingthatthefunction N/e.sc/x.sc/t.scisnotitselfblocking(whichwouldviolatestrongoptimality) ,
+the/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scwillbecalledrecursivelyon exactlyone ofthetwohistoriesinFigure D.1c,depending
+on which of the two reads is returned ﬁrst by N/e.sc/x.sc/t.sc. We will continue our discussion with the
+historyℎ1onthe top ofFigure D.1c.Theothercase is similar (symmetric).
+Fromℎ1, depending on order deﬁned by N/e.sc/x.sc/t.scbetween write(/u1D467,1)andread(/u1D466.alt),/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc can
+be called recursively either on ℎ11in Figure D.1for onℎ2in Figure D.1d. Analogously, from ℎ2
+two alternatives arise depending on the order deﬁned by N/e.sc/x.sc/t.scbetweenread(/u1D466.alt)and the rest of
+eventsinthelefttransaction:exploring ℎ21inFigure D.1gifread(/u1D466.alt)isaddedbefore write(/u1D466.alt,1)or
+ℎ3in Figure D.1eotherwise. Thus, from ℎ3two alternatives arise when added read(/u1D466.alt)depending
+on where it reads from: ℎ31in Figure D.1hif it reads from initandℎ32in Figure D.1jif it reads
+fromthe left transaction.
+However,fromhistories ℎ11,ℎ21orℎ31/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scwillnecessarilybecalledrecursivelyonahistory
+ℎlikeinFigure D.1bwhichdoesnotsatisfy /u1D43C,therebyviolatingstrongoptimality: /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scalways
+explorebranchesthatenlargethecurrenthistory.Thus,any /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scimplementationthatisstrong
+optimalshouldonlyexplore ℎ32.Insuchcase,bytherestrictionsonthe S/w.sc/a.sc/p.scfunction(deﬁnedin
+Section4),anyextensionof ℎ32doesnotallowtoexplorethehistory ˆℎinFigure D.1ewhereread(/u1D465)
+readsfrom write(/u1D465,2):anyoutcomeofare-orderingbetweentwocontiguoussubsequenc es/u1D6FCand
+/u1D6FDmust be preﬁx of such extension when the events in /u1D6FCare taken out. In particular, for any
+extension ℎ′ofℎ32and pair of contiguous sequences /u1D6FC,/u1D6FDsuch that ℎ′\/u1D6FCis a preﬁx of ℎ′, if an
+event from the second transaction belongs to /u1D6FD,read(/u1D466.alt)must also be in /u1D6FD. Therefore, write(/u1D465,2)
+must be in /u1D6FDas it iswr−1(read(/u1D466.alt)). Hence,read(/u1D465)must also be in /u1D6FD. Analogously, if read(/u1D465)
+belongs to /u1D6FD,initbelongsto it. Altogether,if /u1D6FDcontains any element, then /u1D6FCmust be empty; so
+noswaps canbe producedfrom ℎ32.Toconclude,in this case /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.scviolates/u1D43C-completeness.
+/square
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:33
+E PROOF OF THEOREM 5.1
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.sc5.1. Foranypreﬁx-closedandcausallyextensibleisolationlev el/u1D43C,/e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc is/u1D43C-sound,
+/u1D43C-complete, strongly optimal, andpolynomial space.
+As explained in Section 5.4,/u1D43C-soundness, the polynomial space bound, and the part of strong
+completenessthatreferstonot engagingin fruitlessexplorati ons followdirectlyfromdeﬁnitions.
+In the following, we focus on /u1D43C-completeness and then optimality. For the sake of the proof’s
+readability, we will omit all local states of the algorithm’ s deﬁnition during the proof. Therefore,
+we consider programswhere we can describe alltheir events.
+E.1 Completeness
+By deﬁnition, /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc is/u1D43C-complete if for any given program P, it outputs every history in
+hist/u1D43C(P).Letℎ∈hist/u1D43C(P).Our objective is to producea computablepathof ordered his tories that
+lead toℎ(i.e. a (ﬁnite) ordered collection of ordered histories such thatℎ0=∅and for every /u1D45B, if
+/u1D452=/n.sc/e.sc/x.sc/t.sc(ℎ/u1D45B), eitherℎ/u1D45B+1=ℎ/u1D45B⊕/u1D452,ℎ/u1D45B+1=ℎ/u1D45B⊕wr(/u1D452,/u1D461)for some /u1D461∈ℎ/u1D45Borℎ/u1D45B+1=/s.sc/w.sc/a.sc/p.sc(ℎ/u1D45B,/u1D45F,/u1D461)
+forsome /u1D45F,/u1D461∈ℎ/u1D45B).
+However, the algorithm /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc works with ordered histories. Therefore, we ﬁrst have to
+furnishℎwithatotalordercalled canonical order that,ifℎwerereachable,itwouldcoincidewith
+itshistoryorder.Secondly,wedescribeafunction /p.sc/r.sc/e.sc/v.scdeﬁnedover theset ofallpartial histories
+that, ifℎis reachable, /p.sc/r.sc/e.sc/v.sc(ℎ)returns the previous history of ℎcomputed by /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc . Then,
+we prove that there exists a ﬁnite collection of histories /u1D43B={ℎ/u1D456}/u1D45B
+/u1D456=0such that ℎ/u1D45B=ℎ,ℎ0=∅
+andℎ/u1D456=/p.sc/r.sc/e.sc/v.sc(ℎ/u1D456+1). As it ends in the initial state, we can therefore prove that thi s collection
+conformsanactualcomputablepath;whichallowustoconclude thatℎisreachable.Nevertheless,
+for proving both the equivalence between history order and canoni cal order and the soundness
+of function /p.sc/r.sc/e.sc/v.scwe will deﬁne the notion of or-respectfulness , an invariant satisﬁed by every
+reachablehistory based on theevents’ relative positions in t he oracleorder.
+E.1.1 Canonicalorder.
+Asmentioned,weneedtoformallydeﬁneatotalorderforeveryhis torythatcoincideonreach-
+ablehistories withthehistory order.Forachieving it,weana lyzehow thealgorithmorderstrans-
+action logs in a history. In particular, we observe that if tw o transactions /u1D461,/u1D461′have a(so∪wr)∗
+dependency,thehistoryorderinthealgorithmordersthemanal ogously.Butiftheyare (so∪wr)∗-
+incomparable,the algorithmprioritizes the one that is read b y a smaller readevent according or.
+Combiningbothargumentsrecursivelyweobtaina canonicalorder forahistory,whichisformally
+deﬁned with the function presented below.
+Thefunction /c.sc/a.sc/n.sc/o.sc/n.sc/i.sc/c.sc/a.sc/l.scO/r.sc/d.sc/e.sc/r.sc producesa relation between transactions in a history, denoted
+≤ℎ.In algorithm 3’s description, we denote ⊥to represent the end of the program,which always
+exists, andthat is so-related with every single transaction.
+Firstly, we prove our canonicalorder iswell deﬁned for every pa ir oftransactions.
+L/e.sc/m.sc/m.sc/a.scE.1. Foreveryhistory ℎ,event/u1D452andtransaction /u1D461,/d.sc/e.sc/p.sc(ℎ,/u1D461,min<or/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452))⊆/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452).
+Moreover, if /d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452)≠/u1D461, the inclusion isstrict.
+P/r.sc/o.sc/o.sc/f.sc.Let/u1D45F′=min<or/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452). If/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D45F′)=/u1D461the lemma is trivially proved, so let’s
+suppose there exists /u1D45F∈/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D45F′)\/u1D461. Then,∃/u1D461′s.t./u1D461[so∪wr]∗/u1D461′∧/u1D461′[wr]/u1D45F∧tr(ℎ,/u1D45F)[so∪
+wr]+tr(ℎ,/u1D45F′)and∃/u1D461′′s.t./u1D461[so∪wr]∗/u1D461′′∧/u1D461′′[wr]/u1D45F′∧tr(ℎ,/u1D45F′)[so∪wr]+tr(ℎ,/u1D452);sotr(ℎ,/u1D45F)[so∪
+wr]+tr(ℎ,/u1D45F′)[so∪wr]+tr(ℎ,/u1D452). In other words, /u1D45F∈/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452). The moreover comes trivially as
+/u1D45F′∉/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D45F′). /square
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:34 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+Algorithm 3 C/a.sc/n.sc/o.sc/n.sc/i.sc/c.sc/a.sc/l.sc/o.sc/r.sc/d.sc/e.sc/r.sc
+1:procedure /c.sc/a.sc/n.sc/o.sc/n.sc/i.sc/c.sc/a.sc/l.scO/r.sc/d.sc/e.sc/r.sc (ℎ,/u1D461,/u1D461′)
+2:return/u1D461[so∪wr]∗/u1D461′∨
+3:(¬(/u1D461′[so∪wr]∗/u1D461)∧/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461,/u1D461′,⊥)
+4:procedure /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461,/u1D461′,/u1D452)
+5:let/u1D44E=min<or/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452);/u1D44E′=min<or/d.sc/e.sc/p.sc(ℎ,/u1D461′,/u1D452)
+6:if/u1D44E≠/u1D44E′then
+7:return/u1D44E<or/u1D44E′
+8:else
+9:return/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461,/u1D461′,/u1D44E)
+10:procedure /d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452)
+11:return{/u1D45F|∃/u1D461′s.t./u1D461[so∪wr]∗/u1D461′∧/u1D461′[wr]/u1D45F∧tr(ℎ,/u1D45F)[so∪wr]+tr(ℎ,/u1D452)}∪/u1D461
+L/e.sc/m.sc/m.sc/a.sc E.2. For every pair of distinct transactions /u1D461,/u1D461′,/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461,/u1D461′,⊥)always
+halts.
+P/r.sc/o.sc/o.sc/f.sc.Let’ssupposebycontrapositivethat /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461,/u1D461′,⊥)doesnothalt.There-
+fore,therewouldexistaninﬁnitechainofevents /u1D452/u1D45B,/u1D45B∈Nsuchthat /u1D4520=⊥,/u1D452/u1D45B+1=minor/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452/u1D45B)=
+minor/d.sc/e.sc/p.sc(ℎ,/u1D461′,/u1D452/u1D45B). Firstly, as ℎis ﬁnite, so are both /d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452/u1D45B)and/d.sc/e.sc/p.sc(ℎ,/u1D461′,/u1D452/u1D45B). Moreover, if
+/u1D452/u1D45B∉/u1D461,/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452/u1D45B+1)/subsetnoteql/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452/u1D45B)(and analogously for /u1D461′). Therefore, there exist some indexes
+/u1D45B0,/u1D45A0such that /u1D452/u1D45B0∈/u1D461and/u1D452/u1D45A0∈/u1D461′. Let/u1D458=max{/u1D45B0,/u1D45A0}. Because ; but if /u1D452/u1D45B∈/u1D461,/u1D461=/d.sc/e.sc/p.sc(ℎ,/u1D461,/u1D452/u1D45B)
+and/u1D452/u1D45B+1=/u1D452/u1D45B, so/u1D452/u1D458=/u1D452/u1D45B0and/u1D452/u1D458=/u1D452/u1D45A0. Therefore /u1D452/u1D458∈/u1D461∩/u1D461′; so/u1D461=/u1D461′as transaction logs do not
+share events; whichcontradict the assumptions. /square
+C/o.sc/r.sc/o.sc/l.sc/l.sc/a.sc/r.sc/y.scE.3. Therelation≤ℎiswell deﬁnedfor every pairof transactions.
+P/r.sc/o.sc/o.sc/f.sc.As by lemma E.2, we know that /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461,/u1D461′,⊥)always halts if /u1D461≠/u1D461′;
+it is clearthat /c.sc/a.sc/n.sc/o.sc/n.sc/i.sc/c.sc/a.sc/l.scO/r.sc/d.sc/e.sc/r.sc(ℎ,/u1D461,/u1D461′)also doesit. Therefore,therelation iswell deﬁned. /square
+Now that≤ℎhas been proved a well deﬁned relation between each pair of tra nsactions, let us
+prove that it is indeed atotal order.
+L/e.sc/m.sc/m.sc/a.sc E.4. Therelation≤ℎisatotal order.
+P/r.sc/o.sc/o.sc/f.sc.
+•Strongly connection Let/u1D4611,/u1D4612s.t./u1D4611/notlessequalℎ/u1D4612. If/u1D4612[so∪wr]∗/u1D4611, then/u1D4612≤ℎ/u1D4611. Otherwise, as
+¬(/u1D4611[so∪wr]∗/u1D4612)and/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc halts (lemma E.2) either
+/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D4611,/u1D4612,⊥)or/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D4612,/u1D4611,⊥)holds.But as /u1D4611/notlessequalℎ/u1D4612,
+/u1D4612≤ℎ/u1D4611.
+•Reﬂexivity: Bydeﬁnition, forevery /u1D461,/u1D461≤ℎ/u1D461.
+•Transitivity: Let/u1D4611,/u1D4612,/u1D4613three distinct transactions such that /u1D4611≤ℎ/u1D4612and/u1D4612≤ℎ/u1D4613. Clearly,
+if/u1D4611[so∪wr]∗/u1D4613,/u1D4611≤ℎ/u1D4613. However, if /u1D4613[so∪wr]∗/u1D4611,we would ﬁnd one of the following
+three scenarios:
+–/u1D4611[so∪wr]∗/u1D4612,which isimpossible bystrong connectivity asthat would mean /u1D4613≤ℎ/u1D4612.
+–/u1D4612[so∪wr]∗/u1D4613,which isalso impossible bystrong connectivity,as /u1D4612≤ℎ/u1D4611.
+–¬(/u1D4611[so∪wr]∗/u1D4612)and¬(/u1D4612[so∪wr]∗/u1D4613).Then,letuscall /u1D452/u1D456
+0=⊥and/u1D452/u1D456
+/u1D45B+1=min<or/d.sc/e.sc/p.sc(ℎ,/u1D461/u1D456,/u1D452/u1D456
+/u1D45B)
+for/u1D456∈{1,2,3}. Let’s prove by induction that if for every /u1D458</u1D45B /u1D4521
+/u1D45B∉/u1D4611, then/u1D4521
+/u1D45B=/u1D4522
+/u1D45B=/u1D4523
+/u1D45B.
+Clearlythisholdfor /u1D45B=0and,assuming it holdsforevery /u1D458≤/u1D45B−1,as/u1D4611≤ℎ/u1D4612,/u1D4612≤ℎ/u1D4613,
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:35
+we know /u1D4521
+/u1D45B≤or/u1D4522
+/u1D45B≤or/u1D4523
+/u1D45Band as/u1D4613[so∪wr]∗/u1D4611, if/u1D4521
+/u1D45B∉/u1D4611,/u1D4523
+/u1D45B≤or/u1D4521
+/u1D45B. In other words,
+they coincide. However, by lemma E.2, we know /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D4611,/u1D4613,⊥)halts,
+sothereexistssomeminimal /u1D45B0suchthat /u1D4521
+/u1D45B0∈/u1D4611;so/u1D4522
+/u1D45B0∈/u1D4611.Thatimplies /u1D4612[so∪wr]∗/u1D4611;
+whichis impossible as /u1D4611≤ℎ/u1D4612.
+We deduce then that either /u1D4611[so∪wr]∗/u1D4613or¬(/u1D4613[so∪wr]∗/u1D4611). In the latter case, let’s
+take the sequence /u1D452/u1D456
+/u1D45B,/u1D456∈ {1,2,3}deﬁned in the last paragraph. Then, as by lemma E.2
+/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D4611,/u1D4613,⊥)halts, there exists a maximum index /u1D45B0such that /u1D4521
+/u1D45B0=
+/u1D4522
+/u1D45B0=/u1D4523
+/u1D45B0.Then/u1D4521
+/u1D45B0+1<or/u1D4522
+/u1D45B0+1or/u1D4522
+/u1D45B0+1<or/u1D4523
+/u1D45B0;so/u1D4611≤ℎ/u1D4613.
+•Antisymmetric Let/u1D4611,/u1D4612s.t./u1D4611≤ℎ/u1D4612and/u1D4612≤ℎ/u1D4611. If/u1D4611[so∪wr]∗/u1D4612, then/u1D4611=/u1D4612. If not, by
+the symmetric argument, ¬(/u1D4612[so∪wr]∗/u1D4611).In that situation, by lemma E.2we know both
+/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D4611,/u1D4612,⊥)and/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D4611,/u1D4612,⊥)halt and cannot be
+satisﬁed at thesame time. Thiscontradictsthat both /u1D4611≤ℎ/u1D4612and/u1D4612≤ℎ/u1D4611hold;so/u1D4611=/u1D4612.
+/square
+E.1.2 Oracle-respectful histories.
+Thesecondstepinthisproofischaracterizingallreachableh istorieswithsomegeneralinvariant
+thatcanbegeneralizedtoeverytotalhistory.Fordoingso,we willshowthatforreachablehistories
+any history order coincide with its canonical order; so any proper ty based on a history order can
+be generalizedto be basedon its canonicalorder.
+Deﬁnition E.5. An ordered history (ℎ,≤)isor-respectful with respect to≤if it hasat most one
+pending transaction log and for every pair of events /u1D452∈P,/u1D452′∈ℎs.t./u1D452≤or/u1D452′, either/u1D452≤/u1D452′or
+∃/u1D452′′∈ℎ,tr(ℎ,/u1D452′′)≤ortr(ℎ,/u1D452)s.t.tr(ℎ,/u1D452′)[so∪wr]∗tr(ℎ,/u1D452′′),/u1D452′′≤/u1D452and/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452′′); where
+if/u1D452∉ℎwe state/u1D452′≤/u1D452alwaysholdbut /u1D452≤/u1D452′never does.We will denote it by Ror(ℎ,≤).
+L/e.sc/m.sc/m.sc/a.scE.6. Let/u1D45Dacomputablepath.Everyorderedhistory (ℎ,≤ℎ)in/u1D45Disor-respectfulwithrespect
+to≤ℎ.
+P/r.sc/o.sc/o.sc/f.sc.We will prove this propertyby induction on the numberof histor ies this path has.The
+base case, the empty path, trivially holds; so let us prove th e inductive case: for every path of at
+most length /u1D45Btheproperty holds.Let /u1D45Dapath oflength /u1D45B+1andℎ<thelast reachablehistory of
+thispath.As /u1D45D\{ℎ}isacomputablepathoflength /u1D45B,theimmediatepredecessorof ℎin/u1D45D,(ℎ/u1D45D,<ℎ/u1D45D)
+isor-respectfulwith respect to </u1D45D.Let/u1D44E=/n.sc/e.sc/x.sc/t.sc(ℎ/u1D45D).
+Firstly, if /u1D44Eis not areadnor abeginevent and ℎ=ℎ/u1D45D⊕/u1D44E, as≤ℎis an extension of ≤ℎ/u1D45D,/u1D44E
+belongs to the only pending transaction and ororders transactions completely, we can deduce
+thatℎisor-respectful with respect to ≤.
+Inaddition, if /u1D44Eis abeginevent and ℎ=ℎ/u1D45D⊕/u1D44E, let/u1D452∈P,/u1D452′∈ℎs.t./u1D452<or/u1D452′.If/u1D452∈ℎ/u1D45Dor/u1D452′≠/u1D44E,
+as≤ℎis an extension of ≤ℎ/u1D45DandRor(ℎ/u1D45D,≤ℎ/u1D45D)holds, the condition for satisfying Ror(ℎ,≤)holds
+with/u1D452and/u1D452′. Moreover, as /u1D44E=minorP\ℎ/u1D45D, there is no event /u1D452∈P\ℎ/u1D45Ds.t./u1D452≤or/u1D44E; soRor(ℎ,≤)
+holds.
+Moreover, if /u1D44Eis areadevent and ℎ=ℎ/u1D45D⊕wr(/u1D461,/u1D44E)for some transaction log /u1D461, let us call /u1D452∈
+P,/u1D452′∈ℎs.t./u1D452<or/u1D452′.Onceagain,if /u1D452∈ℎor/u1D452′≠/u1D44Ethepropertyholds;solet’ssuppose /u1D452∈P\ℎ/u1D45Dand
+/u1D452′=/u1D44E.Let/u1D44F=begin(tr(ℎ,/u1D44E)),thatalsobelongsto ℎ/u1D45D.Firstly,as /u1D452≤ortr(ℎ,/u1D452′)=tr(ℎ,/u1D44F)weknow
+that/u1D452≤or/u1D44F.Secondly,as Ror(ℎ/u1D45D,≤ℎ/u1D45D),/u1D452∉ℎ/u1D45Dand/u1D452≤or/u1D44F;thereexists /u1D450∈ℎ/u1D45D,tr(ℎ/u1D45D,/u1D450)≤ortr(ℎ/u1D45D,/u1D44E)
+s.t.(tr(ℎ/u1D45D,/u1D44F),tr(ℎ/u1D45D,/u1D450))∈(so∪wr)∗,/u1D450≤/u1D44Fand/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D450). Astr(ℎ,/u1D44E)=tr(ℎ,/u1D44F)and
+/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D450)implies/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ<,/u1D450),we conclude Ror(ℎ,≤).
+But if no previous case is satisﬁed, it is because ℎ=/s.sc/w.sc/a.sc/p.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D45F,/u1D461)for some /u1D45F,/u1D461∈ℎ/u1D45Ds.t.
+O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D45F,/u1D461)holds.Let /u1D452,/u1D452′twoevents s.t. /u1D452≤or/u1D452′.On onehand,if /u1D452≤/u1D452′,Ror(ℎ,/u1D452)
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:36 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+holds. On the other hand, if /u1D452′</u1D452and/u1D452′≤ℎ/u1D45D/u1D452, asRor(ℎ/u1D45D,≤ℎ/u1D45D)holds and no swapped event is
+deleted by O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D45F,/u1D461)’s deﬁnition, the property is also satisﬁed. Finally, if /u1D452′</u1D452
+and/u1D452≤ℎ/u1D45D/u1D452′,/u1D452has to be a deleted event so /u1D452∈P\ℎ. As/u1D45F≤ℎ/u1D45D/u1D452, if/u1D452≤or/u1D44E,as/u1D452/notlessequal/u1D44E,there
+would exist a /u1D450∈ℎ/u1D45D,tr(ℎ/u1D45D,/u1D450)≤ortr(ℎ/u1D45D,/u1D452)≤ortr(ℎ/u1D45D,/u1D45F)s.t.(tr(ℎ/u1D45D,/u1D45F),tr(ℎ/u1D45D,/u1D450))∈(so∪wr)∗and
+/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ<,/u1D450).However, thisisimpossibleas tr(ℎ<,/u1D45F)hasasmaximalevent /u1D45Fandthealgorithm
+preservesatmostonependingtransaction ;so/u1D452≤or/u1D44E.Taking/u1D452′′=/u1D45Fthepropertyiswitnessed. /square
+P/r.sc/o.sc/p.sc/o.sc/s.sc/i.sc/t.sc/i.sc/o.sc/n.scE.7. For anyreachable history ℎ,≤ℎ≡≤ℎ.
+P/r.sc/o.sc/o.sc/f.sc.For proving this equivalence, we will show that in any computabl e path and for any
+ordered history(ℎ,≤ℎ), if/u1D461≤ℎ/u1D461′, then/u1D461≤ℎ/u1D461′, as by lemma E.4≤ℎis a total order and therefore
+they have to coincide.We will prove thisby induction onthe numb erofhistories apath has.The
+base case, the empty path, trivially holds; so let us prove th e inductive case: for every path of at
+most length /u1D45Bthe property holds. Let /u1D45Da path of length /u1D45B+1 andℎ<ℎthe last reachable ordered
+history of this path. As /u1D45D\{ℎ}is a computable path of length /u1D45B, the immediate predecessor of ℎ
+in/u1D45D,≤ℎ/u1D45D≡≤ℎ/u1D45D. Let/u1D452=/n.sc/e.sc/x.sc/t.sc(ℎ/u1D45D). Firstly, let’s note that if ℎis an extension of ℎ/u1D45D, asRor(ℎ/u1D45D,<ℎ/u1D45D),
+the propertycanonly fail while comparinga transaction /u1D461withtr(ℎ,/u1D452).
+•ℎextendsℎ/u1D45Dand/u1D452is abegin:As/d.sc/e.sc/p.sc(ℎ/u1D45D,/u1D461,⊥)=/d.sc/e.sc/p.sc(ℎ,/u1D461,⊥)for every transaction in ℎ/u1D45D, if
+/u1D461≤ℎ/u1D45D/u1D461′, then/u1D461≤ℎ/u1D461′. Moreover, /d.sc/e.sc/p.sc(ℎ,tr(ℎ,/u1D452),⊥)={/u1D452}=minorP\ℎ/u1D45D. By lemma E.6ℎis
+or-respectful, so for every /u1D461, minor/d.sc/e.sc/p.sc(ℎ,/u1D461,⊥)<or/u1D452; which implies /u1D461<ℎtr(ℎ,/u1D452). By lemma
+E.4,≤ℎisa total order,so it coincideswith ≤ℎ.
+•ℎextendsℎ/u1D45Dand/u1D452is notabegin:As no transaction depends on tr(ℎ,/u1D452)andtr(ℎ,/u1D452)=
+last(ℎ/u1D45D),if weprove thatforevery pairoftransactions /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ/u1D45D,/u1D461′,/u1D461′′,⊥)
+=/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461′,/u1D461′′,⊥), the lemma would hold. On one hand,
+/d.sc/e.sc/p.sc(ℎ,tr(ℎ,/u1D452),⊥)=/d.sc/e.sc/p.sc(ℎ/u1D45D,tr(ℎ,/u1D452),⊥)=tr(ℎ,/u1D452)and in the other hand, by lemma E.6,
+minor/d.sc/e.sc/p.sc(ℎ/u1D45D,/u1D461,⊥)<ortr(ℎ,/u1D452). Finally, as /u1D452∉/d.sc/e.sc/p.sc(ℎ,ˆ/u1D461,/u1D452′), for every ˆ/u1D461≠tr(ℎ,/u1D452),/u1D452′≠⊥, for
+every pair of transactions /u1D461′,/u1D461′′,/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ/u1D45D,/u1D461′,/u1D461′′⊥) =
+/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461′,/u1D461′′,⊥).
+•ℎ=/s.sc/w.sc/a.sc/p.sc(ℎ/u1D45D,/u1D45F,/u1D461),where/u1D461=tr(ℎ,/u1D452):AsO/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ/u1D45D,/u1D45F,/u1D461)is satisﬁed and ℎis
+or-respectful, for every event /u1D452′and transaction /u1D461′inℎ, minor/d.sc/e.sc/p.sc(ℎ/u1D45D,/u1D461′,/u1D452′)=
+minor/d.sc/e.sc/p.sc(ℎ,/u1D461′,/u1D452′), so for every pair of transactions /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ/u1D45D,/u1D461′,/u1D461′′,⊥)=
+/m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc (ℎ,/u1D461′,/u1D461′′,⊥).Inparticular,thisimplies /u1D461′≤ℎ/u1D45D/u1D461′′ifandonlyif /u1D461′≤ℎ/u1D461′′
+for every pair /u1D461′,/u1D461′′∈ℎ. Finally, as for every /u1D461′∈ℎ,/u1D461′≤ℎtr(ℎ,/u1D45F)(because tr(ℎ,/u1D45F)is
+(so∪wr)+-maximal);we concludethat ≤ℎ≡≤ℎ.
+/square
+Proposition E.7is a very interesting result as it express the following fact: re gardless of the
+computablepaththatleadstoahistory,theﬁnalorderbetwee neventswillbethesame.Therefore,
+allpossiblehistoryorderscollapsetoone,thecanonicalone.T hisresultwillhaveakeyroleduring
+bothcompleteness and optimality, asit restricts the possibl e histories that precedeanother while
+describing the computable path leading to it. In addition, prop ositionE.7together with lemma
+E.6justify enlarging deﬁnition E.5with a general order as for reachable histories, Ror(ℎ,≤ℎ)is
+equivalent to Ror(ℎ,≤ℎ). From what follows, we will simply state ℎisor-respectful and we will
+denote it by Ror(ℎ). Moreover,we will assume every history isordered with the c anonicalorder.
+C/o.sc/r.sc/o.sc/l.sc/l.sc/a.sc/r.sc/y.scE.8. Letℎ/u1D45Dareachablehistoryandlet ℎaimmediatesuccessor of ℎ/u1D45Dwhoselastevent
+/u1D45Fisaread. Thenℎ<=/s.sc/w.sc/a.sc/p.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D45F,/u1D461)if and onlyif /s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D45F)does.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:37
+P/r.sc/o.sc/o.sc/f.sc.⇒
+Let’s suppose that ℎ<=/s.sc/w.sc/a.sc/p.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D45F,/u1D461)for some /u1D461transaction. As the last event in ℎ
+is/u1D45Fand by deﬁnition of /s.sc/w.sc/a.sc/p.scfunction no event reads from wr−1(/u1D45F)inℎbesides/u1D45F, to prove
+/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D45F)holds we just need to show that /u1D45F<or/u1D461. By lemma E.6,Ror(ℎ/u1D45D)holds. As /u1D45F<ℎ/u1D45D/u1D461,
+O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc((ℎ/u1D45D,<ℎ/u1D45D),/u1D45F,/u1D461)holdsand /u1D461is(so∪wr)+-maximal,we concludethat /u1D45F<or/u1D461.
+⇐=Let’s suppose that ℎ=ℎ/u1D45D⊕/u1D45F⊕wr(/u1D45F,/u1D461)for some transaction /u1D461. Let’s suppose that /u1D45F<or/u1D461.
+AsRor(ℎ/u1D45D),there exists some event /u1D452′′s.t.tr(ℎ/u1D45D,/u1D452′′)≤tr(ℎ,/u1D45F),/u1D461[so∪wr]∗tr(ℎ,/u1D452′′)and/u1D452′′≤/u1D45Fso
+¬(/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D45F)).
+/square
+L/e.sc/m.sc/m.sc/a.sc E.9. Any total history is or-respectful.
+P/r.sc/o.sc/o.sc/f.sc.Letℎbe a total history and /u1D461,/u1D461′a pair of transactions s.t. /u1D461≤or/u1D461′. If/u1D461≤ℎ/u1D461′, then the
+statement is satisﬁed; so let’s assume the contrary: /u1D461′≤ℎ/u1D461. If(/u1D461′,/u1D461)∈(so∪wr)∗, then for every
+/u1D452∈/u1D461,/u1D452′∈/u1D461′∃/u1D450∈ℎs.t.tr(ℎ,/u1D450)≤ortr(ℎ,/u1D452), (tr(ℎ,/u1D452′),tr(ℎ,/u1D450))∈(so∪wr)∗,/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D450)and
+/u1D450≤ℎ/u1D452; so the property is satisﬁed. Otherwise, by deﬁnition of /m.sc/i.sc/n.sc/i.sc/m.sc/a.sc/l.scD/e.sc/p.sc/e.sc/n.sc/d.sc/e.sc/n.sc/c.sc/y.sc ,there exists
+/u1D45F′∈ℎs.t.(/u1D461′,tr(ℎ,/u1D45F′))∈(so∪wr)∗andtr(ℎ,/u1D45F′)≤or/u1D461.Moreover,by /c.sc/a.sc/n.sc/o.sc/n.sc/i.sc/c.sc/a.sc/l.scO/r.sc/d.sc/e.sc/r.sc ’sdeﬁnition,
+tr(ℎ,/u1D45F)≤ℎ/u1D461. Finally/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D45F′)holds as it is the minimum element according or. To sum up,
+Ror(ℎ)holds. /square
+E.1.3 Previous ofahistory.
+As a third and ﬁnal step in our proof, we deﬁne the function previousthat, for a every history
+ℎ, if/p.sc/r.sc/e.sc/v.sc(ℎ)is reachable, then ℎis also reachable. Moreover, /p.sc/r.sc/e.sc/v.sc(ℎ)will belong to the same
+computablepath.
+Algorithm 4 /p.sc/r.sc/e.sc/v.sc
+1:procedure /p.sc/r.sc/e.sc/v.sc(ℎ)
+2:ifℎ=∅then
+3:return∅
+4:/u1D44E←last(ℎ)
+5:if¬/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E)then
+6:returnℎ\/u1D44E
+7:else
+8:let/u1D461s.t.(/u1D461,/u1D45F)∈wr.
+9:return/m.sc/a.sc/x.scC/o.sc/m.sc/p.sc/l.sc/e.sc/t.sc/i.sc/o.sc/n.sc(ℎ\/u1D44E,{/u1D452|/u1D452∉(ℎ\/u1D44E)∧/u1D452<or/u1D461})
+10:procedure /m.sc/a.sc/x.scC/o.sc/m.sc/p.sc/l.sc/e.sc/t.sc/i.sc/o.sc/n.sc (ℎ,/u1D437)
+11:if/u1D437≠∅then
+12:/u1D452←min<or/u1D437
+13:iftype(/u1D452)≠readthen
+14: return/m.sc/a.sc/x.scC/o.sc/m.sc/p.sc/l.sc/e.sc/t.sc/i.sc/o.sc/n.sc(ℎ⊕/u1D452,/u1D437\{/u1D452})
+15:else
+16: let/u1D461s.t.readLatest /u1D43C(ℎ⊕/u1D452⊕wr(/u1D461,/u1D452),/u1D452,)holds
+17: return/m.sc/a.sc/x.scC/o.sc/m.sc/p.sc/l.sc/e.sc/t.sc/i.sc/o.sc/n.sc(ℎ⊕/u1D452⊕wr(/u1D461,/u1D452),/u1D437\{/u1D452})
+18:else
+19:returnℎ
+First, we show thatthe invariant ofour algorithmispreserved via/p.sc/r.sc/e.sc/v.sc.
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:38 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+L/e.sc/m.sc/m.sc/a.sc E.10. Forevery or-respectful history ℎ,/p.sc/r.sc/e.sc/v.sc(ℎ)isalsoor-respectful.
+P/r.sc/o.sc/o.sc/f.sc.Let suppose ℎ≠∅,ℎ/u1D45D=/p.sc/r.sc/e.sc/v.sc(ℎ),/u1D44E=last(ℎ),/u1D452∈Pand/u1D452′∈ℎ/u1D45Ds.t./u1D452≤or/u1D452′. We
+explore diﬀerent cases depending if /u1D452,/u1D452′belong to ℎor not. If /u1D452′∈ℎ/u1D45D\ℎ,¬(/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D45D,/u1D452))
+and¬(/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D45D,/u1D452′))holds. As min <or/d.sc/e.sc/p.sc(ℎ,tr(ℎ,/u1D452′),⊥)=begin(tr(ℎ,/u1D452′)), we obtain that
+min<or/d.sc/e.sc/p.sc(ℎ,tr(ℎ,/u1D452′)) ≤or/u1D452′≤orbegin(tr(ℎ,/u1D452′)). Therefore, as /u1D452′∈ℎ/u1D45D∈ℎ,¬(tr(ℎ,/u1D452′)[so∪
+wr]+tr(ℎ,/u1D452)), so/u1D452≤ℎ/u1D452′.And if/u1D452′∈ℎ, either/u1D452≤ℎ/u1D452′or/u1D452′≤ℎ/u1D452. In the former case, bothare in ℎ
+andtherefore,in ℎ/u1D45D.Asitcannothappenthat /u1D452′∈tr(ℎ,/u1D44E)and/u1D452≤ℎ/u1D45D/u1D44Ebecause/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E)and
+/u1D452≤or/u1D452′, we conclude that /u1D452≤ℎ/u1D452′(≤ℎ/u1D45Dkeeps the relative orders between transactions diﬀerent
+fromtr(ℎ,/u1D44E)and by lemma E.6they coincide). In the latter case, by Ror(ℎ), there exists /u1D452′′that
+witness it. In particular, /s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452′′)holds, so /u1D452′′∈ℎ/u1D45D./u1D452′′witnessRor(ℎ/u1D45D)holds. In the three
+caseswe deducethat Ror(ℎ/u1D45D).
+/square
+Next,wehavetoprovethatpreviousisasoundfunction,i.e.the compositionbetween /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc
+and/p.sc/r.sc/e.sc/v.scgive us the identity. For doing so, in the case a history is a swap , we deduce that both
+histories should contain thesame elementsand they read the sam e;so they have to coincide.
+L/e.sc/m.sc/m.sc/a.sc E.11. For every consistent history or-respectful ℎ, if/p.sc/r.sc/e.sc/v.sc(ℎ)is reachable, then ℎis also
+reachable.
+P/r.sc/o.sc/o.sc/f.sc.Let suppose ℎ≠∅,ℎ/u1D45D=/p.sc/r.sc/e.sc/v.sc(ℎ)and/u1D44E=last(ℎ). If¬/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E), letℎ/u1D45B=ℎ/u1D45D⊕/u1D44E
+if/u1D44Eis not a read and ℎ/u1D45B=ℎ/u1D45D⊕/u1D44E⊕wr(/u1D461,/u1D44E), where/u1D461is the transaction s.t. (/u1D461,/u1D45F) ∈wr, other-
+wise.Eitherway, ℎ/u1D45Bisalwaysreachableanditcoincideswith ℎ.Onthecontrary,if /s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E),
+/u1D44Eis areadevent and it swapped; so let us call /u1D461to the transaction s.t. (/u1D461,/u1D44E) ∈wr. Firstly, as
+/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E),/u1D44E<or/u1D461, and by lemma E.6,Ror(ℎ/u1D45D)holds, so /u1D44E<ℎ/u1D45D/u1D461does; which let us conclude
+C/o.sc/m.sc/p.sc/u.sc/t.sc/e.scR/e.sc/o.sc/r.sc/d.sc/e.sc/r.sc/i.sc/n.sc/g.sc/s.sc (ℎ/u1D45D)will alwaysreturn (/u1D44E,/u1D461)asapossible swappair. Inaddition,all trans-
+actionsin ℎ/u1D45Dare non-pendingand (/u1D461,/u1D44E)∈wr,so in particular last(ℎ/u1D45D)isancommitevent. If we
+callℎ/u1D460=/s.sc/w.sc/a.sc/p.sc(ℎ/u1D45D,/u1D44E,/u1D461),andwe prove that ℎ/u1D45D\ℎ=ℎ/u1D45D\ℎ/u1D460holds,then we would deduce ℎ=ℎ/u1D460as
+wr(/u1D461,/u1D44E)in bothℎ/u1D45D,ℎ/u1D460andℎ⊆ℎ/u1D45D,ℎ/u1D460⊆ℎ/u1D45D; which would allow us to conclude ℎis reachable from
+ℎ/u1D45D.
+Ononehand,if /u1D452∈ℎ/u1D45D\ℎ,wededucethat /u1D452∉ℎand/u1D452<or/u1D461.Inparticular,¬(tr(ℎ,/u1D452)[so∪wr]∗/u1D461).
+Moreover, if /u1D452≤or/u1D44E, byRor(ℎ), either/u1D452≤ℎ/u1D44Eor∃/u1D452′′∈ℎ,/u1D452′′≤or/u1D452s.t./u1D461(/u1D44E)[so∪wr]∗tr(ℎ,/u1D452′′),
+/u1D452′′≤ℎ/u1D452and/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452′′); both impossible situations as /u1D452∉ℎand/u1D44E=last(ℎ); so/u1D44E≤or/u1D452. In
+otherwords, /u1D452∈ℎ/u1D45D\ℎ/u1D460.
+On the other hand, /u1D452∈ℎ/u1D45D\ℎ/u1D460if and only if¬(tr(ℎ,/u1D452)[so∪wr]∗/u1D461(/u1D464))and/u1D44E<or/u1D452<or/u1D464. If/u1D452
+would belong to ℎthen/u1D452≤ℎ/u1D44E. Asℎisor-respectful and /u1D44E≤or/u1D452, we deduce there exists a /u1D452′′∈ℎ
+s.t.tr(ℎ,/u1D452′′)≤or/u1D461(/u1D44E),tr(ℎ,/u1D452)[so∪wr]∗tr(ℎ,/u1D452′′)and/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452′′).Moreover,as /u1D452′′∈ℎ,/u1D452′′∈ℎ/u1D45D.
+Bycorollary E.8/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D45D,/u1D452′′)andO/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ/u1D45D,/u1D44E,/u1D461)hold,/u1D452′′∈ℎ/u1D460andso/u1D452does.Thisresult
+leadsto a contradiction,so /u1D452∉ℎ; i.e./u1D452∈ℎ/u1D45D\ℎ. /square
+C/o.sc/r.sc/o.sc/l.sc/l.sc/a.sc/r.sc/y.scE.12. Inaconsistent or-respectfulhistory ℎwhoseprevioushistoryisreachable,if /u1D44E=
+last(ℎ),/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E)and/u1D461isatransactionsuchthat (/u1D461,/u1D44E)∈wr,ℎcoincideswith /s.sc/w.sc/a.sc/p.sc(/p.sc/r.sc/e.sc/v.sc(ℎ),/u1D44E,/u1D461).
+P/r.sc/o.sc/o.sc/f.sc.It comesstraight away fromthe proofoflemma E.11. /square
+Once proven that /p.sc/r.sc/e.sc/v.scis sound, let us prove that for every history we can compose /p.sc/r.sc/e.sc/v.sca
+ﬁnite number of times obtaining the empty history. We are going to p rove it by induction on the
+numberofswappedevents, so weprove ﬁrst therecursive compos itionﬁnishesin ﬁnite timeand
+then we concludeourclaim.
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:39
+L/e.sc/m.sc/m.sc/a.sc E.13. For every non-empty consistent or-respectful history ℎ,ℎ/u1D45D=/p.sc/r.sc/e.sc/v.sc(ℎ)and/u1D44E=
+last(ℎ),if/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E)then{/u1D452∈ℎ/u1D45D|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D45D,/u1D452)}={/u1D452∈ℎ|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452)}\{/u1D44E},otherwise
+ℎ/u1D45D=ℎ\/u1D44E.
+P/r.sc/o.sc/o.sc/f.sc.Let/u1D44E=last(ℎ)andℎ′=ℎ\/u1D44E. If¬(/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D44E)), thenℎ/u1D45D=ℎ′and the lemmaholds
+trivially. Otherwise, as ℎ/u1D45D=/m.sc/a.sc/x.scC/o.sc/m.sc/p.sc/l.sc/e.sc/t.sc/i.sc/o.sc/n.sc(ℎ′), we will show that every event not belonging
+toℎ/u1D45D\ℎ′is not swapped by induction on every recursive call to /m.sc/a.sc/x.scC/o.sc/m.sc/p.sc/l.sc/e.sc/t.sc/i.sc/o.sc/n.sc . Let us call
+/u1D437={/u1D452|/u1D452∉ℎ′∧/u1D452<or}. This set, intuitively, contain all the events that would have b een deleted
+from a reachable history ℎto produce ℎ/u1D45D. In this setting, let us call ℎ|/u1D437|=ℎ′,/u1D437|/u1D437|=/u1D437and
+/u1D437/u1D458=/u1D437/u1D458+1\{min<or/u1D437/u1D458+1}, /u1D452/u1D458=min<or/u1D437/u1D458for every /u1D458,0≤/u1D458<|/u1D437|(i.e./u1D437/u1D458=/u1D437/u1D458+1\{/u1D452/u1D458+1}).
+We will prove the lemma by induction on /u1D45B=|/u1D437|−/u1D458, constructing a collection of or-respectful
+historiesℎ/u1D458,0≤/u1D458<|/u1D437|,suchthateachoneisanextensionofitspredecessorwithanon-s wapped
+event.
+The base case, ℎ|/u1D437|is trivial as by its deﬁnition it corresponds with ℎ′. Let’s prove the in-
+ductive case:{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458+1,/u1D452)}={/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ′,/u1D452)}. If/u1D452/u1D458+1is not areadevent,ℎ/u1D458=
+ℎ/u1D458+1⊕/u1D452/u1D458+1,Ror(ℎ/u1D458)and{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458,/u1D452)}={/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ′,/u1D452)}; as only readevents can
+be swapped. Otherwise, /u1D452/u1D458+1is a read event. By the isolation level’s causal-extensibilit y there ex-
+ists a transaction /u1D453/u1D458+1that writes the same variable as /u1D452/u1D458+1,(/u1D453/u1D458+1,tr(ℎ,/u1D452/u1D458+1)) ∈(so∪wr)∗and
+ℎ/u1D458+1⊕/u1D452/u1D458+1⊕wr(/u1D453/u1D458+1,/u1D452/u1D458+1)is consistent. Moreover, if /u1D452/u1D458+1reads from any causal dependent ele-
+ment/u1D453′,/u1D453′inℎ/u1D458+1,itcannotbeswapped:as Ror(ℎ/u1D458+1)holds,if/u1D452/u1D458+1<or/u1D453′theremustbeanevent
+/u1D450/u1D458+1s.t.tr(ℎ,/u1D450/u1D458+1)≤ortr(ℎ,/u1D452/u1D458+1)and(/u1D453′,tr(ℎ,/u1D450/u1D458+1))∈(so∪wr)∗. Hence,{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458+1,/u1D452)}
+={/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458+1⊕/u1D452/u1D458+1⊕wr(/u1D453′,/u1D452/u1D458+1),/u1D452)}.
+Let/u1D438/u1D458+1={/u1D461|ℎ/u1D458+1⊕/u1D452/u1D458+1⊕wr(/u1D461,/u1D452/u1D458+1)|=/u1D43C∧{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458+1,/u1D452)}=/u1D460{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458+1⊕
+/u1D452/u1D458+1⊕wr(/u1D461,/u1D452/u1D458+1),/u1D452)}}and let/u1D461/u1D458+1=max≤ℎ/u1D458+1{/u1D461∈/u1D438/u1D458+1|(/u1D461,tr(ℎ/u1D458+1,/u1D452/u1D458+1))∈(so∪wr)∗}.This
+element is well deﬁned as /u1D453/u1D458+1belongs to /u1D438/u1D458+1. Therefore, ℎ/u1D458=ℎ/u1D458+1⊕/u1D452/u1D458+1⊕wr(/u1D461/u1D458+1,/u1D452/u1D458+1)
+is consistent and{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458,/u1D452)}={/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ′,/u1D452)}. Moreover, let’s remark that as
+/u1D461/u1D458+1is the maximum transaction according to ≤ℎ/u1D458+1s.t. is consistent and {/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D458,/u1D452)}=
+{/u1D452|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ′,/u1D452)}. In addition, by construction, it also satisﬁes readLatest /u1D43C(ℎ/u1D458,/u1D452/u1D458+1,/u1D464/u1D458+1,).Fi-
+nally,ℎ/u1D458isalsoor-respectfulas /u1D452/u1D458+1isnot swapped and Ror(ℎ/u1D458+1)holds.
+Thus,afterapplyinginduction,weobtain ℎ/u1D45D=ℎ0;whichletusconclude {/u1D452∈ℎ/u1D45D|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ/u1D45D,/u1D452)}=
+{/u1D452∈ℎ′|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ′,/u1D452)}={/u1D452∈ℎ|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452)}\{/u1D44E}. /square
+L/e.sc/m.sc/m.sc/a.sc E.14. For every consistent or-respectful history ℎthere exists some /u1D458ℎ∈Nsuch that
+/p.sc/r.sc/e.sc/v.sc/u1D458ℎ(ℎ)=∅.
+P/r.sc/o.sc/o.sc/f.sc.This lemma is immediate consequence of lemma E.13. Let us call /u1D709(ℎ)=
+|{/u1D452∈ℎ|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452)}|, the number of swapped events in ℎ, and let us prove the lemma by
+induction on(/u1D709(ℎ),|ℎ|). The base case, /u1D709(ℎ)=|ℎ|=0 is trivial as ℎwould be∅; so let’s assume
+that for every history ℎsuch that /u1D709(ℎ)</u1D45Bor/u1D709(ℎ)=ℎ∧|ℎ|</u1D45Athere exists such /u1D458ℎ. Letℎthen
+a history s.t. /u1D709(ℎ)=/u1D45Band|ℎ|=/u1D45A.ℎ/u1D45D=/p.sc/r.sc/e.sc/v.sc(ℎ). On one hand, if ℎ/u1D45D=ℎ\/u1D44Ethen/u1D709(/u1D465/u1D45D)=/u1D709(ℎ)
+and|ℎ/u1D45D|=|ℎ|−1. On the other hand, if ℎ/u1D45D≠ℎ\/u1D44E,/u1D709(ℎ/u1D45D)=/u1D709(ℎ)−1. In any case, by induction
+hypothesis on ℎ/u1D45D, there exists an integer /u1D458ℎ/u1D45Dsuch that /p.sc/r.sc/e.sc/v.sc/u1D458ℎ/u1D45D(ℎ/u1D45D)=∅. Therefore, /u1D458ℎ=/u1D458ℎ/u1D45D+1
+satisﬁes/p.sc/r.sc/e.sc/v.sc/u1D458ℎ(ℎ)=∅. /square
+P/r.sc/o.sc/p.sc/o.sc/s.sc/i.sc/t.sc/i.sc/o.sc/n.scE.15. Forevery consistent or-respectful history ℎexists/u1D458∈Nand somesequence of
+or-respectful histories {ℎ/u1D45B}/u1D458
+/u1D45B=0,ℎ0=∅andℎ/u1D458=ℎsuch that the algorithm will compute.
+P/r.sc/o.sc/o.sc/f.sc.Letℎa history, /u1D458the minimum integer such that /p.sc/r.sc/e.sc/v.sc/u1D458(ℎ)=∅,which exists thanksto
+lemmaE.14and/u1D436={/p.sc/r.sc/e.sc/v.sc/u1D458−/u1D45B(ℎ)}/u1D458
+/u1D45B=0aset ofindexed histories. Bythecollection’sdeﬁnition and
+lemmaE.10,ℎ0=/p.sc/r.sc/e.sc/v.sc/u1D458(ℎ)=∅,ℎ/u1D458=/p.sc/r.sc/e.sc/v.sc0(ℎ)=ℎandRor(ℎ/u1D45B)forevery /u1D45B∈N;soletusprove by
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:40 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+induction on /u1D45Bthat every history in /u1D436is reachable.The base case, ℎ0,is trivially achieved; asit is
+alwaysreachable.Inaddition,bylemma E.11,weknowthatif ℎ/u1D45Bisreachable, ℎ/u1D45B+1isittoo;which
+proves the inductive step. /square
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.scE.16. The algorithm /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc iscomplete.
+P/r.sc/o.sc/o.sc/f.sc.By lemma E.9,any consistent total history is or-respectful.Asa consequence ofpropo-
+sitionE.15, there exist a sequence of reachable histories which ℎbelongs to; so in particular, ℎis
+reachable. /square
+E.2 Optimality
+For proving optimality we are going to exploit two properties a lready studied for completeness:
+or-respectfulness and the canonicalorder. Then,as algorithm /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc is sound and complete,
+wewillprovethatanycomputablepathleadingtoaconsistenthis toryistheonecomputedinthe
+completeness’proof.
+T/h.sc/e.sc/o.sc/r.sc/e.sc/m.scE.17. Algorithm /e.sc/x.sc/p.sc/l.sc/o.sc/r.sc/e.sc/hyphen.sc/c.sc/e.sc isstrongly optimal.
+P/r.sc/o.sc/o.sc/f.sc.As the model is causal-extensible, any algorithm optimal is al so strongly optimal. Let
+us prove that for every reachable history there is only a compu table path that leads to it from ∅.
+Let’s suppose there exists a history ℎthat is reached /u1D45D1,/u1D45D2by two computable paths. By lemma
+E.7,we know that≤ℎ≡≤ℎ.However,≤ℎis an order thatdoesnot depend onthe computablepath
+thatleadsto ℎ;soneitherdoes≤ℎ.Therefore,wecanassumewithoutlossofgeneralitythat ℎisa
+history with minimal value of /u1D709(ℎ)=|{/u1D452∈ℎ|/s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D452)}|and in case of tie, that is minimal
+with respect|ℎ|; valuesindependent ofthe computablepaththat leadsto ℎ.
+We can also assume without loss of generality that the predece ssor ofℎin/u1D45D1isℎ1=/p.sc/r.sc/e.sc/v.scℎ,
+andℎ2is the predecessor of ℎin/u1D45D2. If we prove ℎ1andℎ2are identical, /u1D45D1and/u1D45D2have to also be
+identical and therefore,the algorithmwouldbe optimal.Firs tly, iflast(ℎ)isnot a swapped read
+event, by the deﬁnition of /n.sc/e.sc/x.sc/t.scfunctionℎ2=ℎ\last(ℎ)=ℎ1. On the contrary, let’s suppose
+/u1D45F=last(ℎ)isaswappedeventthatreadsfromatransaction /u1D461.Because /s.sc/w.sc/a.sc/p.sc/p.sc/e.sc/d.sc(ℎ,/u1D45F)holds,from
+ℎ2toℎithastohavehappenedaswapbetween /u1D45Fand/u1D464.Butbycorollary E.12,ℎ=/s.sc/w.sc/a.sc/p.sc(ℎ1,/u1D45F,/u1D464),
+soℎ1↾ℎ\/u1D45F=ℎ2↾ℎ\/u1D45F. Asℎ1,ℎ2are both or-respectful, /u1D452∈ℎ1\ℎ⇐⇒/u1D452∈ℎ2\ℎ. Finally, as
+O/p.sc/t.sc/i.sc/m.sc/a.sc/l.sc/i.sc/t.sc/y.sc(ℎ/u1D456,/u1D45F,/u1D464)holdsfor/u1D456∈{1,2},forevery readevent/u1D452inℎ1∩ℎ2thereexistsatransaction
+/u1D461/u1D452s.t.wr(/u1D452,/u1D461/u1D452)forbothhistories. /square
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.DynamicPartialOrder Reduction forChecking Correctness a gainst TransactionIsolationLevels 129:41
+F EXPERIMENTAL DATA
+F.1 ApplicationScalability
+CC CC+SI CC+SER
+Histories End states Time Mem. Histories End states Time Mem. H istories End states Time Mem.
+courseware-1 216 216 00:00:22 370 81 216 00:00:25 370 72 216 0 0:00:23 370
+courseware-2 46 46 00:00:06 316 34 46 00:00:06 308 34 46 00:00 :06 314
+courseware-3 12790 12790 00:12:45 533 6197 12790 00:13:59 5 33 960 12790 00:12:37 557
+courseware-4 69 69 00:00:07 314 39 69 00:00:08 324 17 69 00:00 :07 370
+courseware-5 388 388 00:00:25 308 136 388 00:00:27 370 71 388 00:00:24 370
+shoppingCart-1 444 444 00:00:19 308 108 444 00:00:22 308 81 44 4 00:00:19 308
+shoppingCart-2 2934 2934 00:00:55 308 811 2934 00:01:13 444 4 80 2934 00:00:58 308
+shoppingCart-3 1594 1594 00:00:55 308 1077 1594 00:01:05 308 338 1594 00:01:00 308
+shoppingCart-4 58677 58677 TL444 12440 49589 TL444 779 60194 TL383
+shoppingCart-5 4686 4686 00:02:56 444 1986 4686 00:03:07 444 780 4686 00:02:41 308
+tpcc-1 165 165 00:00:43 794 47 165 00:00:47 808 47 165 00:00:4 5 796
+tpcc-2 353 353 00:01:25 699 35 353 00:01:29 879 31 353 00:01:2 5 704
+tpcc-3 1593 1593 00:10:12 966 232 1593 00:10:29 1054 116 1593 00:10:05 803
+tpcc-4 105 105 00:00:15 450 22 105 00:00:16 485 1 105 00:00:15 396
+tpcc-5 7836 7836 TL1732 695 6973 TL1647 271 7617 TL1640
+twitter-1 36 36 00:00:05 256 29 36 00:00:06 308 18 36 00:00:05 256
+twitter-2 876 876 00:00:48 459 263 876 00:01:03 1066 122 876 0 0:00:56 513
+twitter-3 1072 1072 00:01:24 444 576 1072 00:01:33 569 216 10 72 00:01:21 444
+twitter-4 12915 12915 00:08:36 444 1680 12915 00:10:59 640 1 680 12915 00:09:12 533
+twitter-5 12915 12915 00:07:53 444 1680 12915 00:11:18 533 1 680 12915 00:07:43 444
+wikipedia-1 649 649 00:03:59 820 95 649 00:02:34 699 95 649 00 :02:32 695
+wikipedia-2 3610 3610 00:13:51 792 328 3610 00:14:13 696 292 3610 00:13:50 798
+wikipedia-3 2339 2339 00:05:44 640 175 2339 00:06:04 640 175 2339 00:05:41 640
+wikipedia-4 691 691 00:01:54 774 246 691 00:02:01 768 108 691 00:01:55 774
+wikipedia-5 21317 21317 TL620 292 19840 TL533 220 22307 TL444
+RA+CC RC+ CC true+CC DFS(CC)
+Histories End states Mem. Time Histories End states Mem. Time H istories End states Mem. Time End states Mem. Time
+courseware-1 216 893 00:00:52 370 216 11751 00:07:02 370 216 124399 TL444 58072 00:13:52 308
+courseware-2 46 106 00:00:06 308 46 588 00:00:11 308 46 1074 0 0:00:15 308 18010 00:02:12 308
+courseware-3 10585 47570 TL444 40 65075 TL308 40 119388 TL370 186758 TL308
+courseware-4 69 88 00:00:07 308 69 2392 00:00:29 308 69 3779 0 0:00:39 315 37956 00:07:19 308
+courseware-5 388 765 00:00:39 308 388 66557 00:27:12 370 320 96681 TL660 68074 TL308
+shoppingCart-1 444 1620 00:00:34 370 444 202066 TL370 370 173904 TL308 69396 TL308
+shoppingCart-2 2934 32976 00:19:58 450 366 224700 TL370 366 508967 TL370 93549 TL308
+shoppingCart-3 1594 6291 00:01:41 308 1594 131226 00:18:23 3 08 1594 223740 TL308 99522 TL533
+shoppingCart-4 19945 53687 TL533 151 256686 TL308 11 267433 TL308 270996 TL370
+shoppingCart-5 4686 16323 00:06:43 370 2469 265924 TL469 371 420084 TL444 191813 TL404
+tpcc-1 165 958 00:02:13 839 7 50588 TL1045 3 84272 TL545 18489 TL1383
+tpcc-2 353 3958 00:11:24 809 3 7029 TL1153 1 23097 TL670 25253 TL1029
+tpcc-3 1475 10969 TL1029 20 22934 TL688 2 119267 TL459 18124 TL1251
+tpcc-4 105 114 00:00:15 474 17 50203 TL640 3 112330 TL670 22645 TL948
+tpcc-5 271 9178 TL1629 3 4059 TL662 3 48306 TL768 36060 TL1284
+twitter-1 36 44 00:00:05 256 36 4104 00:01:07 370 36 12384 00: 02:56 473 35056 00:20:25 533
+twitter-2 876 2917 00:02:01 592 876 18219 00:09:30 548 876 37 943 00:17:35 544 145070 TL533
+twitter-3 1072 2272 00:02:05 576 1072 9514 00:08:10 533 1072 20164 00:16:14 588 108792 00:24:34 452
+twitter-4 12915 48363 00:29:09 476 10 114588 TL370 1 147462 TL533 50404 TL533
+twitter-5 12915 48363 00:27:07 444 84 70376 TL444 84 136241 TL370 57654 TL444
+wikipedia-1 649 2296 00:04:16 672 64 37382 TL832 4 66814 TL699 54510 TL660
+wikipedia-2 2049 8451 TL979 17 19697 TL795 2 85523 TL930 43629 TL650
+wikipedia-3 2339 6170 00:10:06 640 100 28952 TL522 50 23974 TL581 43962 TL682
+wikipedia-4 691 1781 00:02:57 925 5 44937 TL567 3 61334 TL543 24873 TL1188
+wikipedia-5 13159 26384 TL533 29 72930 TL444 23 78413 TL695 97881 TL444
+F.2 SessionScalability
+One session Two sessions Threesessions Four sessions Five sessi ons
+Histories Time Mem. Histories Time Mem. Histories Time Mem. Histories Time Mem. Histories Time Mem.
+tpcc-1 1 00:00:02 256 6 00:00:03 256 1540 00:05:42 804 3081 TL4096 14525 TL4096
+tpcc-2 1 00:00:03 256 66 00:00:17 587 9630 TL2900 17637 TL4076 2442 TL4096
+tpcc-3 1 00:00:03 256 12 00:00:09 384 4824 00:25:43 1503 3463 TL4096 2940 TL4096
+tpcc-4 1 00:00:03 256 90 00:00:41 674 6355 TL1728 1722 TL4096 2634 TL4096
+tpcc-5 1 00:00:03 256 96 00:00:41 692 3659 TL1765 1343 TL4092 1481 TL4096
+wikipedia-1 1 00:00:02 256 199 00:00:19 370 19654 TL640 16377 TL533 12419 TL4096
+wikipedia-2 1 00:00:02 256 38 00:00:14 536 7055 00:22:07 768 21000 TL3520 16985 TL4096
+wikipedia-3 1 00:00:02 256 67 00:00:14 444 9346 TL768 9451 TL4096 3264 TL4096
+wikipedia-4 1 00:00:02 256 7 00:00:07 374 73 00:00:14 602 394 0 00:20:40 4096 1325 TL4096
+wikipedia-5 1 00:00:02 256 28 00:00:08 308 336 00:05:41 662 1 0914 TL4096 563 TL3936
+Proc. ACMProgram. Lang.,Vol. 7, No. PLDI,Article129. Publica tion date: June 2023.129:42 Ahmed Bouajjani,ConstantinEnea,andEnriqueRomán-Calvo
+F.3 Transaction Scalability
+One transaction Twotransactions Threetransactions Four transact ions Five transactions
+Histories Mem. Time Histories Mem. Time Histories Mem. Time Histories Mem. Time Histories Mem. Time
+tpcc-1 4 00:00:03 256 107 00:00:46 674 303 00:01:32 812 13780 00:27:59 3904 13431 TL4096
+tpcc-2 18 00:00:11 444 4030 00:16:10 1063 5162 TL2012 5351 TL4096 3243 TL4096
+tpcc-3 3 00:00:04 256 219 00:01:38 881 6679 TL1327 6533 TL4093 2036 TL4096
+tpcc-4 20 00:00:13 444 5187 00:20:04 1046 3262 TL2066 1548 TL4096 2045 TL4096
+tpcc-5 1 00:00:03 256 23 00:00:15 596 171 00:01:31 901 1812 TL3933 4091 TL4096
+wikipedia-1 16 00:00:04 308 2428 00:02:30 444 22289 TL533 17113 TL640 14648 TL4096
+wikipedia-2 9 00:00:06 256 56 00:00:20 533 739 00:02:02 690 5 364 TL4068 3568 TL3977
+wikipedia-3 18 00:00:07 308 1109 00:01:24 640 26110 TL768 15339 TL3621 15138 TL3822
+wikipedia-4 4 00:00:05 256 43 00:00:12 444 3919 00:29:57 164 9 3501 TL4096 2506 TL4096
+wikipedia-5 2 00:00:03 256 20 00:00:10 444 46 00:00:20 370 75 4 00:05:42 2521 2573 TL4096
+Received 2022-11-10;accepted2023-03-31
+Proc. ACMProgram. Lang.,Vol. 7,No. PLDI,Article129. Publica tion date: June 2023.

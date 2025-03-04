@@ -1,0 +1,2442 @@
+Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+Avi Schwarzschild∗
+University of Maryland
+College Park, Maryland, USAMax Cembalest
+Arthur
+New York City, New York, USAKarthik Rao
+Arthur
+New York City, New York, USA
+Keegan Hines
+Arthur
+New York City, New York, USAJohn Dickerson†
+Arthur
+New York City, New York, USA
+ABSTRACT
+As neural networks increasingly make critical decisions in high-
+stakes settings, monitoring and explaining their behavior in an
+understandable and trustworthy manner is a necessity. One com-
+monly used type of explainer is post hoc feature attribution, a
+family of methods for giving each feature in an input a score corre-
+sponding to its influence on a model’s output. A major limitation
+of this family of explainers in practice is that they can disagree on
+which features are more important than others. Our contribution
+in this paper is a method of training models with this disagreement
+problem in mind. We do this by introducing a Post hoc Explainer
+Agreement Regularization (PEAR) loss term alongside the standard
+term corresponding to accuracy, an additional term that measures
+the difference in feature attribution between a pair of explainers.
+We observe on three datasets that we can train a model with this
+loss term to improve explanation consensus on unseen data, and
+see improved consensus between explainers other than those used
+in the loss term. We examine the trade-off between improved con-
+sensus and model performance. And finally, we study the influence
+our method has on feature attribution explanations.
+1 INTRODUCTION
+As machine learning becomes inseparable from important societal
+sectors like healthcare and finance, increased transparency of how
+complex models arrive at their decisions is becoming critical. In this
+work, we examine a common task in support of model transparency
+that arises with the deployment of complex black-box models in
+production settings: explaining which features in the input are most
+influential in the model’s output. This practice allows data scientists
+and machine learning practitioners to rank features by importance
+– the features with high impact on model output are considered
+more important, and those with little impact on model output are
+considered less important. These measurements inform how model
+users debug and quality check their models, as well as how they
+explain model behavior to stakeholders.
+1.1 Post Hoc Explanation
+The methods of model explanation considered in this paper are post
+hoc local feature attribution scores. The field of explainable artificial
+intelligence (XAI) is rapidly producing different methods of this
+∗Work completed while working at Arthur.
+†Correspondence to: John Dickerson at < john@arthur.ai >, Avi Schwarzschild at
+<avi1@umd.edu >.
+SHAP Grad Grad*Input IntGrad SmoothGradAgree w/ LIME 
+Baseline OursFigure 1: Our loss that encourages explainer consensus
+boosts the correlation between LIME and other common
+post hoc explainers. This comes with a cost of less than two
+percentage points of accuracy compared with our baseline
+model on the Electricity dataset. Our method improves con-
+sensus on six agreement metrics and all pairs of explainers
+we evaluated. Note that this plot measures the rank correla-
+tion agreement metric and the specific bar heights depend
+on this choice of metric.
+type to make sense of model behavior [e.g., 21,24,30,32,37]. Each
+of these methods has a slightly different formula and interpretation
+of its raw output, but in general they all perform the same task of
+attributing a model’s behavior to its input features. When tasked to
+explain a model’s output with a corresponding input (and possible
+access to the model weights), these methods answer the question,
+“How influential is each individual feature of the input in the model’s
+computation of the output?”
+Data scientists are using post hoc explainers at increasing rates –
+popular methods like LIME and SHAP have had over 350 thousand
+and 6 million downloads of their Python packages in the last 30
+days, respectively [23].
+1.2 The Disagreement Problem
+The explosion of different explanation methods leads Krishna et al.
+[15] to observe that when neural networks are trained naturally, i.e.
+for accuracy alone, often post hoc explainers disagree on how much
+different features influenced a model’s outputs. They coin the term
+the disagreement problem and argue that when explainers disagree
+about which features of the input are important, practitioners have
+little concrete evidence as to which of the explanations, if any, to
+trust.arXiv:2303.13299v1  [cs.LG]  23 Mar 2023Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+There is an important discussion around local explainers and
+their true value in reaching the communal goal of model trans-
+parency and interpretability [see, e.g., 7,18,29]; indeed, there are
+ongoing discussions about the efficacy of present-day explanation
+methods in specific domains [for healthcare see, e.g., 8]. Feature
+importance estimates may fail at making a model more transparent
+when the model being explained is too complex to allow for easily
+attributing the output to the contribution of each individual feature.
+In this paper, we make no normative judgments with respect to
+this debate, but rather view “explanations” as signals to be used
+alongside other debugging, validation, and verification approaches
+in the machine learning operations (MLOps) pipeline. Specifically,
+we take the following practical approach: make the amount of
+explanation disagreement a controllable model parameter instead
+of a point of frustration that catches stakeholders off-guard.
+1.3 Encouraging Explanation Consensus
+Consensus between two explainers does not require that the ex-
+plainers output the same exact scores for each feature. Rather, con-
+sensus between explainers means that whatever disagreement they
+exhibit can be reconciled. Data scientists and machine learning prac-
+titioners say in a survey that explanations are in basic agreement
+if they satisfy agreement metrics that align with human intuition,
+which provides a quantitative way to evaluate the extent to which
+consensus is being achieved [ 15]. When faced with disagreement
+between explainers, a choice has to be made about what to do next –
+if such an arbitrary crossroads moment is avoidable via specialized
+model training, we believe it would be a valuable addition to a data
+scientist’s toolkit.
+We propose, as our main contribution, a training routine to help
+alleviate the challenge posed by post hoc explanation disagreement.
+Achieving better consensus between explanations does not provide
+more interpretability to a model inherently. But, it may lend more
+trust to the explanations if different approaches to attribution agree
+more often on which features are important. This gives consensus
+the practical benefit of acting as a sanity check – if consensus
+is observed, the choice of which explainer a practitioner uses is
+less consequential with respect to downstream stakeholder impact,
+making their interpretation less subjective.
+2 RELATED WORK
+Our work focuses on post hoc explanation tools. Some post hoc
+explainers, like LIME [ 24] and SHAP [ 21], are proxy models trained
+atop a base machine learning model with the sole intention of
+“explaining” that base model. These explainers rely only on the
+model’s inputs and outputs to identify salient features. Other ex-
+plainers, such as Vanilla Gradients (Grad) [ 32], Gradient Times
+Input (Grad*Input) [ 30], Integrated Gradients (IntGrad) [ 37] and
+SmoothGrad [ 34], do not use a proxy model but instead compute
+the gradients of a model with respect to input features to identify
+important features.1Each of these explainers has its quirks and
+1In many settings, there may be a strong case to consider interpretable-by-design
+models—that is, models that need no proxy model or gradient computation to be
+explained, and are instead interpretable in their base form. Rudin [29] provides an
+overview of this space, and we specifically call out directions such as falling rule
+lists [ 40], generalized additive models [ 20], and concept/prototype-based models [ 9,
+14]. We acknowledge this direction of research as well as subsequent push-backthere are reasons to use, or not use, them all—based on input type,
+model type, downstream task, and so on. But there is an underlying
+pattern unifying all these explanation tools. Han et al. [12] provide
+a framework that characterizes all the post hoc explainers used in
+this paper as different types of local-function approximation. For
+more details about the individual post hoc explainers used in this
+paper, we refer the reader to the individual papers and to other
+works about when and why to use each one [see, e.g., 5, 13].
+We build directly on prior work that defines and explores the dis-
+agreement problem [ 15]. Disagreement here refers to the difference
+in feature importance scores between two feature attribution meth-
+ods, but can be quantified several different ways as are described
+by the metrics Krishna et al. [15] define and use. We describe these
+metrics in Section 4.
+The method we propose in this paper relates to previous work
+that trains models with constraints on explanations via penalties
+on the disagreement between feature attribution scores and hand-
+crafted ground-truth scores [ 26,27,41]. Additionally, work has
+been done to leverage the disagreement between different post-
+hoc explanations to construct new feature attribution scores that
+improve metrics like stability and pairwise rank agreement [ 2,16,
+25].
+3 PEAR: POST HOC EXPLAINER
+AGREEMENT REGULARIZER
+Our contribution is the first effort to train models to be both accu-
+rate and to be explicitly regularized via consensus between local
+explainers. When neural networks are trained naturally (i.e. with
+a single task-specific loss term like cross-entropy), disagreement
+between post hoc explainers often arises. Therefore, we include an
+additional loss term to measure the amount of explainer disagree-
+ment during training to encourage consensus between explanations.
+Since human-aligned notions of explanation consensus can be cap-
+tured by more than one agreement metric (listed in A.3), we aim to
+improve several agreement metrics with one loss function.2
+Our consensus loss term is a convex combination of the Pearson
+and Spearman correlation measurements between the vectors of
+attribution scores (Spearman correlation is just the Pearson corre-
+lation on the ranks of a vector).
+To paint a clearer picture of the need for two terms in the loss,
+consider the examples shown in Figure 3. In the upper example,
+the raw feature scores are very similar and the Pearson correlation
+coefficient is in fact 1 (to machine precision). However, when we
+rank these scores by magnitude, there is a big difference in their
+ranks as indicated by the Spearman value. Likewise, in the lower
+portion of Figure 3 we show that two explanations with identical
+magnitudes will show a low Pearson correlation coefficient. Since
+some of the metrics we use to measure disagreement involve rank-
+ing and others do not, we conclude that a mixture of these two
+terms in the loss is appropriate.
+While the example in Figure 3 shows two explanation vectors
+with similar scale, different explanation methods do not always
+claiming that performance drops from prioritizing interpretability may be prohibitively
+high [e.g., when compared to so-called foundation models, see 4]. Given industry
+uptake of post hoc explanations, our paper focuses on that approach alone.
+2The PEAR package will be publicly for download on the Package Installer for Python
+(pip), and it is also available upon request from the authors.Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+LossY:GroundtruthlabelsM:ModelX:ModelinputsŶ:ModeloutputsE1:Explainer1explanationsE2:Explainer2explanationsTaskLossCross-Entropy(Y,Ŷ)ConsensusLoss!*Spearman(E1,E2)+(1-!)*Pearson(E1,E2)(1-")*"*
+Figure 2: Our loss function measures the task loss between
+the model outputs and ground truth (task loss), as well as
+the disagreement between explainers (consensus loss). The
+weight given to the consensus loss term is controlled by a
+hyperparameter 𝜆. The consensus loss term term is a convex
+combination of the Spearman and Pearson correlation mea-
+surements between feature importance scores, since increas-
+ing both rank correlation (Spearman) and raw-score correla-
+tion (Pearson) are useful for improving explainer consensus
+on our many agreement metrics.
+Figure 3: Example feature attribution vectors where Pearson
+and Spearman show starkly different scores. Recall, both
+Pearson and Spearman correlation range from −1to+1. Both
+of these pairs of vectors satisfy some human-aligned no-
+tions of consensus. But in each circumstance, one of the cor-
+relation metrics gives a low similarity score. Thus, in order
+to successfully encourage explainer consensus (by all of our
+metrics), we use both types of correlation in our consensus
+loss term.
+align. Some explainers have the sums of their attribution scores
+constrained by various rules, whereas other explainers have no
+such constraints. The correlation measurements we use in our loss
+provide more latitude when comparing explainers than a direct
+difference measurement like mean absolute error or mean squared
+error, allowing our correlation measurement.
+More formally, our full loss function is defined as follows. Let 𝑓
+denote a model. Let 𝐸1and𝐸2be any two post-hoc explainers, each
+of which take a data point 𝑥and its predicted label ^𝑦as input and
+output a vector, which is the same size as 𝑥and has correspondingfeature attribution scores. We define 𝑅to be the ranking function,
+so it replaces each entry in a vector with the rank of its magnitude
+among all entries in the vector.3
+Let the functions 𝑝(𝑎,𝑏)and𝑠(𝑎,𝑏)be Pearson and Spearman
+correlation measurements, respectively. We denote the average
+value of all entries in a vector with the ¯·notation.
+𝑝(𝑎,𝑏)=∑︁
+𝑖(𝑎𝑖−¯𝑎)(𝑏𝑖−¯𝑏)
+∥𝑎∥∥𝑏∥(1)
+𝑠(𝑎,𝑏)=∑︁
+𝑖(𝑅(𝑎)𝑖−𝑅(𝑎))(𝑅(𝑏)𝑖−𝑅(𝑏))
+∥𝑅(𝑎)∥∥𝑅(𝑏)∥(2)
+We refer to the first term in the loss function as the task loss , or
+ℓtask, and for our classification tasks we use cross-entropy loss. A
+graphical depiction of the flow from data to loss value is shown
+in Figure 2. Formally, our complete loss function can be expressed
+as follows with two hyperparameters 𝜆,𝜇∈ [0,1]. We weight
+the influence of our consensus term with 𝜆, so lower values give
+more priority to task loss. We weight the influence between the two
+explanation correlation terms with 𝜇, so lower values give more
+weight to Pearson correlation and higher values give more weight
+to Spearman correlation.
+𝐿(𝑥,𝑦,𝑓,𝐸 1,𝐸2)=
+(1−𝜆)ℓtask
++𝜆
+𝜇𝑠 𝐸1(𝑥,𝑦),𝐸2(𝑥,𝑦)
++(1−𝜇)𝑝 𝐸1(𝑥,𝑦),𝐸2(𝑥,𝑦)(3)
+3.1 Choosing a Pair of Explainers
+The consensus loss term is defined for any two explainers in general,
+but since we train with standard backpropagation we need these
+explainers to be differentiable. With this constraint in mind, and
+with some intuition about the objective of improving agreement
+metrics, we choose to train for consensus between Grad and IntGrad.
+If Grad and IntGrad align, then the function should become more
+locally linear in logit space. IntGrad computes the average gradient
+along a path in input space toward each point being explained. So,
+if we train the model to have a local gradient at each point (Grad)
+closer to the average gradient along a path to the point (IntGrad),
+then perhaps an easy way for the model to accomplish that training
+objective would be for the gradient along the whole path to equal
+the local gradient from Grad. This may push the model to be more
+similar to a linear model. This is something we investigate with
+qualitative and quantitative analysis in Section 4.5.
+3.2 Differentiability
+On the note of differentiability, the ranking function 𝑅is not differ-
+entiable. We substitute a soft ranking function from the torchsort
+package [ 3]. This provides a floating point approximation of the
+ordering of a vector rather than an exact integer computation of
+the ordering of a vector, which allows for differentiation.
+3When more than one of the entries have the same magnitude, they get a common
+ranking value equal to the average rank if they were ordered arbitrarily.Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+4 THE EFFICACY OF CONSENSUS TRAINING
+In this section we present each experiment with the hypothesis it is
+designed to test. The datasets we use for our experiments are Bank
+Marketing, California Housing, and Electricity, three binary classi-
+fication datasets available on the OpenML database [ 39]. For each
+dataset, we use a linear model’s performance (logistic regression)
+as a lower bound of realistic performance because linear models
+are considered inherently explainable.
+The models we train to study the impact of our consensus loss
+term are multilayer perceptrons (MLPs). While the field of tabular
+deep learning is still growing, and MLPs may be an unlikely choice
+for most data scientists on tabular data, deep networks provide the
+flexibility to adapt training loops for multiple objectives [1, 10, 17,
+28,31,35]. We also verify that our MLPs outperform linear models
+on each dataset, because if deep models trained to reach consensus
+are less accurate than a linear model, we would be better off using
+the linear model.
+We include XGBoost [ 6] as a point of comparison for our ap-
+proach, as it has become a widely popular method with high per-
+formance and strong consensus metrics on many tabular datasets
+(figures in Appendix A.7). There are cases where we achieve more
+explainer consensus than XGBoost, but this point is tangential as
+we are invested in exploring a loss for training neural networks.
+For further details on our datasets and model training hyperpa-
+rameters, see Appendices A.1 and A.2.
+4.1 Agreement Metrics
+In their work on the disagreement problem, Krishna et al. [15]intro-
+duce six metrics to measure the amount of agreement between post
+hoc feature attributions. Let [𝐸1(𝑥)]𝑖,[𝐸2(𝑥)]𝑖be the attribution
+scores from explainers for the 𝑖-th feature of an input 𝑥. A feature’s
+rank is its index when features are ordered by the absolute value of
+their attribution scores. A feature is considered in the top-𝑘most
+important features if its rank is in the top- 𝑘. For example, if the
+importance scores for a point 𝑥=[𝑥1,𝑥2,𝑥3,𝑥4], output by one ex-
+plainer are𝐸1(𝑥)=[0.1,−0.9,0.3,−0.2], then the most important
+feature is𝑥2and its rank is 1 (for this explainer).
+Feature Agreement counts the number of features 𝑥𝑖such that
+[𝐸1(𝑥)]𝑖and[𝐸2(𝑥)]𝑖are both in the top- 𝑘.Rank Agreement
+counts the number of features in the top- 𝑘with the same rank in
+𝐸1(𝑥)and𝐸2(𝑥).Sign Agreement counts the number of features
+in the top-𝑘such that[𝐸1(𝑥)]𝑖and[𝐸2(𝑥)]𝑖have the same sign.
+Signed Rank Agreement counts the number of features in the
+top-𝑘such that[𝐸1(𝑥)]𝑖and[𝐸2(𝑥)]𝑖agree on both sign and rank.
+Rank Correlation is the correlation between 𝐸1(𝑥)and𝐸2(𝑥)(on
+all features, not just in the top- 𝑘), and is often referred to as the
+Spearman correlation coefficient. Lastly, Pairwise Rank Agree-
+ment counts the number of pairs of features (𝑥𝑖,𝑥𝑗)such that𝐸1
+and𝐸2agree on whether 𝑥𝑖or𝑥𝑗is more important. All of these
+metrics are formalized as fractions and thus range from 0to1,
+except Rank Correlation, which is a correlation measurement and
+ranges from−1to+1. Their formal definitions are provided in
+Appendix A.3.
+In the results that follow, we use all of the metrics defined above
+and reference which one is used where appropriate. When we
+evaluate a metric to measure the agreement between each pair ofexplainers, we average the metric over the test data to measure
+agreement. Both agreement and accuracy measurements are av-
+eraged over several trials (see Appendices A.6 and A.5 for error
+bars).
+4.2 Improving Consensus Metrics
+The intention of our consensus loss term is to improve agreement
+metrics. While the objective function explicitly includes only two
+explainers, we show generalization to unseen explainers as well
+as to the unseen test data. For example, we train for agreement
+between Grad and IntGrad and observe an increase in consensus
+between LIME and SHAP.
+To evaluate the improvement in agreement metrics when using
+our consensus loss term, we compute explanations from each ex-
+plainer on models trained naturally and on models trained with
+our consensus loss parameter using 𝜆=0.5.
+In Figure 4, using a visualization tool developed by Krishna et al.
+[15], we show how we evaluate the change in an agreement metric
+(pairwise rank agreement) between all pairs of explainers on the
+California Housing data.
+Hypothesis: We can increase consensus by deliberately training
+for post hoc explainer agreement.
+Through our experiments, we observe improved agreement met-
+rics on unseen data and on unseen pairs of explainers. In Figure 4
+we show a representative example where Pairwise Rank Agreement
+between Grad and IntGrad improve from 87% to 96% on unseen data.
+Moreover, we can look at two other explainers and see that agree-
+ment between SmoothGrad and LIME improves from 56% to 79%.
+This shows both generalization to unseen data and to explainers
+other than those explicitly used in the loss term. In Appendix A.5,
+we see more saturated disagreement matrices across all of our
+datasets and all six agreement metrics.
+4.3 Consistency At What Cost?
+While training for consensus works to boost agreement, a question
+remains: How accurate are these models?
+To address this question, we first point out that there is a trade-
+off here, i.e., more consensus comes at the cost of accuracy. With
+this in mind we posit that there is a Pareto frontier on the accuracy-
+agreement axes. While we cannot assert that our models are on
+the Pareto frontier, we plot trade-off curves which represent the
+trajectory through accuracy-agreement space that is carved out by
+changing𝜆.
+Hypothesis: We can increase consensus with an acceptable drop
+in accuracy.
+While this hypothesis is phrased as a subjective claim, in reality
+we define acceptable performance as better than a linear model
+as explained at the beginning of Section 4. We see across all three
+datasets that increasing the consensus loss weight 𝜆leads to higher
+pairwise rank agreement between LIME and SHAP. Moreover, even
+with high values of 𝜆, the accuracy stays well above linear models
+indicating that the loss in performance is acceptable. Therefore this
+experiment supports the hypothesis.
+The results plotted in Figure 5 demonstrate that a practitioner
+concerned with agreement can tune 𝜆to meet their needs of accu-
+racy and agreement. This figure serves in part to illuminate why ourReckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.73 0.56 0.83 0.56 0.56
+0.73 1 0.65 0.72 0.69 0.6
+0.56 0.65 1 0.57 0.87 0.7
+0.83 0.72 0.57 1 0.54 0.51
+0.56 0.69 0.87 0.54 1 0.7
+0.56 0.6 0.7 0.51 0.7 1California Housing Data
+Pairwise Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.79 0.79 0.88 0.79 0.79
+0.79 1 0.8 0.81 0.81 0.78
+0.79 0.8 1 0.83 0.96 0.87
+0.88 0.81 0.83 1 0.83 0.81
+0.79 0.81 0.96 0.83 1 0.87
+0.79 0.78 0.87 0.81 0.87 1California Housing Data
+Pairwise Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+Figure 4: When models are trained naturally, we see disagreement among post hoc explainers (left). However, when trained
+with our loss function, we see a boost in agreement with only a small cost in accuracy (right). This can be observed visually
+by the increase in saturation or in more detail by comparing the numbers in corresponding squares.
+74 75 76 77 78 79
+Test Accuracy (%)0.500.550.600.650.70 Pairwise Rank AgreementBank Marketing Data
+LIME vs. SHAP
+Linear Model Acc.
+MLP Baseline
+MLP =0.25
+MLP =0.5
+MLP =0.75
+81 82 83 84 85
+Test Accuracy (%)0.720.760.800.84California Housing Data
+LIME vs. SHAP
+Linear Model Acc.
+MLP Baseline
+MLP =0.25
+MLP =0.5
+MLP =0.75
+73 75 77 79 81
+Test Accuracy (%)0.640.660.680.70Electricity Data
+LIME vs. SHAP
+Linear Model Acc.
+MLP Baseline
+MLP =0.25
+MLP =0.5
+MLP =0.75
+Figure 5: The trade-off curves of consensus and accuracy. Increasing the consensus comes with a drop in accuracy and the
+trade-off is such that we can achieve more agreement and still outperform linear baselines. Moreover, as we vary the 𝜆value,
+we move along the trade-off curve. In all three plots we measure agreement with the pairwise rank agreement metric and we
+show that increased consensus comes with a drop in accuracy, but all of our models are still more accurate than the linear
+baseline, indicated by the vertical dashed line (the shaded region shows ±one standard error).
+hyperparameter choice is sensible— 𝜆gives us control to slide along
+the trade-off curve, making post hoc explanation disagreement
+more of a controllable model parameter so that practitioners have
+more flexibility to make context-specific model design decisions.
+4.4 Are the Explanations Still Valuable?
+Whether our proposed loss is useful in practice is not completely
+answered simply by showing accuracy and agreement. A question
+remains about how our loss might change the explanations in the
+end. Could we see boosted agreement as a result of some breakdown
+in how the explainers work? Perhaps models trained with our lossfool explainers into producing uninformative explanations just to
+appease the agreement term in the loss.
+Hypothesis: We only get consensus trivially, i.e., with feature
+attributions scores that are uninformative.
+Since we have no ground truth for post hoc feature attribution
+scores, we cannot easily evaluate their quality [ 37]. Instead, we
+reject this hypothesis with an experiment wherein we add random
+“junky” features to the input data. In this experiment we show that
+when we introduce junky input features, which by definition have
+no predictive power, our explainers appropriately attribute near
+zero importance to them.Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+Our experimental design is related to other efforts to understand
+explainers. Slack et al. [33] demonstrate an experimental setup
+whereby a model is built with ground-truth knowledge that one
+feature is the only important feature to the model, and the other
+features are unused. They then adversarially attack the model-
+explainer pipeline and measure the frequency with which their
+explainers identify one of the truthfully unimportant features as
+the most important. Our tactic works similarly, since a naturally
+trained model will not rely on random features which have no
+predictive power.
+We measure the frequency with which our explainers place one
+of the junk features in the top- 𝑘most important features, using
+𝑘=5throughout.
+As a representative example, LIME explanations of MLPs trained
+on this augmented Electricity data put random features in the top
+five 11.8% of the time on average. If our loss was encouraging models
+to permit uninformative explanations for the sake of agreement, we
+might see this number rise. However, when trained with 𝜆=0.5,
+random features are only in the top five LIME features 9.1% of the
+time – and random chance would have at least one junk feature in
+the top five over 98% of the time. For results on all three datasets
+and all six expalainers, see Appendix A.4.
+The setting where junk features are most often labelled as one of
+the top five is when using SmoothGrad to explain models trained
+on Bank Marketing data with 𝜆=0, where for 43.1% of the samples,
+at least one of the top five is in fact a junk feature. Interestingly, for
+the same explainer and dataset models trained with 𝜆=0.5lead
+to explanations that have a junk feature as one of the top five less
+than 1% of the time, indicating that our loss can even improve this
+behavior in some settings.
+Therefore, we reject this hypothesis and conclude that the ex-
+planations are not corrupted by training with our loss.
+4.5 Consensus and Linearity
+Since linear models are the gold standard in model explainability,
+one might wonder if our loss is pushing models to be more like
+linear models. We conduct a quantitative and qualitative test to see
+whether our method indeed increases linearity.
+Hypothesis: Encouraging explanation consensus during training
+encourages linearity.
+Qualitative analysis. In their work on model reproducibility,
+Somepalli et al. [36] describe a visualization technique wherein a
+high-dimensional decision surface is plotted in two dimensions.
+Rather than more complex distance preserving projection tactics,
+they argue that the subspace of input space defined by a plane
+spanning three real data points can be a more informative way to
+visualize how a model’s outputs change in high dimensional input
+space. We take the same approach to study how the logit surface of
+our model changes with 𝜆. We take three random points from the
+test set, and interpolate between the three of them to get a planar
+slice of input space. We then compute the logit surface on this plane
+(we arbitrarily choose the logit corresponding to the first class). We
+visualize the contour plots of the logit surface in Figure 6 (more
+visualizations in Section A.7). As we increase 𝜆, we see that the
+shape of the contours often tends toward the contour pattern that
+a linear model takes on that same plane slice of input space.𝜆= 0.00 𝜆= 0.75 𝜆= 0.95 Linear
+Figure 6: Logit surface contour plots on a plane spanning
+three real data points from four different models. Left to
+right: MLPs trained with 𝜆= 0,𝜆= 0.75 and𝜆= 0.95 as well as
+a linear model. Notice that as we increase 𝜆, and move from
+left to right, we get straighter contours in the logit surface.
+Quantitative analysis. We can also measure how close to linear
+a model is quantitatively. The extent to which our models trained
+with higher 𝜆values are close to linear can be measured as follows.
+For each of ten random planes in input space (constructed using
+the three-point method described above), we fit a linear regression
+model to predict the logit value at each point of the plane, and
+measure the mean absolute error. The closer this error term is to
+zero, the more our model’s logits on this input subspace resemble
+a linear model. In Figure 7 we show the error values of the linear
+fit drop as we increase the weight on the consensus loss for the
+Electricity dataset. Thus, these analyses support the hypothesis
+that encouraging consensus encourages linearity.
+But if our consensus training pushes models to be closer to
+linear, does any method that increases the linearity measurement
+also lead to increased consensus? We consider the possibility that
+any approach to make models closer to linear improves consensus
+metrics.
+Hypothesis: Linearity implies more explainer consistency.
+To explore another path toward more linear models, we train a
+set of MLPs without our consensus loss but with various weight
+decay coefficients. In Figure 7, we show a drop in linear-best-fit
+error across the random three-point planes which is similar to the
+drop observed by increasing 𝜆, showing that increasing weight
+decay also encourages models to be closer to linear.
+But when evaluating these MLPs with increasing weight decay
+by their consensus metrics, they show near-zero improvement. We
+therefore reject this hypothesis—linearity alone does not seem to
+be enough to improve consensus on post hoc explanations.
+4.6 Two Loss Terms
+For the majority of experiments, we set 𝜇=0.75, which is deter-
+mined by a coarse grid search. And while it may not be optimal for
+every dataset on every agreement metric, we seek to show that the
+extreme values 𝜇=0and𝜇=1, which each correspond to only
+one correlation term in the loss, can be suboptimal. This ablation
+study serves to justify our choice of incorporating two terms in
+the loss. In Figure 8, we show the agreement-accuracy trade-off for
+multiple values of 𝜇and of𝜆. We see that 𝜇=0.75shows the more
+optimal trade-off curve.
+In Appendix A.7, where we show more plots like Figure 8 for
+other datasets and metrics, we see that the best value of 𝜇varies
+case by case. This demonstrates the importance of having a tunable
+parameter within our consensus loss term to be tweaked for better
+performance.Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+0.0 0.25 0.5 0.75 0.95
+ Value
+0.200.701.201.70 Error of a Linear Fit
+0.0002 0.002 0.02 0.2
+Weight Decay Coefficient
+Electricity Data and Local Linearity
+Figure 7: Sampled linear-best-fit error (MAE) measurements
+as𝜆increases and as the weight decay coefficient increases.
+Both approaches lead to lower error of a linear approxi-
+mation on the Electricity dataset. This indicates that both
+weight decay and consensus training are correlated with lin-
+ear fit. The shaded region corresponds to ±one standard er-
+ror.
+80 81 82 83 84
+Test Accuracy (%)0.400.450.500.550.60 Rank CorrelationCalifornia Housing Data
+LIME vs. SHAP
+MLP Baseline
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+Figure 8: We perform an ablation study of our loss term pa-
+rameter𝜇to show why, when training to improve correla-
+tion between feature attribution scores, using both Spear-
+man and Pearson correlation can be better than using just
+one type of correlation.
+5 DISCUSSION
+The empirical results we present demonstrate that our loss term is
+effective in its goal of boosting consensus among explainers. As with
+any first attempt at introducing a new objective to neural network
+training, we see modest results in some settings and evidence that
+hyperparameters can likely be tuned on a case-by-case basis. It is
+not our aim to leave practitioners with a how-to guide, but rather
+to begin exploring how practitioners can control where a model
+lies along the accuracy-agreement trade-off curve.
+We introduce a loss term measuring two types of correlation
+between explainers, which unfortunately adds more complexity
+to the machine learning engineer’s job of tuning models. But, we
+show conclusively that there are settings in which using both typesof correlation is better than using only one when encouraging
+explanation consensus.
+Another limitation of these experiments as a guide on how to
+train for consensus is that we only trained with one pair of explain-
+ers. Our loss is defined for any pair and perhaps another choice
+would better suit specific applications.
+In light of the contentious debate on whether deep models or
+decision-tree-based methods are better for tabular data [ 10,31,38],
+we argue that developing new tools for training deep models can
+help promote wider adoption for tabular deep learning. Moreover,
+with the results we present in this work, it is our hope that future
+work improves these trends, which could possibly lead to neural
+models that have more agreement (and possibly more accuracy)
+than their tree-based counterparts (such as XGBoost).
+5.1 Future Work
+Armed with the knowledge that training for consensus with PEAR
+is possible, we describe several exciting directions for future work.
+First, as alluded to above, we explored training with only one pair
+of explainers, but other pairs may help data scientists who have a
+specific type of target agreement. Work to better understand how
+a given pair of explainers in the loss affects the agreement of other
+explainers at test time could lead to principled decisions about
+how to use our loss in practice. Indeed, PEAR could fit into larger
+learning frameworks [ 22] that aim to select user- and task-specific
+explanation methods automatically.
+It will be crucial to study the quality of explanations produced
+with PEAR from a human perspective. Ultimately, both the efficacy
+of a single explanation and the efficacy of agreement between
+multiple explanations is tied to how the explanations are used and
+interpreted. Since our work only takes a quantitative approach
+to demonstrate improvement when regularizing for explanation
+consensus, it remains to be seen whether actual human practitioners
+would make better judgments about models trained with PEAR vs
+models trained naturally.
+In terms of model architecture, we chose standard sized MLPs
+for the experiments on our tabular datasets. Recent work proposes
+transformers [ 35] and even ResNets [ 10] for tabular data, so com-
+pletely different architectures could also be examined in future
+work as well.
+Finally, research into developing better explainers could lead to
+an even more powerful consensus loss term. Recall that IntGrad
+integrates the gradients over a path in input space. The designers of
+that algorithm point out that a straight path is the canonical choice
+due to its simplicity and symmetry [ 37]. Other paths through input
+space that include more realistic data points, instead of paths of
+points constructed via linear interpolation, could lead to even better
+agreement metrics on actual data.
+5.2 Conclusion
+In the quest for fair and accessible deep learning, balancing in-
+terpretability and performance are key. It is known that common
+explainers may return conflicting results on the same model and
+input, to the detriment of an end user. The gains in explainer con-
+sensus we achieve with our method, however modest, serve to kick
+start others to improve on our work in aligning machine learningAvi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+models with the practical challenge of interpreting complex models
+for real-life stakeholders.
+ACKNOWLEDGEMENTS
+We thank Teresa Datta and Daniel Nissani at Arthur for their in-
+sights throughout the course of the project. We also thank Satyapriya
+Krishna, one of the authors of the original Disagreement Problem
+paper, for informative email exchanges that helped shape our ex-
+periments.
+REFERENCES
+[1]Sercan Ö Arik and Tomas Pfister. Tabnet: Attentive interpretable tabular learning.
+InProceedings of the AAAI Conference on Artificial Intelligence , volume 35-8, pages
+6679–6687, 2021.
+[2]Umang Bhatt, Adrian Weller, and José M. F. Moura. Evaluating and aggregating
+feature-based model explanations. CoRR , abs/2005.00631, 2020. URL https:
+//arxiv.org/abs/2005.00631.
+[3]Mathieu Blondel, Olivier Teboul, Quentin Berthet, and Josip Djolonga. Fast dif-
+ferentiable sorting and ranking. In International Conference on Machine Learning
+(ICML) , pages 950–959. PMLR, 2020.
+[4]Rishi Bommasani, Drew A Hudson, Ehsan Adeli, Russ Altman, Simran Arora,
+Sydney von Arx, Michael S Bernstein, Jeannette Bohg, Antoine Bosselut, Emma
+Brunskill, et al. On the opportunities and risks of foundation models. arXiv
+preprint arXiv:2108.07258 , 2021.
+[5]Vanessa Buhrmester, David Münch, and Michael Arens. Analysis of explainers of
+black box deep neural networks for computer vision: A survey. Machine Learning
+and Knowledge Extraction , 3(4):966–989, 2021.
+[6]Tianqi Chen and Carlos Guestrin. Xgboost: A scalable tree boosting system. In
+International Conference on Knowledge Discovery and Data Mining (KDD) , pages
+785–794, 2016.
+[7]Finale Doshi-Velez and Been Kim. Towards a rigorous science of interpretable
+machine learning. arXiv preprint arXiv:1702.08608 , 2017.
+[8]Marzyeh Ghassemi, Luke Oakden-Rayner, and Andrew L Beam. The false hope
+of current approaches to explainable artificial intelligence in health care. The
+Lancet Digital Health , 3(11):e745–e750, 2021.
+[9]Amirata Ghorbani, James Wexler, James Y Zou, and Been Kim. Towards automatic
+concept-based explanations. Conference on Neural Information Processing Systems
+(NeurIPS) , 32, 2019.
+[10] Yury Gorishniy, Ivan Rubachev, Valentin Khrulkov, and Artem Babenko. Re-
+visiting deep learning models for tabular data. Advances in Neural Information
+Processing Systems , 34:18932–18943, 2021.
+[11] Léo Grinsztajn, Edouard Oyallon, and Gaël Varoquaux. Why do tree-based
+models still outperform deep learning on typical tabular data? Conference on
+Neural Information Processing Systems (NeurIPS) Datasets and Benchmarks Track ,
+2022.
+[12] Tessa Han, Suraj Srinivas, and Himabindu Lakkaraju. Which explanation should
+I choose? A function approximation perspective to characterizing post-hoc ex-
+planations. arXiv preprint arXiv:2206.01254 , 2022.
+[13] Sérgio Jesus, Catarina Belém, Vladimir Balayan, João Bento, Pedro Saleiro, Pedro
+Bizarro, and João Gama. How can I choose an explainer? An application-grounded
+evaluation of post-hoc explanations. In Conference on Fairness, Accountability,
+and Transparency (FAccT) , pages 805–815, 2021.
+[14] Pang Wei Koh, Thao Nguyen, Yew Siang Tang, Stephen Mussmann, Emma Pier-
+son, Been Kim, and Percy Liang. Concept bottleneck models. In International
+Conference on Machine Learning (ICML) , pages 5338–5348, 2020.
+[15] Satyapriya Krishna, Tessa Han, Alex Gu, Javin Pombra, Shahin Jabbari, Steven Wu,
+and Himabindu Lakkaraju. The disagreement problem in explainable machine
+learning: A practitioner’s perspective. arXiv preprint arXiv:2202.01602 , 2022.
+[16] Gabriel Laberge, Yann Pequignot, Foutse Khomh, Mario Marchand, and Alexandre
+Mathieu. Partial order: Finding consensus among uncertain feature attributions.
+CoRR , abs/2110.13369, 2021. URL https://arxiv.org/abs/2110.13369.
+[17] Roman Levin, Valeriia Cherepanova, Avi Schwarzschild, Arpit Bansal, C Bayan
+Bruss, Tom Goldstein, Andrew Gordon Wilson, and Micah Goldblum. Transfer
+learning with deep tabular models. arXiv preprint arXiv:2206.15306 , 2022.
+[18] Zachary C Lipton. The mythos of model interpretability: In machine learning,
+the concept of interpretability is both important and slippery. Queue , 16(3):31–57,
+2018.
+[19] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. arXiv
+preprint arXiv:1711.05101 , 2017.
+[20] Yin Lou, Rich Caruana, and Johannes Gehrke. Intelligible models for classification
+and regression. In International Conference on Knowledge Discovery and Data
+Mining (KDD) , pages 150–158, 2012.[21] Scott M Lundberg and Su-In Lee. A unified approach to interpreting model
+predictions. Conference on Neural Information Processing Systems (NeurIPS) , 30,
+2017.
+[22] Vedant Nanda, Duncan C. McElfresh, and John P. Dickerson. Learning to explain
+machine learning. In Operationalizing Human-Centered Perspectives in Explainable
+AI (HCXAI) Workshop at CHI-21 , 2021.
+[23] Petru Rares Sincraian PePy. PePy pypi download stats. pepy.tech, 2023. Accessed:
+2023-01-25.
+[24] Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin. “why should I trust
+you?” explaining the predictions of any classifier. In International Conference on
+Knowledge Discovery and Data Mining (KDD) , pages 1135–1144, 2016.
+[25] Laura Rieger and Lars Kai Hansen. Aggregating explainability methods for
+neural networks stabilizes explanations. CoRR , abs/1903.00519, 2019. URL http:
+//arxiv.org/abs/1903.00519.
+[26] Laura Rieger, Chandan Singh, W. James Murdoch, and Bin Yu. Interpretations are
+useful: penalizing explanations to align neural networks with prior knowledge.
+CoRR , abs/1909.13584, 2019. URL http://arxiv.org/abs/1909.13584.
+[27] Andrew Slavin Ross, Michael C Hughes, and Finale Doshi-Velez. Right for the
+right reasons: Training differentiable models by constraining their explanations.
+arXiv preprint arXiv:1703.03717 , 2017.
+[28] Ivan Rubachev, Artem Alekberov, Yury Gorishniy, and Artem Babenko. Revisiting
+pretraining objectives for tabular deep learning. arXiv preprint arXiv:2207.03208 ,
+2022.
+[29] Cynthia Rudin. Stop explaining black box machine learning models for high
+stakes decisions and use interpretable models instead. Nature Machine Intelligence ,
+1(5):206–215, 2019.
+[30] Avanti Shrikumar, Peyton Greenside, and Anshul Kundaje. Learning important
+features through propagating activation differences. In International Conference
+on Machine Learning (ICML) , pages 3145–3153. PMLR, 2017.
+[31] Ravid Shwartz-Ziv and Amitai Armon. Tabular data: Deep learning is not all you
+need. Information Fusion , 81:84–90, 2022.
+[32] Karen Simonyan, Andrea Vedaldi, and Andrew Zisserman. Deep inside convo-
+lutional networks: Visualising image classification models and saliency maps.
+arXiv preprint arXiv:1312.6034 , 2013.
+[33] Dylan Slack, Sophie Hilgard, Emily Jia, Sameer Singh, and Himabindu Lakkaraju.
+Fooling LIME and SHAP: Adversarial attacks on post hoc explanation methods.
+InConference on Artificial Intelligence, Ethics, and Society (AIES) , page 180–186,
+2020.
+[34] Daniel Smilkov, Nikhil Thorat, Been Kim, Fernanda Viégas, and Martin Wat-
+tenberg. Smoothgrad: removing noise by adding noise. arXiv preprint
+arXiv:1706.03825 , 2017.
+[35] Gowthami Somepalli, Micah Goldblum, Avi Schwarzschild, C Bayan Bruss, and
+Tom Goldstein. SAINT: Improved neural networks for tabular data via row
+attention and contrastive pre-training. arXiv preprint arXiv:2106.01342 , 2021.
+[36] Gowthami Somepalli, Liam Fowl, Arpit Bansal, Ping Yeh-Chiang, Yehuda Dar,
+Richard Baraniuk, Micah Goldblum, and Tom Goldstein. Can neural nets learn
+the same model twice? Investigating reproducibility and double descent from
+the decision boundary perspective. In Computer Vision and Pattern Recognition
+Conference (CVPR) , pages 13699–13708, 2022.
+[37] Mukund Sundararajan, Ankur Taly, and Qiqi Yan. Axiomatic attribution for
+deep networks. In International Conference on Machine Learning (ICML) , pages
+3319–3328. PMLR, 2017.
+[38] Bojan Tunguz @tunguz. Tweet, 2023. URL https://twitter.com/tunguz/status/
+1618343510784249856?s=20&t=e3EG7tg3pM398-dqzsw3UQ.
+[39] Joaquin Vanschoren, Jan N. van Rijn, Bernd Bischl, and Luis Torgo. Openml:
+networked science in machine learning. SIGKDD Explorations , 15(2):49–60, 2013.
+doi: 10.1145/2641190.2641198. URL http://doi.acm.org/10.1145/2641190.264119.
+[40] Fulton Wang and Cynthia Rudin. Falling rule lists. In International Conference
+on Artificial Intelligence and Statistics (AISTATS) , pages 1013–1022. PMLR, 2015.
+[41] Ethan Weinberger, Joseph D. Janizek, and Su-In Lee. Learned feature attribution
+priors. CoRR , abs/1912.10065, 2019. URL http://arxiv.org/abs/1912.10065.Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+A APPENDIX
+A.1 Datasets
+In our experiments we use tabular datasets originally from OpenML and compiled into a set of benchmark datasets from the Inria-Soda team
+on HuggingFace [11]. We provide some details about each dataset:
+Bank Marketing This is a binary classification dataset with six input features and is approximately class balanced. We train on 7,933
+training samples and test on the remaining 2,645 samples.
+California Housing This is a binary classification dataset with seven input features and is approximately class balanced. We train on
+15,475 training samples and test on the remaining 5,159 samples.
+Electricity This is a binary classification dataset with seven input features and is approximately class balanced. We train on 28,855
+training samples and test on the remaining 9,619 samples.
+A.2 Hyperparamters
+Many of our hyperparameters are constant across all of our experiments. For example, all MLPs are trained with a batch size of 64, and initial
+learning rate of 0.0005 . Also, all the MLPs we study are 3 hidden layers of 100 neurons each. We always use the AdamW optimizer [ 19]. The
+number of epochs varies from case to case. For all three datasets, we train for 30 epochs when 𝜆∈{0.0,0.25}and 50 epochs otherwise.
+When training linear models, we use 10 epochs and an initial learning rate of 0.1.
+A.3 Disagreement Metrics
+We define each of the six agreement metrics used in our work here.
+The first four metrics depend on the top- 𝑘most important features in each explanation. Let 𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸,𝑘)represent the top- 𝑘most
+important features in an explanation 𝐸, let𝑟𝑎𝑛𝑘(𝐸,𝑠)be the importance rank of the feature 𝑠within explanation 𝐸, and let𝑠𝑖𝑔𝑛(𝐸,𝑠)be the
+sign (positive, negative, or zero) of the importance score of feature 𝑠in explanation 𝐸.
+Feature Agreement
+|𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸1,𝑘)∩𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸2,𝑘)|
+𝑘(4)
+Rank Agreement
+|Ð
+𝑠∈𝑆{𝑠∈𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸1,𝑘)∧𝑠∈𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸2,𝑘)∧𝑟𝑎𝑛𝑘(𝐸1,𝑠)=𝑟𝑎𝑛𝑘(𝐸2,𝑠)}|
+𝑘(5)
+Sign Agreement
+|Ð
+𝑠∈𝑆{𝑠∈𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸1,𝑘)∧𝑠∈𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸2,𝑘)∧𝑠𝑖𝑔𝑛(𝐸1,𝑠)=𝑠𝑖𝑔𝑛𝑟𝑎𝑛𝑘(𝐸2,𝑠)}|
+𝑘(6)
+Signed Rank Agreement
+|Ð
+𝑠∈𝑆{𝑠∈𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸1,𝑘)∧𝑠∈𝑡𝑜𝑝_𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠(𝐸2,𝑘)∧𝑟𝑎𝑛𝑘(𝐸1,𝑠)=𝑟𝑎𝑛𝑘(𝐸2,𝑠)∧𝑠𝑖𝑔𝑛(𝐸1,𝑠)=𝑠𝑖𝑔𝑛(𝐸2,𝑠)}|
+𝑘(7)
+The next two agreement metrics depend on all features within each explanation, not just the top- 𝑘. Let𝑅be a function that computes the
+ranking of features within an explanation by importance.
+Rank Correlation
+∑︁
+𝑖(𝑅(𝑎)𝑖−𝑅(𝑎))(𝑅(𝑏)𝑖−𝑅(𝑏))
+∥𝑅(𝑎)∥∥𝑅(𝑏)∥(8)
+Lastly, let𝑅𝑒𝑙𝑅(𝐸,𝑓𝑖,𝑓𝑗)be a relative ranking function that returns 1 when feature 𝑓𝑖has higher importance than feature 𝑓𝑗in explanation
+𝐸, and let𝐹be any set of features.
+Pairwise Rank AgreementÍ
+𝑖<𝑗1[𝑅𝑒𝑙𝑅(𝐸1,𝑓𝑖,𝑓𝑗)=𝑅𝑒𝑙𝑅(𝐸2,𝑓𝑖,𝑓𝑗)]
+ |𝐹|
+2 (9)
+(Note: Krishna et al. [15] specify in their paper that 𝐹is to be a set of features specified by an end user, but in our experiments we use all
+features with this metric).
+A.4 Junk Feature Experiment Results
+When we add random features for the experiment in Section 4.4, we double the number of features. We do this to check whether our
+consensus loss damages explanation quality by placing irrelevant features in the top- 𝐾more often than models trained naturally. In Table 1,
+we report the percentage of the time that each explainer included one of the random features in the top-5 most important features. We
+observe that across the board, we do not see a systematic increase of these percentages between 𝜆=0.0(a baseline MLP without our
+consensus loss) and 𝜆=0.5(an MLP trained with our consensus loss).Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+Table 1: Frequency of junk features getting top- 5ranks, measured in percent.
+LIME SHAP GRAD Input*Grad IntGrad SmoothGrad Random Chance
+Bank Marketing𝜆=0.0 30.4 17.1 1.1 43.2 0.0 43.198.9𝜆=0.5 25.1 12.0 0.1 34.9 0.0 0.1
+California Housing𝜆=0.0 22.6 8.7 0.0 24.8 0.0 0.398.5𝜆=0.5 21.2 20.4 1.4 25.9 1.4 0.9
+Eelectricity𝜆=0.0 11.8 16.0 4.0 15.8 0.9 6.898.5𝜆=0.5 9.1 9.5 1.7 8.6 0.8 3.1
+A.5 More Disagreement Matrices
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.66 0.67 0.9 0.65 0.7
+0.66 1 0.79 0.66 0.78 0.75
+0.67 0.79 1 0.66 0.87 0.76
+0.9 0.66 0.66 1 0.63 0.69
+0.65 0.78 0.87 0.63 1 0.76
+0.7 0.75 0.76 0.69 0.76 1Bank Marketing Data
+Feature Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.71 0.71 0.9 0.71 0.69
+0.71 1 0.85 0.69 0.86 0.82
+0.71 0.85 1 0.67 0.97 0.91
+0.9 0.69 0.67 1 0.67 0.66
+0.71 0.86 0.97 0.67 1 0.92
+0.69 0.82 0.91 0.66 0.92 1Bank Marketing Data
+Feature Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.005 0.004 0.009 0.016
+0.007 0 0.004 0.005 0.007 0.013
+0.005 0.004 0 0.004 0.005 0.011
+0.004 0.005 0.004 0 0.003 0.018
+0.009 0.007 0.005 0.003 0 0.021
+0.016 0.013 0.011 0.018 0.021 0Bank Marketing Data
+Feature Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.019 0.018 0.011 0.019 0.013
+0.019 0 0.018 0.018 0.019 0.008
+0.018 0.018 0 0.018 0.004 0.018
+0.011 0.018 0.018 0 0.018 0.015
+0.019 0.019 0.004 0.018 0 0.02
+0.013 0.008 0.018 0.015 0.02 0Bank Marketing Data
+Feature Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.5 0.49 0.8 0.47 0.57
+0.5 1 0.67 0.5 0.68 0.65
+0.49 0.67 1 0.53 0.81 0.66
+0.8 0.5 0.53 1 0.46 0.57
+0.47 0.68 0.81 0.46 1 0.68
+0.57 0.65 0.66 0.57 0.68 1Bank Marketing Data
+Pairwise Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.59 0.58 0.85 0.59 0.57
+0.59 1 0.74 0.57 0.74 0.71
+0.58 0.74 1 0.57 0.97 0.9
+0.85 0.57 0.57 1 0.56 0.55
+0.59 0.74 0.97 0.56 1 0.91
+0.57 0.71 0.9 0.55 0.91 1Bank Marketing Data
+Pairwise Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.012 0.005 0.02 0.03
+0.007 0 0.007 0.006 0.007 0.025
+0.012 0.007 0 0.005 0.006 0.014
+0.005 0.006 0.005 0 0.011 0.025
+0.02 0.007 0.006 0.011 0 0.024
+0.03 0.025 0.014 0.025 0.024 0Bank Marketing Data
+Pairwise Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.014 0.016 0.006 0.016 0.009
+0.014 0 0.024 0.01 0.024 0.021
+0.016 0.024 0 0.01 0.001 0.01
+0.006 0.01 0.01 0 0.011 0.008
+0.016 0.024 0.001 0.011 0 0.011
+0.009 0.021 0.01 0.008 0.011 0Bank Marketing Data
+Pairwise Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.17 0.17 0.33 0.2 0.25
+0.17 1 0.21 0.17 0.2 0.26
+0.17 0.21 1 0.18 0.43 0.25
+0.33 0.17 0.18 1 0.21 0.2
+0.2 0.2 0.43 0.21 1 0.28
+0.25 0.26 0.25 0.2 0.28 1Bank Marketing Data
+Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.22 0.25 0.46 0.26 0.28
+0.22 1 0.27 0.23 0.27 0.27
+0.25 0.27 1 0.22 0.86 0.59
+0.46 0.23 0.22 1 0.22 0.23
+0.26 0.27 0.86 0.22 1 0.62
+0.28 0.27 0.59 0.23 0.62 1Bank Marketing Data
+Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.002 0.005 0.004 0.011 0.011
+0.002 0 0.005 0.002 0.007 0.016
+0.005 0.005 0 0.003 0.008 0.009
+0.004 0.002 0.003 0 0.01 0.007
+0.011 0.007 0.008 0.01 0 0.032
+0.011 0.016 0.009 0.007 0.032 0Bank Marketing Data
+Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.003 0.014 0.01 0.014 0.015
+0.003 0 0.013 0.004 0.013 0.012
+0.014 0.013 0 0.009 0.007 0.033
+0.01 0.004 0.009 0 0.01 0.009
+0.014 0.013 0.007 0.01 0 0.037
+0.015 0.012 0.033 0.009 0.037 0Bank Marketing Data
+Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.011 -0.011 0.72 -0.059 0.19
+0.011 1 0.46 0.048 0.46 0.37
+-0.011 0.46 1 0.059 0.72 0.4
+0.72 0.048 0.059 1 -0.15 0.18
+-0.059 0.46 0.72 -0.15 1 0.45
+0.19 0.37 0.4 0.18 0.45 1Bank Marketing Data
+Rank Correlation
+ = 0.0
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.24 0.22 0.83 0.23 0.21
+0.24 1 0.59 0.22 0.6 0.54
+0.22 0.59 1 0.17 0.97 0.89
+0.83 0.22 0.17 1 0.15 0.14
+0.23 0.6 0.97 0.15 1 0.91
+0.21 0.54 0.89 0.14 0.91 1Bank Marketing Data
+Rank Correlation
+ = 0.5
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.019 0.03 0.012 0.052 0.068
+0.019 0 0.02 0.016 0.021 0.061
+0.03 0.02 0 0.019 0.012 0.036
+0.012 0.016 0.019 0 0.034 0.06
+0.052 0.021 0.012 0.034 0 0.061
+0.068 0.061 0.036 0.06 0.061 0Bank Marketing Data
+Rank Correlation (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.032 0.037 0.012 0.037 0.022
+0.032 0 0.055 0.023 0.054 0.047
+0.037 0.055 0 0.034 0.001 0.015
+0.012 0.023 0.034 0 0.034 0.025
+0.037 0.054 0.001 0.034 0 0.016
+0.022 0.047 0.015 0.025 0.016 0Bank Marketing Data
+Rank Correlation (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.28 0.55 0.68 0.6 0.52
+0.28 1 0.19 0.27 0.21 0.26
+0.55 0.19 1 0.62 0.83 0.66
+0.68 0.27 0.62 1 0.52 0.49
+0.6 0.21 0.83 0.52 1 0.7
+0.52 0.26 0.66 0.49 0.7 1Bank Marketing Data
+Sign Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.3 0.61 0.73 0.63 0.6
+0.3 1 0.24 0.3 0.26 0.24
+0.61 0.24 1 0.61 0.96 0.88
+0.73 0.3 0.61 1 0.59 0.54
+0.63 0.26 0.96 0.59 1 0.89
+0.6 0.24 0.88 0.54 0.89 1Bank Marketing Data
+Sign Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.007 0.006 0.006 0.013
+0.007 0 0.004 0.004 0.003 0.01
+0.007 0.004 0 0.003 0.007 0.012
+0.006 0.004 0.003 0 0.006 0.02
+0.006 0.003 0.007 0.006 0 0.019
+0.013 0.01 0.012 0.02 0.019 0Bank Marketing Data
+Sign Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.014 0.022 0.013 0.012
+0.007 0 0.006 0.003 0.006 0.008
+0.014 0.006 0 0.017 0.003 0.024
+0.022 0.003 0.017 0 0.018 0.014
+0.013 0.006 0.003 0.018 0 0.026
+0.012 0.008 0.024 0.014 0.026 0Bank Marketing Data
+Sign Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.093 0.15 0.25 0.19 0.22
+0.093 1 0.052 0.078 0.063 0.088
+0.15 0.052 1 0.17 0.41 0.23
+0.25 0.078 0.17 1 0.17 0.15
+0.19 0.063 0.41 0.17 1 0.25
+0.22 0.088 0.23 0.15 0.25 1Bank Marketing Data
+Signed Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.12 0.23 0.39 0.25 0.26
+0.12 1 0.093 0.13 0.096 0.098
+0.23 0.093 1 0.22 0.85 0.58
+0.39 0.13 0.22 1 0.22 0.22
+0.25 0.096 0.85 0.22 1 0.61
+0.26 0.098 0.58 0.22 0.61 1Bank Marketing Data
+Signed Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.007 0.006 0.006 0.013
+0.007 0 0.004 0.004 0.003 0.01
+0.007 0.004 0 0.003 0.007 0.012
+0.006 0.004 0.003 0 0.006 0.02
+0.006 0.003 0.007 0.006 0 0.019
+0.013 0.01 0.012 0.02 0.019 0Bank Marketing Data
+Sign Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.014 0.022 0.013 0.012
+0.007 0 0.006 0.003 0.006 0.008
+0.014 0.006 0 0.017 0.003 0.024
+0.022 0.003 0.017 0 0.018 0.014
+0.013 0.006 0.003 0.018 0 0.026
+0.012 0.008 0.024 0.014 0.026 0Bank Marketing Data
+Sign Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+Figure 9: Disagreement matrices for all metrics considered in this paper on Bank Marketing data.Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.76 0.7 0.82 0.72 0.7
+0.76 1 0.78 0.73 0.81 0.74
+0.7 0.78 1 0.71 0.91 0.74
+0.82 0.73 0.71 1 0.69 0.66
+0.72 0.81 0.91 0.69 1 0.74
+0.7 0.74 0.74 0.66 0.74 1California Housing Data
+Feature Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.81 0.81 0.89 0.81 0.81
+0.81 1 0.81 0.83 0.81 0.8
+0.81 0.81 1 0.88 0.98 0.91
+0.89 0.83 0.88 1 0.87 0.84
+0.81 0.81 0.98 0.87 1 0.91
+0.81 0.8 0.91 0.84 0.91 1California Housing Data
+Feature Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.006 0.01 0.005 0.012 0.023
+0.006 0 0.007 0.007 0.009 0.022
+0.01 0.007 0 0.008 0.007 0.019
+0.005 0.007 0.008 0 0.008 0.017
+0.012 0.009 0.007 0.008 0 0.029
+0.023 0.022 0.019 0.017 0.029 0California Housing Data
+Feature Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.009 0.025 0.012 0.026 0.014
+0.009 0 0.029 0.021 0.029 0.018
+0.025 0.029 0 0.039 0.016 0.028
+0.012 0.021 0.039 0 0.038 0.023
+0.026 0.029 0.016 0.038 0 0.028
+0.014 0.018 0.028 0.023 0.028 0California Housing Data
+Feature Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.73 0.56 0.83 0.56 0.56
+0.73 1 0.65 0.72 0.69 0.6
+0.56 0.65 1 0.57 0.87 0.7
+0.83 0.72 0.57 1 0.54 0.51
+0.56 0.69 0.87 0.54 1 0.7
+0.56 0.6 0.7 0.51 0.7 1California Housing Data
+Pairwise Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.79 0.79 0.88 0.79 0.79
+0.79 1 0.8 0.81 0.81 0.78
+0.79 0.8 1 0.83 0.96 0.87
+0.88 0.81 0.83 1 0.83 0.81
+0.79 0.81 0.96 0.83 1 0.87
+0.79 0.78 0.87 0.81 0.87 1California Housing Data
+Pairwise Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.01 0.005 0.015 0.027
+0.007 0 0.004 0.005 0.006 0.025
+0.01 0.004 0 0.006 0.003 0.021
+0.005 0.005 0.006 0 0.008 0.025
+0.015 0.006 0.003 0.008 0 0.028
+0.027 0.025 0.021 0.025 0.028 0California Housing Data
+Pairwise Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.004 0.009 0.007 0.008 0.008
+0.004 0 0.009 0.005 0.008 0.007
+0.009 0.009 0 0.02 0.013 0.024
+0.007 0.005 0.02 0 0.017 0.01
+0.008 0.008 0.013 0.017 0 0.026
+0.008 0.007 0.024 0.01 0.026 0California Housing Data
+Pairwise Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.17 0.11 0.46 0.1 0.17
+0.17 1 0.085 0.18 0.06 0.11
+0.11 0.085 1 0.11 0.49 0.33
+0.46 0.18 0.11 1 0.12 0.14
+0.1 0.06 0.49 0.12 1 0.32
+0.17 0.11 0.33 0.14 0.32 1California Housing Data
+Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.27 0.27 0.61 0.25 0.3
+0.27 1 0.32 0.3 0.36 0.26
+0.27 0.32 1 0.31 0.84 0.52
+0.61 0.3 0.31 1 0.29 0.28
+0.25 0.36 0.84 0.29 1 0.53
+0.3 0.26 0.52 0.28 0.53 1California Housing Data
+Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.006 0.006 0.016 0.012 0.011
+0.006 0 0.003 0.006 0.003 0.012
+0.006 0.003 0 0.003 0.014 0.019
+0.016 0.006 0.003 0 0.009 0.011
+0.012 0.003 0.014 0.009 0 0.013
+0.011 0.012 0.019 0.011 0.013 0California Housing Data
+Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.015 0.025 0.011 0.027 0.024
+0.015 0 0.025 0.018 0.029 0.023
+0.025 0.025 0 0.031 0.024 0.044
+0.011 0.018 0.031 0 0.035 0.03
+0.027 0.029 0.024 0.035 0 0.05
+0.024 0.023 0.044 0.03 0.05 0California Housing Data
+Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.61 0.19 0.78 0.19 0.15
+0.61 1 0.4 0.59 0.51 0.27
+0.19 0.4 1 0.21 0.85 0.51
+0.78 0.59 0.21 1 0.13 0.022
+0.19 0.51 0.85 0.13 1 0.51
+0.15 0.27 0.51 0.022 0.51 1California Housing Data
+Rank Correlation
+ = 0.0
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.75 0.74 0.88 0.74 0.74
+0.75 1 0.76 0.79 0.77 0.73
+0.74 0.76 1 0.82 0.96 0.86
+0.88 0.79 0.82 1 0.81 0.77
+0.74 0.77 0.96 0.81 1 0.86
+0.74 0.73 0.86 0.77 0.86 1California Housing Data
+Rank Correlation
+ = 0.5
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.023 0.029 0.01 0.044 0.072
+0.023 0 0.012 0.011 0.019 0.067
+0.029 0.012 0 0.015 0.007 0.044
+0.01 0.011 0.015 0 0.019 0.067
+0.044 0.019 0.007 0.019 0 0.06
+0.072 0.067 0.044 0.067 0.06 0California Housing Data
+Rank Correlation (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.006 0.016 0.01 0.015 0.02
+0.006 0 0.019 0.007 0.019 0.018
+0.016 0.019 0 0.032 0.015 0.032
+0.01 0.007 0.032 0 0.03 0.02
+0.015 0.019 0.015 0.03 0 0.036
+0.02 0.018 0.032 0.02 0.036 0California Housing Data
+Rank Correlation (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.32 0.69 0.76 0.7 0.64
+0.32 1 0.26 0.32 0.26 0.25
+0.69 0.26 1 0.71 0.9 0.67
+0.76 0.32 0.71 1 0.67 0.56
+0.7 0.26 0.9 0.67 1 0.68
+0.64 0.25 0.67 0.56 0.68 1California Housing Data
+Sign Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.37 0.78 0.83 0.78 0.76
+0.37 1 0.34 0.39 0.34 0.35
+0.78 0.34 1 0.88 0.97 0.85
+0.83 0.39 0.88 1 0.86 0.77
+0.78 0.34 0.97 0.86 1 0.86
+0.76 0.35 0.85 0.77 0.86 1California Housing Data
+Sign Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.008 0.015 0.008 0.019 0.041
+0.008 0 0.005 0.004 0.004 0.01
+0.015 0.005 0 0.008 0.009 0.032
+0.008 0.004 0.008 0 0.011 0.033
+0.019 0.004 0.009 0.011 0 0.043
+0.041 0.01 0.032 0.033 0.043 0California Housing Data
+Sign Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.005 0.018 0.014 0.014 0.021
+0.005 0 0.019 0.006 0.017 0.016
+0.018 0.019 0 0.039 0.02 0.052
+0.014 0.006 0.039 0 0.033 0.016
+0.014 0.017 0.02 0.033 0 0.052
+0.021 0.016 0.052 0.016 0.052 0California Housing Data
+Sign Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.062 0.1 0.43 0.096 0.15
+0.062 1 0.042 0.068 0.02 0.052
+0.1 0.042 1 0.11 0.48 0.31
+0.43 0.068 0.11 1 0.12 0.12
+0.096 0.02 0.48 0.12 1 0.31
+0.15 0.052 0.31 0.12 0.31 1California Housing Data
+Signed Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.14 0.25 0.57 0.24 0.28
+0.14 1 0.13 0.15 0.15 0.1
+0.25 0.13 1 0.31 0.84 0.49
+0.57 0.15 0.31 1 0.28 0.26
+0.24 0.15 0.84 0.28 1 0.49
+0.28 0.1 0.49 0.26 0.49 1California Housing Data
+Signed Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.003 0.007 0.019 0.012 0.016
+0.003 0 0.003 0.003 0.003 0.009
+0.007 0.003 0 0.003 0.015 0.018
+0.019 0.003 0.003 0 0.008 0.011
+0.012 0.003 0.015 0.008 0 0.017
+0.016 0.009 0.018 0.011 0.017 0California Housing Data
+Signed Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.005 0.027 0.011 0.026 0.031
+0.005 0 0.012 0.009 0.012 0.013
+0.027 0.012 0 0.031 0.026 0.057
+0.011 0.009 0.031 0 0.035 0.03
+0.026 0.012 0.026 0.035 0 0.064
+0.031 0.013 0.057 0.03 0.064 0California Housing Data
+Signed Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+Figure 10: Disagreement matrices for all metrics considered in this paper on California Housing data.
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.72 0.64 0.8 0.64 0.66
+0.72 1 0.67 0.72 0.68 0.63
+0.64 0.67 1 0.75 0.75 0.67
+0.8 0.72 0.75 1 0.64 0.59
+0.64 0.68 0.75 0.64 1 0.68
+0.66 0.63 0.67 0.59 0.68 1Electricity Data
+Feature Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.78 0.76 0.85 0.77 0.78
+0.78 1 0.79 0.79 0.8 0.76
+0.76 0.79 1 0.82 0.92 0.84
+0.85 0.79 0.82 1 0.79 0.75
+0.77 0.8 0.92 0.79 1 0.84
+0.78 0.76 0.84 0.75 0.84 1Electricity Data
+Feature Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.006 0.005 0.003 0.009 0.017
+0.006 0 0.002 0.002 0.005 0.016
+0.005 0.002 0 0.004 0.007 0.004
+0.003 0.002 0.004 0 0.008 0.009
+0.009 0.005 0.007 0.008 0 0.005
+0.017 0.016 0.004 0.009 0.005 0Electricity Data
+Feature Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.013 0.024 0.013 0.023 0.022
+0.013 0 0.021 0.01 0.022 0.021
+0.024 0.021 0 0.025 0.016 0.019
+0.013 0.01 0.025 0 0.023 0.022
+0.023 0.022 0.016 0.023 0 0.019
+0.022 0.021 0.019 0.022 0.019 0Electricity Data
+Feature Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.64 0.58 0.73 0.58 0.6
+0.64 1 0.6 0.64 0.61 0.55
+0.58 0.6 1 0.69 0.74 0.66
+0.73 0.64 0.69 1 0.57 0.48
+0.58 0.61 0.74 0.57 1 0.65
+0.6 0.55 0.66 0.48 0.65 1Electricity Data
+Pairwise Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.69 0.68 0.81 0.69 0.71
+0.69 1 0.7 0.72 0.71 0.67
+0.68 0.7 1 0.74 0.93 0.85
+0.81 0.72 0.74 1 0.72 0.66
+0.69 0.71 0.93 0.72 1 0.86
+0.71 0.67 0.85 0.66 0.86 1Electricity Data
+Pairwise Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.014 0.007 0.006 0.012 0.018
+0.014 0 0.002 0.005 0.005 0.025
+0.007 0.002 0 0.003 0.009 0.004
+0.006 0.005 0.003 0 0.009 0.015
+0.012 0.005 0.009 0.009 0 0.005
+0.018 0.025 0.004 0.015 0.005 0Electricity Data
+Pairwise Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.01 0.022 0.013 0.022 0.021
+0.01 0 0.022 0.007 0.022 0.023
+0.022 0.022 0 0.032 0.013 0.018
+0.013 0.007 0.032 0 0.03 0.027
+0.022 0.022 0.013 0.03 0 0.019
+0.021 0.023 0.018 0.027 0.019 0Electricity Data
+Pairwise Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.18 0.21 0.23 0.22 0.23
+0.18 1 0.2 0.19 0.19 0.18
+0.21 0.2 1 0.17 0.39 0.33
+0.23 0.19 0.17 1 0.16 0.14
+0.22 0.19 0.39 0.16 1 0.32
+0.23 0.18 0.33 0.14 0.32 1Electricity Data
+Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.22 0.21 0.36 0.21 0.21
+0.22 1 0.19 0.25 0.18 0.18
+0.21 0.19 1 0.2 0.73 0.54
+0.36 0.25 0.2 1 0.18 0.17
+0.21 0.18 0.73 0.18 1 0.56
+0.21 0.18 0.54 0.17 0.56 1Electricity Data
+Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.015 0.016 0.019 0.017 0.022
+0.015 0 0.004 0.007 0.006 0.012
+0.016 0.004 0 0.003 0.009 0.009
+0.019 0.007 0.003 0 0.005 0.008
+0.017 0.006 0.009 0.005 0 0.006
+0.022 0.012 0.009 0.008 0.006 0Electricity Data
+Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.008 0.025 0.027 0.028 0.03
+0.008 0 0.021 0.004 0.022 0.018
+0.025 0.021 0 0.041 0.04 0.039
+0.027 0.004 0.041 0 0.03 0.018
+0.028 0.022 0.04 0.03 0 0.041
+0.03 0.018 0.039 0.018 0.041 0Electricity Data
+Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.35 0.23 0.57 0.21 0.27
+0.35 1 0.27 0.36 0.3 0.14
+0.23 0.27 1 0.46 0.59 0.41
+0.57 0.36 0.46 1 0.19 -0.033
+0.21 0.3 0.59 0.19 1 0.41
+0.27 0.14 0.41 -0.033 0.41 1Electricity Data
+Rank Correlation
+ = 0.0
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.47 0.46 0.74 0.48 0.52
+0.47 1 0.51 0.53 0.52 0.43
+0.46 0.51 1 0.56 0.93 0.81
+0.74 0.53 0.56 1 0.51 0.41
+0.48 0.52 0.93 0.51 1 0.82
+0.52 0.43 0.81 0.41 0.82 1Electricity Data
+Rank Correlation
+ = 0.5
+1.00
+0.75
+0.50
+0.25
+0.000.250.500.751.00
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.033 0.02 0.011 0.029 0.045
+0.033 0 0.006 0.013 0.015 0.065
+0.02 0.006 0 0.01 0.019 0.01
+0.011 0.013 0.01 0 0.023 0.044
+0.029 0.015 0.019 0.023 0 0.011
+0.045 0.065 0.01 0.044 0.011 0Electricity Data
+Rank Correlation (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.023 0.057 0.024 0.056 0.053
+0.023 0 0.055 0.014 0.055 0.057
+0.057 0.055 0 0.076 0.018 0.032
+0.024 0.014 0.076 0 0.075 0.066
+0.056 0.055 0.018 0.075 0 0.034
+0.053 0.057 0.032 0.066 0.034 0Electricity Data
+Rank Correlation (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.22 0.43 0.51 0.44 0.61
+0.22 1 0.3 0.33 0.27 0.23
+0.43 0.3 1 0.75 0.68 0.47
+0.51 0.33 0.75 1 0.57 0.4
+0.44 0.27 0.68 0.57 1 0.46
+0.61 0.23 0.47 0.4 0.46 1Electricity Data
+Sign Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.36 0.68 0.73 0.7 0.72
+0.36 1 0.36 0.41 0.37 0.36
+0.68 0.36 1 0.82 0.91 0.76
+0.73 0.41 0.82 1 0.78 0.66
+0.7 0.37 0.91 0.78 1 0.76
+0.72 0.36 0.76 0.66 0.76 1Electricity Data
+Sign Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.01 0.007 0.008 0.019 0.018
+0.01 0 0.005 0.004 0.004 0.014
+0.007 0.005 0 0.004 0.011 0.015
+0.008 0.004 0.004 0 0.011 0.004
+0.019 0.004 0.011 0.011 0 0.022
+0.018 0.014 0.015 0.004 0.022 0Electricity Data
+Sign Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.019 0.037 0.035 0.034 0.037
+0.019 0 0.01 0.009 0.009 0.015
+0.037 0.01 0 0.025 0.02 0.044
+0.035 0.009 0.025 0 0.023 0.038
+0.034 0.009 0.02 0.023 0 0.048
+0.037 0.015 0.044 0.038 0.048 0Electricity Data
+Sign Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.068 0.16 0.15 0.17 0.21
+0.068 1 0.079 0.1 0.072 0.068
+0.16 0.079 1 0.17 0.37 0.27
+0.15 0.1 0.17 1 0.14 0.094
+0.17 0.072 0.37 0.14 1 0.26
+0.21 0.068 0.27 0.094 0.26 1Electricity Data
+Signed Rank Agreement
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad1 0.12 0.18 0.32 0.19 0.19
+0.12 1 0.082 0.16 0.083 0.084
+0.18 0.082 1 0.2 0.72 0.51
+0.32 0.16 0.2 1 0.18 0.15
+0.19 0.083 0.72 0.18 1 0.53
+0.19 0.084 0.51 0.15 0.53 1Electricity Data
+Signed Rank Agreement
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.007 0.014 0.01 0.014 0.021
+0.007 0 0.003 0.004 0.006 0.006
+0.014 0.003 0 0.003 0.01 0.01
+0.01 0.004 0.003 0 0.004 0.007
+0.014 0.006 0.01 0.004 0 0.011
+0.021 0.006 0.01 0.007 0.011 0Electricity Data
+Signed Rank Agreement (Std. Err.)
+ = 0.0 and k = 5
+0.00.20.40.60.81.0
+LIME SHAP Grad Grad*
+InputIntGrad Smooth
+GradLIME
+SHAP
+Grad
+Grad*
+Input
+IntGrad
+Smooth
+Grad0 0.004 0.021 0.032 0.025 0.022
+0.004 0 0.011 0.004 0.013 0.008
+0.021 0.011 0 0.041 0.042 0.044
+0.032 0.004 0.041 0 0.028 0.012
+0.025 0.013 0.042 0.028 0 0.048
+0.022 0.008 0.044 0.012 0.048 0Electricity Data
+Signed Rank Agreement (Std. Err.)
+ = 0.5 and k = 5
+0.00.20.40.60.81.0
+Figure 11: Disagreement matrices for all metrics considered in this paper on Electricity data.Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+A.6 Extended Results
+Table 2: Average test accuracy for models we trained. This table is organized by dataset, model, the hyperparameters in the
+loss, and the weight decay coefficient (WD). Averages are over several trials and we report the means ±one standard error.
+Dataset Model 𝜆 𝜇 WD Accuracy
+Bank Marketing Linear 0.00 0.00 0.0002 74.3516 ±0.1313
+MLP 0.00 0.00 0.0002 79.0653 ±0.2133
+MLP 0.00 0.00 0.0020 78.9666 ±0.4625
+MLP 0.00 0.00 0.0200 79.1430 ±0.4260
+MLP 0.00 0.00 0.2000 79.1934 ±0.1383
+MLP 0.25 0.00 0.0002 79.2565 ±0.1241
+MLP 0.25 0.75 0.0002 79.3321 ±0.1265
+MLP 0.25 1.00 0.0002 79.2691 ±0.5393
+MLP 0.50 0.00 0.0002 79.4707 ±0.1363
+MLP 0.50 0.75 0.0002 79.0086 ±0.0882
+MLP 0.50 1.00 0.0002 79.1934 ±0.1241
+MLP 0.75 0.00 0.0002 78.7902 ±0.1865
+MLP 0.75 0.75 0.0002 77.8618 ±0.4173
+MLP 0.75 1.00 0.0002 77.5299 ±0.6848
+California Housing Linear 0.00 0.00 0.0002 81.5352 ±0.1819
+MLP 0.00 0.00 0.0002 84.8580 ±0.1768
+MLP 0.00 0.00 0.0020 84.6159 ±0.1275
+MLP 0.00 0.00 0.0200 84.5448 ±0.2128
+MLP 0.00 0.00 0.2000 84.3639 ±0.3306
+MLP 0.25 0.00 0.0002 81.7471 ±0.8670
+MLP 0.25 0.75 0.0002 83.5821 ±0.1443
+MLP 0.25 1.00 0.0002 84.1442 ±0.3780
+MLP 0.50 0.00 0.0002 80.2546 ±0.4983
+MLP 0.50 0.75 0.0002 83.1595 ±0.2225
+MLP 0.50 1.00 0.0002 83.7178 ±0.1902
+MLP 0.75 0.00 0.0002 82.7874 ±0.7604
+MLP 0.75 0.75 0.0002 82.4578 ±0.3826
+MLP 0.75 1.00 0.0002 81.7859 ±0.6012
+Electricity Linear 0.00 0.00 0.0002 73.3382 ±0.1500
+MLP 0.00 0.00 0.0002 81.2974 ±0.1576
+MLP 0.00 0.00 0.0020 81.1727 ±0.2092
+MLP 0.00 0.00 0.0200 81.5573 ±0.1169
+MLP 0.00 0.00 0.2000 76.9311 ±0.5849
+MLP 0.25 0.00 0.0002 81.5781 ±0.1690
+MLP 0.25 0.75 0.0002 80.5454 ±0.1380
+MLP 0.25 1.00 0.0002 80.9162 ±0.5275
+MLP 0.50 0.00 0.0002 81.4880 ±0.1428
+MLP 0.50 0.75 0.0002 80.0742 ±0.1131
+MLP 0.50 1.00 0.0002 79.6479 ±0.4371
+MLP 0.75 0.00 0.0002 80.6252 ±0.1940
+MLP 0.75 0.75 0.0002 79.0118 ±0.4375
+MLP 0.75 1.00 0.0002 78.6811 ±0.6160Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+A.7 Additional Plots
+Figure 12: The logit surfaces for MLPs, each trained with a different lambda value, on 10 randomly construcuted three-point
+planes from the Bank Marketing dataset.Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+Figure 13: The logit surfaces for MLPs, each trained with a different lambda value, on 10 randomly construcuted three-point
+planes from the California Housing dataset.Reckoning with the Disagreement Problem:
+Explanation Consensus as a Training Objective
+Figure 14: The logit surfaces for MLPs, each trained with a different lambda value, on 10 randomly construcuted three-point
+planes from the Electricity dataset.Avi Schwarzschild, Max Cembalest, Karthik Rao, Keegan Hines, and John Dickerson
+77 78 79
+Test Accuracy (%)0.680.700.730.750.780.800.830.85Feature AgreementBank Marketing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+   =0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+80 82 84 86 88
+Test Accuracy (%)0.740.760.780.800.820.840.86Feature AgreementCalifornia Housing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+78 80 82 84
+Test Accuracy (%)0.640.660.680.700.720.740.760.78Feature AgreementElectricity Data
+LIME vs. SHAP
+Baseline
+=0.25
+=0.5
+=0.75
+XGBoost
+=0.75
+=0.0
+=1.0
+77 78 79
+Test Accuracy (%)0.500.550.600.650.700.75Pairwise Rank AgreementBank Marketing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+   =0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+80 82 84 86 88
+Test Accuracy (%)0.650.680.700.720.750.780.80Pairwise Rank AgreementCalifornia Housing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+78 80 82 84
+Test Accuracy (%)0.600.630.650.680.700.730.750.78Pairwise Rank AgreementElectricity Data
+LIME vs. SHAP
+Baseline
+=0.25
+=0.5
+=0.75
+XGBoost
+=0.75
+=0.0
+=1.0
+77 78 79
+Test Accuracy (%)0.180.200.220.240.260.280.30Rank AgreementBank Marketing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+   =0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+80 82 84 86 88
+Test Accuracy (%)0.150.170.200.230.250.280.30Rank AgreementCalifornia Housing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+78 80 82 84
+Test Accuracy (%)0.180.200.230.250.280.300.330.350.38Rank AgreementElectricity Data
+LIME vs. SHAP
+Baseline
+=0.25
+=0.5
+=0.75
+XGBoost
+=0.75
+=0.0
+=1.0
+77 78 79
+Test Accuracy (%)0.100.200.300.400.500.60Rank CorrelationBank Marketing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+   =0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+80 82 84 86 88
+Test Accuracy (%)0.400.450.500.550.600.650.700.750.80Rank CorrelationCalifornia Housing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+78 80 82 84
+Test Accuracy (%)0.200.300.400.500.600.70Rank CorrelationElectricity Data
+LIME vs. SHAP
+Baseline
+=0.25
+=0.5
+=0.75
+XGBoost
+=0.75
+=0.0
+=1.0
+77 78 79
+Test Accuracy (%)0.300.400.500.600.70Sign AgreementBank Marketing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+   =0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+80 82 84 86 88
+Test Accuracy (%)0.300.350.400.450.500.550.600.650.70Sign AgreementCalifornia Housing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+78 80 82 84
+Test Accuracy (%)0.200.300.400.500.600.70Sign AgreementElectricity Data
+LIME vs. SHAP
+Baseline
+=0.25
+=0.5
+=0.75
+XGBoost
+=0.75
+=0.0
+=1.0
+77 78 79
+Test Accuracy (%)0.100.120.150.180.200.230.250.28Signed Rank AgreementBank Marketing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+   =0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+80 82 84 86 88
+Test Accuracy (%)0.050.100.150.200.25Signed Rank AgreementCalifornia Housing Data
+LIME vs. SHAP
+Baseline
+XGBoost
+=0.25
+=0.5
+=0.75
+=0.75
+=0.0
+=1.0
+78 80 82 84
+Test Accuracy (%)0.100.150.200.250.300.35Signed Rank AgreementElectricity Data
+LIME vs. SHAP
+Baseline
+=0.25
+=0.5
+=0.75
+XGBoost
+=0.75
+=0.0
+=1.0
+Figure 15: Additional trade-off curve plots for all datasets and metrics.

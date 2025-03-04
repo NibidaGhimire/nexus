@@ -1,0 +1,1202 @@
+1
+FeatAug-DETR : Enriching One-to-Many Matching
+for DETRs with Feature Augmentation
+Rongyao Fang, Peng Gao, Aojun Zhou, Yingjie Cai, Si Liu, Jifeng Dai, and Hongsheng Li
+Abstract —One-to-one matching is a crucial design in DETR-
+like object detection frameworks. It enables the DETR to perform
+end-to-end detection. However, it also faces challenges of lacking
+positive sample supervision and slow convergence speed. Several
+recent works proposed the one-to-many matching mechanism to
+accelerate training and boost detection performance. We revisit
+these methods and model them in a uniﬁed format of augmenting
+the object queries. In this paper, we propose two methods that
+realize one-to-many matching from a different perspective of
+augmenting images or image features. The ﬁrst method is One-
+to-many Matching via Data Augmentation (denoted as DataAug-
+DETR ). It spatially transforms the images and includes multiple
+augmented versions of each image in the same training batch.
+Such a simple augmentation strategy already achieves one-to-
+many matching and surprisingly improves DETR’s performance.
+The second method is One-to-many matching via Feature Aug-
+mentation (denoted as FeatAug-DETR ). Unlike DataAug-DETR ,
+it augments the image features instead of the original images and
+includes multiple augmented features in the same batch to realize
+one-to-many matching. FeatAug-DETR signiﬁcantly accelerates
+DETR training and boosts detection performance while keeping
+the inference speed unchanged. We conduct extensive experi-
+ments to evaluate the effectiveness of the proposed approach
+on DETR variants, including DAB-DETR, Deformable-DETR,
+andH-Deformable-DETR. Without extra training data, FeatAug-
+DETR shortens the training convergence periods of Deformable-
+DETR [1] to 24 epochs and achieves 58.3 AP on COCO val2017
+set with Swin-L as the backbone. Code will be available at:
+https://github.com/rongyaofang/FeatAug-DETR
+Index Terms —Detection Transformer, One-to-one Matching,
+One-to-many Matching, Data Augmentation, Accelerating Train-
+ing
+I. I NTRODUCTION
+Object detection is a fundamental task in computer vision,
+which predicts bounding boxes and categories of objects in an
+image. In the past several years, deep learning made signiﬁcant
+success in the object detection task and tens of classic object
+detectors have been proposed. These classic detectors are
+mainly based on convolutional neural networks, which include
+the one-stage detectors [2]–[4] and two-stage detectors [5]–
+[8]. One-to-many label assignment is the core design of the
+classic detectors, where each ground-truth box is assigned to
+multiple predictions of the detector. With such a one-to-many
+matching scheme, these frameworks require human-designed
+non-maximum suppression (NMS) for post-processing and
+cannot be trained end-to-end.
+R. Fang, A. Zhou, Y . Cai, H. Li are with the Chinese University of Hong
+Kong, Hong Kong SAR, China.
+P. Gao is with Shanghai AI Laboratory, Shanghai, China.
+S. Liu is with Beihang University, Beijing, China.
+J. Dai is with Tsinghua University, Beijing, China.
+Corresponding author: Hongsheng Li
+Featuremap……QueriesAugmentedqueries
+Predictions
+Augmented Predictions
+GroundTruth
+Augmented GroundTruth
+Matching(a)ObjectqueryaugmentationforDETR
+(b)FeaturemapaugmentationforDETR(ours)
+DETRHeadAug.Ioffeat.
+Aug.IIoffeat.
+…Queries
+PredictionsI
+PredictionsII
+GroundTruthI
+GroundTruthIIMatching
+DETRHead
+FeaturemapFeatAug-DETR
+Fig. 1. Previous works achieve one-to-many matching via augmenting object
+queries [9], [10]. We propose DataAug-DETR andFeatAug-DETR to achieve
+one-to-many matching from the perspective of augmenting image features and
+ground truth objects.
+The DEtection TRansformer (DETR) [11] reveals the po-
+tential of using transformer architectures [12] to achieve high
+performance in object detection. It implements one-to-one
+matching between the ground truth boxes and the predictions.
+Various DETR-like frameworks have shown great success.
+Quite a few follow-up works were proposed to improve DETR
+by modifying the architectures, such as the architecture of the
+transformer encoder [1], [13], the decoder [1], [14]–[16], and
+the query designs [17]–[19].
+Besides improving the DETR architectures, several recentarXiv:2303.01503v1  [cs.CV]  2 Mar 20232
+works aim to improve the one-to-one matching mechanism in
+DETR [11]. The one-to-one matching helps DETR to discard
+the human-designed NMS for post-processing. In addition,
+[9] showed that extra one-to-many matching supervisions can
+lead to faster and better convergence. In the recent Group-
+DETR [9] and Hybrid Matching [10], extra object queries are
+used to formulate one-to-many matchings to provide additional
+supervisions for better training DETRs.
+The one-to-many matching mechanism associates each
+ground truth object with multiple object queries. The object
+queries interact with the image feature maps containing the
+objects via cross-attention in the DETR decoder. The one-to-
+one and one-to-many matchings therefore implicitly conduct
+assignments between queries and the object features from the
+spatial feature maps. State-of-the-art Group-DETR and Hybrid
+Matching enhance one-to-one matching by augmenting extra
+object queries and inputting them into the matching module.
+They achieve impressive results in accelerating convergence
+speed and boosting detection performance.
+Our initial observation highlights that a straightforward yet
+appropriately designed data augmentation scheme ( DataAug-
+DETR ) can implicitly accomplish one-to-many matching and
+surprisingly improve DETR performance. By integrating nu-
+merous spatially augmented versions of a single image in a
+single batch, the same objects can be assigned to distinct
+queries across various augmented images. These one-to-many
+assignments can greatly enhance detection performance.
+Given that DETR queries accumulate information from
+image feature maps, we propose approximating the impact of
+spatial image augmentation by applying spatial augmentation
+to the feature maps, thereby avoiding repeated forwarding of
+different versions of the same image into the vision backbone.
+We further propose feature augmentation ( FeatAug-DETR )
+for DETR, which spatially shifts and ﬂips feature maps and
+arranges different versions of a feature map in the same
+batch, thereby assigning the same object queries to different
+objects after feature augmentation. This method is a simple
+yet effective way to enhance DETR performance.
+We conduct extensive experiments to evaluate the efﬁciency
+and effectiveness of DataAug-DETR andFeatAug-DETR . As a
+plug-and-play approach, our proposed modules can be easily
+integrated into different DETR variants. FeatAug-DETR sig-
+niﬁcantly accelerates convergence and also improves the per-
+formance of various DETR detectors, including DAB-DETR
+[19], Deformable-DETR [1], and H-Deformable-DETR [10].
+FeatAug-DETR helps Deformable-DETR [1] with Swin-Large
+backbone [20] reach 55:8AP with 1training schedule (12
+epochs), which is 1:3AP higher than that without our method
+(54:5AP), while keeping the inference FLOPs unchanged.
+Moreover, FeatAug-DETR is compatible with H-Deformable-
+DETR [10] as the feature augmentation realizes one-to-many
+matchings from a different perspective.
+In summary, our contributions are summarized as follows:
+We propose DataAug-DETR , which augments each im-
+age multiple times and includes the different augmented
+versions of an image in the same training batch. It boosts
+DETR’s detection accuracy.We further propose feature augmentation ( FeatAug-
+DETR ) for DETR. It augments the feature maps from
+the vision backbone and signiﬁcantly accelerates training
+compared with DataAug-DETR .
+When integrating FeatAug-DETR into Hybrid Matching
+[10], our method achieves 58.3 AP on COCO val2017
+with Swin-L backbone and 24 training epochs, surpassing
+the state-of-the-art performance by 0.5 AP.
+II. R ELATED WORK
+A. Classic Object Detectors
+Modern object detection models are divided into 2 cate-
+gories, one-stage detectors, and two-stage detectors. The one-
+stage detectors [3], [4] predict the positions of the objects
+relying on the anchors. The two-stage detectors [6], [7] ﬁrst
+generate region proposals and then predict the object position
+w.r.t. the proposals. These methods are both anchor-based
+methods in which the predeﬁned anchors play an important
+role in the models. These classic object detectors also need
+hand-designed operations such as NMS as post-processing,
+which makes they cannot optimize end-to-end.
+B. Label Assignment in Classic Object Detectors
+Assignment between the ground truth objects and training
+samples is a widely-investigated topic in classic object de-
+tectors [2], [3], [6], [8], [21]. Anchor-based detectors [21],
+[22] utilize Intersection-over-Union (IoU) to apply label as-
+signment. The anchor will be assigned to the maximum IoU
+ground truth box when the maximum IoU between an anchor
+and all gt boxes exceeds the predeﬁned IoU threshold. Anchor-
+free detectors [23], [24] utilize spatial and scale constraints
+when selecting positive points. The follow-up works [25], [26]
+propose improvements in a similar direction. The above label
+assignment methods in classic object detectors are one-to-
+many matching, which always assigns several object predic-
+tions with one ground truth box. Such methods require NMS
+for post-processing, which makes the detectors hard to train
+in an end-to-end manner.
+C. Detection Transformer
+Carion et al. [11] proposed Detection Transformer (DETR),
+which introduces the Transformer architecture into the object
+detection ﬁeld. They also use bipartite matching to implement
+set-based loss and make the framework an end-to-end archi-
+tecture. These designs remove the handcraft components such
+as anchors and NMS in the previous classic object detectors.
+However, DETR still faces the problem of slow convergence
+speed and relatively low performance. Also, DETR only uses
+one scale image feature, which lost the beneﬁt of the multi-
+scale feature which has been proven effective in previous
+works. The follow-up works proposed improvements to relieve
+these problems effectively. [27] designed an encoder-only
+DETR without using a decoder. Anchor-DETR [17] utilizes
+designed anchor architecture in the decoder to help accelerate
+training. Conditional-DETR [18] learns conditional spatial3
+query to help cross-attention head to attend to a band con-
+taining a distinct region. It signiﬁcantly shortens the training
+epochs of DETR from 500 epochs to 50 or 108 epochs. Efﬁ-
+cient DETR [28] selects top Kpositions from the encoder’s
+prediction to enhance decoder queries. Dynamic Head [29]
+proposed a dynamic decoder to focus on important regions
+from multiple feature levels. Deformable-DETR [1], [30],
+[31] proposed deformable attention and replace the original
+attention mechanism in DETR. It makes utilizing multi-scale
+image feature feasible in DETR architecture. The follow-up
+DAB-DETR [19] uses 4-D box coordinates as queries and
+updates boxes layer-by-layer in the Transformer decoder part.
+In the later work, DN-DETR [14] and DINO [32], they use
+bounding box denoising operation and continue to shorten the
+training period to 3 standard training schedule (36 epochs).
+D. One-to-one Matching
+Carion et al. [11] uses bipartite matching to implement one-
+to-one matching between the object queries and ground truth
+bounding box. The pipeline computes a pair-wise matching
+cost depending on the class prediction and the similarity
+of predicted and ground truth boxes. Then the Hungarian
+algorithm [33] is applied to ﬁnd the optimal assignment. The
+design helps DETR achieve end-to-end training in the object
+detection ﬁeld without implementing the hand-designed NMS
+operations.
+However, because of the relatively small number of ground
+truth boxes in each image (always smaller than 50) compared
+with the number of predictions which are generally larger
+than 300. The positive sample supervision provided by one-
+to-one matching is relatively sparse [9]. It results in a slow
+convergence speed for the DETR framework. This problem can
+be effectively revealed by designing one-to-many matching
+methods.
+E. One-to-Many Matching
+Recently, several works [9], [10] discuss the sparsity posi-
+tive supervision problem of one-to-one matching and proposed
+one-to-many matching methods on DETR-liked frameworks.
+Group-DETR [9] decouples the positives into multiple inde-
+pendent groups and keeps only one positive per gt object
+in each group. Hybrid Matching [10] combines the original
+one-to-one matching branch with auxiliary queries that use
+one-to-many matching loss during training. The principles
+of these two methods are similar. They provide extra object
+queries in the decoder to produce more positive supervision
+in the model. The two methods both effectively accelerate
+convergence speed and boost performance for DETR.
+Our method shares the same principle of generating more
+positive supervision. But unlike Group-DETR or Hybrid
+Matching, which implement extra object queries, we augment
+the images in a batch or the features from the backbone to
+realize the goal. Our method achieves obvious performance
+improvement in DETR training. Through experiments, we
+show that our method continues to obtain further performance
+boosting when applying previous methods (such as Hybrid
+Matching) together.III. M ETHOD
+A. A Brief Revisit of DETR and One-to-Many Matching
+In DETR, an input image Iis processed by the backbone
+Bto obtain the feature map F2R^C^H^W. A stack of self-
+attentions and feed-forward networks in the DETR encoder
+transform to obtain the feature maps. The transformer decoder
+utilizes cross-attention to guide a series of object queries Q2
+RNCto aggregate information from the feature maps and
+generate object predictions P, whereNdenotes the number
+of object queries and Cis the query vector dimension. The
+predictions include the normalized location predictions Pl2
+RN4and class predictions Pc2RN(Ncls+1), in whichNcls
+denotes the class number. The one-to-one matching strategy
+is adopted to associate the predictions Pwith ground truth
+objectsG.
+An object query set Q=fq1;q2;:::;q Ng 2RNCis
+input into the Transformer decoder. The queries aggregate
+information from image features Fthrough the cross-attention
+operations in the Transformer decoder D()which has L
+Transformer layers and outputs object predictions. The pre-
+dictions of each decoder layer are denoted as P1;P2;:::;PL
+respectively. A bipartite one-to-one matching between the
+object predictions and the ground truth Gis conducted at each
+layer. The process is formulated as:
+Pl=Dl(Q;F);Lone2one =LX
+l=1LHungarian (Pl;G);(1)
+whereDl()denotes the lthlayer of the decoder, Lone2one
+denotes the one-to-one matching loss, and LHungarian denotes
+the Hungarian matching (bipartite matching) loss at each layer.
+Since each prediction pl
+i2Plis generated from the object
+queryqi, the matchings between ground truths and predictions
+can be viewed as the matchings between ground truths Gand
+object queries Q.
+In order to better supervise DETR and accelerate its train-
+ing, one-to-many matching schemes were proposed in [9],
+[10]. Group DETR [9] and Hybrid Matching [10] to augment
+extra object queries ^Qand introduce one-to-many matching
+loss, which achieves signiﬁcant performance gain. Similar to
+the formulation of one-to-one matching, the general formula-
+tion of one-to-many matching can be deﬁned as:
+^Pl
+k=Dl(^Qk;F);Lone2many =KX
+k=1LX
+l=1LHungarian (^Pl
+k;^Gk);
+(2)
+whereKdenotes the number of Hungarian matching groups.
+In each matching group, the predictions corresponding to k-th
+group of augmented queries ^Qkare denoted as ^Pl
+k, and the
+augmented ground truths are denoted as ^Gk.
+In one-to-many matching, the predictions and ground truths
+are augmented to generate different groups of positive super-
+vision. Here we discuss the designs of Group-DETR [9] and
+Hybrid Matching [10] following the above uniﬁed formulation
+(Eq. (2)).4
+DETREncoder-decoder(DAB-DETR,Deform-DETRet.al.)
+Backbone
+AugmentationIofimg.
+MatchingAugmentationIIofimg.MatchingPredictionI
+PredictionIIAugmentationIofGT
+AugmentationIIofGT
+Backbone
+Originalfeat.
+MatchingAugmentationoffeat.MatchingPredictionI
+PredictionIIOriginalGT
+AugmentationofGTimage
+Originalfeat.
+image
+DETREncoder-decoder(DAB-DETR,Deform-DETRet.al.)(a)DataAug-DETR
+(b)FeatAug-DETRAugment
+Augment
+Fig. 2. DataAug-DETR augments images several times and includes multiple augmented versions in the same batch. FeatAug-DETR augments feature maps
+from the vision backbone multiple times and include them in the same batch. Our FeatAug-DETR can augment both single-scale and multi-scale feature maps.
+Only single-scale feature maps are shown here for simplicity.
+1) Group-DETR: Group-DETR utilizes Kseparate groups
+of object queries Q1;:::;Q Kand generates Kgroups of
+predictions for each training image. The same set of ground
+truthGapplies one-to-one matching to each group of the
+predictions respectively. The process can be formulated as:
+Pl
+k=Dl(Qk;F);LGroup DETR =KX
+k=1LX
+l=1LHungarian (Pl
+k;G);
+(3)
+In Group-DETR, multiple groups of object queries are
+matched to the same set of ground truths. The augmentation
+on the object queries helps to boost the model performance.
+2) Hybrid Matching: In Hybrid Matching, it uses a second
+group of object queries, which contains Tobject queries ^Q=
+f^q1;^q2;:::; ^qTg. The second group of queries applies one-
+to-many matching with repeated sets of ground truths ^G=
+f^G1;^G2;:::; ^GKg, where ^G1=^G2==^GK=G. The
+process of Hybrid Matching can be formulated as:
+Pl=Dl(Q;F);^Pl=Dl(^Q;F);
+LH=LX
+l=1LHungarian (Pl;G) +LX
+l=1LHungarian (^Pl;^G):(4)Group-DETR and Hybrid Matching both augment the object
+queries ^Qto facilitate the training. Considering the uniﬁed
+formulation of one-to-many matching (Eq. (2)), Group-DETR
+and Hybrid Matching both conduct one-to-many matching via
+augmenting the query set Qbut ignore the possibility of jointly
+augmenting the image features Fand the ground truths G.
+B. One-to-many Matching via Data Augmentation
+Our important observation is that one-to-many matching
+can also be implemented via augmenting the image feature
+Fand the ground truths Gin Eq. (2). We explore conducting
+spatial augmentation on each image multiple times and include
+them in the same batch. And we experimentally validate
+that spatially augmented versions of the same image lead to
+different query-ground truth assignments.
+We conduct a pilot study on COCO train2017 dataset,
+where we augment every image two times with random
+ﬂipping and cropping. The random ﬂipping and cropping
+operations follow the same operations as that in DETR [11]
+for data augmentation. Such augmented image pairs are then
+input to a trained Deformable-DETR whose parameters are
+ﬁxed. The Deformable-DETR has 300 object queries and
+operates in a one-stage manner. We observe that 95.9% of
+the corresponding objects in the two augmented images are
+assigned to different object queries. The remaining 4.1%5
+objects that are assigned to the same object queries are mostly
+located at the same relative positions in the two augmented
+images. More speciﬁcally, ground truth bounding boxes with
+unchanged queries of the two augmented images have a high
+average IoU of 78.2%. This pilot study shows that, by spatially
+augmenting each training image in a proper way, the objects
+can be assigned to different object queries via spatial image
+augmentation. It is therefore reasonable to take advantage of
+image spatial transformation to modify FandGto achieve
+one-to-many matching for DETRs.
+The above pilot study shows that one-to-many matching
+can be achieved via spatial data augmentation. We propose
+DataAug-DETR , which conducts spatial image augmentation
+on each training image and includes them in the same training
+batch. We adopt the default data augmentation scheme of
+DETR and Deformable-DETR, which includes a 50% random
+horizontal ﬂipping and a 50% random cropping, followed by
+a random resizing to several pre-deﬁned sizes with the short
+edge ranging from [480;800]. Assume that each image is
+spatially augmented for Ntimes in each training iteration.
+We denote the data augmentation operation as Tn(), where
+ndenotes the n-th random data augmentation to an image.
+TheNversions of the image pass through the image fea-
+ture backboneFin DETR and generate Nimage features
+f^Fn=F(Tn(I))gN
+n=1. Note that data augmentation is also
+applied to the ground truth labels Gand generates Nversions
+of labelsf^Gn=Tn(G)gN
+n=1. The augmentation process can
+be formulated as:
+^Fn=F(Tn(I));^Gn=Tn(G);forn= 1;:::;N: (5)
+Then by applying the bipartite matching on each augmented
+image individually, the matching process in Eq. (2) becomes:
+^Pl
+n=Dl(Q;^Fn);LDataAug =NX
+n=1LX
+l=1LHungarian (^Pl
+n;^Gn);
+(6)
+whereDl()denotes the l-th Transformer decoder layer in
+DETR. Note that in the default setting of our DataAug-DETR ,
+we use a set of object queries Qshared with all images. During
+the Hungarian matching of different augmented versions of an
+image, the ground truth objects tend to be matched to different
+object queries.
+C. One-to-many Matching via Feature Augmentation
+In our DataAug-DETR , data augmentations are applied to
+each image multiple times. The augmented Nversions of
+the same image are encoded by the feature backbone, whose
+computation cost is considerable as the Naugmented versions
+of each image need to be processed by the generally heavy
+backbone.
+Since we choose to perform simple spatial transformations
+on each training image, the resulting features of the spatially
+transformed images can also be approximated by conducting
+the spatial transformations directly on the feature maps Fof
+each image I. In this way, each image only goes throughthe heavy feature backbone once and can still obtain multiple
+spatially augmented feature maps ^F1;:::; ^FN. This strategy
+is much more efﬁcient than DataAug-DETR and we name it
+FeatAug-DETR . The process can be formulated as:
+F=F(I);^Fn=E(Tn(F));
+^Gn=Tn(G);forn= 1;2;:::;N;(7)
+whereE()denotes the Transformer encoder of DETR. Tn()
+denotes conducting spatial augmentation on the feature map
+F. We perform feature augmentation to the output feature of
+the backbone and before the Transformer encoder E(), which
+we experimentally found to achieve better performance. The
+detailed experiment on the selection of the feature augmenta-
+tion position can be found in Section IV-G2.
+After the augmented feature ^Fnis obtained, a matching
+process similar to that of DataAug-DETR is applied:
+^Pl
+n=Dl(Q;^Fn);LFeatAug =NX
+n=1LX
+l=1LHungarian (^Pl
+n;^Gn);
+(8)
+For the speciﬁc operation of feature augmentation Tn(), we
+investigate feature map ﬂipping or/and cropping.
+1) Feature Map Flipping: Horizontal ﬂipping is performed
+on the feature map F(denoted as FeatAug-Flip ), which is
+formulated as:
+F=F(I);^F1=E(F);^F2=E(Flip(F));
+^G1=G; ^G2= Flip(G):(9)
+After applying FeatAug-Flip , the two augmented feature
+maps ^F1and^F2are forwarded to the follow-up modules of
+DETR and two separate Hungarian matchings are conducted
+for the two feature maps in the same training batch following
+Eq. 2.
+2) Feature Map Cropping: Besides the ﬂip operation,
+random cropping on the feature map is tested (denoted as
+FeatAug-Crop ). The process of FeatAug-Crop is similar to that
+ofFeatAug-Flip but replaces ﬂipping with feature cropping.
+The cropping and resizing hyperparameters are the same as
+the DETR’s original image data augmentation cropping and
+resizing scheme. Since some state-of-the-art DETR-like frame-
+works are based on Deformable-DETR, which utilizes multi-
+scale features from a backbone, our FeatAug-Crop augments
+both single-scale and multi-scale feature maps. Deformable-
+DETR utilizes multi-scale feature maps of 1/8, 1/16, and 1/32
+original resolutions, respectively. In order to crop the features
+of the three scales, we use the RoIAlign [8] to crop and
+resize the same region across the three scales. The feature
+augmentation for single-scale features is the same but only
+conducts the augmentation on one scale.
+When cropping the features with RoIAlign, we ﬁnd that the
+features after cropping ^Fbecome blurry due to the bilinear
+interpolation in RoIAlign. It causes a domain gap between the
+original feature Fand the cropped feature ^F. When DETR
+is trained with both types of region features, its detection
+performance deteriorates. We propose to use extra feature6
+projectors on the cropped features to narrow down the domain
+gap. Given the three-scale features from the backbone, three
+individual projectors are adopted to transform the cropped
+features ^F, each of which includes a 11convolution layer
+and a group normalization layer [34]. The projectors are only
+applied on ^Fduring training, while the original features F
+are still processed by the original detection head. The cropped
+feature projectors are able to mitigate the domain gap produced
+by RoIAlign and avoid performance reduction.
+3) Combining Flipping and Cropping: InFeatAug-Flip and
+FeatAug-Crop , the two versions of feature maps of each image,
+which include the original and the augmented features, are
+forwarded through the DETR detection head. It is straightfor-
+ward to combine the above ﬂipping and cropping operations
+for feature augmentation. We name this combined version
+FeatAug-FC . When applying FeatAug-FC , three versions of
+each image’s feature maps, i.e. the original, ﬂipped, and
+cropped feature maps, are input into the DETR head.
+DataAug-DETR andFeatAug-DETR are introduced to aug-
+ment feature maps in the same training batch to realize one-to-
+many matching for DETRs from a new perspective. Both our
+methods improve detection performance and FeatAug-DETR
+also signiﬁcantly accelerates DETR training.
+IV. E XPERIMENT
+A. Dataset and Implementation Details
+The experiments are conducted on COCO 2017 object
+detection dataset [35]. The dataset is split into train2017
+andval2017 , in which the train2017 andval2017
+sets contain 118k and 5k images, respectively. There are
+7 instances per image on average, up to 63 instances in
+a single image in the training set. We report the standard
+average precision (AP) results on COCO val2017 . The
+DETR frameworks are tested with ResNet-50 [36], Swin-Tiny,
+and Swin-Large [20] backbones. The ResNet-50 and Swin-
+Tiny backbones are pretrained on ImageNet-1K [37] and Swin-
+Large is pretrained on ImageNet-22K [37].
+We test our proposed methods on top of DAB-DETR [19],
+Deformable-DETR [1] with tricks (denoted as “Deform-DETR
+w/ tck.”) from [10], and Hybrid Matching Deformable-DETR
+(H-Deformable-DETR) [10]. The latter two DETR frame-
+works use additional tricks, including bounding box reﬁnement
+[1], two-stage [1], mixed query selection [32] and look forward
+twice [32]. These tricks accelerate the convergence speed and
+improve the ﬁnal performance.
+We use the L1 loss and GIOU [38] loss for box regression,
+and focal loss [21] with = 0:25,= 2 for classiﬁcation.
+As the setting in DETR [11], we apply auxiliary losses after
+each decoder layer. Similar to Deformable-DETR [1], we add
+extra intermediate losses after the query selection module, with
+the same components as for each decoder layer. We adopt the
+loss coefﬁcients: 2.0 for classiﬁcation loss, 5.0 for L1 loss,
+and 2.0 for GIOU loss, which is the same as [10].
+Each tested DETR framework is composed of a feature
+backbone, a Transformer encoder, a Transformer decoder, and
+two prediction heads for boxes and labels. All Transformer
+weights are initialized with Xavier initialization [39]. In theexperiments, we use 6 layers for both the Transformer encoder
+and decoder. The hidden dimension of the Transformer layers
+is 256. The intermediate size of the feed-forward layers in the
+Transformer blocks is 2048, which follows the settings of [10].
+The MLP networks for box and label predictions share the
+same parameters across different decoder layers. We use 300
+object queries in the decoder. We use AdamW [40] optimizer
+with a weight decay 10 4. We use an initial learning rate of
+210 4for the Deformable DETR head and a learning rate of
+210 5for the backbone, which is the same as those in [1]. A
+1=10learning rate drop is applied at the 11-th, 20-th, and 30-
+th epochs for the 12, 24, and 36 epoch settings, respectively.
+The model is trained without dropout. The training batch size
+is 16 and the experiments are run on 16 NVIDIA V100 GPUs.
+During validation, we select 100 predicted boxes and labels
+with the largest classiﬁcation logits for evaluation by default.
+B. Main Results
+Our DataAug-DETR andFeatAug-DETR methods are com-
+patible with most DETR-like frameworks. The results on
+COCO val2017 set are shown in Table I. The DAB-
+DETR-DC5- FeatAug-FC denotes applying FeatAug-FC on
+top of DAB-DETR [19] with R50 dilated C5-stage image
+features [41], Deformable-DETR w/ tck. - FeatAug-FC denotes
+FeatAug-FC on top of Deformable-DETR with tricks, and H-
+Deformable-DETR- FeatAug-Flip denotes FeatAug-Flip on top
+of Hybrid matching Deformable-DETR. We experimentally
+found that, when integrating with Hybrid Matching, FeatAug-
+Flip achieves better performance than FeatAug-FC as shown
+in Table II. Thus, we report the results of Hybrid Matching
+with FeatAug-Flip and others with FeatAug-FC .
+In the table, we also report the performances of some previ-
+ous representative DETR variants. The compared methods in-
+clude single-scale and multi-scale detectors. The Deformable-
+DETR ones, which utilize multi-scale features, generally
+achieve better performances than single-scale detectors.
+We compare the performance gain of our DataAug-DETR
+andFeatAug-DETR on top of the baselines. DataAug-DETR is
+evaluated on top of Deform-DETR w/ tck. [1]. FeatAug-DETR
+is evaluated on DAB-DETR [19], Deform-DETR w/ tck.,
+andH-Deformable-DETR [10]. DataAug-DETR (48 epochs
+training) improves the performance by about 1.0 AP compared
+with the Deform-DETR w/ tck. (36 epochs training) baseline,
+while the performance of the baseline trained with 48 epochs
+degrades. In each epoch of DataAug-DETR , we only train
+1=Nof the whole training set, where Nis the augmentation
+times of DataAug-DETR . Thus, the training time per epoch
+ofDataAug-DETR is the same as that of the baseline. The
+detailed investigation of the convergence speed of DataAug-
+DETR is shown in Section IV-D.
+On the single-scale DAB-DETR with ResNet-50 back-
+bone, FeatAug-FC improves the performance for 1.4 AP with
+50 training epochs and reaches 47.1 AP, which makes the
+single-scale detector’s performance better than the multi-scale
+Deformable-DETR [1] (46.9 AP). It is shown that the AP M
+and AP Lof DAB-DETR-DC5- FeatAug-FC exceed those of
+Deformable-DETR by large margins (0.8 AP and 2.7 AP,7
+TABLE I
+MAIN RESULTS OF PROPOSED DATA AUGMENTATION AND FEATURE AUGMENTATION ON VARIOUS DETR FRAMEWORKS
+Method Backbone Tricks #queries #epochs AP AP 50 AP75 APS APM APL
+DETR-DC5 [11] R50 % 300 500 43.3 63.1 45.9 22.5 47.3 61.1
+Conditional-DETR-DC5 [18] R50 % 300 108 45.1 65.4 48.5 25.3 49.0 62.2
+DAB-DETR-DC5 [19] R50 % 300 50 45.7 66.2 49.0 26.1 49.4 63.1
++FeatAug-FC R50 % 300 36 46.1 ("0.4) 66.6 49.5 27.7 50.0 62.8
++FeatAug-FC R50 % 300 50 47.1 ("1.4) 67.4 50.8 27.9 50.9 64.3
+Deformable-DETR-One-Stage [1] R50 % 300 50 44.5 63.6 48.7 27.1 47.6 59.6
+Deformable-DETR [1] R50 % 300 50 46.9 65.6 51.0 29.6 50.1 61.6
+DAB-Deformable-DETR [19] R50 % 300 50 46.9 66.0 50.4 29.1 49.8 62.3
+DN-Deformable-DETR [14] R50 % 300 12 43.4 61.9 47.2 24.8 46.8 59.4
+DN-Deformable-DETR [14] R50 % 300 50 48.6 67.4 52.7 31.0 52.0 63.7
+DINO-Deformable-DETR [32]yR50 " 900 12 47.9 65.3 52.1 31.2 50.9 61.9
+DINO-Deformable-DETR [32]yR50 " 900 36 50.5 68.3 55.1 32.7 53.9 64.9
+DINO-Deformable-DETR [32]ySwin-L " 900 12 56.8 75.6 62.1 39.9 60.4 73.3
+DINO-Deformable-DETR [32]ySwin-L " 900 36 57.8 76.5 63.2 40.6 61.8 73.5
+Deformable-DETR w/ tck. [1] R50 " 300 12 47.0 65.3 50.9 30.7 50.0 60.9
++FeatAug-FC R50 " 300 12 48.7 ("1.7) 67.1 53.3 31.2 52.1 63.2
+Deformable-DETR w/ tck. [1] R50 " 300 36 49.0 67.6 53.3 32.7 51.5 63.7
++DataAug R50 " 300 48 50.0 ("1.0) 68.6 54.6 33.3 52.9 64.5
++FeatAug-FC R50 " 300 24 49.9 ("0.9) 68.3 54.7 32.5 52.9 65.1
+Deformable-DETR w/ tck. [1] Swin-T " 300 12 49.3 67.8 53.4 31.6 52.4 64.4
++FeatAug-FC Swin-T " 300 12 50.9 ("1.6) 69.4 55.6 33.1 54.3 66.1
+Deformable-DETR w/ tck. [1] Swin-T " 300 36 51.8 70.9 56.5 34.6 55.1 67.9
++DataAug Swin-T " 300 48 53.3 ("1.5) 72.1 58.5 35.9 56.7 68.4
++FeatAug-FC Swin-T " 300 24 52.7 ("0.9) 71.3 57.5 35.1 56.6 67.8
+Deformable-DETR w/ tck. [1] Swin-L " 300 12 54.5 74.0 59.2 37.0 58.6 71.0
++FeatAug-FC Swin-L " 300 12 55.8 ("1.3) 75.5 61.1 39.2 60.2 72.1
+Deformable-DETR w/ tck. [1] Swin-L " 300 36 56.3 75.7 61.5 39.1 60.3 71.9
++DataAug Swin-L " 300 48 57.0 ("0.7) 76.3 62.2 40.4 60.9 73.3
++FeatAug-FC Swin-L " 300 24 57.1 ("0.8) 76.4 62.5 41.1 60.9 73.3
++FeatAug-FCySwin-L " 900 24 57.6 76.7 63.1 41.1 61.5 73.8
+H-Deformable-DETR [10] R50 " 300 12 48.7 66.7 53.4 31.4 51.8 63.6
++FeatAug-Flip R50 " 300 12 49.4 ("0.7) 67.5 53.7 31.9 52.7 64.3
+H-Deformable-DETR [10] R50 " 300 36 50.0 68.1 54.6 32.5 53.1 65.0
++FeatAug-Flip R50 " 300 24 50.4 ("0.4) 68.7 54.9 32.7 53.6 65.2
+H-Deformable-DETR [10] Swin-L " 300 12 55.9 75.1 61.0 39.3 59.9 72.1
++FeatAug-Flip Swin-L " 300 12 56.4 ("0.5) 75.6 61.8 40.0 60.4 72.4
+H-Deformable-DETR [10] Swin-L " 300 36 57.1 76.3 62.7 40.2 61.6 73.3
++FeatAug-Flip Swin-L " 300 24 57.6 ("0.5) 76.6 63.1 40.4 61.9 73.9
+H-Deformable-DETR [10]ySwin-L " 900 36 57.9 76.9 63.8 42.5 62.0 73.5
++FeatAug-FlipySwin-L " 900 24 58.3 ("0.4) 77.1 64.0 41.7 62.4 73.9
+Tricks: tricks described in Section IV-A.y: keep 300 instead of 100 predictions for evaluation.
+TABLE II
+FeatAug-FC VS.FeatAug-Flip ON TOP OF HYBRID MATCHING
+DEFORMABLE -DETR
+Method Backbone #epochs AP AP 50 AP75
+H-Deformable-DETR [10] R50 24 50.0 68.1 54.6
++FeatAug-FC R50 24 50.1 68.2 54.6
++FeatAug-Flip R50 24 50.4 68.7 54.9
+respectively). When shortening the training epochs to 36
+epochs, FeatAug-FC still achieves the performance of 46.1 AP,
+which is 0.4 AP higher than the DAB-DETR-DC5 baseline
+trained with 50 epochs.
+On top of the multi-scale Deform-DETR w/ tck. baseline,FeatAug-FC not only achieves around 1.0 AP gain after
+convergence but also shortens the training epochs (24 epochs
+vs. 36 epochs) on all the three tested backbones. Our FeatAug-
+FC integrated into Deform-DETR w/ tck. on Swin-Large
+backbone achieves 57.6 AP, which is comparable with the
+state-of-the-art DINO-Deformable-DETR framework.
+The work Hybrid Matching (denoted as H) [10] also tackles
+the one-to-many matching problem and achieves state-of-the-
+art performance. We also test our FeatAug-DETR on top of
+Hybrid Matching with Swin-Large backbone and achieve the
+performance of 58.3 AP, which is 0.5 AP higher than the
+previous state-of-the-art DINO. In experiments, we adopt the
+default hyperparameter settings of Hybrid Matching as [10].8
+10 20 30 40 50
+Epochs404244464850AP50.0
+49.8
+49.1
+46.749.0
+48.7
+47.0
+Baseline
+DataAug N=2
+10 20 30 40 50 60
+Epochs404244464850AP50.0
+49.8
+49.1
+46.750.0
+49.9
+49.4
+48.4
+45.6
+DataAug N=3
+DataAug N=2
+Fig. 3. Left: Training AP curves of Deform-DETR w/ tck. baseline and DataAug-DETR withN= 2.Right: Training AP curves of DataAug-DETR with
+N= 2 andN= 3. It shows that augmenting each image for more than two times results in slower convergence and is non-beneﬁcial to the ﬁnal performance.
+TABLE III
+THE PERFORMANCE OF DataAug-DETR WITH NON -SPATIAL
+TRANSFORMATION
+Method Backbone#epochs
+12 24 36
+Deform-DETR w/ tck. R50 47.0 48.7 49.0
++DataAug R50 46.7 49.1 49.8
++DataAug-Resizing R50 45.2 48.1 48.9
+C. Non-spatial vs. Spatial Transformation for DataAug-DETR
+As discussed in Section III-B, the object queries’ assign-
+ments with the ground truths are sensitive to position changes.
+In other words, when an augmentation changes the relative
+position of objects, these objects almost always match dif-
+ferent queries compared to the original image/feature. Our
+proposed ﬂipping and cropping augmentations are both spatial
+transformations that change relative object positions. There are
+also other widely used data augmentation methods that do not
+change the objects’ relative positions, such as image random
+resizing. In this section, we also test applying only image
+random resizing in our DataAug-DETR method, which applies
+random resizing of each image several times in the same batch.
+We compare the non-spatial transformation with the Deform-
+DETR w/ tck. baseline and our DataAug-DETR with default
+settings. In the experiments, the augmentation times for each
+imageN= 2.
+As shown in Table III, the performance of only applying im-
+age resizing in DataAug-DETR is even worse than the baseline
+and our proposed default DataAug-DETR setting. The model
+converges slower and leads to worse performance than the
+baseline. This experiment shows that spatial transformations
+such as ﬂipping and cropping are crucial in the effectiveness
+ofDataAug-DETR . It also shows the rationality of the ﬂipping
+and cropping feature augmentation in FeatAug-DETR .
+D. Convergence Analysis of DataAug-DETR
+In the following analysis experiments, unless otherwise
+speciﬁed, we test our proposed method and evaluate its differ-TABLE IV
+CONVERGENCE ANALYSIS OF DataAug-DETR
+Method Backbone#epochs
+12 24 36 48
+Deform-DETR w/ tck. R50 47.0 48.7 49.0 48.3
++DataAug -N= 2 R50 46.7 49.1 49.8 50.0
++DataAug -N= 3 R50 45.6 48.4 49.4 49.9
+ent designs on top of the Deform-DETR w/ tck. and ResNet-50
+backbone and treat it as our experiment baseline.
+When keeping the same 16batch size as the baseline,
+DataAug-DETR can be viewed as changing the order of
+training data compared with the ordinary training pipeline.
+Here we investigate the convergence speed of DataAug-DETR
+AP-epoch curves.
+As shown in Figure 3 (left) and Table IV, applying
+DataAug-DETR improves the ﬁnal converged performance.
+The baseline converges with 36 epochs and achieves 49.0 AP.
+Further training hurts the model as the performance drops
+when trained for 48 epochs. After applying DataAug-DETR
+with augmentation times N= 2, its performance at 36 epochs
+is 0.8 AP higher than the baseline. The performance continues
+to improve with a 48-epoch training scheme. It is also observed
+thatDataAug-DETR slightly slows down convergence in early
+epochs.
+We also investigate the augmentation number Nwith
+DataAug-DETR , Figure 3 (right) shows that the convergence
+is slower with a larger augmentation number, while the ﬁnal
+performance becomes saturated after N2. Thus we adopt
+N= 2 as the default setting unless otherwise speciﬁed.
+E. Comparison of Different Feature Augmentation Operators
+We compare the performance of the proposed FeatAug-Flip ,
+FeatAug-Crop , and FeatAug-FC on the Deform-DETR w/ tck.
+baseline. The results are listed in Table V.
+As shown in the table, all of our FeatAug-DETR ’s results are
+better than that of the baseline. FeatAug-Flip is 0.3 AP higher9
+0 5 10 15 20 25 30 35 40
+Epochs0.350.400.450.500.55AP0.4900.4960.563 0.5680.571
+R50  Baseline
+R50  FeatAug-Flip
+Swin-L  Baseline
+Swin-L  FeatAug-Flip
+Swin-L  FeatAug-FC
+0 200 400 600 800 1000 1200 1400
+NVIDIA V100 GPU * Hours0.350.400.450.500.55AP0.4900.4960.5630.568 0.571
+R50  Baseline
+R50  FeatAug-Flip
+Swin-L  Baseline
+Swin-L  FeatAug-Flip
+Swin-L  FeatAug-FC
+Fig. 4. Left: Training AP curves w.r.t training epochs of Deform-DETR w/ tck. and that integrated with our FeatAug-DETR .Right: Traing AP curves w.r.t
+GPUHours of Deform-DETR w/ tck. and that integrated with our FeatAug-DETR .
+TABLE V
+RESULTS OF DIFFERENT FeatAug-DETR METHODS ON DEFORM -DETR W/
+TCK.
+Method #ep. AP AP 50 AP75 APS APM APL
+Deform-DETR w/ tck. 12 47.0 65.3 50.9 30.7 50.0 60.9
+Deform-DETR w/ tck. 36 49.0 67.6 53.3 32.7 51.5 63.7
++FeatAug-Flip 12 48.4 66.7 52.8 31.7 51.4 64.0
++FeatAug-Flip 24 49.6 68.1 54.1 31.6 53.1 64.8
++FeatAug-Crop 12 48.1 66.3 52.3 30.7 51.3 63.2
++FeatAug-Crop 24 49.6 68.1 54.1 33.2 52.6 64.7
++FeatAug-FC 12 48.7 67.1 53.3 31.2 52.1 63.2
++FeatAug-FC 24 49.9 68.3 54.7 32.5 52.9 65.1
+TABLE VI
+COMPUTATIONAL CONSUMPTION OF FeatAug-DETR ONDEFORM -DETR
+W/TCK.WITH 16 NVIDIA V100 GPU S
+Method Backbone Time (per epoch) Time (total)
+Deform-DETR w/ tck. R50 40min 24h (36epochs)
++FeatAug-Flip R50 60min 24h (24epochs)
+Deform-DETR w/ tck. Swin-T 50min 30h (36epochs)
++FeatAug-Flip Swin-T 70min 28h (24epochs)
+Deform-DETR w/ tck. Swin-L 140min 84h (36epochs)
++FeatAug-Flip Swin-L 160min 64h (24epochs)
++FeatAug-FC Swin-L 180min 72h (24epochs)
+than FeatAug-Crop with 12 training epochs. The stronger
+FeatAug-FC is 0.3 AP better than FeatAug-Flip andFeatAug-
+Crop with 24 epochs and reaches 49.9 AP.
+The results show that FeatAug-Flip converges faster than
+FeatAug-Crop , while their convergence performance is sim-
+ilar. FeatAug-FC provides further performance improvement
+compared with FeatAug-Flip andFeatAug-Crop , while it also
+requires extra training time for epoch. Thus, FeatAug-Flip is
+suitable for models with relatively small backbones (e.g. R50
+and Swin-Tiny). FeatAug-FC is preferred when training with
+large backbones (e.g. Swin-Large).TABLE VII
+EVALUATION ON ONE-STAGE DEFORMABLE -DETR
+Method #ep. AP AP 50 AP75 APS APM APL
+One-stage 50 44.5 63.6 48.7 27.1 47.6 59.6
++FeatAug-FC 36 45.9 64.8 50.3 27.7 49.3 60.6
++FeatAug-FC 50 46.3 65.3 50.6 28.0 49.7 61.1
+TABLE VIII
+ABLATION ON INPUT FEATURE SELECTION IN FeatAug-DETR
+Method #ep. AP AP 50 AP75
+Deform-DETR w/ tck. 12 47.0 65.3 50.9
++FeatAug-Flip-Encoder 12 46.5 64.8 50.6
++FeatAug-Flip-Default 12 48.4 66.7 52.8
+TABLE IX
+ABLATION ON CROPPED FEATURE PROJECTOR IN FeatAug-Crop ON
+DEFORM -DETR W/TCK.
+Method #ep. AP AP 50 AP75 APSAPM APL
+Deform-DETR w/ tck. 36 49.0 67.6 53.3 32.7 51.5 63.7
+Same Proj. 24 49.2 67.8 53.6 31.8 52.9 63.4
+Cropped Proj. 24 49.6 68.1 54.1 33.2 52.6 64.7
+F . Convergence Analysis of FeatAug-DETR
+InFeatAug-DETR , the Transformer encoder and decoder
+process several augmented features during training, which
+produce extra computational consumption. However, such
+an increase in computation is invariant to the scale of the
+backbone. When training with large-scale backbones, the extra
+computational consumption is relatively small compared with
+the backbone. The training time per epoch comparisons with
+different backbones is shown in Table VI.
+The table reports the training time of the Deform-DETR
+w/ tck. baseline and that integrated with FeatAug-Flip . The
+training time of FeatAug-Crop is similar to FeatAug-Flip .
+Our training process uses 16 NVIDIA V100 GPUs with a
+batch size of 16. As shown in Table VI, the increase in the
+computation time is invariant with the size of the backbone.10
+Fig. 5. Visualization of randomly selected one channel feature of the output
+of vision backbone. It visualizes the feature domain gap caused by RoIAlign,
+we adopt projectors after the cropped features to mitigate the domain gap.
+Left: Original input image. Middle: Original feature from vision backbone.
+Right: Feature after RoIAlign operation. It shows that the augmented feature
+becomes blurry compared with the original one, and such a domain gap causes
+detection performance degradation. Here we adopt the 1=8input-resolution
+feature map from the R50 backbone trained with Deform-DETR w/ tck.
+The proportion of the increased computation time is only about
+15% when using the Swin-L backbone.
+The training AP curves of FeatAug-DETR are shown in Fig-
+ure 4. The left ﬁgure shows the curves w.r.t. training epochs.
+Our FeatAug-DETR consistently surpasses the Deform-DETR
+w/ tck. baseline by a large margin and shortens the train-
+ing epochs from 36 epochs to 24 epochs. Considering our
+FeatAug-DETR requires extra computation consumption in
+each epoch, we also show the training AP curves w.r.t.
+GPUHours in the right ﬁgure. It shows FeatAug-DETR still
+achieves better performance than the baseline in terms of
+detection accuracy and convergence speed. Especially when
+the backbone scale is larger, the performance gain is more
+obvious.
+G. Ablation Studies
+1) Evaluation on one-stage Deformable-DETR: Since we
+mainly evaluate our method based on Deform-DETR w/ tck.,
+which consists of tricks that boost performance. In order to
+show that our methods are independent of these tricks and can
+still improve various DETR variants’ performance, we also test
+our method on top of the one-stage Deformable-DETR, which
+is its original version. The results are shown in Table VII.
+Our method accelerates its convergence speed. FeatAug-FC
+trained for 36 epochs is 1.4 AP better than the one-stage
+Deformable-DETR trained for 50 epochs. With the same 50
+training epochs, FeatAug-FC reaches 46.3 AP, which is 1.8
+AP better than the baseline.
+2) Input feature of FeatAug-DETR: In our FeatAug-DETR ,
+we augment the image feature from the backbone and input the
+augmented features into the Transformer encoder. However,
+in the Deform-DETR w/ tck. baseline, the features after the
+Transformer encoder can also be chosen as the alternative
+for augmentation. To analyze which feature is better as the
+input of FeatAug-DETR , we test them and the results are
+shown in Table VIII. FeatAug-DETR on the feature after the
+Transformer encoder is denoted as FeatAug-Encoder and the
+augmentation on the feature directly from the backbone is
+denoted as FeatAug-Default .
+As shown in the table, the feature augmentation on the
+encoder feature actually hurts the performance and is even
+worse than that of the baseline. Since the Transformer encoder
+enhances the image features with positional information. If
+the feature augmentation is applied after the Transformer
+0.00 0.25 0.50 0.75 1.00
+Center X0.00.20.40.60.81.0Center YObject Query #11
+0.00 0.25 0.50 0.75 1.00
+Center X0.00.20.40.60.81.0Object Query #27
+0.00 0.25 0.50 0.75 1.00
+Center X0.00.20.40.60.81.0Object Query #145
+0.00 0.25 0.50 0.75 1.00
+Center X0.00.20.40.60.81.0Object Query #238
+0.00 0.25 0.50 0.75 1.00
+Width0.00.20.40.60.81.0Height
+0.00 0.25 0.50 0.75 1.00
+Width0.00.20.40.60.81.0
+0.00 0.25 0.50 0.75 1.00
+Width0.00.20.40.60.81.0
+0.00 0.25 0.50 0.75 1.00
+Width0.00.20.40.60.81.0Fig. 6. We visualize the predicted bounding boxes position distribution of
+4 randomly selected object queries on 10000 random selected images from
+COCO train2017 set. The top 4 ﬁgures show the predicted center x and
+center y of the corresponding bounding boxes, while the bottom 4 ﬁgures
+show the predicted heights and widths of the queries.
+encoder, it would mislead the later Transformer decoder about
+the positional information of this image and thus harm the
+Transformer decoder training.
+3) Cropped feature projectors in FeatAug-DETR: In our
+FeatAug-Crop andFeatAug-FC , in order to mitigate the do-
+main gap caused by RoIAlign, we adopt projectors after the
+cropped features. The visualization of the caused domain
+gap is shown in Figure 5. Here we ablate on removing the
+individual projectors and using the same projector on both
+the original and cropped features. The results are shown in
+Table IX. Using the projectors for cropped features in FeatAug-
+Crop performs 0.4 AP better than using the same projector for
+both cropped and original features. The performance gain is
+more obvious on small objects and large objects, where APS
+increases by 1.4 and APLby 1.3.
+H. Visualization of Position-Aware Object Queries
+In the pilot study in Section III-A, it shows that spatial
+augmentation changes the query-object assignments. We fur-
+ther visualize some bounding boxes that each object query
+predicts. Here we test a trained Deformable-DETR without our
+DataAug-DETR orFeatAug-DETR . We record all the output
+bounding box predictions that are matched with the ground
+truth objects for each query and visualize fcenter x, center y,
+width, heightgof all the predicted bounding boxes for each
+query. Here we visualize four queries (#11, #27, #145, and
+#238) in Figure 6.
+As shown in Figure 6, the predicted center of each object
+query is almost always located around a ﬁxed position, which
+means that a spatial transformation that changes the bounding
+boxes’ relative positions on the feature map (such as ﬂipping)
+can change the matched object queries. Furthermore, by ob-
+serving the predicted heights and widths distribution of Query
+#11 and Query #27, it shows that though the two queries
+predict similar center positions, their predicted height and
+width are differently distributed. Query #11 always predicts
+large objects while Query #27 is always in charge of small
+objects. It shows that the cropping operation that changes the
+sizes of the predicted bounding boxes’ also varies the object-
+query matchings.11
+The above two observations show that the object queries as-
+signed to predicted bounding boxes are highly position-aware.
+Applying ﬂipping and cropping operations makes different
+object queries match different ground truth objects.
+V. C ONCLUSION
+In this paper, we enrich the formulation of one-to-many
+matching for DETRs. We summarize the one-to-many match-
+ing mechanism of augmenting object queries for Group-
+DETR [9] and Hybrid Matching [10] and propose augmenting
+image features to implement one-to-many matching. To be
+detailed, we proposed DataAug-DETR method to help DETR-
+like methods to achieve higher performance after convergence.
+Further, we also propose the FeatAug-DETR method, including
+FeatAug-Flip .FeatAug-Crop , and FeatAug-FC . The FeatAug-
+DETR method signiﬁcantly accelerates DETR training and
+accomplishes better performance. FeatAug-DETR improve the
+performance of Deformable-DETR [1] with different back-
+bones for around 1.0 AP and shorten the training epochs to
+only 1or2standard training schedule. When applying
+FeatAug-DETR together with Hybrid Matching [10] and using
+a Swin-Large backbone, we achieve the current state-of-the-art
+performance of 58.3 AP.
+REFERENCES
+[1] X. Zhu, W. Su, L. Lu, B. Li, X. Wang, and J. Dai, “Deformable
+DETR: deformable transformers for end-to-end object detection,”
+in9th International Conference on Learning Representations, ICLR
+2021, Virtual Event, Austria, May 3-7, 2021 . OpenReview.net, 2021.
+[Online]. Available: https://openreview.net/forum?id=gZ9hCDWe6ke
+[2] J. Redmon, S. K. Divvala, R. B. Girshick, and A. Farhadi, “You
+only look once: Uniﬁed, real-time object detection,” in 2016 IEEE
+Conference on Computer Vision and Pattern Recognition, CVPR 2016,
+Las Vegas, NV , USA, June 27-30, 2016 . IEEE Computer Society, 2016,
+pp. 779–788. [Online]. Available: https://doi.org/10.1109/CVPR.2016.91
+[3] J. Redmon and A. Farhadi, “YOLO9000: better, faster, stronger,” in
+2017 IEEE Conference on Computer Vision and Pattern Recognition,
+CVPR 2017, Honolulu, HI, USA, July 21-26, 2017 . IEEE Computer
+Society, 2017, pp. 6517–6525. [Online]. Available: https://doi.org/10.
+1109/CVPR.2017.690
+[4] ——, “Yolov3: An incremental improvement,” CoRR , vol.
+abs/1804.02767, 2018. [Online]. Available: http://arxiv.org/abs/1804.
+02767
+[5] R. B. Girshick, J. Donahue, T. Darrell, and J. Malik, “Rich
+feature hierarchies for accurate object detection and semantic
+segmentation,” in 2014 IEEE Conference on Computer Vision and
+Pattern Recognition, CVPR 2014, Columbus, OH, USA, June 23-28,
+2014 . IEEE Computer Society, 2014, pp. 580–587. [Online]. Available:
+https://doi.org/10.1109/CVPR.2014.81
+[6] S. Ren, K. He, R. B. Girshick, and J. Sun, “Faster R-CNN:
+towards real-time object detection with region proposal networks,”
+inAdvances in Neural Information Processing Systems 28: Annual
+Conference on Neural Information Processing Systems 2015, December
+7-12, 2015, Montreal, Quebec, Canada , C. Cortes, N. D. Lawrence,
+D. D. Lee, M. Sugiyama, and R. Garnett, Eds., 2015, pp. 91–
+99. [Online]. Available: https://proceedings.neurips.cc/paper/2015/hash/
+14bfa6bb14875e45bba028a21ed38046-Abstract.html
+[7] ——, “Faster R-CNN: towards real-time object detection with
+region proposal networks,” IEEE Trans. Pattern Anal. Mach. Intell. ,
+vol. 39, no. 6, pp. 1137–1149, 2017. [Online]. Available: https:
+//doi.org/10.1109/TPAMI.2016.2577031
+[8] K. He, G. Gkioxari, P. Doll ´ar, and R. B. Girshick, “Mask R-CNN,”
+inIEEE International Conference on Computer Vision, ICCV 2017,
+Venice, Italy, October 22-29, 2017 . IEEE Computer Society, 2017, pp.
+2980–2988. [Online]. Available: https://doi.org/10.1109/ICCV .2017.322
+[9] Q. Chen, X. Chen, G. Zeng, and J. Wang, “Group DETR: fast
+training convergence with decoupled one-to-many label assignment,”
+CoRR , vol. abs/2207.13085, 2022. [Online]. Available: https://doi.org/
+10.48550/arXiv.2207.13085[10] D. Jia, Y . Yuan, H. He, X. Wu, H. Yu, W. Lin, L. Sun, C. Zhang,
+and H. Hu, “Detrs with hybrid matching,” CoRR , vol. abs/2207.13080,
+2022. [Online]. Available: https://doi.org/10.48550/arXiv.2207.13080
+[11] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, and
+S. Zagoruyko, “End-to-end object detection with transformers,” in
+Computer Vision - ECCV 2020 - 16th European Conference, Glasgow,
+UK, August 23-28, 2020, Proceedings, Part I , ser. Lecture Notes in
+Computer Science, A. Vedaldi, H. Bischof, T. Brox, and J. Frahm,
+Eds., vol. 12346. Springer, 2020, pp. 213–229. [Online]. Available:
+https://doi.org/10.1007/978-3-030-58452-8 13
+[12] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N.
+Gomez, L. Kaiser, and I. Polosukhin, “Attention is all you need,”
+inAdvances in Neural Information Processing Systems 30: Annual
+Conference on Neural Information Processing Systems 2017, December
+4-9, 2017, Long Beach, CA, USA , I. Guyon, U. von Luxburg, S. Bengio,
+H. M. Wallach, R. Fergus, S. V . N. Vishwanathan, and R. Garnett, Eds.,
+2017, pp. 5998–6008. [Online]. Available: https://proceedings.neurips.
+cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html
+[13] X. Cao, P. Yuan, B. Feng, and K. Niu, “CF-DETR: coarse-to-
+ﬁne transformers for end-to-end object detection,” in Thirty-Sixth
+AAAI Conference on Artiﬁcial Intelligence, AAAI 2022, Thirty-Fourth
+Conference on Innovative Applications of Artiﬁcial Intelligence,
+IAAI 2022, The Twelveth Symposium on Educational Advances in
+Artiﬁcial Intelligence, EAAI 2022 Virtual Event, February 22 - March
+1, 2022 . AAAI Press, 2022, pp. 185–193. [Online]. Available:
+https://ojs.aaai.org/index.php/AAAI/article/view/19893
+[14] F. Li, H. Zhang, S. Liu, J. Guo, L. M. Ni, and L. Zhang, “DN-
+DETR: accelerate DETR training by introducing query denoising,” in
+IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+CVPR 2022, New Orleans, LA, USA, June 18-24, 2022 . IEEE,
+2022, pp. 13 609–13 617. [Online]. Available: https://doi.org/10.1109/
+CVPR52688.2022.01325
+[15] P. Gao, M. Zheng, X. Wang, J. Dai, and H. Li, “Fast convergence
+of DETR with spatially modulated co-attention,” in 2021 IEEE/CVF
+International Conference on Computer Vision, ICCV 2021, Montreal,
+QC, Canada, October 10-17, 2021 . IEEE, 2021, pp. 3601–3610.
+[Online]. Available: https://doi.org/10.1109/ICCV48922.2021.00360
+[16] X. Dai, Y . Chen, J. Yang, P. Zhang, L. Yuan, and L. Zhang, “Dynamic
+DETR: end-to-end object detection with dynamic attention,” in 2021
+IEEE/CVF International Conference on Computer Vision, ICCV 2021,
+Montreal, QC, Canada, October 10-17, 2021 . IEEE, 2021, pp.
+2968–2977. [Online]. Available: https://doi.org/10.1109/ICCV48922.
+2021.00298
+[17] Y . Wang, X. Zhang, T. Yang, and J. Sun, “Anchor DETR: query
+design for transformer-based detector,” in Thirty-Sixth AAAI Conference
+on Artiﬁcial Intelligence, AAAI 2022, Thirty-Fourth Conference
+on Innovative Applications of Artiﬁcial Intelligence, IAAI 2022,
+The Twelveth Symposium on Educational Advances in Artiﬁcial
+Intelligence, EAAI 2022 Virtual Event, February 22 - March 1,
+2022 . AAAI Press, 2022, pp. 2567–2575. [Online]. Available:
+https://ojs.aaai.org/index.php/AAAI/article/view/20158
+[18] D. Meng, X. Chen, Z. Fan, G. Zeng, H. Li, Y . Yuan, L. Sun, and J. Wang,
+“Conditional DETR for fast training convergence,” in 2021 IEEE/CVF
+International Conference on Computer Vision, ICCV 2021, Montreal,
+QC, Canada, October 10-17, 2021 . IEEE, 2021, pp. 3631–3640.
+[Online]. Available: https://doi.org/10.1109/ICCV48922.2021.00363
+[19] S. Liu, F. Li, H. Zhang, X. Yang, X. Qi, H. Su, J. Zhu, and L. Zhang,
+“DAB-DETR: dynamic anchor boxes are better queries for DETR,”
+inThe Tenth International Conference on Learning Representations,
+ICLR 2022, Virtual Event, April 25-29, 2022 . OpenReview.net, 2022.
+[Online]. Available: https://openreview.net/forum?id=oMI9PjOb9Jl
+[20] Z. Liu, Y . Lin, Y . Cao, H. Hu, Y . Wei, Z. Zhang, S. Lin, and
+B. Guo, “Swin transformer: Hierarchical vision transformer using
+shifted windows,” in 2021 IEEE/CVF International Conference on
+Computer Vision, ICCV 2021, Montreal, QC, Canada, October
+10-17, 2021 . IEEE, 2021, pp. 9992–10 002. [Online]. Available:
+https://doi.org/10.1109/ICCV48922.2021.00986
+[21] T. Lin, P. Goyal, R. B. Girshick, K. He, and P. Doll ´ar, “Focal
+loss for dense object detection,” in IEEE International Conference
+on Computer Vision, ICCV 2017, Venice, Italy, October 22-29, 2017 .
+IEEE Computer Society, 2017, pp. 2999–3007. [Online]. Available:
+https://doi.org/10.1109/ICCV .2017.324
+[22] W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. E. Reed, C. Fu, and
+A. C. Berg, “SSD: single shot multibox detector,” in Computer Vision -
+ECCV 2016 - 14th European Conference, Amsterdam, The Netherlands,
+October 11-14, 2016, Proceedings, Part I , ser. Lecture Notes in
+Computer Science, B. Leibe, J. Matas, N. Sebe, and M. Welling,12
+Eds., vol. 9905. Springer, 2016, pp. 21–37. [Online]. Available:
+https://doi.org/10.1007/978-3-319-46448-0 2
+[23] Z. Tian, C. Shen, H. Chen, and T. He, “FCOS: fully convolutional one-
+stage object detection,” in 2019 IEEE/CVF International Conference
+on Computer Vision, ICCV 2019, Seoul, Korea (South), October 27 -
+November 2, 2019 . IEEE, 2019, pp. 9626–9635. [Online]. Available:
+https://doi.org/10.1109/ICCV .2019.00972
+[24] S. Zhang, C. Chi, Y . Yao, Z. Lei, and S. Z. Li, “Bridging the gap
+between anchor-based and anchor-free detection via adaptive training
+sample selection,” in 2020 IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, CVPR 2020, Seattle, WA, USA,
+June 13-19, 2020 . Computer Vision Foundation / IEEE, 2020, pp.
+9756–9765. [Online]. Available: https://openaccess.thecvf.com/content
+CVPR 2020/html/Zhang Bridging theGap Between Anchor-Based
+and Anchor-Free Detection viaAdaptive CVPR 2020 paper.html
+[25] K. Kim and H. S. Lee, “Probabilistic anchor assignment with
+iou prediction for object detection,” in Computer Vision - ECCV
+2020 - 16th European Conference, Glasgow, UK, August 23-28,
+2020, Proceedings, Part XXV , ser. Lecture Notes in Computer
+Science, A. Vedaldi, H. Bischof, T. Brox, and J. Frahm, Eds.,
+vol. 12370. Springer, 2020, pp. 355–371. [Online]. Available:
+https://doi.org/10.1007/978-3-030-58595-2 22
+[26] Z. Ge, S. Liu, Z. Li, O. Yoshie, and J. Sun, “OTA:
+optimal transport assignment for object detection,” in IEEE
+Conference on Computer Vision and Pattern Recognition,
+CVPR 2021, virtual, June 19-25, 2021 . Computer Vision
+Foundation / IEEE, 2021, pp. 303–312. [Online]. Available: https:
+//openaccess.thecvf.com/content/CVPR2021/html/Ge OTA Optimal
+Transport Assignment forObject Detection CVPR 2021 paper.html
+[27] Z. Sun, S. Cao, Y . Yang, and K. Kitani, “Rethinking transformer-based
+set prediction for object detection,” in 2021 IEEE/CVF International
+Conference on Computer Vision, ICCV 2021, Montreal, QC, Canada,
+October 10-17, 2021 . IEEE, 2021, pp. 3591–3600. [Online]. Available:
+https://doi.org/10.1109/ICCV48922.2021.00359
+[28] Z. Yao, J. Ai, B. Li, and C. Zhang, “Efﬁcient DETR: improving end-
+to-end object detector with dense prior,” CoRR , vol. abs/2104.01318,
+2021. [Online]. Available: https://arxiv.org/abs/2104.01318
+[29] X. Dai, Y . Chen, B. Xiao, D. Chen, M. Liu, L. Yuan, and L. Zhang,
+“Dynamic head: Unifying object detection heads with attentions,” in
+IEEE Conference on Computer Vision and Pattern Recognition, CVPR
+2021, virtual, June 19-25, 2021 . Computer Vision Foundation / IEEE,
+2021, pp. 7373–7382. [Online]. Available: https://openaccess.thecvf.
+com/content/CVPR2021/html/Dai Dynamic Head Unifying Object
+Detection Heads With Attentions CVPR 2021 paper.html
+[30] J. Dai, H. Qi, Y . Xiong, Y . Li, G. Zhang, H. Hu, and Y . Wei,
+“Deformable convolutional networks,” in IEEE International Conference
+on Computer Vision, ICCV 2017, Venice, Italy, October 22-29, 2017 .
+IEEE Computer Society, 2017, pp. 764–773. [Online]. Available:
+https://doi.org/10.1109/ICCV .2017.89
+[31] X. Zhu, H. Hu, S. Lin, and J. Dai, “Deformable convnets V2:
+more deformable, better results,” in IEEE Conference on Computer
+Vision and Pattern Recognition, CVPR 2019, Long Beach, CA, USA,
+June 16-20, 2019 . Computer Vision Foundation / IEEE, 2019, pp.
+9308–9316. [Online]. Available: http://openaccess.thecvf.com/content
+CVPR 2019/html/Zhu Deformable ConvNets V2More Deformable
+Better Results CVPR 2019 paper.html
+[32] H. Zhang, F. Li, S. Liu, L. Zhang, H. Su, J. Zhu, L. M. Ni, and
+H. Shum, “DINO: DETR with improved denoising anchor boxes
+for end-to-end object detection,” CoRR , vol. abs/2203.03605, 2022.
+[Online]. Available: https://doi.org/10.48550/arXiv.2203.03605
+[33] H. W. Kuhn, “The hungarian method for the assignment problem,”
+in50 Years of Integer Programming 1958-2008 - From the Early
+Years to the State-of-the-Art , M. J ¨unger, T. M. Liebling, D. Naddef,
+G. L. Nemhauser, W. R. Pulleyblank, G. Reinelt, G. Rinaldi, and
+L. A. Wolsey, Eds. Springer, 2010, pp. 29–47. [Online]. Available:
+https://doi.org/10.1007/978-3-540-68279-0 2
+[34] Y . Wu and K. He, “Group normalization,” in Computer Vision -
+ECCV 2018 - 15th European Conference, Munich, Germany, September
+8-14, 2018, Proceedings, Part XIII , ser. Lecture Notes in Computer
+Science, V . Ferrari, M. Hebert, C. Sminchisescu, and Y . Weiss,
+Eds., vol. 11217. Springer, 2018, pp. 3–19. [Online]. Available:
+https://doi.org/10.1007/978-3-030-01261-8 1
+[35] T. Lin, M. Maire, S. J. Belongie, J. Hays, P. Perona, D. Ramanan,
+P. Doll ´ar, and C. L. Zitnick, “Microsoft COCO: common objects in
+context,” in Computer Vision - ECCV 2014 - 13th European Conference,
+Zurich, Switzerland, September 6-12, 2014, Proceedings, Part V , ser.
+Lecture Notes in Computer Science, D. J. Fleet, T. Pajdla, B. Schiele,and T. Tuytelaars, Eds., vol. 8693. Springer, 2014, pp. 740–755.
+[Online]. Available: https://doi.org/10.1007/978-3-319-10602-1 48
+[36] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for
+image recognition,” in 2016 IEEE Conference on Computer Vision
+and Pattern Recognition, CVPR 2016, Las Vegas, NV , USA, June
+27-30, 2016 . IEEE Computer Society, 2016, pp. 770–778. [Online].
+Available: https://doi.org/10.1109/CVPR.2016.90
+[37] J. Deng, W. Dong, R. Socher, L. Li, K. Li, and L. Fei-Fei,
+“Imagenet: A large-scale hierarchical image database,” in 2009
+IEEE Computer Society Conference on Computer Vision and Pattern
+Recognition (CVPR 2009), 20-25 June 2009, Miami, Florida, USA .
+IEEE Computer Society, 2009, pp. 248–255. [Online]. Available:
+https://doi.org/10.1109/CVPR.2009.5206848
+[38] H. Rezatoﬁghi, N. Tsoi, J. Gwak, A. Sadeghian, I. D. Reid, and
+S. Savarese, “Generalized intersection over union: A metric and a
+loss for bounding box regression,” in IEEE Conference on Computer
+Vision and Pattern Recognition, CVPR 2019, Long Beach, CA, USA,
+June 16-20, 2019 . Computer Vision Foundation / IEEE, 2019, pp.
+658–666. [Online]. Available: http://openaccess.thecvf.com/content
+CVPR 2019/html/Rezatoﬁghi Generalized Intersection Over Union
+AMetric and aLoss forCVPR 2019 paper.html
+[39] X. Glorot and Y . Bengio, “Understanding the difﬁculty of training
+deep feedforward neural networks,” in Proceedings of the Thirteenth
+International Conference on Artiﬁcial Intelligence and Statistics,
+AISTATS 2010, Chia Laguna Resort, Sardinia, Italy, May 13-15,
+2010 , ser. JMLR Proceedings, Y . W. Teh and D. M. Titterington,
+Eds., vol. 9. JMLR.org, 2010, pp. 249–256. [Online]. Available:
+http://proceedings.mlr.press/v9/glorot10a.html
+[40] I. Loshchilov and F. Hutter, “Decoupled weight decay regularization,”
+in7th International Conference on Learning Representations, ICLR
+2019, New Orleans, LA, USA, May 6-9, 2019 . OpenReview.net, 2019.
+[Online]. Available: https://openreview.net/forum?id=Bkg6RiCqY7
+[41] Y . Li, H. Qi, J. Dai, X. Ji, and Y . Wei, “Fully convolutional
+instance-aware semantic segmentation,” in 2017 IEEE Conference on
+Computer Vision and Pattern Recognition, CVPR 2017, Honolulu, HI,
+USA, July 21-26, 2017 . IEEE Computer Society, 2017, pp. 4438–4446.
+[Online]. Available: https://doi.org/10.1109/CVPR.2017.472

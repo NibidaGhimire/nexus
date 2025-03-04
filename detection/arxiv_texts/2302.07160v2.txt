@@ -1,0 +1,1332 @@
+1
+Learning a model is paramount for sample
+efﬁciency in reinforcement learning control of PDEs
+Stefan Werner, Sebastian Peitz
+Abstract —The goal of this paper is to make a strong point for
+the usage of dynamical models when using reinforcement learning
+(RL) for feedback control of dynamical systems governed by
+partial differential equations (PDEs). To breach the gap between
+the immense promises we see in RL and the applicability in
+complex engineering systems, the main challenges are the massive
+requirements in terms of the training data, as well as the
+lack of performance guarantees. We present a solution for the
+ﬁrst issue using a data-driven surrogate model in the form
+of a convolutional LSTM with actuation. We demonstrate that
+learning an actuated model in parallel to training the RL agent
+signiﬁcantly reduces the total amount of required data sampled
+from the real system. Furthermore, we show that iteratively
+updating the model is of major importance to avoid biases
+in the RL training. Detailed ablation studies reveal the most
+important ingredients of the modeling process. We use the chaotic
+Kuramoto-Sivashinsky equation do demonstarte our ﬁndings.
+Index Terms —reinforcement learning, surrogate modeling,
+partial differential equations, feedback control
+I. I NTRODUCTION
+Feedback control of complex physical systems is an essen-
+tial building block in almost any modern technology such
+as wind energy [1], combustion [2] or nuclear fusion [3].
+In all these systems, we face the task of having to take
+control actions in a very short amount of time and for a
+system with highly complex, distributed dynamics (typically
+governed by nonlinear partial differential equations (PDEs))
+that are difﬁcult or even impossible to observe completely.
+Since classical feedback control strategies have limitations for
+such highly complex systems, model predictive control [4] has
+emerged as an important control paradigm, where a model
+of the system dynamics is used to solve an optimal control
+problem repeatedly on a receding horizon in order to create
+a feedback loop. As this calls for the solution of an optimal
+control problem in a very short amount of time, surrogate
+models are frequently used to accelerate the solution process,
+in particular when the system dynamics are governed by PDEs.
+There exists a plethora of approaches, ranging from Galerkin
+models based on the Proper Orthogonal Decomposition [5]
+over the sparse identiﬁcation of governing equations [6] to
+deep neural networks [7]. All these modeling paradigms now
+face the challenge to trade between model accuracy and
+computational performance, which becomes more and more
+challenging for increasingly complex systems.
+Due to the real-time challenges for MPC, reinforcement
+learning [8] is gaining more and more popularity as a very
+powerful and real-time capable paradigm for feedback control.
+Both authors are with the Department of Computer Science, Paderborn
+University, Paderborn, Germany. e-mail: sebastian.peitz@upb.de.In recent years, we have seen tremendous successes, not only
+in the area of games (e.g., [9]), but also in complex technical
+applications such as ﬂow control [10] or nuclear fusion [3].
+However, there are two drawbacks that limit the deployment of
+RL agents in real systems. The ﬁrst point is that the amount
+of required training data often exceeds tens to hundreds of
+millions of samples [11], [12] such that the training becomes
+very expensive. A notable example (even though from the
+area of game playing) includes the efforts of OpenAI Five
+to master the Dota 2 video game with an agent training on
+about 100,000 CPU cores for a time period of about ten
+months [13]. These issues are even more severe when data
+collection becomes exceedingly resource-intensive, as is the
+case for most ﬂuid or electromagnetic ﬁeld simulations, see,
+e.g., [14]. The second drawback is that the control performance
+may vary strongly, in particular for high-dimensional state and
+action space dimensions, where it is challenging to obtain
+the required amounts of training data. A popular approach
+to tackle these issues is the usage of model-based algorithms
+[15], see also [16] for an overview and a taxonomy. Therein,
+a surrogate model replaces the real environment to allow for a
+signiﬁcant increase of the training on data created by said
+surrogate. Using such a model enables the agent to look
+ahead at the effects of its actions on the system without
+ever performing them in the actual environment. It is widely
+accepted that surrogate models can reduce the amount of data
+an agent consumes before converging in the case that accurate
+and generalizable surrogates can be learned [17]–[19], and
+in many situations, this model can be orders of magnitude
+faster than evaluating the environment model (e.g., numeri-
+cally solving a PDE). Collecting data through model-based
+rollouts is advantageous as soon as they reduce the amount
+of computation time spent on numerical simulations or the
+number of time-consuming and impractical real-world trials.
+At the same time, models introduce approximation errors so
+that we may obtain solutions inferior to those discovered using
+the model-free paradigm [20]. The literature thus studies to
+what extent capable function approximators can overcome
+modeling bias and how to avoid for errors to propagate into
+control strategies [21]–[24]. Overall, interest has shifted from
+stable and robust linear models [25], [26] to shallow neural
+networks [27] or Gaussian processes [18], [28] as learning
+machines, before advancing to the deep neural networks seen
+today in state-of-the-art algorithms for model-based control
+[24], [29]. In the meantime, the increased model capacity
+makes overﬁtting a substantial issue of concern [21], [30].
+In spite of that, the recent SimPLe [31] and DREAMER [32]
+algorithms solve challenging visual control tasks, being orders
+of magnitude more efﬁcient (even though the original problemarXiv:2302.07160v2  [cs.LG]  13 Mar 20232
+is not expensive to simulate) than their model-free peers while
+rivaling their asymptotic performance.
+Even though it seems clear that surrogates have the potential
+to improve the learning process, the trade off in terms of
+sample efﬁciency, computational complexity, and performance
+is seldom quantiﬁed, in particular in an engineering context
+such as PDE control. Two recent approaches using learned
+surrogates are [33] or [34]. In addition to assuming complete
+knowledge of the phenomena governing the system dynamics,
+the ﬁrst work uses a physics-informed loss that, in essence,
+uses a deep neural network to compute the same ﬁnite dif-
+ference solution as the numerical simulation does, but at a
+substantial slowdown in terms of runtime. The second con-
+tribution learns a highly accurate surrogate before optimizing
+a control strategy on it but fails to adjust its forecasts to the
+continuously changing distribution of visited simulation states.
+In this paper, we discuss and evaluate a variety of design
+choices associated with model-based reinforcement learning,
+adopt a more sophisticated optimization approach, and identify
+promising directions for future research. We discuss the var-
+ious modeling steps (Section III) that are required in order
+to arrive at a model that possesses the required accuracy.
+We then thoroughly study the impact on the required amount
+of training data (Section IV), where an improvement by a
+factor of nine is observed for the case of the 1D Kuramoto-
+Sivashinsky equation. In both Sections III and IV, we con-
+duct various ablation studies to identify the most important
+modeling techniques in the ofﬂine phase, as well as online
+updating strategies during deployment. Finally, we discuss the
+implications for the robustness of RL agents as well as future
+research directions in Section VI.
+II. R EINFORCEMENT LEARNING
+Reinforcement learning (RL) aims to solve sequential
+decision-making problems mathematically deﬁned as Markov
+Decision Processes (MDPs) (see, e.g., [8] for a detailed
+overview). It possesses a set Sof system states and a set Aof
+actions an agent may select among to exercise control. At each
+discrete time step , the agent observes state s2S of the
+environment and responds with an action a2A. A stochastic
+transition function T:SA!P (S)formalizes in what
+way the system state changes as a result thereof. In an MDP,
+the state transition is independent of past states and actions,
+meaning that it satisﬁes the Markov property . The reward
+signalrthen quantiﬁes the quality of decision ataken in
+statesand is an instance of the stochastic reward function
+R:SA!P (R). Starting from an initial state s0P 0(S),
+the RL framework aims to maximize the expected sum of
+discounted future rewards E[P1
+=0r], where2[0;1]is
+the discount factor.
+A policyis a mapping :S ! P (A)modeling the
+probability(ajs)of taking action a2A in states2S of
+the environment. Solving an MDP means ﬁnding an optimal
+policy:
+= arg max
+E"1X
+=0r#
+:So-called value functions are useful concepts to formally
+deﬁne optimality conditions for policies. In substance, a state
+valueV(s)denotes what future rewards to expect following
+policywhen the environment is in state s:
+V(s) =E"1X
+k=0kr+ks=s#
+:
+Therefore, a policy is optimal if its state value V(s)at
+each states2S is at least as large as the state values of any
+other policy. Similarly, state-action values Q(s;a)describe
+what rewards to expect once action ais selected in state s
+and policygoverns the behavior thereafter:
+Q(s;a) =E"1X
+k=0kr+ks=s;a=a#
+:
+InDeep Reinforcement Learning , deep neural networks are
+typically used as function approximators to learn policies and
+value functions. For continuous control tasks (that is, continu-
+ous state and/or action spaces as in PDE control), policy gra-
+dient methods (e.g., the Proximal Policy Optimization (PPO)
+[35], the deep deterministic policy gradient (DDPG) [36] or
+theSoft Actor Critic (SAC) [37]) are the most prominent
+methods.
+A. Model-based reinforcement learning
+Model-based algorithms use a dynamics model to capture
+the changes in the environment, i.e., they approximate the state
+transition mapT:SA!P (S)by a surrogate fT ,
+whereare trainable parameters.
+The model-based framework extends the optimization pro-
+cedure of model-free reinforcement learning with additional
+planning [8] and model-learning steps. Our work focuses on
+models learned from data for two reasons. The phenomena
+deﬁning the physics as well as their parameter values (for
+example mass or viscosity parameters) are often not known
+exactly. At the same time, computational models solving the
+governing PDEs often do not meet real-time constraints, which
+is essential for online planning.
+EnvironmentAgent
+Experience Repla yDynamics Mode l
+Model Rollout 𝒔𝜏ො𝒔𝜏+𝐾ො𝒔𝜏+𝐾
+ො𝒔𝜏+𝐾
+Fig. 1. In model-based RL with learned models, collected data serves two
+purposes. Samples are used to learn a model of the system dynamics and to
+estimate update targets for the model-free agent. Using rollouts of the agent
+in the model, algorithms collect additional data to improve their behavior. In
+the ideal absence of prediction errors, the model matches the environment
+without its downsides of real-world trials or severe computational costs.
+B. Reinforcement learning for PDE control
+In the literature on partial differential equations, control
+problems are usually deﬁned on a continuous time scale (in
+contrast to the discrete-time decision-making underpinning3
+reinforcement learning). The system state u: 
+[0;T]!Rn
+is a function of time t2[0;T]and spacex2
+, and
+the dynamics is described by a nonlinear partial differential
+operatorN, i.e.,
+@u
+@t=N(u;);
+with: 
+[0;T]!Rmbeing the control input that
+may depend on both space and time. Moreover, the initial
+conditions are given by I(u;rxu;:::)and the boundary
+conditions byB(u;rxu;:::).
+In order to draw the connection to reinforcement learning
+(or numerical implementations in general), one can introduce
+a partial discretization in time with a constant step size =
+t+1 t,= 0;1;:::;p , i.e.,
+T(u;) =u+Zt+1
+tN(u(;t);) dt=u+1;
+where we assume that (;t) =is constant over the
+interval [t;t+1). Note that this time step is typically
+much larger than the time step tin a standard numerical
+discretization scheme. Using the above considerations, the
+control task can be formalized as an optimal control problem
+of the following form:
+min
+J(u;) = min
+pX
+=0`(u;) (1)
+s.t.u+1=T(u;);  = 0;1;2;:::;p 1;
+whereJis the objective functional over the time horizon
+T=p, and`is the stage cost , e.g., a tracking term (with
+regularization, including penalties on the control cost)
+`(u;) =u uref
+2
+L2+kk2
+L2:
+In terms of RL, the stage cost `can be seen as the negative
+reward, the state ucorresponds to sandis linked toa.
+C. The Kuramoto-Sivashinsky equation
+The Kuramoto-Sivashinsky equation emerges in various
+reaction-diffusion systems and other physical phenomena, but
+was originally developed to model instabilities in laminar
+ﬂame fronts. Since it admits chaotic behavior from a certain
+domain size on (and has similarities to the Navier-Stokes
+equations in ﬂuid ﬂow), it is one of the most frequently studied
+PDE systems in many situations. The equation is deﬁned as
+@u
+@t= r2
+xu r4
+xu 1
+2urxu+; (2)
+whereuis the velocity and is an additive forcing term.
+Similar to other works [34], [38], we study a one-dimensional
+spatial domain 
+ = [0;L]with periodic boundary conditions
+and system size L= 22 . This spatial conﬁguration has been
+shown to manifest stable chaotic conditions, having the small-
+est system size to develop sustained (weak) turbulence [39].
+Again following related work [34], [38], [40], the control
+consists of a superposition of several Gaussians
+x;=4X
+i=1a[i]p
+2exp
+ (x x(i))2
+22
+; (3)located at spatial coordinates x(i)2 f0;L=4;2L=4;3L=4g.
+Herea[i]2[ 1;1]is thei-th control output of the agent
+at time step and= 0:4. The applied control values
+a[i]are changed at intervals of = 0:25time units. Each
+episode simulates Tmax= 100 time units of the system, that
+is,400 discrete steps, beginning with states sampled from
+the unforced attractor as an initial condition. In detail, we
+follow the conﬁguration outlined in [40] and initialize the
+solution variable uwith uniform noise in the range [ 0:4;0:4].
+The simulation then continues developing the state evolution
+for200 time units (about 10 Lyapunov times). During the
+transient, the system is not actuated.
+In accordance with [34], [40], our goal is to dampen the
+dissipationDof the solution variable while minimizing the
+amount of energy Pspent to power the system as well as the
+actuation devices:
+D=h
+r2
+xu2iandP=h
+rxu2i+hui; (4)
+whereh?idenotes the spatial average taken over the physical
+domain 
+. The reward is thus
+r= Z+
+D(t) +P(t)dt: (5)
+For the numerical solution, we implement the ﬁnite differ-
+ence simulation outlined in [33] and use a fourth-order Runge-
+Kutta scheme with a ﬁxed time step of t= 0:001. The
+second-order dissipation and fourth-order hyperviscous damp-
+ing terms are discretized by a sixth-order central difference
+scheme, while a second-order upwind scheme approximates
+the convection term. The spatial domain is discretized into
+N= 64 equidistant collocation points whose solution values
+constitute the state vector sobserved for decision-making.
+III. L EARNING SURROGATE MODELS OF FORCED PDE S
+Before integrating our surrogate into the online learning
+process of model-based RL, we evaluate its design on an
+ofﬂine dataset. In order to do so, we discuss the different
+modeling steps in detail and assess their importance in an
+ablation study on the Kuramoto-Sivashinsky system.
+A. Dimensionality reduction
+For learning surrogates, the spatial extent of the physical
+domain 
+and the dimensionality of its discretization affects
+the amount of data necessary in training as well as the
+degree to which the surrogate matches the state evolution
+of the system. To achieve a dimensionality reduction, we
+use a convolutional autoencoder (CAE) architecture, which is
+particularly well suited to cover the (on shorter time scales)
+local physics of PDEs. Another merit of CAEs is the weight-
+sharing capability, which signiﬁcantly decreases the number
+of model parameters and has a self-regularizing effect. The
+architecture consists of an encoder and a decoder network, as
+illustrated by the yellow and dark blue blocks in Figure 2.
+The encoder network fenccompresses snapshots sof the
+system to a compact latent space h=fenc(s), while
+the decoder network fdecattempts to recover the original
+input ^s=fdec(h). The information bottleneck between4
+ConvLSTM ConvLSTM
+𝒔𝜏𝒂𝜏+1 𝒂𝜏𝝓𝜏Δ𝜏 𝒖𝜏Δ𝜏 𝝓𝜏Δ𝜏+Δ𝜏𝑓𝝍𝑒𝑛𝑐𝑓𝝍𝑒𝑛𝑐𝑓𝜽𝑒𝑛𝑐𝑓𝜽𝑒𝑛𝑐𝑓𝜽𝑑𝑒𝑐𝑓𝜽𝑑𝑒𝑐
+𝒗𝜏 𝒉𝜏෡𝒉𝜏+1𝒗𝜏+1𝒄𝜏 𝒄𝜏+1ෝ𝒖𝜏Δ𝜏+Δ𝜏 ෝ𝒖𝜏Δ𝜏+2Δ𝜏
+𝒐𝜏 𝒐𝜏+1𝒄𝜏+2
+Fig. 2. Our surrogate model is composed of a state encoder fenc(yellow),
+an action encoder f enc(red) and a convolutional LSTM cell ffwd(green)
+modeling the transition dynamics, as well as a decoder network fdec(blue)
+that restores the spatial extent of its output to the physical domain. Starting
+off an initial condition (left), the model predicts the state evolution using its
+prior output as an input of the state variable (right). The ﬁgure does not show
+intermediate scaling or normalization transformations for clarity.
+the encoder and decoder networks regulates the degree to
+which the state dimensionality is reduced. Supposing that the
+reconstruction loss LMSE is small, the latent variable hholds
+similar information as the original input sbut in denser form.
+More details on the speciﬁcs of the network architecture can
+be found in Appendix A.
+B. Time stepping
+To take full advantage of the fact that both the latent
+statehand the auto-encoded control v(Appendix A) act
+in the same spatial domain, albeit downsampled, we use a
+convolutional LSTM model [41] to transition in latent space.
+Combining all components outlined so far, we pass solution
+variablesuand forcing terms to the encoder
+networksfencandf encand compute h=fenc(u)
+andv=f enc()before transitioning in latent space
+withffwdto predict the deterministic state evolution of the
+decision-making process. Similar to other works [42]–[44],
+the decoder network fdecis tied into a network learning
+temporal residuals, i.e., it is used to predict state changes
+s=s+1 sof solution variables. State changes are
+scaled with the time duration of control steps and modeled
+in latent space. Therefore, our network architecture infers state
+transitions as
+^u+=u+ fdec(o); (6)
+witho=ffwd(h;v;c); (7)
+where targets s=fdec(o)are used to train the
+transition model ffwdvia end-to-end backpropagation. The
+variablecis the cell state of our recurrent transition model.
+The overall network architecture is illustrated in Figure 2. It
+shows that, in each step, our model (1) transforms control out-
+putsato external forcing terms using a known functional,
+(2) encodes solution variables uand forcing terms to a latent
+space deﬁned on a shared spatial domain with encoder neural
+networks (yellow and red components), (3) uses a transition
+model (green component) to infer encoded state changes o,and (4) decodes temporal changes o(blue component) before
+adding them to the original input. In order to use our model
+as a surrogate of the system, it is unrolled in time, taking the
+control output of an agent as well as its prior prediction for
+an input.
+A notable beneﬁt of learning temporal residuals is that the
+network’s predictions obey the initial conditions of the system
+by construction. In fact, modeling state changes scaled with
+coefﬁcient imposes a temporal smoothness assumption
+on the predictions to thwart irregular and erratic changes in
+the state evolution. In the context of model-based control,
+our temporal smoothness assumption offers a signiﬁcant ad-
+vantage. Since the control loop intertwines data collection,
+model learning, and behavior improvement, only a limited
+number of system snapshots are available to the surrogate at
+ﬁrst. As we conﬁrmed in our experiments, models predicting
+states in place of state changes often suffer from compounding
+model errors in the small data regime due to their dependence
+on well-functioning encoder and decoder networks. In the
+small data regime, said neural networks are often still unable
+to encode and decode input states to a sufﬁcient degree of
+accuracy, which can result in large model errors that can
+cause catastrophic learning updates [23] for the agent. In
+contrast, the additive changes of our model architecture couple
+its predictions to the initial condition and enforce a close
+proximity to the temporal state evolution of the system for
+at least a few steps of the prediction until model errors begin
+compounding.
+IV. L EARNING TO CONTROL PDE S SAMPLE EFFICIENTLY
+As a member of the Dyna family of model-based algorithms
+[15], [45], our approach implements a model-free agent to
+learn behavior !and improve it over time. In essence,
+all descendants of Dyna follow instructions similar to those
+outlined in Alg. 1. In a broad sense, the algorithm intertwines
+data collection, model learning, and behavior improvement for
+its main steps, as shown in Alg. 1. Each iteration begins with
+rolling out!to collect additional samples that are later stored
+as a datasetDenv. After training a deep neural network fto
+learn the dynamics of the environment on samples stored in
+Denv, the model serves as an approximate MDP M0of the
+actual systemM. Supplementary samples from model-based
+rollouts of!are then stored in a separate dataset Dmodel as
+proxies for the actual experience. Iterations of our algorithm
+conclude with an update of the model-free agent. Here, data
+stored inDenvas well asDmodel is used, and the latter amount
+often exceeds the other by multiple orders of magnitude.
+A. The model-based RL framework
+A concrete implementation of the model-based principle is,
+therefore, all about (1) the design of a surrogate and its training
+process, (2) the way in which Dmodel is populated with
+artiﬁcial samples, and (3) the model-free agent updating !
+with data stored in Denvand ﬁctitious samples in Dmodel . In
+the following, we outline our approach to each of the above
+steps for model-based reinforcement learning.5
+Algorithm 1 Model-Based Reinforcement Learning
+1:Initialize parameters of policy !and modelf
+2:Initialize empty datasets DenvandDmodel
+3:while not done do
+4: SampleMusing policy !!add toDenv
+5: Train model fon datasetDenv
+6: SampleM0using policy !!add toDmodel
+7: Update policy !using samples ofDmodel andDenv
+8:end while
+1) Model learning: Unlike related work on model-based
+ﬂuid control, we do not collect snapshots of the system in ad-
+vance using random exploration. Instead, we alternate between
+data collection and model learning to align the distribution
+of states that PI visits with the data our surrogate is trained
+on and approximates well. Our experiments (Section V-B)
+suggest that an online adaptation of the model to changes
+in the behavior is essential for the model to maintain its
+relevance. After each step of data collection, We train the
+modelfusing the samples collected in Denv. To mitigate
+overﬁtting in the small data regime, we monitor the model on
+a validation setDvaland stop training early once the validation
+lossLvalconverges. In order to encourage an adaptation
+of the model to recent experience but protect !against
+severe changes of inputs during policy training, we limit
+the minimum Pminand maximum Pmax number of gradient
+updates to the model. We found that striking a balance between
+regular model updates but keeping shifts in the distribution
+of artiﬁcial samples minor helped stabilize the optimization.
+In our experiments, continuous updates of the model each
+performing only a few gradient steps (small values for Pmax
+andPval) generally worked well and outperformed updating
+the model for an unlimited number of steps. We also found that
+using a curriculum (similar to [46]) for the data collection is
+beneﬁcial. We use short model-based rollouts of policy !for
+artiﬁcial data collection early on, and increase their prediction
+horizon once more data is available [24]. In other words, we
+optimize the model for short-term performance in the small
+data regime and emphasize learning global dynamics later on.
+2) Model-Based Rollouts: Consistent with standard prac-
+tice [21], [22], we mitigate the risk of model exploitation
+using an ensemble ff1;:::;fLensgof dynamics models.
+The models deviate not only by their initial weights and the
+ordering of mini-batches, but also in terms of the data used for
+training and validation. Indeed, using a bootstrapping mech-
+anism for training, [21] ﬁnd that ensembles isolate epistemic
+uncertainty through disagreement. Since epistemic uncertainty
+is due to data scarcity, ensembling helps identifying regions of
+the state space where overﬁtting is likely and forecast errors
+are substantial. As is standard practice (see, e.g., [24]), we
+make use of the elite mechanism for the ensemble. More
+details on our ensemble techniques can be found in Appendix
+B.
+Using our ensemble of dynamics models ff1;:::;fLensg,
+we deﬁne an approximate MDP M0imitating the original
+systemM. Analogous to recent works on Dyna algorithms,
+model-based rollouts in our implementation branch off arbi-trary system states sampled from dataset Denv. Unlike rollouts
+beginning at initial conditions of the decision-making process,
+branching rollouts off arbitrary starting states avoids com-
+pounding model errors for states visited during later stages of
+episodes. In place of sampling single starting states, we select
+state-action sequences (s Ktf;a Ktf;:::;s;a)D env
+of lengthKtf. Sampling sequences enables us to warm-start
+the memory unit of our recurrent transition model f. Each
+state-action pair of the sequence is then processed in teacher-
+forcing mode to guide the transitions. We match the sequence
+lengthKtfto the number of teacher-forcing steps during
+training. In our experiments, using Ktfstate transitions to seed
+the cell state was essential since we did not backpropagate
+gradients to its initial state at training time. Vice versa, we
+do not learn the initial condition of the memory unit since
+model-based rollouts start in states at different points in time
+for the system, which otherwise destabilized the algorithm in
+our experiments. In order to implement a similar mechanism
+for the ﬁrst Ktfsteps of an episode, we use a simple padding
+method and repeat the initial state-action tuple to extend the
+sequence to length Ktf. A longer discussion on our rollout
+approach has been shifted to Appendix C.
+3) Policy optimization: As our approach belongs to the
+Dyna family, arbitrary model-free agents can be used to derive
+behavior given artiﬁcial samples. An important design choice
+for our purpose is whether to optimize the behavior using
+on-policy or off-policy methods. Indeed, members of the
+former category discard existing experience after each update
+to the policy. Despite our dynamics models being designed
+as lightweight surrogates of the numerical simulation, reusing
+already existing experience is still more efﬁcient. Adopting the
+soft-actor critic [37] as our off-policy method (as in MBPO
+[24]) the samples our model synthesizes in each iteration can
+be kept in dataset Dmodel for a number of repetitions. Using
+artiﬁcial samples, the model-based algorithm updates the soft-
+actor critic Lupdates times per iteration. Unlike the model-
+free framework, parameter Lupdates is set in such a way that
+multiple updates (often between 20 and 40, see, e.g., [24]) are
+performed per environment interaction. To ensure the stability
+of the agent even after updating the behavior more than once,
+we collect a large number of artiﬁcial samples Nmodel in
+each iteration (in [24], for example, 400 model rollouts are
+performed for each sample of the environment). After model-
+based data collection, the agent uses the samples stored in
+DenvandDmodel to update its state-action value estimates
+and policy.
+Our work builds on code made openly available in [47]
+and [48]. The soft-actor critic agent implements double Q-
+learning [49] to learn estimates of state-action values with
+separate networks QandQ0to mitigate selection biases and
+uses delayed target networks Q to stabilize the optimization
+towards a moving target. Soft updates of Q through Polyak
+averaging [50] keep the target parameters consistent [11].
+Similar to the TD3 algorithm [51], multiple gradient updates
+of the critic are taken before altering the actor to ensure
+up-to-date value estimates. The actor !parameterizes the
+mean and covariance of a Gaussian distribution deﬁned over
+the continuous action space. Our implementation does not6
+use automatic entropy tuning [37] but sets the temperature
+to a constant value instead. Both the actor and critic are
+implemented as multilayer perceptrons of three layers with
+256hidden units each.
+V. E XPERIMENTAL EVALUATION
+Corresponding to Sections III and IV, we ﬁrst evaluate the
+capabilities of our surrogate to approximate the state evolution
+well when the data is collected in advance, before considering
+the control aspect. More details on the training of our model
+can be found in Appendix D.
+A. Data-driven prediction of forced PDEs
+In order to evaluate the amount of data our surrogate needs
+to approximate the state evolution, we collect a dataset of
+100 simulation episodes ( 40;000 snapshots), where actions
+are sampled uniform at random. We split the samples into
+training, validation (80% / 20%), and testing episodes. All
+results are the aggregate of cross-validation scores with ﬁve
+folds. In general, we study the evolution of state variable ufor
+subsequences with Kmax= 30 consecutive prediction steps
+(7:5time units) during training and testing.
+Since our later approach to model-based approach aims to
+use as few samples as possible, the small data regime is critical
+to our work. To assess the alignment of our model design with
+our overall goal, we systematically decrease the amount of
+data available throughout cross-validation from 100% down to
+10%. In fact, our dataset (including validation and testing data)
+equals the number of snapshots used in the work of [34] for
+modeling the Kuramoto-Sivashinsky equation upfront before
+they derive a control strategy with the surrogate afterward.
+In order to isolate the contribution of single design decisions
+for our dynamics model, we introduce several ablations and
+compare our results with those of a simple baseline, namely
+(1) the usage of fully connected networks instead of CNNs and
+(2) the prediction of the state instead of a residual update. We
+train each model for a maximum of 250epochs or terminate
+the optimization once the monitored loss does not decrease
+forPval= 25 validation epochs.
+Residual prediction Full-state predictionConvolutoinal NN Fully connected NN
+Fig. 3. Prediction error of the Kuramoto-Sivashinsky equation. Each datapoint
+averages the error for different testing subsequences. The models are trained
+on an increasing share of the dataset composed of 40;000 snapshots. Solid
+lines depict the mean of ﬁve folds, while the shaded regions show the 95%
+conﬁdence interval.
+Ground truth CNN / Residual CNN / Full-state FC / Residual FC / Full-stateFig. 4. Comparison of the temporal state evolution of the Kuramoto-
+Sivashinsky equation with forecasts of our model and the different ablations.
+In Figure 3, we show the normalized mean squared state
+prediction error, averaged over various initial conditions. Un-
+surprisingly, convolutional models (top row) prove far more
+effective than fully connected networks (bottom row) in both
+the small as well as large data regime, learning temporal resid-
+uals or not. In terms of the comparison between residual and
+full-state prediction (left vs. right column), the former yields a
+notable advantage for forecasts over short time durations with
+error margins being negligible for several time units. In the
+small data regime, the full-state prediction is not yet equipped
+to recover state variables and, therefore, suffers from large
+error margins. A notable advantage of our approach is thus
+the strongly reduced data requirements supposing we limit the
+prediction horizon appropriately. Since our RL approach will
+limit model usage after a small number of prediction steps,
+the inferior accuracy after 3:25time units (13 discrete
+steps) is of no concern to the optimization. The errors in
+the predicted rewards (which have a signiﬁcant impact on the
+learning performance) are very similar to the state prediction.
+An example of forecasts for each model at an increasing share
+of the 40;000snapshots for training is shown in Figure 4.
+In general, increasing the degrees of freedom of a model
+enables it to learn the state evolution of snapshots in greater
+detail. At the same time, models of higher capacity are at
+a greater risk of overﬁtting to patterns in the training set,
+contriving substantial errors once presented with data withheld
+for testing. Considering this trade-off is essential for model-
+based RL since overﬁtting is among its greatest challenges
+[21], [22], [30]. A study on this dependency can be found in
+Appendix E. For the main body of this paper, all models have
+the identical structure, which we found to be a good trade off7
+between expressive capabilities and complexity.
+B. Reinforcement learning control of PDEs
+At last, we evaluate the ability of our approach to model-
+based reinforcement learning to stabilize systems with dynam-
+ics governed by PDEs. In this section, we study whether (1)
+learning a surrogate of the global dynamics indeed mitigates
+the data consumption of model-free approaches, (2) learned
+control strategies can match their effectiveness, although
+model-based reinforcement learning algorithms introduce ap-
+proximation errors to the experience used for behavior im-
+provement, (3) examine the contribution of single components
+to our overall approach in isolation, and (4) evaluate our
+algorithm for a number of conﬁgurations.
+1) Data efﬁciency of learned control laws: To assess the
+capabilities of our control algorithm in mitigating the data
+consumption of the model-free RL framework, we compare
+accomplished episode returns to those of the popular PPO
+[35] and SAC [37] algorithms. As outlined before, the former
+algorithm belongs to the family of controllers most often
+encountered in the ﬂuid mechanics literature nowadays (see,
+e.g., [52] for a comprehensive survey), despite the agent dis-
+carding past experiences after each update. Since our approach
+integrates SAC as a main component for policy improvement,
+it is the candidate best suited to compare against. In both
+cases, we use the open-source implementations made available
+by the stable-baselines3 project [53] as well as their default
+conﬁguration for our experiments.
+0 2 4
+Time Steps×104−600−500−400−300−200Avg. Episode Return
+0.0 0.2 0.4 0.6 0.8 1.0
+Time Steps ×106Ours
+SAC
+PPO
+Fig. 5. Average evaluation episode returns for our approach compared to SAC
+and PPO for up to 50;000(left) and 1;000;000(right) steps of training. Solid
+lines show the mean of three trials, while shaded regions denote the standard
+deviation among trials. All lines are smoothed using a Gaussian ﬁlter with
+= 1. The dotted lines on the right-hand side show the average performance
+of our model-based algorithm after termination at 50;000 time steps.
+Figure 5 shows the average return of evaluation episodes
+with respect to the number of samples collected for training
+thus far. Due to computational costs, we terminate the exe-
+cution of our model-based approach once it obtained 50;000
+samples. Since computational workloads per interaction with
+the system are lower for model-free algorithms, we execute
+our baselines for 1;000;000 samples. On the left-hand side
+of the ﬁgure, we show the training curves up to the point
+where we terminate our algorithm, while the right-hand side
+shows the asymptotic behavior of SAC and PPO. We ﬁnd
+that our model-based approach indeed learns suitable control
+strategies using substantially fewer samples. On average, SAC
+takes about 430;000samples to break even with the average
+episode returns of our approach at 50;000 samples, while
+PPO cannot match its performance even after 1;000;000
+−3−2−10−(D+Pf)Rewardsr
+01020Spatial Domain xVelocityu
+a0a1a2a3RandomActionsa
+−3−2−10−(D+Pf)
+01020Spatial Domain x
+a0a1a2a3Ours
+−3−2−10−(D+Pf)
+01020Spatial Domain x
+a0a1a2a3SAC
+0255075100
+Timet−3−2−10−(D+Pf)
+0 20 40 60 80 100
+Timet01020Spatial Domain x
+0 25 50 75 100
+Timeta0a1a2a3PPO−202
+−202
+−202
+−202
+Fig. 6. The spatio-temporal evolution of the Kuramoto-Sivashinsky system
+(middle) and its dissipative term Dand power consumption P(left) as a result
+of the actions applied to it (right). In each row, we show an agent attempting
+to stabilize the dynamics starting from an initial condition sampled at random.
+The ﬁgure shows control strategies after their training terminated after 50;000
+or1;000;000 steps, respectively.
+steps. With an almost nine-fold improvement in terms of
+data consumption over SAC, this demonstrates that model-
+based RL is indeed a promising direction to learn control
+strategies for systems governed by PDEs. Even though we
+stopped training early after 50;000steps, the control strategy
+dampened the dissipation Dand power consumption Pof the
+system by more than 63% of the values accomplished with
+random forcing. At the same time, SAC converges to a value
+of about 73%, although using 20times the amount of data to
+do so. An example of what actuations the controller applies
+to navigate the system towards a stable state after termination
+is illustrated in Figure 6.
+2) Ablation study: A part of the motivation for our work
+are the shortcomings of past studies on model-based con-
+trol for governed systems insofar as recent advances in the
+reinforcement learning literature are not properly taken into
+account. As outlined before, the related works [33] and [34],
+for example, use neither ensembling nor rollout scheduling
+and in the latter case do not adapt the model to altering state
+distributions, despite each feature being considered standard
+practice in other ﬁelds. In order to appraise the contribution
+of each component to the overall performance of our method
+in isolation, our work examines the following ablations of our
+model-based approach.
+Ofﬂine model training ablation: Similar to [34], we
+collect 50,000 snapshots of the system in advance using
+random exploration. After training our ensemble to mimic
+the global dynamics, the RL agent acts entirely within the
+surrogate for data collection.
+Model exploitation ablation: Our approach establishes
+multiple mechanisms to prevent compounding model
+errors from propagating into policy improvement steps.
+Similar to [33] and [34], this ablation neither uses en-8
+0 10000 20000 30000 40000 50000
+Time Steps−600−500−400−300−200Avg. Episode Return
+0 1000 2000 3000 4000 5000
+IterationsOurs
+Surrogate Ablation
+Exploitation Ablation
+Oﬄine Ablation
+Fig. 7. Average evaluation episode returns for our model-based approach
+compared to different ablations. Solid lines show the mean of three trials,
+while shaded regions denote the standard deviation among trials. All lines
+are smoothed using a Gaussian ﬁlter with = 1. The dotted lines on the
+right-hand side show the average performance of the left-hand algorithms
+after termination at 50;000 time steps. Since our ofﬂine ablation does not
+collect additional samples, we show its performance throughout iterations of
+the optimization.
+sembling nor rollout scheduling to diversify or truncate
+rollouts in an adaptative manner. In contrast to our
+surrogate, the model is trained for a ﬁxed number of
+gradient steps in each iteration.
+Surrogate ablation: In place of our residual surrogate,
+we use the full-state prediction model to approximate the
+temporal state evolution for the algorithm as presented in
+Section III.
+Figure 7 compares our implementation of the model-based
+methodology to its ablations. It shows that an improper treat-
+ment of compounding model errors often leads to unstable
+behavior optimization (purple line). Out of all methods we
+have tried for learning control strategies in our experiments, we
+found the exploitation ablation to be the least stable, as char-
+acterized by its wide standard deviation. Implementing model
+ensembling and using a schedule to determine the length of
+model-based rollouts is seemingly essential to prevent the
+agent from taking advantage of model errors in the small data
+regime. The ﬁgure also shows that a similar issue pertains to
+oursurrogate ablation (green line). Although convergence is
+more stable overall, its approximate MDP cannot faithfully
+match the temporal evolution of the PDE in the small data
+regime so that behavior improvements of the agent for the
+surrogate do not generalize to the system. Speciﬁcally, as a
+result of the surrogate ablation learning solution variables in
+place of temporal residuals, its forecasts sustain substantial
+errors at the beginning of data collection. Our results also
+suggest that random exploration does not cover all relevant
+regions of the state space that policies visit during their
+optimization process (red line). After an initial phase of
+improvement, the behavior of our ofﬂine ablation diverges
+more and more from the state distribution that the model used
+for training, increasing prediction errors and destabilizing the
+optimization once the policy begins exploiting them. Indeed,
+while trials are relatively stable at ﬁrst, their standard deviation
+dilates with an increasing number of algorithm iterations.
+VI. D ISCUSSION AND OUTLOOK
+We have seen that carefully constructed surrogate models
+are capable of increasing the sample efﬁciency by roughly one
+order of magnitude. Furthermore, we found that an overallmore sophisticated approach to model-based reinforcement
+learning (online model adaptation, ensembling, curriculum
+learning, etc.) is beneﬁcial to stabilize the convergence, and
+we hope that our ﬁndings showcase the appeal of adopting
+best practices. However, due to the increased complexity, the
+performance of model-based RL is still inferior in situations
+where the model is comparatively easy to simulate. For
+future work, it will thus be highly interesting to see whether
+simpler yet more efﬁcient surrogate models can be utilized.
+At this point, suitable candidates appear to be GRUs instead
+of LSTMs (see, e.g., [54]), sparse regreesion techinques to
+identify governing equations [6], [55], and in particular the
+highly popular Koopman operator [56]–[58], as it allows us
+to learn linear models of nonlinear systems, which is very
+efﬁcient both in terms of the required training data and the run
+time. Finally, it might be worth looking into recent prediction
+error results for these methods [59]–[61] and see whether
+they can be transferred into guarantees for the RL process. In
+addition, one can try to exploit system knowledge (in particular
+symmetries / invariances) in order to get smaller agents and
+thus to reduce the number of parameters that have to be trained
+[62]–[64].
+CODE AVAILABILITY
+The source code of the conducted experiments can be ob-
+tained freely under https://github.com/stwerner97/pdecontrol .
+ACKNOWLEDGMENT
+S.P. acknowledges ﬁnancial support by the project “SAIL:
+SustAInable Life-cycle of Intelligent Socio-Technical Sys-
+tems” (Grant ID NW21-059A), which is funded by the
+program “Netzwerke 2021” of the Ministry of Culture and
+Science of the State of Northrhine Westphalia, Germany.
+REFERENCES
+[1] S. Aubrun, A. Leroy, and P. Devinant, “A review of wind turbine-
+oriented active ﬂow control strategies,” Experiments in Fluids , vol. 58,
+no. 10, pp. 1–21, 2017.
+[2] Z. Wu, D. Fan, Y . Zhou, R. Li, and B. R. Noack, “Jet mixing
+optimization using machine learning control,” Experiments in Fluids ,
+vol. 59, no. 8, pp. 1–17, 2018.
+[3] J. Degrave, F. Felici, J. Buchli, M. Neunert, B. Tracey, F. Carpanese,
+T. Ewalds, R. Hafner, A. Abdolmaleki, D. de Las Casas et al. , “Magnetic
+control of tokamak plasmas through deep reinforcement learning,”
+Nature , vol. 602, no. 7897, pp. 414–419, 2022.
+[4] L. Gr ¨une and J. Pannek, Nonlinear model predictive control . Springer,
+2017.
+[5] K. Kunisch and S. V olkwein, “Galerkin proper orthogonal decomposi-
+tion methods for a general equation in ﬂuid dynamics,” SIAM Journal
+on Numerical Analysis , vol. 40, pp. 492–515, 2002.
+[6] E. Kaiser, J. N. Kutz, and S. L. Brunton, “Sparse identiﬁcation of
+nonlinear dynamics for model predictive control in the low-data limit,”
+Proceedings of the Royal Society A , vol. 474, no. 2219, p. 20180335,
+2018.
+[7] K. Bieker, S. Peitz, S. L. Brunton, J. N. Kutz, and M. Dellnitz, “Deep
+model predictive ﬂow control with limited sensor data and online
+learning,” Theoretical and computational ﬂuid dynamics , vol. 34, no. 4,
+pp. 577–591, 2020.
+[8] R. S. Sutton and A. G. Barto, Reinforcement learning: An introduction .
+MIT press, 2018.
+[9] D. Silver, A. Huang, C. J. Maddison, A. Guez, L. Sifre, G. Van
+Den Driessche, J. Schrittwieser, I. Antonoglou, V . Panneershelvam,
+M. Lanctot et al. , “Mastering the game of go with deep neural networks
+and tree search,” nature , vol. 529, no. 7587, pp. 484–489, 2016.9
+[10] J. Rabault, M. Kuchta, A. Jensen, U. R ´eglade, and N. Cerardi, “Artiﬁcial
+neural networks trained through deep reinforcement learning discover
+control strategies for active ﬂow control,” Journal of ﬂuid mechanics ,
+vol. 865, pp. 281–302, 2019.
+[11] V . Mnih, K. Kavukcuoglu, D. Silver, A. A. Rusu, J. Veness, M. G.
+Bellemare, A. Graves, M. Riedmiller, A. K. Fidjeland, G. Ostrovski
+et al. , “Human-level control through deep reinforcement learning,”
+nature , vol. 518, no. 7540, pp. 529–533, 2015.
+[12] B. Zoph and Q. V . Le, “Neural architecture search with reinforcement
+learning,” arXiv:1611.01578 , 2016.
+[13] C. Berner, G. Brockman, B. Chan, V . Cheung, P. Debiak, C. Dennison,
+D. Farhi, Q. Fischer, S. Hashme, C. Hesse et al. , “Dota 2 with large
+scale deep reinforcement learning,” arXiv:1912.06680 , 2019.
+[14] P. Ma, Y . Tian, Z. Pan, B. Ren, and D. Manocha, “Fluid directed rigid
+body control using deep reinforcement learning,” ACM Transactions on
+Graphics (TOG) , vol. 37, no. 4, pp. 1–11, 2018.
+[15] R. S. Sutton, “Dyna, an integrated architecture for learning, planning,
+and reacting,” ACM Sigart Bulletin , vol. 2, no. 4, pp. 160–163, 1991.
+[16] T. Wang, X. Bao, I. Clavera, J. Hoang, Y . Wen, E. Langlois, S. Zhang,
+G. Zhang, P. Abbeel, and J. Ba, “Benchmarking model-based reinforce-
+ment learning,” arXiv:1907.02057 , 2019.
+[17] C. G. Atkeson and J. C. Santamaria, “A comparison of direct and
+model-based reinforcement learning,” in Proceedings of international
+conference on robotics and automation , vol. 4. IEEE, 1997, pp. 3557–
+3564.
+[18] M. Deisenroth and C. E. Rasmussen, “Pilco: A model-based and
+data-efﬁcient approach to policy search,” in Proceedings of the 28th
+International Conference on machine learning (ICML-11) . Citeseer,
+2011, pp. 465–472.
+[19] T. M. Moerland, J. Broekens, and C. M. Jonker, “Model-based rein-
+forcement learning: A survey,” arXiv:2006.16712 , 2020.
+[20] H. W. Andersen and M. K ¨ummel, “Evaluating estimation of gain
+directionality: Part 1: Methodology,” Journal of Process Control , vol. 2,
+no. 2, pp. 59–66, 1992.
+[21] K. Chua, R. Calandra, R. McAllister, and S. Levine, “Deep reinforce-
+ment learning in a handful of trials using probabilistic dynamics models,”
+Advances in neural information processing systems , vol. 31, 2018.
+[22] T. Kurutach, I. Clavera, Y . Duan, A. Tamar, and P. Abbeel, “Model-
+ensemble trust-region policy optimization,” arXiv:1802.10592 , 2018.
+[23] H. P. Van Hasselt, M. Hessel, and J. Aslanides, “When to use parametric
+models in reinforcement learning?” Advances in Neural Information
+Processing Systems , vol. 32, 2019.
+[24] M. Janner, J. Fu, M. Zhang, and S. Levine, “When to trust your model:
+Model-based policy optimization,” Advances in Neural Information
+Processing Systems , vol. 32, 2019.
+[25] S. Levine and P. Abbeel, “Learning neural network policies with
+guided policy search under unknown dynamics,” Advances in neural
+information processing systems , vol. 27, 2014.
+[26] R. Lioutikov, A. Paraschos, J. Peters, and G. Neumann, “Sample-
+based informationl-theoretic stochastic optimal control,” in 2014 IEEE
+International Conference on Robotics and Automation (ICRA) . IEEE,
+2014, pp. 3896–3902.
+[27] X. Xiong, F. W ¨org¨otter, and P. Manoonpong, “Neuromechanical con-
+trol for hexapedal robot walking on challenging surfaces and surface
+classiﬁcation,” Robotics and Autonomous Systems , vol. 62, no. 12, pp.
+1777–1789, 2014.
+[28] M. Seeger, “Gaussian processes for machine learning,” International
+journal of neural systems , vol. 14, no. 02, pp. 69–106, 2004.
+[29] D. Hafner, T. Lillicrap, I. Fischer, R. Villegas, D. Ha, H. Lee, and
+J. Davidson, “Learning latent dynamics for planning from pixels,” in
+International conference on machine learning . PMLR, 2019, pp. 2555–
+2565.
+[30] A. Nagabandi, G. Kahn, R. S. Fearing, and S. Levine, “Neural network
+dynamics for model-based deep reinforcement learning with model-free
+ﬁne-tuning,” in 2018 IEEE International Conference on Robotics and
+Automation (ICRA) . IEEE, 2018, pp. 7559–7566.
+[31] L. Kaiser, M. Babaeizadeh, P. Milos, B. Osinski, R. H. Campbell,
+K. Czechowski, D. Erhan, C. Finn, P. Kozakowski, S. Levine et al. ,
+“Model-based reinforcement learning for atari,” arXiv:1903.00374 ,
+2019.
+[32] D. Hafner, T. Lillicrap, J. Ba, and M. Norouzi, “Dream to control:
+Learning behaviors by latent imagination,” arXiv:1912.01603 , 2019.
+[33] X.-Y . Liu and J.-X. Wang, “Physics-informed dyna-style model-based
+deep reinforcement learning for dynamic control,” Proceedings of the
+Royal Society A , vol. 477, no. 2255, p. 20210618, 2021.[34] K. Zeng, A. J. Linot, and M. D. Graham, “Data-driven control of
+spatiotemporal chaos with reduced-order neural ode-based models and
+reinforcement learning,” arXiv:2205.00579 , 2022.
+[35] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov,
+“Proximal policy optimization algorithms,” arXiv:1707.06347 , 2017.
+[36] T. P. Lillicrap, J. J. Hunt, A. Pritzel, N. Heess, T. Erez, Y . Tassa,
+D. Silver, and D. Wierstra, “Continuous control with deep reinforcement
+learning,” arXiv:1509.02971 , 2015.
+[37] T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine, “Soft actor-critic: Off-
+policy maximum entropy deep reinforcement learning with a stochastic
+actor,” in International conference on machine learning . PMLR, 2018,
+pp. 1861–1870.
+[38] M. A. Bucci, O. Semeraro, A. Allauzen, G. Wisniewski, L. Cordier,
+and L. Mathelin, “Control of chaotic systems by deep reinforcement
+learning,” Proceedings of the Royal Society A , vol. 475, no. 2231, p.
+20190351, 2019.
+[39] P. Cvitanovi ´c, R. L. Davidchack, and E. Siminos, “On the state space
+geometry of the kuramoto–sivashinsky ﬂow in a periodic domain,” SIAM
+Journal on Applied Dynamical Systems , vol. 9, no. 1, pp. 1–33, 2010.
+[40] K. Zeng and M. D. Graham, “Symmetry reduction for deep rein-
+forcement learning active control of chaotic spatiotemporal dynamics,”
+Physical Review E , vol. 104, no. 1, p. 014210, 2021.
+[41] X. Shi, Z. Chen, H. Wang, D.-Y . Yeung, W.-K. Wong, and W.-c.
+Woo, “Convolutional lstm network: A machine learning approach for
+precipitation nowcasting,” Advances in neural information processing
+systems , vol. 28, 2015.
+[42] S. Mo, N. Zabaras, X. Shi, and J. Wu, “Deep autoregressive neural
+networks for high-dimensional inverse problems in groundwater contam-
+inant source identiﬁcation,” Water Resources Research , vol. 55, no. 5,
+pp. 3856–3881, 2019.
+[43] N. Geneva and N. Zabaras, “Modeling the dynamics of pde systems
+with physics-constrained deep auto-regressive networks,” Journal of
+Computational Physics , vol. 403, p. 109056, 2020.
+[44] P. Ren, C. Rao, Y . Liu, J.-X. Wang, and H. Sun, “Phycrnet: Physics-
+informed convolutional-recurrent network for solving spatiotemporal
+pdes,” Computer Methods in Applied Mechanics and Engineering , vol.
+389, p. 114399, 2022.
+[45] R. S. Sutton, “Integrated architectures for learning, planning, and
+reacting based on approximating dynamic programming,” in Machine
+learning proceedings 1990 . Elsevier, 1990, pp. 216–224.
+[46] S. Chiappa, S. Racaniere, D. Wierstra, and S. Mohamed, “Recurrent
+environment simulators,” arXiv:1704.02254 , 2017.
+[47] P. Tandon, “pytorch sac,” https://github.com/pranz24/
+pytorch-soft-actor-critic, 2018.
+[48] D. Yarats, A. Zhang, I. Kostrikov, B. Amos, J. Pineau, and R. Fergus,
+“pytorch sacae,” https://github.com/denisyarats/pytorch sacae, 2021.
+[49] H. Van Hasselt, A. Guez, and D. Silver, “Deep reinforcement learning
+with double q-learning,” in Proceedings of the AAAI conference on
+artiﬁcial intelligence , vol. 30, no. 1, 2016.
+[50] B. T. Polyak and A. B. Juditsky, “Acceleration of stochastic approxima-
+tion by averaging,” SIAM journal on control and optimization , vol. 30,
+no. 4, pp. 838–855, 1992.
+[51] S. Fujimoto, H. Hoof, and D. Meger, “Addressing function approxi-
+mation error in actor-critic methods,” in International conference on
+machine learning . PMLR, 2018, pp. 1587–1596.
+[52] J. Viquerat, P. Meliga, and E. Hachem, “A review on deep reinforcement
+learning for ﬂuid mechanics: an update,” arXiv:2107.12206 , 2021.
+[53] A. Rafﬁn, A. Hill, A. Gleave, A. Kanervisto, M. Ernestus, and
+N. Dormann, “Stable-baselines3: Reliable reinforcement learning
+implementations,” Journal of Machine Learning Research , vol. 22,
+no. 268, pp. 1–8, 2021. [Online]. Available: http://jmlr.org/papers/v22/
+20-1364.html
+[54] S. Pandey, P. Teutsch, P. M ¨ader, and J. Schumacher, “Direct data-driven
+forecast of local turbulent heat ﬂux in rayleigh–b ´enard convection,”
+Physics of Fluids , vol. 34, no. 4, p. 045106, 2022.
+[55] S. L. Brunton, J. L. Proctor, and J. N. Kutz, “Discovering governing
+equations from data by sparse identiﬁcation of nonlinear dynamical
+systems,” Proceedings of the national academy of sciences , vol. 113,
+no. 15, pp. 3932–3937, 2016.
+[56] J. L. Proctor, S. L. Brunton, and J. N. Kutz, “Dynamic mode decom-
+position with control,” SIAM Journal on Applied Dynamical Systems ,
+vol. 15, no. 1, pp. 142–161, 2016.
+[57] M. Korda and I. Mezi ´c, “Linear predictors for nonlinear dynamical sys-
+tems: Koopman operator meets model predictive control,” Automatica ,
+vol. 93, pp. 149–160, 2018.10
+[58] S. Peitz and S. Klus, “Koopman operator-based model reduction for
+switched-system control of pdes,” Automatica , vol. 106, pp. 184–191,
+2019.
+[59] F. N ¨uske, S. Peitz, F. Philipp, M. Schaller, and K. Worthmann, “Finite-
+data error bounds for Koopman-based prediction and control,” Journal
+of Nonlinear Science , vol. 33, p. 14, 2023.
+[60] S. Peitz and K. Bieker, “On the Universal Transformation of Data-Driven
+Models to Control Systems,” Automatica , vol. 149, p. 110840, 2023.
+[61] C. Zhang and E. Zuazua, “A quantitative analysis of Koopman operator
+methods for system identiﬁcation and predictions,” Comptes Rendus.
+M´ecanique , 2023.
+[62] V . Belus, J. Rabault, J. Viquerat, Z. Che, E. Hachem, and U. Reglade,
+“Exploiting locality and translational invariance to design effective deep
+reinforcement learning control of the 1-dimensional unstable falling
+liquid ﬁlm,” AIP Advances , vol. 9, no. 12, p. 125014, 2019.
+[63] S. Peitz, J. Stenner, V . Chidananda, O. Wallscheid, S. L. Brunton, and
+K. Taira, “Distributed Control of Partial Differential Equations Using
+Convolutional Reinforcement Learning,” arXiv:2301.10737 , 2023.
+[64] L. Guastoni, J. Rabault, P. Schlatter, H. Azizpour, and R. Vinuesa, “Deep
+reinforcement learning for turbulent drag reduction in channel ﬂows,”
+arXiv:2301.09889 , 2023.
+[65] A. Vahdat and J. Kautz, “Nvae: A deep hierarchical variational autoen-
+coder,” Advances in Neural Information Processing Systems , vol. 33, pp.
+19 667–19 679, 2020.
+[66] S. Elfwing, E. Uchibe, and K. Doya, “Sigmoid-weighted linear units
+for neural network function approximation in reinforcement learning,”
+Neural Networks , vol. 107, pp. 3–11, 2018.
+[67] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image
+recognition,” in Proceedings of the IEEE conference on computer vision
+and pattern recognition , 2016, pp. 770–778.
+[68] T. Salimans and D. P. Kingma, “Weight normalization: A simple repa-
+rameterization to accelerate training of deep neural networks,” Advances
+in neural information processing systems , vol. 29, 2016.
+[69] J. L. Ba, J. R. Kiros, and G. E. Hinton, “Layer normalization,”
+arXiv:1607.06450 , 2016.
+[70] S. Ioffe and C. Szegedy, “Batch normalization: Accelerating deep
+network training by reducing internal covariate shift,” in International
+conference on machine learning . PMLR, 2015, pp. 448–456.
+[71] M. D. Zeiler, D. Krishnan, G. W. Taylor, and R. Fergus, “Decon-
+volutional networks,” in 2010 IEEE Computer Society Conference on
+computer vision and pattern recognition . IEEE, 2010, pp. 2528–2535.
+[72] H. Noh, S. Hong, and B. Han, “Learning deconvolution network
+for semantic segmentation,” in Proceedings of the IEEE international
+conference on computer vision , 2015, pp. 1520–1528.
+[73] T. Wang and J. Ba, “Exploring model-based planning with policy
+networks,” arXiv:1906.08649 , 2019.
+[74] G. Z. Holland, E. J. Talvitie, and M. Bowling, “The effect of plan-
+ning shape on dyna-style planning in high-dimensional state spaces,”
+arXiv:1806.01825 , 2018.
+[75] R. J. Williams and D. Zipser, “A learning algorithm for continually
+running fully recurrent neural networks,” Neural computation , vol. 1,
+no. 2, pp. 270–280, 1989.
+[76] Y . Bengio, J. Louradour, R. Collobert, and J. Weston, “Curriculum
+learning,” in Proceedings of the 26th annual international conference
+on machine learning , 2009, pp. 41–48.
+[77] D. P. Kingma and J. Ba, “Adam: A method for stochastic optimization,”
+arXiv:1412.6980 , 2014.
+[78] H. Jaeger, “Tutorial on training recurrent neural networks, covering bppt,
+rtrl, ekf and the” echo state network” approach,” 2002.
+[79] M. Tan and Q. Le, “Efﬁcientnet: Rethinking model scaling for con-
+volutional neural networks,” in International conference on machine
+learning . PMLR, 2019, pp. 6105–6114.
+APPENDIX
+A. Neural network details
+Our encoder network consists of residual cells similar to
+those proposed in [65] for image generation, as they mitigate
+vanishing and exploding gradients at deeper layers of the archi-
+tecture with so-called skip connections. The cells used in our
+work stack two 33convolutional layers with SiLU activation
+functions [66] along the residual branch, see Figure 8 for an
+illustration. Similar to [67], we use a 11strided convolution
+conv . 3x3 
+Layer Norm. 
+Layer Norm. conv . 3x3 Layer Norm. conv . 1x1 Fig. 8. Residual block consisting of a skip connection (lower branch)
+downsampling the inputs with 11convolutions and a main branch using
+33convolutions. Layer normalization [69] is used to normalize the output
+activations for single input instances, which accelerates the training. The
+illustration is adopted from [65].
+unit along the shortcut connection to downsample the input.
+Strides are also applied in the ﬁrst 33convolution of the
+residual branch to reduce the spatial dimensionality and dictate
+the degree to which the spatial extent is reduced. We typically
+half the spatial dimensionality with each stacked residual cell
+in the encoder network and use convolution instead of pooling
+layers for downsampling. Lastly, we use weight normalization
+[68] and layer normalization [69] over batch normalization
+[70] layers due to the well-known shortcomings of the latter
+during inference in recurrent structures. For our decoder
+networkfdec, we use deconvolutions [71], [72] without
+unpooling layers and with SiLU activation functions. After
+the spatial extent of the physical domain has been restored,
+we introduce further convolutional layers to the architecture,
+which enhanced the performance in our experiments.
+For the control term, we experimented with sharing the
+encoder network fencbetween encoding states uand
+forcing terms . However, since we only consider an
+additive control term in our application, we ultimately found
+training a separate encoder network v=f enc()to be
+more effective. In general, the action encoder f encmatches
+the model architecture of fencbut implements fewer convo-
+lutional ﬁlters due to the simple Gaussian shape of the exerted
+force in the case of the Kuramoto-Sivashinsky control problem
+considered here.
+Besides parameter sharing, another beneﬁt of the convolu-
+tion operation is its ability to obey the boundary conditions.
+In the case of periodic boundaries, as studied in our work, a
+circular padding mechanism is applied at each border of the
+spatial domain. Similar to other inductive biases like spatial
+locality, encoding such prior system knowledge often improves
+data usage and generalization of forecasts. Using circular
+padding for all convolution operators in the encoder, decoder,
+and transition model helped signiﬁcantly when learning the
+state evolution in our experiments.
+B. Implementation details on ensembles
+Other works [22], [24], [73] alternate the dynamics model
+f`used to predict state transition ^s+1=f`(^s;a;c;`)
+at each step. Owing to the fact that the memory unit of our
+model maintains a state of its past inputs, switching transition
+models after each step is only feasible if we invoke all models11
+of the ensemble for each step. Otherwise, the memory kept
+as cell state c;`would be outdated. Saving computation,
+our work explores an alternative design choice and selects
+single models of ensemble ff1;:::;fLensgand uses them
+throughout the entire model-based rollout, similar to what is
+considered in [21] for model predictive control. Our hope
+is that the use of an intermediate replay buffer Dmodel and
+training our model-free agent off-policy will have a similar
+decorrelation effect, since agents still update their parameters
+with artiﬁcial experience generated through several models at
+once. Indeed, our experiments show that there is no signiﬁcant
+difference between both implementations for the decision-
+making problem studied in our work. The compute savings for
+model-based rollouts amount to a factor equal to the number
+of elites in the ensemble.
+C. Model-based rollouts
+In order for model-based algorithms to succeed, planning
+must be advantageous to updating the behavior with existing
+samples or collecting additional data. On this matter, a recent
+study [74] formulates an essential condition for models to ben-
+eﬁt the optimization. Speciﬁcally, unlike existing experience, a
+model has to generalize and has to be queried at unseen regions
+of the state space. A working assumption is thus that the model
+has to generalize quicker towards the global dynamics than
+the policy!can learn and generalize behavior. A prolonged
+rollout of!in the surrogate is thus inevitable for planning
+to generate samples unfamiliar to the agent [74]. Vice versa,
+with an increasing rollout length, model errors compound and
+could cause catastrophic learning updates to the agent [23]. As
+proposed in [24], we adopt a scheduler for the rollout length
+Krllin order to trade off compounding model errors against the
+novelty of samples. A rollout length scheduler deters the agent
+from exploiting model errors, speciﬁcally in the small data
+regime, where overﬁtting is often an issue of high-capacity
+function approximators. In general, we use our previous results
+for the valid prediction time of Section IV for guidance to
+limit the number of data collection steps. Our implementation
+uses a linear scheduler that increments the length Krllup to
+a maximum number of steps. In Figure 9, we illustrate the
+competing effects of sample novelty and compounding model
+errors in detail. The ﬁgure shows an ideal situation where the
+model quickly generalizes to other regions of the state space
+once more and more data becomes available (contour lines
+widening on the right-hand side), while the ability of the agent
+to generalize its behavior lags behind (marginal widening
+of contour lines on the left-hand side). Despite model-based
+rollouts increasing in depth, model-based rollouts continue to
+be accurate due to the generalizing model (bottom right) and
+collect data on state space regions unfamiliar to the agent
+(bottom left).
+Overall, model-based rollouts proceed in the following
+way. After a sampled sequence of existing experience
+(s Ktf;a Ktf;:::;s;a)D envis processed in teacher-
+forcing mode to obtain ^s, the policy !selects an action a
+as its control output. A dynamics model f`of the ensemble
+then predicts the state transition ^s+1=f`(^s;a;c`;).
+Small
+Data RegimeStop
+StartExperience Novelty Model Error
+Stop
+StartLarge
+Data RegimeStop
+StartStop
+StartFig. 9. Intuition of rollout length scheduling. In the small data regime (top),
+the model does not generalize to unfamiliar regions of the state space (top
+right) so that rollouts must be truncated after few steps. In the large data
+regime (bottom), forecast can branch off collected data for several steps before
+compounding model errors become substantial (bottom right). In an ideal
+scenario, the model can generate unfamiliar experience for the agent (left-
+hand side), since it generalizes more efﬁciently.
+In practice, dynamics model f`compresses the state-action
+pair to a latent space using encoder networks f`;encand
+f `;enc, performs a time step using the convolutional LSTM
+f`;fwdand restores a state space representation with decoder
+networkf`;dec. Using the known reward function R, we
+estimate the reward of the action as ^r=R(^u;)
+and insert the transition as an additional sample into dataset
+Dmodel . Rollouts are stopped manually after Krllsteps or
+conclude once a terminal state of the system is reached. The
+studied decision-making problem in our work does not deﬁne
+a terminal condition except for the ﬁxed time limit of Tmax.
+D. Model training details
+Given sequences of system states fsgKseq
+=0and control
+outputsfagKseq 1
+=0 for training, we ﬁrst use our surrogate
+modelfto predictf^sgKseq
+=1. Afterwards, we train the model
+end-to-end while minimizing the mean squared error LMSE/
+P
+iPKseq
+=1^s(i)
+ s(i)
+2
+2averaged over batches and sequence
+lengths. To address the slow convergence of the optimization
+and instabilities during training, we adopt teacher forcing [75]
+for guidance. In doing so, we split state sequence fsgKseq
+=0
+into separate portions fsgKtf
+=0andfsgKseq
+=Ktf+1and replace
+model predictions ^s+lwith statess+lin the ﬁrstKtfsteps
+of the recurrent feedback loop to mitigate compounding errors
+propagating to later prediction steps at the beginning of our
+training process. After Ktfsteps with teacher feedback, the
+model predicts sequence f^sgKseq
+=Ktf+1using its prior output
+^s+las inputs for the succeeding prediction step ^s+l+1. In an
+attempt to reconcile the beneﬁts of teacher forcing in terms of
+convergence speed with the necessity of consecutive prediction
+steps, we use a curriculum for training [76]. At ﬁrst, we keep
+the number of consecutive state transitions Kseq Ktfsmall
+to learn the encoding and decoding of state variables quickly.12
+TABLE I
+NETWORK ARCHITECTURE OF OUR DYNAMICS MODEL .
+Network Layer Filters Filter Stride Parameters Output
+Size
+States — — — — — 164
+State EncoderRes. Block 4 3 1 64 464
+Res. Block 8 3 2 320 832
+Res. Block 16 3 2 1280 1616
+Forcing Term — — — — — 164
+Action EncoderRes. Block 2 3 1 20 264
+Res. Block 4 3 2 80 432
+Res. Block 6 3 2 204 616
+Transition Model Conv. LSTM 16 3 1 4800 1616
+State DecoderDeConv. 16 3 2 784 1632
+DeConv. 8 3 2 392 864
+Res. Block 4 5 1 176 464
+Conv. 1 7 1 13 164
+After that, we shift the focus towards learning temporal
+transitions and increase the sequence length Kseqtowards the
+target sequence length Kmax+Ktf, that is, predict Kmaxsteps
+in feedback mode.
+Given a training set of Neps episodes composed
+ofTmax=state transitions each, we subsample sequences
+fs;a;:::;s+Kseq;a+Kseqgstarting at arbitrary points
+within episodes. In each training and validation epoch, we
+subsampleKsubseq sequences equal to the number of consec-
+utive segments in the dataset which are non-overlapping and of
+lengthKseq. While we subsample our training sequences anew
+after each epoch, the validation set remains ﬁxed throughout
+the optimization procedure.
+We use the Adam optimizer [77] with an adaptive learning
+rate (initial learning rate of 0:001, momentum of 0:9) to min-
+imize the training loss LMSE. Standard techniques, including
+gradient clipping (threshold of 0:5) and regularization, are
+used. Using truncated backpropagation through time [78], we
+limit the maximum number of steps KTBTT the gradient
+signal is backpropagated. All inputs as well as prediction
+targets are scaled to the unit interval or normalized based on
+statistics derived from the training set. In our experiments,
+learning normalized target values of the temporal residuals
+s== (s+1 s)=at each step worked signiﬁ-
+cantly better than backpropagating through reconstructed state
+variables ^s+1=^s+ ^s.
+Table I shows the network architecture for our dynamics
+model. In essence, the state and action encoder networks com-
+press the number of spatial dimensions of the state variable
+four-fold.
+E. Study on the neural network sizes
+We here study several variants of our dynamics model with
+an increasing number of parameters. In doing so, we evaluate
+surrogates similar to the encoder, decoder and transition model
+outlined in Table I, but scale the width of each network,
+which deﬁnes the exponential number of channels Nof
+its layers in terms of their depth N[79]. We evaluate the
+predictive capabilties of surrogates with network widths and
+overall number of parameters outlined in Table II. In thissetting, the network in our previous study (which we are also
+going to use in the next section) corresponds to 3.
+TABLE II
+NUMBER OF LEARNABLE PARAMETERS AT INCREASING MODEL WIDTHS .
+Width 1.5 2.0 2.5 3.0 3.5 4.0
+Model Parameters 2612 4137 7636 17542 36409 77443
+246Tval
+Threshold/epsilon1=0.025
+ Threshold/epsilon1=0.05
+1.5 2.0 2.5 3.0 3.5 4.0
+Model Width β246Tval
+Threshold/epsilon1=0.075
+1.5 2.0 2.5 3.0 3.5 4.0
+Model Width β
+Threshold/epsilon1=0.175
+50
+25Dataset [%]
+75
+50
+25Dataset [%]
+Fig. 10. Valid prediction time of models at increasing model widths and
+several thresholds. Solid lines depict the mean of ﬁve folds, while the shaded
+regions show the 95% conﬁdence interval.
+In order to determine the time span throughout which
+forecasts match the spatio-temporal evolution of state variables
+and attributed rewards, we compute the valid prediction time as
+the farthest point in time Tvptwith normalized mean squared
+errors of state and reward being consistently below a ﬁxed
+threshold. Therefore, Tvptgives a coarse estimate on the
+number of steps we expect to be safe in the context of model-
+based reinforcement learning. In Figure 10, we illustrate the
+valid prediction time of models at increasing network widths
+for a number of thresholds and dataset sizes given for training.
+Surprising to us, models of larger network widths are not
+susceptible to overﬁtting if only few snapshots are available,
+with our model at width = 4:0outperforming the network
+at width= 1:5consistently. (In contrast, we observed an
+inverse trend on fully connected architectures.) As a matter
+of fact, the valid prediction time consistently increases with
+growing network width but plateaus marginally after = 3:0.
+Since computation time increases at an exponential rate
+with the width of a neural network [79], we ﬁx 3:0
+for subsequent experiments. Intermediate experiments in our
+work suggested that increasing model capacity also improves
+data efﬁciency and overall performance of learned control
+strategies. Still, a comprehensive evaluation of our algorithm
+for model-based control turned out to be too resource-intensive
+and time-consuming for larger dynamics models.

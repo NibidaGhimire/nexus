@@ -1,0 +1,1250 @@
+EDEFuzz: A Web API Fuzzer for Excessive Data Exposures
+Lianglu Pan, Shaanan Cohney, Toby Murray, Van-Thuan Pham
+lianglup@student.unimelb.edu.au,shaanan@cohney.info,{toby.murray,thuan.pham}@unimelb.edu.au
+The University of Melbourne, Melbourne, Australia
+ABSTRACT
+APIs often transmit far more data to client applications than they
+need, and in the context of web applications, often do so over public
+channels.Thisissue,termed ExcessiveDataExposure (EDE),was
+OWASP’sthirdmostsignificantAPIvulnerabilityof2019.However,
+there are few automated tools—either in research or industry—to
+effectively find and remediate such issues. This is unsurprising as
+theproblemlacksanexplicittestoracle:thevulnerabilitydoesnot
+manifestthroughexplicitabnormalbehaviours(e.g.,programcrashes
+or memory access violations).
+Inthiswork,wedevelopametamorphicrelationtotacklethatchal-
+lengeandbuildthefirstfuzzingtool—thatwecall EDEFuzz —tosys-
+tematicallydetectEDEs. EDEFuzz cansignificantlyreducefalseneg-
+ativesthatoccurduringmanualinspectionandad-hoctext-matching
+techniques, the current most-used approaches.
+Wetested EDEFuzz againstthe sixty-nineapplicable targetsfrom
+the Alexa Top-200 and found 33,365 potential leaks—illustrating
+our tool’s broad applicability and scalability. In a more-tightlycon-
+trolled experiment of eight popular websites in Australia, EDEFuzz
+achievedahightruepositiverateof98.65%withminimalconfigura-
+tion, illustrating our tool’s accuracy and efficiency.
+ACM Reference Format:
+Lianglu Pan, Shaanan Cohney, Toby Murray, Van-Thuan Pham. 2024. EDE-
+Fuzz: A Web API Fuzzer for Excessive Data Exposures. In 2024 IEEE/ACM
+46thInternationalConferenceon SoftwareEngineering (ICSE2024), April
+14–20, 2024, Lisbon, Portugal. ACM, New York, NY, USA, 12pages.https:
+//doi.org/10.1145/3597503.3608133
+1 INTRODUCTION
+Every week, another leak! Server-side APIs of web applications fre-
+quently transmit more data than is needed for their corresponding
+clients. This may not have been an issue, were it not for the fact that
+theseAPIsareoftenpubliclyaccessible.APIvulnerabilitiesofthis
+type are known as Excessive Data Exposures (EDEs). Despite rank-
+ing as OWASP’s#3 most significant API vulnerability for2019 [ 1],
+technology to detect these vulnerabilities remains underdeveloped.
+Wethusdevelopthefirstautomatedandsystematicfuzzingtool,
+EDEFuzz , to detect EDEs. As the “gold standard for finding and
+removing costly,exploitable security flaws”, fuzzing is a key tool for
+cost-effectively detecting and remediating such issues [ 2].
+Weposit thatthe lackof automatedtools todetect EDEsis due
+to theirsemantic nature. Specifically, EDEs do not manifest through
+explicit, abnormal behaviours (e.g., program crashes). Detecting
+them thus requires a model of what constitutes an EDE.
+ICSE 2024, April 14–20, 2024, Lisbon, Portugal
+© 2024 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+This is the author’s version of the work. It is posted here for your personal use. Notfor
+redistribution. The definitive Version of Record was published in 2024 IEEE/ACM 46th
+International Conference on Software Engineering (ICSE 2024), April 14–20, 2024,
+Lisbon, Portugal ,https://doi.org/10.1145/3597503.3608133 .“Automatictoolsusuallycan’tdetectthistypeofvulnerabilitybecause it’s
+hard to differentiate between legitimate data returned from the API, and
+sensitivedata that should not be returned without a deep understanding
+of the application.”
+— The Open Web Application Security Project (OWASP)
+“This vulnerability is so prevalent (place 3 in the top 10) because it’s
+easy to miss. Automation is near useless here because robots can not tell
+whatdatashouldnotbeservedtotheuserwithouttellingthemexactly
+how the application should work. This is bad because API’s are often
+implemented in a generic way, returning all data and expecting the front-
+end to filter it out.”
+— Wallarm End-to-End API Security Solution
+Figure 1: Industry views on the EDEs. These indicate the preva-
+lence of EDEs and limitations of existing detection tools
+Westartwithadefinition:anAPIisvulnerabletoEDEifitexposes
+meaningfully more data than what the client legitimately needs [ 1].
+Considerasimpleexampleofanonlinestorefront.Whenauser
+views the page for a specific product, an API call may be made to
+fetch stock levels, informing the user whether the item is in stock.
+However,theAPImayalsoreturnextraneousdata(suchastheprofit
+marginontheitem)thatisnotdisplayedtotheuserbutisnonethe-
+less transmitted. The transmission of the extra data constitutes an
+“excessive data exposure”. This leads to our motivating question:
+How to detect if a web API exposes unnecessary data?
+The question is related to the famous test oracle problem. How
+can a tester or an automated testing technique distinguish desired,
+correct behaviour from undesired or incorrect behaviour [ 3]. The
+common wisdom in industry (see Figure 1) is that the test oracle
+problem renders EDE detection beyond current testing approaches.
+We address this challenge with the following key insight:
+DatareturnedfromanAPIendpointismorelikelyexcessiveifithas
+no impact on the content displayed to a user.
+Specifically, we develop the following novel metamorphic relation1
+to side-step this problem. Through the relation, automated testing
+approaches can check if a data field in an API response is excessive
+bycheckingfordifferencebetweenwhataclientdisplayswhenthe
+field is present in an API response, versus when the field is deleted.
+Formally,assumewehaveanAPIresponseunderanalysis Rorigin
+comprisingasetofdatafields.Awebclient(e.g.,awebbrowser)uses
+RorigintorenderapagethatcanberepresentedbyaDocumentObject
+Model (DOM) tree Dorigin. A data field 32 R originis considered
+non-excessive if the following inequality holds:
+diﬀDOM¹Dorigin Dmutated º<0 (1)
+1A metamorphic relation is one that holds between two different program inputs and
+their corresponding outputs [ 4]ICSE 2024, April 14–20, 2024, Lisbon, Portugal Pan et al.
+where diffDOMcalculates the difference between two DOM trees
+DoriginandDmutated.Dmutatedisconstructedfrom Rmutatedwhich
+we obtain by removing the in-question data field 3from Rorigin. If a
+data field violates Equation (1) , it is deemed excessive.
+From this relation we build a system that significantly reduces
+the potential for false negatives that hinder competing approaches—
+manual inspection and keyword-matching. Notably, keyword match-
+ing techniques often use a listof terms (“key”, “token”,“password”
+etc)inordertoflagexposures[ 5]andthereforeanyexcessivedata
+fieldthatdoesnotmatchanyknownkeywordsiserroneouslyignored.
+Incontrasttotheseapproaches,ourtool EDEFuzz leveragesthe
+metamorphic relation to detect EDEs. It mutates and replays API
+responses into the client side of a web application and compares the
+generatedDOMtree withthe original treein eachfuzzing iteration.
+Building the tool required surmounting two major challenges.
+First,weneededtobuildanAPIfuzzerwith responsedeterminism .
+ExistingmutationalgorithmsusedinWebAPItesting/fuzzing[ 6]
+focus on mutating API requestswhich introduces random and un-
+targeted changes in server responses . However, our metamorphic
+relation requires that the responses differ only in a single field.
+Second,likeotherfuzzingtools,theusefulnessofourtooldepends
+onitsabilitytoachievereasonablethroughput(representedintests
+per second). This challenge is particularly acute in the context of
+webfuzzingastoolsareratelimitedbybothbandwidth,andserver
+load. Forpublic sites, the challenge is further compounded by both
+server-side rate-limiting and the need to minimize disruption. These
+hinder the timely progress of a fuzzing tool.
+Toaddressthesetwochallenges,weadopta“record-replay”model
+[7].Wecombineawebproxyandacustom-builtsimulatedserver
+to minimize interactions with sites under-test. Prior to beginning
+the fuzzing process, our tool initiates a “record” phase: a web proxy
+capturesallclientrequestsandserverresponses,includingtherequest
+senttothetargetedAPIandthecorrespondingresponse.Notethat
+ineachfuzzingcampaign EDEFuzz targetsonlyoneAPI.Following
+the record phase, fuzzing begins (i.e., the “replay” phase).
+In the replay phase, no communication with the actual remote
+server is necessary . Our lightweight simulated server handles all
+requests. If a request is sent to the targeted API, the simulated server
+transmits a mutated version of the original server response. Other-
+wise,thesimulatedservermerelyreplaystherecordedtransmissions.
+This architecture yields several benefits. First, test executions
+(i.e.,sendingrequestsandgettingresponses)areperformedlocally—
+leading to much lower latency. Second, changes to the remote server
+donot impact testresults, makingthem highlydeterministic.Main-
+taining deterministic results is a critical requirement for fuzzing
+in general because it helps reduce false positives. However, when
+detectingEDEs,thisalsohelpsreducefalsenegatives.Absentthisde-
+terminism,anapplicationchangethatyieldsadifferentwebpagemay
+causeEDEFuzz to incorrectly flag a field as non-excessive–believe
+theDOM changeto be causedbychangesin theserver-responseand
+notin theapplication itself.Third,the architecturepermits running
+tests in parallel, which minimizes the burden of scaling the tool.
+Weevaluatethetoolintwodifferentsettings.Firstmotivatedbya
+recentmassiveWebAPIleakinAustralia[ 8],weapplied EDEFuzz to
+severalcomparableAustralianwebproperties.Weperformadetailed
+comparison of the tool’s results against a corresponding manual
+efforttoassesstheseverityandaccuracyofthefindings.Second,werunourtoolagainstabroadersetofsixty-ninewebapplications—
+thecompletesetofapplicabletargetsfromtheAlexaTop-200.We
+usethisevaluationtoassessthe scalabilityofour toolaswellas its
+applicability to a representative set of global web applications.
+Our overall contributions are as follows:
+Weidentifyanovelmetamorphicrelationtoaddressthetestoracle
+problemin the contextof detecting excessivedata exposure.
+We develop the first systematic and automated fuzzing tool for
+detectingexcessivedata exposurevulnerabilities, EDEFuzz .
+Weempiricallyevaluatetheaccuracyofourapproach,itsappli-
+cability to popular websites, and its efficiency (both in terms of
+computational time and human effort). Our results demonstrate
+EDEFuzz ’seffectivenessfordiscoveringunknownsensitivedata
+leakageviaEDEalso,whoseprevalencewealsoinvestigate.We
+foundthat our approachis
+–highly accurate: 98.65% of the fields flagged by the tool in a
+controlled study were true excessive data exposures.
+–widelyapplicabletopopularwebsites,requiringmodestcom-
+putational costs and human effort to employ.
+–able to discover zero-day EDE vulnerabilities. Specifically, it
+foundfivezero-dayEDEvulnerabilitiesseriousenoughtomerit
+immediate disclosure.
+To support future research in this interesting topic, we will make
+EDEFuzz open sourced. The source code, along with some tuto-
+rials will be available at https://github.com/Broken-Assumptions/
+EDEFuzz .
+InSection2 ,weprovidethenecessarypreliminariesonWebAPIs,
+ExcessiveData Exposures and Metamorphic Fuzzing.In Section 3 ,
+we motivate our work with several real-world vulnerabilities discov-
+eredbyourtool .InSection4 ,wepresentourautomatedapproach
+to detect EDEs and our implementation. In Section 5 , we report our
+experimentalresults.Weconsiderrelatedworkin Section6 followed
+by a brief discussion in Section 7 .
+1.1 Research Ethics
+Weconsidered boththe proprietyof our scanning andfuzzing tech-
+niques and engaged in vulnerability disclosure.
+Wediscussed our researchin a series ofconversationswith our
+researchethicsofficewhoultimatelydeemeditexemptfromafullre-
+view process. Our research involves scraping and scanning commen-
+suratewithordinaryactivitybybothsearchenginesandtheresearch
+community. Our methodology minimizes interaction with remote
+servers by performing all fuzzing offline on a simulated replica of
+the target server. Given the low impact of capturing the outcome of
+a limited number of HTTP requests and the potential benefits of our
+research it was determined that our work adheres to the principle of
+beneficence that is the hallmark of research ethics.
+As our work notes, EDEFuzz flags fields for further human analy-
+sis (rather than indicating vulnerabilities with certainty). As a result,
+our assessment of whether a flagged field rises to a reportable level
+requires human judgement about whether an EDE leaks sensitive in-
+formationandthepotentialharmsfromthatleak.Inthefiveinstances
+wherewediscoveredsensitivedataleakagewecontactedtheaffected
+entities.Bytimeofsubmission,allfiveentitieshadacknowledged
+our disclosures; two had remediated the issues.EDEFuzz: A WebAPI Fuzzer for ExcessiveData Exposures ICSE 2024, April 14–20, 2024, Lisbon, Portugal
+2 BACKGROUND
+2.1 Web APIs & Excessive Data Exposure
+Webapplicationsoften exposeAPI endpointsto thepublic internet.
+Exposing the endpointallowsthe application to separate front- and
+back-end logic. While the front-end components focus on rendering
+visualelementsandtheirassociatedinteractivecomponents,back-
+end logic is more closely tied to long-term data storage. The API
+allowsthefont-endtoquerytheback-endandinmanycasesservesa
+responseineitherJSONorXML.WhileanAPIoughttonarrowly
+tailor the data served in a response to the request, this practice is
+oftenignored.OWASPtermsthisexcessivedataexposure(EDE)[ 9].
+OnecauseforEDEsisthatAPIdevelopersover-relyonAPIclients
+toperformdatafiltering.Thiseasesthecognitiveburdenonback-end
+developers to determine the specific needs of the client a priori.
+When present, EDEs are often trivial to exploit. To obtain the
+excess(orevensensitive)data,itisoftensufficienttosimplyexamine
+response traffic from the target API.
+SincetechnologytoscanforanddetectEDEsremainsunderde-
+veloped,OWASPonlyprovidesgeneraladvice[ 9]onhowtoprevent
+them,suchas“Neverrelyontheclienttofilterdata!”,“Reviewall
+API responses and adapt them to match what the API consumers
+really need”, and “Enforce response checks to prevent accidental
+leaksofdataorexceptions”.However,theprevalenceofEDEsshows
+that advice alone is insufficient. We need effective automation!
+2.2 Fuzzing
+Fuzzingisaprocessofrepeatedlygenerating(random)inputsand
+feeding them to a system under test (SUT) discover bugs. In its
+traditional use, a fuzzer detects issues through aberrant program
+behaviour, such as program crashes. This indicates a potential se-
+curity bug in the SUT. In response, the fuzzer will preserve the
+bug-triggering input for further analyses (e.g., manual debugging).
+While we preserve the input generation phase above, our work
+notablydeviatesinthatwedetectpotentialerrorsthrough thelackof
+changein program output, rather than a spec violation or crash.
+However,ourworkisnotthefirsttoaddressAPItesting.WebAPI
+fuzzing recentlygarnered increased interestfrom both industry and
+academia[ 6],[10],[11].RESTler[ 6]isthecurrentstate-of-the-artap-
+proach.RESTlerisastatefulblack-boxREpresentationalStateTrans-
+fer (REST) API fuzzing tool. For a target with an OpenAPI/Swagger
+specification[ 12],RESTleranalyzesitsentirespecification,andthen
+generates and executes tests through its REST APIs.
+Researcherstypicallyclassifyfuzzersbasedonthelevelofintegra-
+tionbetweentheSUTandthefuzzer.Themostcommonclassification
+is based on the fuzzer’s awareness of the internal structure of the
+SUT [13]. Specifically, a black-box fuzzer knows nothing about the
+internalstructure of the SUT.Incontrast,a white-boxfuzzer would
+knoweverythingabouttheSUTsuchasitssourcecode,itscontrol
+flows and data flows. Grey-box fuzzing is in between; it leverages
+partial knowledge of the SUT, typically via lightweight program
+instrumentation. Our tool EDEFuzz is a black-box fuzzer.
+2.3 Metamorphic Testing/Fuzzing
+Weadopt fuzzingasourapproachtodetectingEDEs becauseofits
+demonstrated success in discovering security flaws.Highlightingtheeffectivenessoffuzzing,asofMay2022,Google’s
+fuzzing infrastructure had detected over 25,000 bugs [ 14]. However,
+these bugs were detected using explicit test oracles. Bugs with a test
+oracleeitherleadtoprogramcrashes(e.g.,segmentationfaults)orare
+caughtbyinstrumentation-basedcheckers(e.g.,AddressSanitizer,
+etc).Incontrast,semanticbugslikeEDEsdonotmanifestthrough
+explicit abnormal behaviours, and cannot be reliably detected by
+observing singleprogram executions.
+How do we build tools to detect semantic bugs? Metamorphic
+testing and fuzzing, which leverage metamorphic relations, are a
+promising approach. At its core, metamorphic fuzzing involves com-
+paringmultiple executions of the SUT under different inputs and
+observingwhethersomerelation(calledthe metamorphicrelation )
+holds between their corresponding outputs.
+Consider the following toy example of metamorphic bug finding:
+wecantestafunctionthatreversesalistbytesting,foranarbitrary
+inputlist G,whetherreversingthereverseof Gyields Gitself;orfora
+functionthatcalculatesdistancebetweenapairofpoints,whether
+thedistancefrompoint 0to2isalwayssmallerorequaltothesum
+of the distances from 0to1and from 1to2, etc.
+Metamorphicrelationsarepropertiesthatmustnecessarilyhold
+with respect to the correct functioning of the SUT. In metamorphic
+testing, the violation of a metamorphic relation indicates a potential
+bug[4].Pastworkhassuccessfullyidentifiedandusedmetamorphic
+relations to find bugs in a variety of systems, including Machine
+Translation software [ 15] and popular DBMSs [ 16].
+3 MOTIVATING EXAMPLES
+Inthissection,wepresentaselectionofreal-worldEDEsdetectedby
+ourtooltodemonstratetheirprevalenceandimplications,thechal-
+lenges in detecting them using prior approaches, and the motivation
+for our tool (which we comprehensively evaluate in Section 5 ).
+Vulnerability 1 - Locations and Contact Details EDEFuzz dis-
+coveredavulnerabilitywhiletestingthelivedeliverytrackingservice
+offered by Company-I , an Australian last-mile delivery service. The
+vulnerabilityhasbeenreportedandfixed.Asshownin Figure2,a
+customerreceivesauniquelinkonthedaythatanitemisonboard
+for delivery. The link opens a web page which displays the name
+andaphotoofthedeliverydriver,anEstimatedTimeofArrivalof
+thedelivery,andthepositionoftheiteminthedriver’squeue.The
+page sends an API request to the server regularly, and updates the
+contentsonthepagebasedontheAPIresponse.Partofthisresponse
+is shown in Listing 1 , with sensitive information removed.
+The client-side logic allows the webapp to display the accurate
+geographiclocationofthedeliverydriver onlywhentheitemtobe
+deliveredisatthefrontofthequeue.Itsuggeststhatwhilethedriver
+is delivering an item to a customer, another customer should not
+be able to ascertain the location of the driver—which would leak
+the location of other deliveries. However, EDEFuzz detected that
+theAPIresponsealwayscontainsrichinformationaboutthedeliv-
+ery driver,including accurate latitude and longitude (the location
+field),directionoffacing(the bearing field),andspeedoftravelling
+(thespeedfield).EDEFuzz also identified the driver’s manager’s
+information in the API response.
+Knowingthetimestampedlocationofthedeliverydriver,acus-
+tomer may recover the route that the delivery driver is travelling, orICSE 2024, April 14–20, 2024, Lisbon, Portugal Pan et al.
+…Web Server https://api.XYZ.com.au/api/web/customers/xxxxx 
+Driver’s info 
+You are number 8 
+In the queue 
+Driver’s location You’re #8 in the 
+queue 
+Driver’s info 
+Arriving in 2 mins 
+Driver’s info Arriving 
+in 2 minutes 
+Driver’s info Driver’s location 
+Figure2:APIflowforapackagedeliveryservice.Awebapplica-
+tion requests tracking information, returned in a JSON object.
+evenbe ableto identify theaddress of othercustomerswhoreceive
+parcelfromthesamedeliverydriver.Suchinformationisidealfor
+enabling further attacks, like social engineering [ 17].
+Listing 1: An API response to a query for delivery status. The
+authors have redacted or adjusted sensitive information.
+1{
+2 "driver" :{
+3 "id":353,
+4 "url":"/api/web/drivers/353" ,
+5 "full_name" :"[NAME]" ,
+6 "car":{
+7 "car_type" :1,
+8 "car_type_name" :"Car",
+9 "capacity" :33
+10 },
+11 "member_id" :37270063 ,
+12 "avatar" :"[URL_TO_AVATAR]" ,
+13 "is_online" :true,
+14 "work_status" :"working" ,
+15 "phone":"[PHONE_NUMBER]" ,
+16 "status" :"in_progress" ,
+17 "location" :{
+18 "id":1081725,
+19 "timestamp" :1632107809.0 ,
+20 "speed":7.60149761928202 ,
+21 "accuracy" :4.88680554160758 ,
+22 "location" :"-
+37.79998905537697,144.9940922248341" , !
+23 "created_at" :"2021-09-20T13:16:49.365492+10:00" ,
+24 "bearing" :277.508087158203 ,
+25 ...
+26 },
+27 ...
+28 },
+29 "manager" :{
+30 "id":305,
+31 "full_name" :"[NAME]" ,
+32 "email":"[EMAIL]" ,
+33 "avatar" :null,
+34 "is_online" :false,
+35 "work_status" :"not_working" ,
+36 "phone":"[PHONE_NUMBER]" ,
+37 "can_make_payment" :false,
+38 "merchant_position" :"Manager" ,
+39 "role":"Manager" ,
+40 ...
+41 },
+42 ...
+43}Vulnerability2-StockLevels Thissecondvulnerabilityexposed
+detailedstockavailabilityfora retailer,whichmight beconsidered
+sensitive. Many retailers allow potential customers to check their
+stockavailabilityonlinebeforevisitingtheirshops.Someretailers
+reveal precise stock values on their websites, while other retailers
+decidedtoonlydisplaycategorisedvaluessuchas“instock”,“low
+stock”and“outofstock”.Interestingly,wenoticedafewsuchonline
+servicesinwhichtheservertransmitstheprecisestockvaluesbutthe
+webapplicationonlydisplayscategorisedvaluesbasedonthresholds.
+Weobservedthisdesigninretailercompaniessuchas Company-C ,
+Company-D andCompany-E .Company-D claimedthattheiraccurate
+stocklevelisnon-sensitive,whereas Company-E removedtheirstock
+level from their API response before we tried to contact them.
+Regarding attack scenarios, if a retailer knows about the stock
+detailsoftheircompetitorsindifferentlocations,theycouldadjust
+their logisticplan accordinglyto increase their sales and gain more
+profit.Individualsuppliersmightalsotakeadvantageofthisvulnera-
+bilitytoincreasetheirpricesforspecificretailerswhentheyknow
+thattheyarelowonstock.Havingaccesstothatkindofinformation,
+a3rd-partycompany(e.g.,ashoppingsuggestionservice)couldalso
+develop an app and give more precise suggestions to their customer,
+leading to some monetary benefit.
+Vulnerability 3 - Network bandwidth Transmitting excessive
+data fields reduces performance and thus the web application’s user
+experience.Further,itimposesincreasedbandwidthrequirements
+creatingaccessibilityissues.EDEsimplyalackofconsensusbetween
+anapplication’sback-andfront-ends.Likeother“codesmells”EDEs
+are indicative of poor development practices that may cause other
+vulnerabilities. We found a case in Company-C ’s API where the
+front-end consumed only 4.4% of the response data fields.
+The Bugs Escaped Detection! There are a variety of ways in
+whichtheseflawsmayhaveescapednotice.Developers,whileaware
+of security flaws, are heavily reliant on tooling to detect bugs. As
+discussedin Section2 keyword-matchingtools[ 5]todiscoverEDEs
+are of low effectiveness and prone to false negatives. To confirm
+this hypothesis we applied the popular vulnerability scanner Burp
+Suite[5]toattempttoidentifyEDEandsensitivedataleakagetosites
+from our test set. As expected it failed to identity Vulnerability-2 in
+Company-D (a false negative); it also failed to identify almost all of
+theEDEandsensitivedataleakagein Company-I (identifyingonly
+the disclosed email addresses in Listing 1 ). It also reported false
+positives (mistaking public postcode data for credit card numbers).
+A tool-free approach requires back-end developers to carefully
+ascertain if a given field is needed, which is not always feasible.
+As discussed in the case of Vulnerability-2, while Company-D
+claimed that their accurate stock level is non-sensitive, Company-E
+decidedtoremovethatinformationfromtheirAPIresponses.This
+furtherindicatestheneedforaprinciplesbasedapproachthatreduces
+the burden on developers to determine the balance between business
+need and sensitivity.
+4 OUR APPROACH
+Wenowprovideanoverviewof EDEFuzz anddetailthedesignofits
+components.Wedepictthemainworkflowof EDEFuzz whentesting
+a website (given its URL and a targeted API endpoint) in Figure 3.EDEFuzz: A WebAPI Fuzzer for ExcessiveData Exposures ICSE 2024, April 14–20, 2024, Lisbon, Portugal
+Web Proxy 
+DiffDOM Web Driver 
+&
+DOM Extractor 
+Bug 
+reports Targeted Web 
+Server 
+requestorigin 
+responseorigin 
+request
+origin
+response
+mutated
+Web 
+Developer DOMorigin 
+DOMmutated requestorigin 
+responseorigin Web page 
+(client side) EDEFuzz 
+0
+1
+2 3<req, resp> pairs 
+Mutation 
+Engine Simulated Server 
+Figure 3: The workflow of our approach to identify excessive
+data exposure vulnerabilities in web APIs.
+4.1 Overview
+Identifying API Endpoints. Identifying target API endpoints is
+an orthogonal problem to testing them for the presence of EDEs,
+andisthusoutofscopeforthispaper.Onemayleveragetoolslike
+crawlers to automatically explore the website and detect APIs for
+targeting. However, this automated approach could be destructive
+and potentially illegal without permission from the website owners.
+In our experiments (as detailed in Section 5 ) we identify target APIs
+by examining browser behavior during manual website interaction.
+HavingidentifiedatargetAPI, EDEFuzz ’sworkflowconsistsof
+four main steps which are in turn divided into two phases: record-
+ing/preparation phase (Step 0) and relaying/fuzzing phase (Steps
+1-3), in line with its record/replay design discussed in Section 1 .
+Recording/Preparation Phase. In this semi-automated phase,
+thegoalistogenerateaconfigurationfiledenotedas thatbrings
+theclientundertesttoabaselinestate.Thisfilewillbeusedinthe
+subsequentreplaying/fuzzingphase.Tothatend,weuseaWebProxy
+to capture the traffic between a client app, which is a web browser
+in our experiments, and the targeted web server. Specifically, we
+starttheclientappandcaptureitsinitialstate (0.Afterthat,welet
+the client open the given URL, wait for the web page to be fully
+loaded.Thetestertheninteractswiththepage(e.g.,fillintextboxes,
+click buttons) to trigger a request to the target API. We denote (1as
+the client state at which the request has just been completely sent.
+Wedevelopalightweightbrowserplugintocapturetheinteraction
+stepsrequiredto traversefrom state (0to(1andsavetheminto the
+configurationfilesothattheycanbeplayedbackinsubsequentsteps.
+The standard most common for responses to web API requests is
+JSON. Under AJAX or similar paradigms, when the API response is
+receivedaclientusestheJSONresponsetoupdatethewebpage(e.g.,
+showingmoreinformation)andtheupdatetypicallyaltersonlysome
+partsofthewebpage,ratherthanchangingtheentirepage.Wedenote
+(2astheclientstateimmediatelyfollowingtheupdate.Thisstatecan
+betypicallyidentifiedbytheexistenceofcertainpageelements.The
+stepsrequiredtoidentifythetransitionfrom (1to(2(typicallyofthe
+form“waituntilpageelement -appears”)arealsorecordedinthe
+configurationfile,meaningitnowstoresallstepsrequiredtotraversefrom state (0to(2. At(2, a baseline DOM tree (denoted as Dorigin)
+ofthewebpageisextractedusingtheDOMExtractorcomponent.
+This DOM tree will be compared with other trees to be generated
+in the fuzzing phase to check for potential excessive data exposures
+based on the metamorphic relation defined in Equation (1) .
+Before the targeted request-response pair has been exchanged, the
+browser and the server might have completed other exchanges for
+fetchingHTMLdocumentsandotherresourcessuchasimages,style-
+sheetsandJavascripts.Thusallrequest-responsepairsandresources,
+denoted %are recorded and stored for the replaying/fuzzing phase.
+Replaying/FuzzingPhase. Theinputforthisphase includes: 1)
+the configuration file , 2) the original DOM tree Dorigin, and 3) all
+request-response pairs %recordedin the recording phase.
+Listing 2: A configuration file generated in recording phase.
+1TARGET /api/v2/stock/get
+2
+3LOAD https://www.example.com/path/page
+4INPUT //input[@id="text-postcode"] 3000
+5CLICK //span[text()="Check availability"]
+6WAIT_LOCATE //div[@id="stock-info"]/div[2]
+7FUZZ
+Listing 2 shows a sample configuration file. The first line spec-
+ifies the target API under test. The rest define a sequence of user
+interactions to be performed to reach state (2. The example loads
+awebpage,entersthenumber 3000intoatextbox,clicksabutton
+andthenwaitsforaspecificelementtoappearonthewebpagebe-
+fore capturing the state. Apart from these actions, EDEFuzz also
+supports HOVER, SLEEP, and SCROLL for (i) hovering the mouse
+on a specific element, (ii) waiting for a specified period of time, and
+(iii) scrolling up/down, respectively.
+Ineachfuzzingiteration, EDEFuzz goesthroughthreesteps(Steps
+1-3). In the firststep(Step-1),the Web Drivercomponent, which is
+built on top of the Selenium Web Driver [ 18], uses the configuration
+filetoreplayallthestepsuntiltheclientreachesthestate (1.Before
+that state has been reached, the Simulated Server responds to client
+requests with the corresponding recorded responses stored in %with
+no modification. Once state (1is reachedand the Simulated Server
+receivestherequestsenttothetargetedAPI,itmutatestheoriginally
+recordedresponsebydeletingaspecificdatafieldandtransmitstothe
+client. We describe the mutation algorithm in detail in Section 4.3 .
+After the baseline state is reached, in Step-2 the client uses the
+mutated response to update the page accordingly. If this leads to
+any error, EDEFuzz moves to the next fuzzing iteration. Otherwise,
+EDEFuzz waitsuntilthepageisfullyupdated(i.e.untilstate (2is
+reached)andusestheDOMExtractortoextractthecurrentDOMtree
+denoted as Dmutated. In Step-3, EDEFuzz compares Dmutatedand
+Doriginusingacomparisonalgorithmdescribedin Section4.4 .Ifthe
+two DOMs are the same (based on our definition of similarity) then
+weflagthedeleteddatafield.Accordingtothemetamorphicrelation,
+the field is excessive. Once all fuzzing iterations are completed,
+EDEFuzz reportsallthepotentialexcessivedatafieldstothetester
+for further analysis and confirmation (see Section 4.5 ).
+Randomness: Theexplanationsofarassumesthatwebreplayingis
+fullydeterministic:givenaconfigurationfile, EDEFuzz —without
+applying any mutations on the server response—produces theICSE 2024, April 14–20, 2024, Lisbon, Portugal Pan et al.
+sameDOMtreeacrossallruns.Thoughuncommon,weidentified
+afewcasesinwhichthisassumptiondoesnothold.Forinstance,a
+socialmediaplatformmayrandomlyinsertadvertisementbetween
+userpostsduringruntime.Thiscausesthewebpagetobevisually
+different in each run, even if all contents transmitted from the
+serverwereidentical.Wediscusstheissuesindetailsandhowwe
+address them in Section 4.2 andSection 4.4 .
+Implementation Details. We implemented EDEFuzz in Python3
+using Selenium as a Web Driver to control web browser. We suc-
+cessfully tested our tool on widely used platforms including Ubuntu
+18.04,Ubuntu20.04andWindows10.Currently, EDEFuzz supports
+two web browsers: Google Chrome and Mozilla Firefox. Our design
+is modular to support future extensions.
+4.2 Simulated Server
+Our design using a Simulated Server brings several benefits to EDE
+testing.Theserversupplieslocallyrecordedcontentswithminimal
+delay—reducingtestlatency.Secondly, EDEFuzz doesnot needto
+communicate with the targeted remote server during the fuzzing
+phase, allowing testing in parallel without affecting the targeted
+server. This allows developers to easily test their servers without
+impacting production services. This design also ensures consistency
+within a given run, ensuring test results are not affected by potential
+changes to the state of the remote server during the testing process.
+Since the simulated server provides a snapshot of states on the
+remote server, there is no need to handle cookies or sessions within
+EDEFuzz . The simulated servermatchesthe requestedURL from
+thecollectionofrecordedrequest-responsepairsandsimplysends
+backtherecordedresponse.Thisalsosupportssitestheuserneedsto
+first log-in: as long as the remote server sent responses representing
+the session of a user who waslogged-induring the recording phase,
+our simulated server can reproduce it in the fuzzing phase.
+WebsitesthatfetchresourcesbyrandomisedURLsinsteadrequire
+afuzzymatchingalgorithminthesimulatedserver.Atypicalcaseis
+whenrequestingaresourcefromtheserver,thewebpagegeneratesa
+random token to be included in the request URL. This case causes a
+requesttobegeneratedforwhichthesimulatedserverhasnorecorded
+response.Ourexperimentalevaluationin Section5.2 showsthatthis
+applies to only a fraction of popular websites (8.7% of our evaluated
+target set). We believe it can be handled by applying fuzzy matching
+for request URLs, but leave this extension for future work.
+4.3 Mutation Engine
+TheoriginalAPIresponse(JSON)producedbytheserverisassumed
+tobevalidbothstructurallyandsemantically. EDEFuzz generates
+test cases by mutating the original API response.
+Werepresent the server-suppliedJSON object using a tree. Each
+leaf node is potentially an excessive data field. For example, Fig-
+ure4showsthe(partial)treerepresentationoftheJSONobjectfrom
+Company-I shownin Listing1.Inthistree,allleafnodesareshaded.
+We generate each mutation (test case) by removing a leaf node
+from the tree. For example, a valid mutation of the JSON object
+fromCompany-I shown in Listing 1 could remove the key-value
+pairid: 353 from the driverdictionary, or capacity: 33 from
+thecardictionary.
+driver
+id
+353...is_onlin e
+truelocation carphone
+...
+id
+1081725speed
+7.68accuracy
+4.88...car_typ e
+1car_type
+_name
+Carcapacity
+33Figure 4: Tree representation of the JSON object in Listing 1 .
+Themutationengineusesthisrepresenationtodeterminewhat
+to mutate. We highlight leaf nodes in yellow.
+Unlikeotherfuzzingapproacheswhichmaygenerateaninfinite
+numberoftestcases(e.gbyusinggeneticmutationoperatorssuch
+as bit flips and splicing [ 19]), our approach produces a fixed number
+of test cases based on the actual leaf nodes on the tree. Standard
+techniquestofurtherreducethatnumberusingapproacheslikebinary
+treesearchanddeltadebugging[ 20]arenotapplicablebecausethere
+isnowaytodeterminewhetherasubtree(orsetoffields)contains
+at leastonefield that constitutes an EDE (if we delete all of them
+andnoticeachangeintheDOM,thenitmightmeanthatnoneare
+excessive, or all-but-one are excessive, or something in-between).
+Insteadourmetamorphicrelationcantellusonlyif allfieldsinsome
+setaresubjecttoEDE(whenweremovethemallandnochangeis
+detected in the DOM). It is worth noting that this design decision
+also ensure more predictable test run times.
+4.4 Similarity Check for DOM Trees
+Awebpage(anHTMLdocument)hasahierarchicalstructurethat
+canberepresentedusingaDOMtree.In Section4.4 andFigure5
+we show a sample HTML snippet and its DOM tree, respectively.
+This is a simplified versionof one of our testing targets Company-I ,
+which we shared in Section 3 .
+<divclass="container" >
+<divclass="logo">
+<imgsrc="..."/>
+</div>
+<divclass="location_icon" >
+<divclass="icon">
+<iclass="icon_car" ></i>
+</div>
+</div>
+<divclass="driver_info" >
+<p>Name: ...</ p>
+<p>Phone: ...</ p>
+</div>
+</div>
+p
+idiv pdiv div divdiv
+img
+text text
+Figure 5: The tree representation of a simple HTML snippet.
+Eachroundednoderepresentsatagelementwhileeachsquare
+node represents a string. The hierarchical structure allows a hu-
+mantoeasilyspecifyasubtree(inyellow)forthetooltoevaluate.
+Recall, a DOM tree has nodes and each tree node represents a tag
+elementintheHTMLdocument.Eachtreenodehaszeroormore
+attributes—which are stored as key-value pairs—and each node may
+have children, which are either further tree nodes or plain strings.EDEFuzz: A WebAPI Fuzzer for ExcessiveData Exposures ICSE 2024, April 14–20, 2024, Lisbon, Portugal
+When comparing two web pages, one considers both the DOM
+treestructureandthecontentwithineachtreenode.Accordingtoour
+metamorphic relation, if an API response with a particular data field
+removedwouldstillresultintheidenticalDOMtree,comparedtothe
+DOMtree produced using theoriginalAPI response, that datafield
+is reported as excessive. Two DOM trees are considered identical if
+and only if allof the following conditions hold:
+(C1)Their root nodes have the same tag name
+(C2)Their root nodes have the same number of attributes
+(C3)Each corresponding pair of attributes have the same value
+(C4)Their root nodes have the same number of children
+(C5)Eachcorrespondingpairofchildrenrepresentingatagele-
+ment is identical, with respect to conditions C1-4
+(C6)Eachcorresponding pair ofchildrenrepresenting a stringis
+identical
+To check for all of these conditions, the most simple yet effective
+approach is to compare the string representations of the correspond-
+ing HTML documents.Our experiments showedthat this worksfor
+47outof54targets.However,weobservedthatseveralwebpages
+contain elements which are not affected by the API response. For
+example,thevalueofthe classattributewithina <div>tagcould
+berandomlygeneratedatrun-time.Anothercommoncaseiswhen
+the web page displays the current date and time on it. Apparently,
+these cases could yield false negatives using the straightforward
+string-based comparison approach.
+To address this issue, we relax the conditions C3andC6. That
+is, we accept the differences in string leaf nodes and in attributes’
+values caused by randomness. To that end, EDEFuzz runs a pre-
+processing step before the fuzzing phase. In this step, EDEFuzz
+uses the configuration file to replay and generate a few DOM
+trees,allgeneratedfromreplayingthe sameserverresponse.After
+that,itrecursivelytraversesandcompares Doriginwitheachofthe
+newly generated DOM trees to look for those parts that differ due
+torandomness,andmarksthoserandomelementsandattributesof
+Doriginthatshouldbe“ignored”inthecomparisonstepofthefuzzing
+phase.Itisworthnotingthat,inthispre-processingstep,if EDEFuzz
+finds that the generated DOM trees are structurally different from
+Dorigin,i.e.violatingconditions C1,C2,C4andC5,itwilldecide
+toterminatethetestingprocess.Inourexperiment,9of69targets
+wereflaggedatthisstep,meaningthattheyeachproducedwebpages
+with different structures, even using the same response.
+Inthefuzzingphase, EDEFuzz comparestheDOMtree Dmutated
+produced from each test case, with the pre-processed Dorigin. Ba-
+sically,EDEFuzz (i) recursively traverses through every node in
+Doriginanditscorrespondingnodein Dmutated,and(ii)compares
+eachpairofnodes. EDEFuzz willskipallstringnodesandattributes
+onDoriginthat havebeen marked as “ignored” in the pre-processing
+step.Twonodesaredeemedstructurallydifferentifanyofthecon-
+ditionsC1,C2,andC4isviolated.Moreover,theyareconsidered
+different in terms of content if there is a discrepancy in the values of
+thenodes(inthecaseofnon-ignoredstringnodes)orthenon-ignored
+attributes (for other types of nodes).
+While comparing the entire DOM tree can identify if a web page
+isdifferentfromanother,inmanycasesaresponsewillaffectonly
+specific areas of a web page. Our approach can optionally utilise
+human knowledge to allow the user to specify an area-of-interestonthewebpage.Thearea-of-interestisasubtreeintheDOMtree
+that contains contents (that the user believes are) affected by the
+API response. The area-of-interest in the Figure 5 example could
+be the subtree rooted at the node <divclass="driver_info" >
+(highlightedinyellowinthetreerepresentation).Thishelpsincrease
+efficiency, and it also avoids other components on the web page
+affecting the comparison (e.g. if they are randomly generated).
+4.5 Result Inspection
+Thefinalstepofourapproachismanuallyinspectingtheresults.This
+involves inspecting each of the flagged data fields to determine what
+kindofdata itexposes(e.g.sensitivity)and, therefore,whetherthe
+web application should be modified to avoid this exposure.
+We suggest the following approach to determine whether a given
+fieldisindeedunnecessary(i.e.,atruepositive),andhowsensitive
+the data is (the severity of a leak).
+False positives. Like other testing/fuzzing approaches, EDEFuzz
+could yield falsepositives.Forinstance,a valueincluded in an API
+responsemayonlybepopulatedonthewebpagewithfurtheruser
+interactions.Thisisnotuncommonwhenusinganoverlaywindowto
+displaycertaininformation.Atestertypicallyverifiesaflagbyfurther
+interacting with the web-page, discovering any hidden dependencies
+on the field.
+Sensitivity of the excessive data. To determine the sensitivity of
+anexcessivedatafield,firstwecanassesswhetherthedatafieldis
+human interpretable. This may include a minimal decoding process
+toparse information represented under agivenscheme(eg; base64,
+GPScoordinates,Unixtimestamp,gzip).Next,wedeterminewhether
+theusercouldlegitimatelyacquirethedatasomeotherway.Ifnot,
+weconsiderit‘sensitive’.Wepresentrealexamplesfromourdataset.
+Wenotethatsomenon-interpretablemaynonethelessbesensitive
+when parsed appropriately. We merely present a usable heuristic
+applicable to our evaluation.
+5 EXPERIMENTAL EVALUATION
+We designed our experimental evaluation to answer the following
+research questions.
+(RQ1) Accuracy. Of the data fields flagged by EDEFuzz , what pro-
+portion are true excessive data exposures (i.e. unused by the web
+page). This evaluates the usefulness of our metamorphic relation.
+(RQ2)Applicability. Towhatproportionofwidelyusedwebsites
+canEDEFuzz be applied successfully? This helps to understand
+limitations of our approach, both inherent and those that arise from
+EDEFuzz ’s current implementation.
+(RQ3) Efficiency. Howmuch human effort and computational time
+is required to apply EDEFuzz ? This sheds light on the scalability of
+our approach.
+(RQ4)PrevalenceofSensitiveDataLeakage. Ofthosefieldsflagged
+byEDEFuzz asexcessive,whatproportioncontainsensitivedata?
+This helps us understand how prevalent sensitive data leakage is
+amongst excessive data exposure issues.
+Notethedistinctionbetween RQ1andRQ4.Specifically,given
+somesetofdatafieldsreportedby EDEFuzz asexcessive,theformer
+measures the proportion of true positives whereas the latter mea-
+sures the proportion that are sensitive. These notions are entirely
+orthogonal: a flagged data field is a true positive precisely when it isICSE 2024, April 14–20, 2024, Lisbon, Portugal Pan et al.
+Target Rank Used when
+Company-A 37 Load tracking history of parcel
+Company-B – Listmembers of a schoolsubject
+Company-C 121 Check stock availability of item
+Company-D – Checkstockavailabilityof item
+Company-E 59 Check stock availability of item
+Company-F 166 Get flight prices for next 30 days
+Company-G 123 Check stock availability of item
+Company-H 2770 List vehicles available for sale
+Table1:Australianwebsitestested.Weincludeshortdescriptions
+of the purpose of the targeted APIs on which we performed
+deeperevaluation.WhereavailableweprovideAlexarankings
+within Australia (extracted 29th April 2022).
+really excessive (i.e. unused by the web page), regardless of whether
+the data it contains is sensitive or not. Likewise, a field contains
+sensitive data precisely when that data should not be revealed by
+the web application, regardless of whether the field is excessive (i.e.
+is unused by the web page) or not. Flagged fields that are not true
+positives are false positives . False positives can exist, for instance,
+when a field contained in a response is used to affect the DOM only
+after subsequent user interaction with the web page. Importantly,
+whether a data field is a true or false positive is a property of the
+behaviour of the web page. That is, distinguishing between true and
+false positives requires carefully understanding allbehaviours of the
+webapplication,includingbyreadingitscodeandinteractingwith
+it,todeterminewhetherthedatafieldcontainedintheresponseis
+ever used in future by the page. Whether a field is sensitive or not is
+simplyapropertyofthedatathatfieldcontains,andcanberelatively
+quickly ascertained by inspecting just the field itself.
+This means that accurately evaluating RQ1requires a set of web
+sites whose behaviour is (or can be) well-understood by the humans
+inspecting EDEFuzz ’sresults.Carefullyunderstandingthebehaviour
+of an individual site can be very time consuming. Therefore, for
+RQ1we assembled a set (see Table 1) of eight (8) popular websites
+within a single country (Australia) that were familiar and whose
+individualbehavioursofthewebpagewerethereforeabletobewell-
+understood. This purposeful restriction was necessary to ensure that
+the proportion of true positives could be accurately evaluated.
+Incontrast,adequatelyevaluatingtheremainingresearchquestions
+requiresadatasetthatcompriseswidelyusedwebsites.Therefore
+the remaining RQs were evaluated on a data set drawn from the
+Alexa Top-200 list of web sites. While not applicable to RQ1(since
+enumerating all of their possible behaviours to accurately determine
+true positives is infeasible), this set forms a representative best-of
+sample, suitable for assessing EDEFuzz ’s performance in general
+(RQ2andRQ3),aswellastounderstandtheprevalenceofsensitive
+data leakage via EDE among common web sites ( RQ4).
+5.1 Procedure
+We follow the 4-step procedure below to fuzz test a given website
+usingEDEFuzz .Theprocedureiswell-alignedwiththeworkflowof
+the tool, as discussed in Section 4.1 .
+(Step-1) Identifying the target API endpoint. Given a primary
+domain, we identify API endpoint(s) for inclusion in the testing
+regime.EachdomainaccessedavarietyofAPIs,someinternaltothe
+domain (eg., a shopping website accessing the site’s stock inventoryand pricing endpoint) and some external (eg., an analytics endpoint
+to retrieve recent visitor counts). Of these, we manually identify the
+internal API most relevant to the function of the site in question. For
+instance,in Table1welisttheselectedAustraliansitesandendpoints
+used in our evaluation.
+(Step-2) Writing a configuration file. We compose a configuration
+file that specifies how to correctly trigger the selected endpoint—
+this includes the sequences of user interactions that preclude the
+execution of a request to the API.
+This process is semi-automated via our custom-builtweb browser
+plugin.Howeverthepluginstillrequirestheusertomanuallyperform
+interactions. After the file is generated, the operator reviews the file
+to make any necessary changes.
+We specified an area-of-interest (see Section 4.4 ) on all our eval-
+uation targets, at the cost of a few seconds per target.
+(Step-3) Running EDEFuzz .After devisingan appropriate config-
+uration, we then execute EDEFuzz , time its execution, and collate
+theresultsforanalysis.Wechosenottorepeatthefuzzingprocess
+for each target because, unlike in traditional fuzzing, EDEFuzz ’s
+mutation process is deterministic by design.
+(Step-4) Analysing results. This involves the manual classification
+step, discussed in Section 4.5 .
+We adhere to a systematic classification model to decide if a
+reportedEDEissensitiveornot.Wefirstassesswhetherthedatafield
+is readily human interpretable (including simple encoding schemes
+such as base64, timestamps). We mark non-human interpretable
+values non-sensitive. Next, we determine whether the user could
+legitimately acquire the data otherwise. If yes, mark the field non-
+sensitive; if not, mark it sensitive.
+5.2 Results
+RQ1. Accuracy. We evaluated the accuracy of our metamorphic
+relation, as implemented in EDEFuzz , for identifying excessive data
+exposuresagainsttheeightsiteslistedin Table1.TheTPcolumn
+ofTable 2summarises the results by recording the true positive
+rate,namelytheproportionofreportedexcessivefields(Reported)
+that wereactuallyexcessive(Confirmed). This wasdetermined by
+manuallyinspectingthewebpagesandcarefullyunderstandingtheir
+behaviours,includingviamanual interaction,to checkwhether,for
+eachreporteddatafield,theyhadanybehavioursthatmadeuseof
+the data field. If no such behaviours were identified, the field was
+classified as a true positive; otherwise it constitutes a false positive.
+The overall true positive rate was 98.65%, confirming the ex-
+ceptionally high degree of accuracy of our approach. (Later, RQ4
+investigateswhichoftheseEDEsactuallyleakedsensitivedatawhich,
+as argued in Section 5 , is a separate concern.)
+EDEFuzz ,likeother testing/fuzzingapproaches,mayyieldfalse
+positives. For instance, a value included in an API response may
+onlybepopulatedonthewebpageafterfurtheruserinteraction.This
+pattern arises for instance when using an overlay window to display
+certain information. We manually investigated each false positive
+(1.35% overall) and found that each was an instance of this pattern.
+RQ2. Applicability. We evaluated the applicability of EDEFuzz
+onasubsetofthetop200sites(asrecordedbytheAlexaranking).
+Of the 200 sites, we excluded (see Figure 6) from analysis those
+that had no web APIs (and, hence, no possibility for EDE); thoseEDEFuzz: A WebAPI Fuzzer for ExcessiveData Exposures ICSE 2024, April 14–20, 2024, Lisbon, Portugal
+Target Data fields Reported Confirmed TP Preparation Execution Classification Sensitive Non-sensitive
+(min) (min) (min)
+Company-A 189 124 124 100.00% 10 11 5 0 124
+Company-B 18 16 14 87.50% 20 2 2 2 12
+Company-C 2600 2580 2504 97.05% 5 306 3 104 2400
+Company-D 545 506 479 94.66% 15 43 10 9 470
+Company-E 4249 4147 4127 99.52% 10 755 15 0 4127
+Company-F 778 749 749 100.00% 15 103 5 0 749
+Company-G 120 100 100 100.00% 5 12 3 0 100
+Company-H 1465 1066 1066 100.00% 15 79 20 19 1047
+Table 2: Summary statistics fromthe Australian sites. Data fields reportsthe total number of fields contained in the API responseof
+each target, Reported is the number of fields flagged by EDEFuzz as excessive; Confirmed is the number of fields manually confirmed
+tobeexcessive,i.e.truepositives,TP.Thetimetakentoconfigure EDEFuzz foreachtargetisreportedinPreparation,asistheduration
+of test execution (Duration) and the human effort required to manually classify the flagged fields as sensitive or not (Classification), all
+measured in minutes. We also report (Sensitive) the number of fields we classified as containing sensitive data, after manual inspection.
+requiringpayment;thoseinalanguagethatnoneofourauthorsun-
+derstand;thosecomprisingadultorillegalcontent;thosethatwere
+geoblocked; and those that required solving a CAPTCHA. Doing
+so excluded around 60% of the 200 sites, after deduplication. None
+oftheseexclusionsrepresentlimitationsofourapproachorimple-
+mentation. Of the remaining sites, we additionally excluded 12 sites
+that used HTTP_POST requests to query their APIs with query param-
+etersincludedintherequestbody,since EDEFuzz ’ssimulatedserver
+currently relies solely on the request URL to supply the response,
+thoughthisimplementation-levellimitationcouldberesolvedwith
+modestfuturework.Thisleft69sitesforourevaluationof EDEFuzz .
+Of these 69 sites, EDEFuzz successfully applied to 53 targets
+(76.8%).Ofthe16unsuccessfultargets,allbutoneweretheresult
+ofnondeterminismakarandomness:nine(13.0%)didnotpassthe
+pre-processingstep(asexplainedin Section4.4 ),asthesewebsites
+populatedelementsoftheirpagenon-deterministically;six(8.7%)
+usedrequeststhatincludednon-deterministictokensrequiredtoload
+resources.ThefinalunsuccessfultargetusedshadowDOMwithinits
+webpage,preventing EDEFuzz fromaccessingits completeDOM
+tree.
+We further assessed applicability by performing an additional
+validationstepon those53 successful targets.This wasdone to test
+the implicit assumption of our mutation strategy that, given any two
+fieldsofaresponse,whetheroneisexcessiveisindependentofthe
+presenceorabsenceoftheother,i.e.thateachfieldofaresponsecan
+beassessedindependentlyoftheothers.Wetestedthisassumption
+for each of the 53 successful targets by taking the entire set of fields
+flaggedby EDEFuzz asexcessiveandremoving allofthemsimul-
+taneously from the recorded response, and replaying that mutated
+response to see whether the resulting DOM passed the similarity
+check (Section 4.4 ) to the original. Surprisingly we found that for
+three(3)ofthesites,removingmultiplefieldsatoncecausedadiffer-
+enceintheDOMevenwhenremovingeachofthefieldsindividually
+didnot(behaviourweconfirmedviamanualtestingforeachofthem).
+Forthesesites,onemightreasonablydebatewhetherthoseflagged
+fields really are excessive or not, a question we leave for future work.
+EDEFuzz ishighlyapplicable;howeversitesthatemployrandom-
+ness,eitherintheirDOM structure ortherequeststheygenerate,are
+beyondEDEFuzz ’scurrentdesign.Thelatterwepositcouldbead-
+dressed by fuzzy matching in the simulated server (see Section 4.2 ).RQ3. Efficiency. Efficiency measures not only the amount of com-
+putational time to employ EDEFuzz , but also the amount of human
+effortbothtoconfigurethetoolandtoinspectitsresultstodetermine
+whichreportedexcessivedatafieldscontainsensitivedata.Weevalu-
+atedefficiencyacrossboththeAustraliansites( Table2)andtheTop
+200dataset.ExperimentsfortheAustraliansiteswerecarriedout
+on a commodity PC with an Intel Core i7-9600K, 32GB of RAM,
+running Windows 10 21H1. Those for the Top 200 data set were
+carried out on an AWS VPS with a 16-core Intel CPU and 32 GB of
+memory, running Ubuntu 20.04.
+Thetimespentontestexecutionwasroughlylinearinthenumber
+ofdatafieldsincludedintheresponsefromthetargetAPI,asexpected
+since our mutation strategy must necessarily mutate one field at a
+time.Onaverage,about8testcaseswereexecutedperminuteandthis
+figureisconsistentbetweenthetwodatasets.However,computation
+timedoesnotpresentasignificantbottleneck,especiallysinceour
+approach is trivially parallelised.
+Regarding human effort, it took a maximum of twenty minutes
+per web site for us to identify an appropriate API endpoint that it
+madeuseofandtothencomposeaconfigurationfile,representing
+minimal overhead.
+While naturally some human effort is required to inspect the
+flaggedfields,todeterminewhicharesensitive,thisagaintookno
+longerthan20minutesperwebsite,evenwhen EDEFuzz reported
+manythousandsof fieldsasexcessive.ThiswasbecausemanyAPI
+responses contained large numbers of repeated structures, which
+allowed us to quickly classify thousands of flagged fields. However,
+we found certain flagged data fields required lengthier and more
+comprehensiveanalysis.Wehypothesisethatthisisafundamental
+limitation on automation (for the near future) as deciding whether a
+fieldisindeedsensitiveisanexerciseofhumanjudgement,involving
+considering the application’s function, what data is already publicly
+available, and privacy expectations, etc.
+Overallweconcludethereforethatourapproachrequiresonlya
+modest amount of human effort.
+RQ4. Prevalence of Sensitive Data in EDEs. Finally, our results
+allow us to draw conclusions about the prevalence of sensitive data
+leakageviaexcessivedataexposure.Suchconclusionsnecessarily
+underestimate thetrueextentofsensitivedataleakage,evenontheICSE 2024, April 14–20, 2024, Lisbon, Portugal Pan et al.
+sites used in our evaluation,since wetestedon eachsite onlyone—
+highly-visible and, hence, likely to be widely-tested—API.
+AmongtheAustralianwebsites,wefindthatsensitivedataleakage
+is much more prevalent (present in 4 out of the 8 cases evaluated)
+thanamongtheAlexaTop200sites(whereitispresentinonlyoneof
+the 53 cases successfully evaluated). We conjecture that this should
+be expected, since popular sites are more widely used (and thus
+tested)bydefinition.Yetevenamongverypopularsites, EDEFuzz
+still found sensitive data leakage.
+Wealreadydiscussedsensitivedataleakagediscoveredby EDE-
+FuzzintheAustralianwebsites Company-C ,Company-D ,andCompany-
+EinSection3.(Wealsodiscussedvulnerabilitiesitfoundin Company-
+IandCompany-J duringtesting,whicharenot partofourevaluation
+set).EDEFuzz also identified sensitive data leakage in Company-
+B, the learning management system with the largest market share
+(34%).Company-B has a feature to create student groups within a
+subject. Instructors of a subject can view and assign group members
+of each group. Our tool flagged the API that lists group members.
+Whilethewebpageonlydisplayedalistofnamesinagroup,theAPI
+responsecontainedthefulllistofsubjectseachstudentisenrolled
+into. We further found that this API is accessible from a student
+account as well, allowinganystudentto gainknowledge about into
+whichsubjects their classmates have ever enrolled.
+The one instance of sensitive data leakage found by EDEFuzz
+in the Alexa Top 200 (Rank 91) affected an API called by a web
+pagefordownloadingdevicedrivers,whichinadvertentlyexposed
+employee names as excessive data, as well as hardware IDs.
+Summary. EDEsappearprevalent,thoughmanyarerelativelyharm-
+less. However, much like memory corruption vulnerabilities (whose
+severity can vary wildly),theycan also be severeandleak sensitive
+information. EDEFuzz is effective at diagnosing such vulnerabili-
+tiesviaitshighlyaccuratemetamorphicrelation,requiringmodest
+human effort and computational cost, while being widely applicable.
+EDEFuzz applicable [34.5%]
+No API [18.5%]
+Payment Required [10.0%]
+Duplication [9.5%]
+Language[7.5%]HTTP_POST [6.0%]Adult or Illegal [5.5%]Non-web [4.0%]CAPTCHA [4.0%]Geoblocked [0.5%]
+Figure6:ApplicablewebsitesfromAlexaTop-200.Ofthe200we
+found69(34.5%)appropriateforourtesting-set.Weexcluded
+domainsforthefollowingreasons:duplicationofasingleservice
+across domains, adult and illegal content, geoblocking, payment
+required for access, lack of an API, foreign language and encod-
+ing of parameters in POST requests (discussed in Section 5.2 ).6 RELATED WORK
+DetectingVulnerabilitiesin WebApplications Researchershave
+made satisfying progress in detecting and preventing certain classes
+of webapp vulnerabilities. Much work [ 21]–[25] exists for detecting
+cross-sitescripting[ 26].Thetechniquesvary,includingblack-box
+[22], [25], grey-box [ 23] and white-box [ 21] approaches. Very re-
+cently, Trickel, et al. [27] proposed a novel grey-box fuzzing ap-
+proach to detecting SQL and command injections.
+However,excessivedataexposurehasreceivedcomparativelylittle
+attention despite being one of the most common vulnerabilities [ 28].
+Tothebestourknowledge,thereisnopublishedresearchfocusing
+onanautomatedapproachtodetectthisclassofvulnerabilityinweb
+applications: our tool EDEFuzz is the first of its kind.
+Koch,etal.[29]studiedawhite-boxandsemi-automatedmecha-
+nismtoidentifyEDEvulnerabilitiesinAndroidapplications—notin
+webapplications. Unlike EDEFuzz whichruns the program on two
+different outputs from the web server (one with a data field deleted)
+andlooksfortheabsenceofdifferenceintheDOMtodetectleakage,
+theirapproachrequires(decompiled)sourcecodeoftheapplications
+to do instrumentation and static data-flow analysis. Its static analysis
+identifiespotentialEDEsbyflaggingdatareceivedbytheappover
+thenetwork(source)thatisthenserialisedtoaJavaobjectbutthat
+then never propagates to the user interface (sink). A subsequent dy-
+namicanalysisthatreliesonprograminstrumentationandmanual
+appinteraction is usedto confirm potential vulnerabilities, wherein
+thehumananalystmustmanuallygenerateteststhatattempttotrigger
+theEDE. EDEFuzz alsorequiresmanualefforttointeractwithaweb
+application to trigger the web API under test, and like Koch et al.
+alsotoconfirmthesensitivityofleakedinformation.So[ 29]andour
+approacharecomplementary.Asdemonstratedinfuzzing research
+[13], combinations of complementary approaches could yield better
+results and we leave that for future work.
+MetamorphicTesting/Fuzzing Asdiscussedin Section2 ,oneofthe
+most important steps of metamorphic testing is to identify metamor-
+phicrelation(s).Thisrequirescreativityandagoodunderstanding
+of the system under test. To ease this crucial step, Segura, et al.
+[30] proposed six abstract relations from which concrete relations
+canbedefined.Specifically,theauthorsidentified60API-specific
+metamorphic relations in their work. Their relations specify how
+related web requests should produce related responses, and so are
+inapplicabletodetectingEDE.Thefundamentalinsightof EDEFuzz
+that showshowmetamorphic fuzzing is applicable to detecting EDE
+is not to mutate the request(as in all prior web fuzzing work), but to
+mutate the response instead.
+RESTfulWebAPITesting RESTler[ 6]—thestate-of-the-artREST-
+fulAPIfuzzingapproach—usedserverstates,relyingonresponse
+codes to identify server crashes on APIs used by cloud services.
+TheirtoolinfersdependenciesamongrequestedAPIstoguidethe
+generation of new test cases. Atlidakis, et al. [11] suggested an
+extension to RESTler to report the violation of four rules commonly
+appliedtoRESTservices,inadditiontoservercrashes.[ 31]improved
+RESTler’s test generation algorithm by representing the payloads
+in a tree structure on which structure-awaremutation operators can
+beapplied.Pythia[ 10]augmentedRESTlerwithcoverage-guided
+feedback and it implemented a learning-based mutation strategy.
+Specifically,itutilisedastatisticalmodeltogainknowledgeaboutEDEFuzz: A WebAPI Fuzzer for ExcessiveData Exposures ICSE 2024, April 14–20, 2024, Lisbon, Portugal
+frequent ordering of calling APIs from seed inputs. It used a reg-
+ular grammar to encode an API request and perform mutation by
+addingnoisetotherequest.NeitherRESTlernoritsfollow-upworks
+candetectEDEvulnerabilities.Moreover,thislineofworkfocuses
+on mutating the API requests while EDEFuzz modifies the API
+responses.
+Record-replayMechanisminWebApplicationTesting Record-
+replaymodelsarepopularintestingwebapplicationsandservices.
+We use two types of record-replay in our work. The firstbears simi-
+larity to WaRR [ 32], which records the interaction between a user
+and a web application. It allows the recorded traces to be later re-
+played to simulate the user interacting with the web application.
+AnothersimilarworkisTimelapse[ 33],inwhichresearcherslogun-
+expectedbehavioursinwebapplicationstohelpdevelopersvisualise,
+demonstrateandbetterunderstandbugs.Wefollowtheirmechanism,
+automatinginteractionswithawebapplicationthroughaheadless
+web-driver. The second form of record-replay tools capture commu-
+nicationsbetweenaserverandclient,tobereplayedatalatertime
+[7].Whileexistingworkfocusesonproducinganexactreplication
+duringareplaystage, EDEFuzz usesasimulatedservertoinstead
+supply mutated server responses.
+Web Change Detection The components of a web application may
+changeovertime,hinderingresearchandtestingthatreliesonconsis-
+tency.Researchershavelookedintodifferentstrategiestocompare
+two pages and identify their differences. One strategy was proposed
+overtwentyyearsago and relies on the HTML DOM tree to monitor
+structuralchangesonthewebpage[ 34].Otherrelevantworkincludes
+X-Diff [35] which aimed at detecting changes in an XML document,
+and[36]whichimprovedtheefficiencyofHungarianalgorithminde-
+tecting web page changes. Modern web applications have increased
+in complexity and often break from prior design paradigms. As a
+result,pastapproachesforpagecomparisonarelesseffectivethan
+theyoncewere.Toaddressthischallenge,Waterfall[ 37]usestwo
+versionsofthesamewebapplication,indetectinglocatorchanges
+and applying fixes. WebEvo [ 38] attempts to identify evolution of a
+web application through detecting semantic structure changes. Both
+approachesaimatmatchingcontentsbetweentwostructuraldiffer-
+entwebpages,whileourworkfocusonidentifyingbothstructural
+difference and content difference.
+7 DISCUSSION AND FUTURE WORK
+Simple ideas are often the best. From our evaluation we conclude
+thatEDEsappearprevalent,andthat EDEFuzz iseffectiveatfinding
+them, including sensitive data leakage, with acceptable efficiency
+and requiring a modest amount of human work. Its metamorphic
+relationyieldspreciseresultsinpractice(aTPrateof 9865%).Itis
+also generally applicable, and it can be parallelized easily. At the
+same time, our results suggest avenues for improvement.
+Handling HTTP POST Requests by parsing request bodies, which
+affected 6%of the targets from the Alexa Top-200 websites.
+ImprovingEfficiency. EventhoughourSimulatedServerhelps EDE-
+Fuzzachieve a reasonable fuzzing throughput, we can improve it
+furtherbyleveragingtherecentadvancementinthetopicofsnapshot-
+basedfuzzing[ 39].Asthedesignof EDEFuzz ismodular,thechange
+couldbe minimal. Specifically,wecan takea snapshot ofthe client
+at the state (1when a request to the target API has just departed(SeeSection4 ).Wecanthenrestorethesnapshotforeachfuzzing
+iteration instead of replaying requests using the Web Driver.
+FuzzyMatching. Wepositedin Section4.2 thatEDEFuzz ’scurrent
+SimulatedServerhasimplementationlimitationsthatpreventitfrom
+being able to respond to randomised requests.It could be overcome
+byimplementing fuzzy matching. While affecting only 8.7% of our
+sites, this is a straightforward avenue for future investigation.
+ACKNOWLEDGMENT
+We thank the anonymous reviewers for their constructive and en-
+couraging feedback. We also thank Amazon (through their Research
+Program)forgivingusAWSCloudCredittoconductourlarge-scale
+experiments.
+REFERENCES
+[1]OWASP API Top 10: 2019 , 2019. [Online]. Available: https://owasp.org/www-
+project-api-security/ (cit. on p. 1).
+[2]Microsoft announces new Project OneFuzz framework , 2020. [Online]. Avail-
+able:https://www.microsoft.com/security/blog/2020/09/15/microsoft-onefuzz-
+framework-open-source-developer-tool-fix-bugs/ (cit.on p. 1).
+[3]E.T.Barr,M.Harman,P.McMinn,M.Shahbaz,andS.Yoo,Theoracleproblem
+in software testing: A survey, IEEE transactions on software engineering ,
+vol.41, no. 5, 507–525, 2014 (cit. on p. 1).
+[4]T.Y.Chen,S.C.Cheung,andS.M.Yiu “Metamorphictesting:Anewapproach
+for generating next test cases,” Tech. Rep. HKUST-CS98-01, 1998, arXiv
+preprint arXiv:2002.12543 (cit. on pp. 1,3).
+[5]Usingburptotestforsensitivedataexposureissues ,2022.[Online].Available:
+https://portswigger.net/support/using-burp-to-test-for-sensitive-data-exposure-
+issues(cit. on pp. 2,4).
+[6]V.Atlidakis,P.Godefroid,andM.Polishchuk Restler:Statefulrestapifuzzing,
+in2019 IEEE/ACM 41st International Conference on Software Engineering
+(ICSE), IEEE, 2019, 748–758 (cit. on pp. 2,3,10).
+[7]R.Netravali,A.Sivaraman,S.Das, etal. Mahimahi:Accurate frecord-and-
+replay gforfhttpg,in2015USENIXAnnualTechnicalConference(USENIX
+ATC15), 2015, 417–429 (cit. on pp. 2,11).
+[8]S. Ikeda, Massive optus data leak prompts new privacy rules in australia, CPO
+Magazine , 2022 (cit. on p. 2).
+[9]Api3:2019excessivedataexposure ,2019.[Online].Available: https://github.
+com/OWASP/API-Security/blob/master/2019/en/src/0xa3-excessive-data-
+exposure.md (cit. on p. 3).
+[10]V.Atlidakis,R.Geambasu,P.Godefroid,M.Polishchuk,andB.Ray,Pythia:
+Grammar-basedfuzzingofrestapiswithcoverage-guidedfeedbackandlearning-
+based mutations, arXiv preprintarXiv:2005.11498 ,2020 (cit. on pp. 3,10).
+[11]V.Atlidakis,P.Godefroid,andM.Polishchuk Checkingsecurityproperties
+of cloud service rest apis, in 2020 IEEE 13th International Conference on
+Software Testing, Validation and Verification (ICST) , IEEE, 2020, 387–397
+(cit.on pp. 3,10).
+[12]OpenAPIInitiative Openapispecification ,Availableonline: https://swagger.
+io/resources/open-api/ , 2020 (cit. on p. 3).
+[13]V.J.M.Manès,H.Han,C.Han, etal.,Theart,science,andengineeringof
+fuzzing: A survey, TSE,2019 (cit. on pp. 3,10).
+[14]Google clusterfuzz , 2022. [Online]. Available: https://google.github.io/
+clusterfuzz/ (cit. on p. 3).
+[15]P.He,C.Meister,andZ.Su Testingmachinetranslationvia referentialtrans-
+parency, in 2021 IEEE/ACM 43rd International Conference on Software Engi-
+neering (ICSE) , IEEE, 2021, 410–422 (cit. on p. 3).
+[16]M. Rigger, and Z. Su Testing database engines via pivoted query synthesis, in
+14thUSENIXSymposiumonOperatingSystemsDesignandImplementation
+(OSDI20) , 2020, 667–682 (cit. on p. 3).
+[17]What is social engineering? 2022. [Online]. Available: https://www.kaspersky.
+com.au/resource-center/definitions/what-is-social-engineering (cit. on p. 4).
+[18]Webdriver ,2022.[Online].Available: https://www.selenium.dev/documentation/
+webdriver/ (cit. on p. 5).
+[19]American fuzzy lop . [Online]. Available: https://lcamtuf.coredump.cx/afl/
+(cit.on p. 6).
+[20]A.Zeller,Yesterday,myprogramworked.today,itdoesnot.why? ACMSIG-
+SOFT Softwareengineering notes , vol.24, no. 6, 253–267, 1999 (cit. on p. 6).
+[21]R. Wang, G. Xu, X. Zeng, X. Li, and Z. Feng, Tt-xss: A novel taint tracking
+baseddynamicdetectionframeworkfordomcross-sitescripting, Journalof
+Parallel and Distributed Computing , vol. 118, 100–106, 2018 (cit. on p. 10).ICSE 2024, April 14–20, 2024, Lisbon, Portugal Pan et al.
+[22]F. Duchene, S. Rawat, J. -L. Richier, and R. Groz Kameleonfuzz: Evolutionary
+fuzzing for black-box xss detection, in Proceedings of the 4th ACM conference
+on Data and application security and privacy , 2014, 37–48 (cit. on p. 10).
+[23]O. v. Rooij, M. A. Charalambous, D. Kaizer, M. Papaevripides, and E. Athana-
+sopoulos Webfuzz: Grey-box fuzzing for web applications, in European Sym-
+posiumonResearchinComputerSecurity ,Springer,2021,152–172(cit.on
+p.10).
+[24]U. Sarmah, D. Bhattacharyya, and J. K. Kalita, A survey of detection methods
+for xss attacks, Journal of Network and Computer Applications , vol. 118, 113–
+143,2018 (cit. on p. 10).
+[25]A. Doupé, L. Cavedon, C. Kruegel, and G. Vigna Enemy of the state: A
+fstate-aware gfblack-box gweb vulnerability scanner, in 21st USENIX Security
+Symposium (USENIX Security 12) , 2012, 523–538 (cit. on p. 10).
+[26]M.C.Martin,andM.S.Lam Automaticgenerationofxssandsqlinjection
+attacks with goal-directed model checking. In USENIX Security symposium ,
+2008, 31–44 (cit. on p. 10).
+[27]E.Trickel,F.Pagani,C.Zhu, etal. Tossafaulttoyourwitcher:Applyinggrey-
+box coverage-guided mutational fuzzing to detect sql and command injection
+vulnerabilities, in 2023 IEEE Symposium on Security and Privacy (SP) , IEEE
+Computer Society, 2022, 116–133 (cit. on p. 10).
+[28]Owasp top 10: 2021 , 2021. [Online]. Available: https://owasp.org/Top10/
+(cit. on p. 10).
+[29]W.Koch,A.Chaabane,M.Egele,W.Robertson,andE.Kirda Semi-automated
+discoveryofserver-basedinformationoversharingvulnerabilitiesinandroidap-
+plications,in Proceedingsofthe26thACMSIGSOFTInternationalSymposium
+on Software Testing and Analysis , 2017, 147–157 (cit. on p. 10).
+[30]S. Segura, J. A. Parejo, J. Troya, and A. Ruiz-Cortés, Metamorphic testingof
+restful web apis, IEEE Transactions on Software Engineering , vol. 44, no. 11,
+1083–1099,2017 (cit. on p. 10).[31]P.Godefroid,B. -Y.Huang,andM.Polishchuk Intelligentrestapidatafuzzing,
+inProceedingsofthe28thACMJointMeetingonEuropeanSoftwareEngineer-
+ingConferenceandSymposiumontheFoundationsofSoftwareEngineering ,
+2020, 725–736 (cit. on p. 10).
+[32]S.Andrica,andG.Candea Warr:Atoolforhigh-fidelitywebapplicationrecord
+andreplay,in 2011IEEE/IFIP41stInternationalConferenceonDependable
+Systems & Networks (DSN) , IEEE, 2011, 403–410 (cit. on p. 11).
+[33]B.Burg,R.Bailey,A.J.Ko,andM.D.Ernst Interactiverecord/replayforweb
+application debugging, in Proceedings of the 26th annual ACM symposium on
+User interface software and technology , 2013, 473–484 (cit. on p. 11).
+[34]S.Flesca,F.Furfaro,andE.Masciari Monitoringwebinformationchanges,
+inProceedings International Conference on Information Technology: Coding
+and Computing , IEEE, 2001, 421–425 (cit. on p. 11).
+[35]Y. Wang, D. J. DeWitt, and J. -Y. Cai X-diff: An effective change detection
+algorithm for xml documents, in Proceedings 19th international conference on
+data engineering (Cat. No. 03CH37405) , IEEE, 2003, 519–530 (cit. on p. 11).
+[36]I.Khoury,R.M.El-Mawas,O.El-Rawas,E.F.Mounayar,andH.Artail,An
+efficientwebpagechangedetectionsystembasedonanoptimizedhungarian
+algorithm, IEEETransactionsonKnowledgeandDataEngineering ,vol.19,
+no. 5, 599–613, 2007 (cit. on p. 11).
+[37]M. Hammoudi, G. Rothermel, and A. Stocco Waterfall: An incremental ap-
+proach for repairing record-replay tests of web applications, in Proceedings
+of the 2016 24th ACMSIGSOFT International Symposium on Foundations of
+Software Engineering , 2016, 751–762 (cit. on p. 11).
+[38]F. Shao, R. Xu, W. Haque, etal. Webevo: Taming web application evolution
+via detecting semantic structure changes, in Proceedings of the 30th ACM
+SIGSOFTInternationalSymposiumonSoftwareTestingandAnalysis ,2021,
+16–28 (cit. on p. 11).
+[39]S.Schumilo,C.Aschermann,A.Jemmett,A.Abbasi,andT.Holz,Nyx-net:
+Networkfuzzingwithincrementalsnapshots, arXivpreprintarXiv:2111.03013 ,
+2021 (cit. on p. 11).

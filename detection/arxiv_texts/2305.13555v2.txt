@@ -1,0 +1,545 @@
+OCI in Transient Schemes
+Exploring One-Cell Inversion Method
+for Transient Transport on GPU
+J. P. Morgan1,2, Ilham Variansyah1,3, Todd S. Palmer1,3, and Kyle E. Niemeyer1,2
+1Center for Exascale Monte Carlo Neutron Transport *
+2School of Mechanical, Industrial, and Manufacturing Engineering
+Oregon State University, 204 Rogers Hall, Corvallis, OR 97331
+3School of Nuclear Science and Engineering
+Oregon State University, Merryfield Hall, Corvallis, OR 97331
+morgjack@oregonstate.edu
+ABSTRACT
+To find deterministic solutions to the transient SNneutron transport equation, iterative schemes
+are typically used to treat the scattering (and fission) source terms. We explore the one-cell inver-
+sion iteration scheme to do this on the GPU and make comparisons to a source iteration scheme.
+We examine convergence behavior, through the analysis of spectral radii, of both one-cell inver-
+sion and source iterations. To further boost the GPU parallel efficiency, we derive a higher-order
+discretization method, simple corner balance (in space) and multiple balance (in time), to add
+more work to the threads and gain accuracy. Fourier analysis on this higher-order numerical
+method shows that it is unconditionally stable, but it can produce negative flux alterations that are
+critically damped through time. We explore a whole-problem (in all angle and all cell) sparse lin-
+ear algebra framework, for both iterative schemes, to quickly produce performant code for GPUs.
+Despite one-cell inversion requiring additional iterations to convergence, those iterations can be
+done faster to provide a significant speedup over source iteration in quadrature sets at or below
+S128. Going forward we will produce a two-dimensional implementation of this code to experi-
+ment with memory and performance impacts of a whole-problem framework including methods
+of synthetic acceleration and pre-conditioners for this scheme, then we will begin making direct
+comparisons to traditionally implemented source iteration in production code.
+KEYWORDS: deterministic transport, one-cell inversion, source iteration, gpu, transient, dynamic
+1. INTRODUCTION
+To find deterministic solutions to the transient SN(where N is the number of angles in a quadrature set)
+neutron transport equation, iterative schemes are typically used to treat the scattering (and fission) source
+terms. The source iteration (SI) method is commonly used to do this, often accompanied by preconditioners
+or synthetic accelerators, where the contribution to the solution from the scattering source is allowed to lag,
+while the angular flux is solved in every ordinate via transport sweeps through the spatial domain [1].
+SI sweeps in Cartesian geometries are readily parallelized over the number of angles, as the source term
+is known from the previous iteration, allowing the angular flux in each ordinate to be computed indepen-
+dently. While any parallelization is a boon to performance, a scheme that is embarrassingly parallel over the
+dimension with the greatest number of degrees of freedom —space— may be advantageous. Furthermore,
+many SNproduction codes that implement SI use some kind of parallel algorithm that works in higher
+spatial dimensions (e.g., PARTISN, which implements the Koch–Baker–Alcouffe or KBA algorithm [2]).
+In this paper, we explore one-cell inversion (OCI), which is inherently parallel over space on both CPUs
+and graphics processor units (GPUs), and its application for transient slab geometry transport problems.
+*https://cement-psaap.github.io/arXiv:2305.13555v2  [physics.comp-ph]  9 Aug 2023J.P. Morgan et al.
+2. ONE-CELL INVERSION (OCI)
+In OCI, all angular fluxes within a cell are computed in a single linear algebra step, assuming that the angular
+fluxes incident on the surfaces of the cell are known from a previous iteration. OCI allows for parallelizing
+over the number of cells as each cell is solved independently of the others in a parallel block Jacobi scheme
+(where each block corresponds to the problem in a single cell in all angles). Previous explorations of OCI
+have primarily focused on steady-state problems [3,4].
+Because there is no communication of information between cells within an iteration, OCI can require more
+iterations to converge to a solution for some of problems. Specifically, as cellular optical thickness goes
+down, OCI’s relative performance degrades. Figure 1 illustrates this behavior, showing the spectral radii
+of the two iteration schemes as a function of cell thickness (in mean free path) and the scattering ratio.
+These values were computed numerically from an infinite medium problem (via reflecting boundaries) using
+steady-state calculations in S4. Gauss Legendre quadrature was used in all presented explorations. The
+smaller the spectral radius, the faster a method is converging. The spectral radius for SI depends strongly
+on the scattering ratio, and for problems that are many mean free paths in size, it is nearly independent of
+cell optical thickness. The spectral radius of OCI decreases substantially as the optical thickness of the cells
+increases.
+Figure 1: Spectral radii ( ρ) of OCI (left) and SI (middle) and the ratio between the two (right),
+where Σis the total cross section, ∆xis the cell width, and Σsis the scattering cross section
+Since both dimensions in Fig. 1 are governed by relationships with the total cross section ( Σ), altering that
+value will impact convergence behavior. As the scattering ratio decreases, both iterative schemes converge
+more quickly. However, the spectral radius of OCI also decreases with increasing optical thickness, which
+is an added benefit. When solving optically thick and highly scattering problems, small increases in Σcan
+drastically improve the relative performance of OCI in comparison with SI.
+3. HIGHER-ORDER METHODS
+To further improve the GPU parallel performance, we investigate higher-order discretization methods, par-
+ticularly the robust, second-order accurate spatial discretization method simple corner balance (SCB) [5]
+and the (also) robust, second-order accurate time discretization method multiple balance (MB) [6]. In cou-
+pling this higher temporal accuracy scheme with an iterative method that can be efficiently solved, we hope
+to optimize the ratio of compute work to communication work to better suit the numerical method for GPUs.
+We start by deriving the discretized slab geometry transport equations—SCB in space, MB in time, SNin
+2OCI in Transient Schemes
+angle—show that the resulting method MB-SCB is unconditionally stable via Fourier analysis, and then
+derive the respective iterative systems.
+3.1. Derivation of MB-SCB
+We begin with the time-dependent, mono-energetic, isotropic scattering slab geometry S Ntransport equa-
+tions with an isotropic source:
+1
+v∂ψm(x, t)
+∂t+µm∂ψm(x, t)
+∂x+ Σ(x)ψm(x, t) =1
+2 
+Σs(x)NX
+n=1wnψn(x, t) +Q(x, t)!
+,
+m= 1. . . N , t > 0, x ∈[0, X],(1)
+where ψis the angular flux, tis time, xis location, vis velocity, wmis angular quadrature weight, µmis the
+angular quadrature ordinate, mis the quadrature index, and Qis the isotropic material source. The initial
+and boundary conditions are prescribed angular flux distributions:
+ψm(x,0) =ψm,0(x), m = 1. . . N ,
+ψm(0, t) =ψm,L(t), µ m>0,
+ψm(X, t) =ψm,R(t), µ m<0.
+We discretize these equations in time using the MB approach [6]:
+1
+vψm,k+1/2(x)−ψm,k−1/2(x)
+∆t
++µm∂ψm,k(x)
+∂x+ Σ(x)ψm,k(x)
+=1
+2 
+Σs(x)NX
+n=1wnψn,k(x) +Qk(x)!
+,(2)
+1
+vψm,k+1/2(x)−ψm,k(x)
+∆t/2+µm∂ψm,k+1/2(x)
+∂x+ Σ(x)ψm,k+1/2(x)
+=1
+2 
+Σs(x)NX
+n=1wnψn,k+1/2(x) +Qk+1/2(x)!
+,(3)
+where ∆tis the time step size, kindexes time-average quantities, and k±1/2indexes time-edge quantities.
+Then, we discretize in space using SCB, which involves a spatial integration over the right and left halves
+of a spatial cell:
+∆xj
+21
+vψm,k+1/2,j,L−ψm,k−1/2,j,L
+∆t
++µm(ψm,k,j,L +ψm,k,j,R )
+2−ψm,k,j−1/2
++∆xj
+2Σjψm,k,j,L =∆xj
+21
+2 
+Σs,jNX
+n=1wnψn,k,j,L +Qk,j,L!
+,(4)
+∆xj
+21
+vψm,k+1/2,j,R−ψm,k−1/2,j,R
+∆t
++µm
+ψm,k,j +1/2−(ψm,k,j,L +ψm,k,j,R )
+2
++∆xj
+2Σjψm,k,j,R =∆xj
+21
+2 
+Σs,jNX
+n=1wnψn,k,j,R +Qk,j,R!
+,(5)
+3J.P. Morgan et al.
+∆xj
+21
+vψm,k+1/2,j,L−ψm,k,j,L
+∆t/2
++µm" 
+ψm,k+1/2,j,L+ψm,k+1/2,j,R
+2−ψm,k+1/2,j−1/2#
++∆xj
+2Σjψm,k+1/2,j,L=∆xj
+21
+2 
+Σs,jNX
+n=1wnψn,k+1/2,j,L+Qk+1/2,j,L!
+,(6)
+∆xj
+21
+vψm,k+1/2,j,R−ψm,k,j,R
+∆t/2
++µm"
+ψm,k+1/2,j+1/2− 
+ψm,k+1/2,j,L+ψm,k+1/2,j,R
+2#
++∆xj
+2Σjψm,k+1/2,j,R=∆xj
+21
+2 
+Σs,jNX
+n=1wnψn,k+1/2,j,R+Qk+1/2,j,R!
+,(7)
+where ∆xis the cell width, jis the spatial index, Ris the right hand side sub cell division, and Lis the left.
+These equations contain the first of the two simple spatial closures—the angular flux at the cell midpoint is
+a simple average of the two half-cell average quantities:
+ψm,k(xj) =(ψm,k,j,L +ψm,k,j,R )
+2, (8)
+ψm,k+1/2(xj) = 
+ψm,k+1/2,j,L+ψm,k+1/2,j,R
+2. (9)
+The second is an upstream prescription for the cell-edge angular flux:
+ψm,k,j +1/2=ψm,k,j,R , µ m>0,
+ψm,k,j +1,L, µ m<0,(10)
+ψm,k+1/2,j+1/2=ψm,k+1/2,j,R, µ m>0,
+ψm,k+1/2,j+1,L, µ m<0.(11)
+3.2. Fourier Analysis of Numerical Method
+To ensure that our combination of higher-order discretization schemes is still unconditionally stable, we
+performed a Fourier analysis to find the slowest-converging mode of the method. Assuming no scattering,
+no sources, and making physical assumptions (only constant positive values of ∆x,∆t,Σ, and v) we
+derived SCB-MB’s eigenfunction and numerically solved it [7].
+We found that the MB-SCB scheme is unconditionally stable over µ∈[−1,1]. While experimenting with
+this method we did find that, under some conditions, it can produce negative fluxes; however, the negative
+flux oscillations were critically damped and dissipated with time.
+3.3. Source Iteration (SI)
+In the traditional SI, the scattering source is presumed known from a previous iteration, which leads to the
+following set of equations to be solved in transport “sweeps”. This means that new estimates of both the
+end of time-step value of angular flux and time-averaged angular flux are computed together in each cell.
+For SCB in slab geometry, this means there is a local 4×4matrix to be solved in each cell. For µm>0,
+this equation has the form:
+A+
+ψm,k,j,L
+ψm,k,j,R
+ψm,k+1/2,j,L
+ψm,k+1/2,j,R
+=b+. (12)
+4OCI in Transient Schemes
+Here, the A+matrix has the following structure and element definitions:
+A+=
+µm+∆xjΣj
+2µm
+2∆xj
+2v∆t0
+−µm
+2µm+∆xjΣj
+20∆xj
+2v∆t
+−∆xj
+v∆t0∆xj
+v∆t+µm+∆xjΣj
+2µm
+2
+0 −∆xj
+v∆t−µm
+2∆xj
+v∆t+µm+∆xjΣj
+2
+(13)
+andb+is given by
+b+=
+∆xj
+4
+Σs,jϕ(l)
+k,j,L+Qk,j,L
++∆xj
+2v∆tψm,k−1/2,j,L+µmψm,k,j−1,R
+∆xj
+4
+Σs,jϕ(l)
+k,j,R+Qk,j,R
++∆xj
+2v∆tψm,k−1/2,j,R
+∆xj
+4
+Σs,jϕ(l)
+k+1/2,j,L+Qk+1/2,j,L
++µmψm,k+1/2,j−1,R
+∆xj
+4
+Σs,jϕ(l)
+k+1/2,j,R+Qk+1/2,j,R
+. (14)
+Forµm<0, this equation has the form:
+A−
+ψm,k,j,L
+ψm,k,j,R
+ψm,k+1/2,j,L
+ψm,k+1/2,j,R
+=b−. (15)
+Here, the A−matrix has the following structure and element definitions:
+A−=
+−µm+∆xjΣj
+2µm
+2∆xj
+2v∆t0
+−µm
+2−µm+∆xjΣj
+20∆xj
+2v∆t
+−∆xj
+v∆t0∆xj
+v∆t+−µm+∆xjΣj
+2µm
+2
+0 −∆xj
+v∆t−µm
+2∆xj
+v∆t+−µm+∆xjΣj
+2
+(16)
+andb−is given by
+b−=
+∆xj
+4
+Σs,jϕ(l)
+k,j,L+Qk,j,L
++∆xj
+2v∆tψm,k−1/2,j,L
+∆xj
+4
+Σs,jϕ(l)
+k,j,R+Qk,j,R
++∆xj
+2v∆tψm,k−1/2,j,R−µmψm,k,j +1,L
+∆xj
+4
+Σs,jϕ(l)
+k+1/2,j,L+Qk+1/2,j,L
+∆xj
+4
+Σs,jϕ(l)
+k+1/2,j,R+Qk+1/2,j,R
+−µmψm,k+1/2,j+1,L
+. (17)
+After sweeping the mesh cells in the appropriate directions for each angle in the quadrature set, the scalar
+flux vector can be updated via
+
+ϕk,j,L
+ϕk,j,R
+ϕk+1/2,j,L
+ϕk+1/2,j,R
+=NX
+n=1wn
+ψn,k,j,L
+ψn,k,j,R
+ψn,k+1/2,j,L
+ψn,k+1/2,j,R
+, (18)
+and the source iteration can continue until this scalar flux vector ceases changing between iterations. After
+converging, the simulation can move to the next time step.
+3.4. One-Cell Inversion (OCI)
+In OCI, the scattering source is subtracted to the left-hand side, and the information that comes from cells
+other than cell jis assumed to be known from a previous iteration. This means that all 4Nangular fluxes
+5J.P. Morgan et al.
+(Nangles, LandR,kandk+ 1/2) are computed simultaneously in cell j. For SCB in slab geometry, this
+means there is a local 4N×4Nmatrix to be solved in each cell.
+(A−S)Ψ=c, (19)
+where,
+A=
+A10··· 0
+0A2··· 0
+............
+0 0 ···AN
+. (20)
+Here, the Ammatrix has the following structure and element definitions:
+Am=A+µm>0
+A−µm<0. (21)
+The scattering source Sis defined by
+Sl,n=∆xjΣs,j
+4wn, (22)
+Ψis given by:
+Ψ= [ψ1ψ2···ψN]T. (23)
+where
+ψn=ψn,k,j,L ψn,k,j,R ψn,k+1/2,j,Lψn,k+1/2,j,RT, (24)
+andcis given by
+c= [c1c2···cN]T, (25)
+where
+cm=c+µm>0
+c−µm<0, (26)
+c+=
+∆xj
+4Qk,j,L+∆xj
+2v∆tψm,k−1/2,j,L+µmψ(l)
+m,k,j−1,R
+∆xj
+4Qk,j,R+∆xj
+2v∆tψm,k−1/2,j,R
+∆xj
+4Qk+1/2,j,L+µmψ(l)
+m,k+1/2,j−1,R
+∆xj
+4Qk+1/2,j,R
+, (27)
+c−=
+∆xj
+4Qk,j,L+∆xj
+2v∆tψm,k−1/2,j,L
+∆xj
+4Qk,j,R+∆xj
+2v∆tψm,k−1/2,j,R−µmψ(l)
+m,k,j +1,L
+∆xj
+4Qk+1/2,j,L
+∆xj
+4Qk+1/2,j,R−µmψ(l)
+m,k+1/2,j+1,L
+. (28)
+Where lindexes solutions from the previous iteration. One cell inversion iterations continue until this angu-
+lar flux vector ceases changing between iterations. After convergence, the time-step counter is incremented
+and the within time-step process can be repeated.
+4. GPU IMPLEMENTATIONS
+Modern exascale-class supercomputers (e.g., El Capitan, Frontier, Aurora) currently being deployed use
+heterogeneous architectures—with both CPUs and accelerators like GPUs—to reach exascale performance,
+motivating the exploration of the performance of these numerical and iterative schemes on the GPU.
+When we first implemented our MB-SCB-OCI scheme on a GPU using discrete dense matrix solves in every
+cell we found that wall-clock performance was drastically worse then even pure Python implementations
+6OCI in Transient Schemes
+on a single CPU core. We profiled on our naive GPU kernels and found that due to a) non-optimum
+data transfers between the GPU and host, b) naive scheduling of our compute solves in every cell, and c)
+overhead in calling an individual dense solver for every cell, performance was lackluster.
+Therefore we implement our neutron transport deterministic methods in a sparse linear algebra framework—
+representing a problem in all cells in all angles as a single sparse linear algebra problem—when we solve
+on GPUs. This whole-problem sparse linear algebra method will produce the same solutions, within the
+iteration convergence criteria, as implementations that manually conduct a sweep or a cell inversion for
+source iteration or one-cell inversion, respectively. The underlying discretizations are the same.
+A sparse linear algebra framework has the benefits of using off the shelf libraries which are often written
+and optimized by the manufacturers of the hardware themselves [8]. Further benefits of utilizing pre-written
+optimized APIs via whole-problem sparse linear algebra are:
+1. Generalizes solve schemes to operations that can run using almost any linear algebra API in many
+languages (e.g., PETSc [9], CuPy [10], Trilinos [11], Scipy [12]) on almost any most back-end (e.g.,
+x86/ARM CPUs, AMD/Nvidia/Intel GPUs);
+2. Enables rapid experimentation or even run-time alteration of matrix solve schemes (e.g., Gauss-Sidel,
+Krylov solvers);
+3. Can take advantage of off-the-shelf preconditioner libraries; and
+4. Enables easy implementation of performance improvements to the mathematical methods as hardware
+and libraries are further optimized or developed.
+Historically this whole-problem sparse matrix approach has not been commonly implemented, especially
+for source iteration where sweeps can be optimized to decrease memory footprint within a given archi-
+tecture. In forming the matrices themselves, we are introducing a bottleneck on the CPU, since all our
+implementations form both the whole-problem versions of the coefficient and right-hand-side matrices on
+the host then send them to the GPU. As we increase the problem size or increase dimensions, this bottleneck
+will grow and potentially become prohibitively large for the limited amount of memory on a GPU.
+However, one of the benefits of using one-cell inversion is that the problem can be dynamically decomposed
+to split over multiple accelerators within an iteration. While we believe this whole-problem approach is ap-
+propriate for these initial explorations in comparing and contrasting iterative schemes on a GPU, specifically
+written GPU kernels in device code that do not form the whole-problem matrices and that are written for a
+given hardware accelerator will likely outperform our implementation after sufficient optimization.
+5. PERFORMANCE ANALYSIS & RESULTS
+We developed a Python-based implementation of the MB-SCB numerical method using both SI and OCI
+iterative schemes [7]. We examine performance on multi-core CPUs (via Numba [13] and SciPy [12]) using
+the manual parallelization scheme that an iterative method might allow (sweeps within an angle in all cells
+for SI and parallel dense matrix solutions within a single cell in all angles in OCI), and on GPUs using a
+whole-problem sparse matrix implementation. All dense matrices were solved with LAPACK’s gesv (LU
+decomposition with partial pivoting and row interchanges) via SciPy, and all sparse linear algebra systems
+were solved with cuSparse’s implementation of GMRES via CuPy.
+To initially verify our discretizations and iterative methods on all hardware back-ends, we used a transient,
+source-free, pure absorber problem with an analytical solution, the AZURV1 problem [14], and transient
+Monte Carlo solutions from MC/DC [15]. Once confident in the correctness of our solutions, we conducted
+run-time testing on a transient version of Reed’s Problem and a transient homogeneous slab with varying
+mean free path, scattering ratio, time step, and quadrature order.
+This performance analysis was conducted on an Intel Core i7-10875H CPU with 16 logical cores at 3.4 GHz
+and an Nvidia RTX 2060 (mobile). The point of these simulations is to compare the wall clock run-time
+behavior of these iterative methods, not to provide a realistic reactor benchmark.
+7J.P. Morgan et al.
+5.1. Transient Reed’s Problem
+Figure 2 shows a time-dependent form of a Reed’s type Problem [16] that serves as an initial performance
+benchmark and to further verify our implementations. An initial condition is set at t= 0 s with 0 angular
+flux everywhere. Then, at t >0 s, the conditions shown in Figure 2 are applied with v= 4 cm s−1,∆t=
+1.0 s,Ntime= 5, Qis ins−1cm−3,ΣandΣsare in cm−1, and ∆xis incminS64. Figure 3 at right shows
+the transient solution through time as it approaches the known steady-state solution.
+Figure 2: Multi-region transient Reed’s problem
+Table 1 shows run-times of the two iterative schemes on both hardware backends from the fifth and final
+time-step. These run-times include every operation in one time step: building and moving the coefficient
+matrix once per time-step, building and moving the right-hand-side vector once per iteration within a time-
+step, calling the matrix solver, and resorting the raw matrix solution vector back into our standard form if
+required.
+On a CPU, OCI takes one order of magnitude longer in wall clock time than SI (both threaded on 16 CPU
+cores). This inverts when going to the GPU with OCI pulling an almost factor of two speedup over SI.
+However, SI threaded on 16 CPU cores requires the least wall clock time to complete this time-step.
+Table 1 also shows how readily one-cell inversion can be implemented in a sparse linear algebra framework.
+It seems that allowing the GPU purpose-built libraries to decide when and how to solve the presented
+parallel block Jacobi system is superior to even a 16 thread manual implementation on CPU, given the 2.4 ×
+speedup. As building and moving data to and from the GPU is further optimized, we would expect the
+relative performance of one-cell inversion to continue to be enhanced.
+5.2. GPU Explorations Across Quadrature Sets
+As convergence—and thus wall clock time—depends on spatial cell optical thickness, time step size, scat-
+tering ratio, and the number of angles in quadrature, we performed a series of run-time tests to compare the
+GPU methods directly to one another. We used a slab thickness of L= 10 cm ,Σ = 2 cm−1, with five time
+steps ( Ntime= 5), an isotropic material source of Q= 0.1 s−1cm−3, an initial condition of zero angular
+flux everywhere, and vacuum boundary conditions on both the left and right sides. Figure 4 shows how
+8OCI in Transient Schemes
+Figure 3: Solution at various times as it approaches steady state ( tis in (s))
+performance varies with scattering cross section ( c= Σ s/Σ), cell optical thickness ( Σ ∆x), and time-step
+size (∆t), measured via speedup ( tSI
+wall clock /tOCI
+wall clock ) across a wide range of angular quadrature orders.
+In lower order quadratures, OCI implementation on GPU provides a significant speedup with a maximum of
+3.4×over SI. S64shows the best performance, with runs regularly reaching over a factor of three speedup.
+As we further increase the quadrature order, the speedup of OCI over SI decreases, with no observed
+speedup at S256. This points to our original idea that parallelization over the most dominate domain will
+incur the greatest performance boost. For this scheme when N (quadrature order) is smaller than J (number
+of cells), OCI leads in performance. Then as N approaches J, the benefit of OCI decreases.
+Closer inspection using profilers shows that when the quadrature order is increased by a factor of four, the SI
+run-time of the GPU-based GMRES matrix solver increases linearly (i.e., four times the angles, four times
+the solve time). However, in OCI implementation, runtime increases by a factor of seven. This suggests that
+there is an optimal matrix size for OCI/GMRES that can be tuned, as OCI allows for easy dynamic domain
+decomposition at any arbitrary location in the system within an iteration.
+6. CONCLUSIONS & FUTURE WORK
+OCI solved as a whole matrix problem on GPUs provides significant speedup in quadrature sets at or below
+S128over SI in the MB-SCB scheme. A whole-matrix sparse linear algebra framework on GPUs has benefits
+that merit further exploration when applied to transient deterministic neutron transport methods, since it
+exploits access to the computational power locked in accelerators found on modern exascale computing
+systems.
+9J.P. Morgan et al.
+Table 1: Wall clock run-times of one time-step of the transient version of Reed’s problem.
+Iteration Scheme Back-end Wall Time (s)
+OCI GPU 17.01
+SI GPU 33.76
+OCI CPU 41.5
+SI CPU 4.85
+Figure 4: Wall clock speedup of OCI over SI across different problems and quadrature orders.
+While both OCI and the whole-problem sparse linear algebra framework do have significant downsides (pri-
+marily in convergence rate at higher ordinates and memory footprint, respectively), we expect to continue to
+see performance speedups as the implementation is further optimized. In the future, we plan to implement
+this method in two dimensions using more advanced linear algebra libraries (e.g., PETSc) in a multi-node
+enabled C++ framework. There we can further compare and contrast the whole-problem implementation
+versus a standard algorithm, as well as explore any memory footprint issues and begin to make direct com-
+parisons to production codes.
+10OCI in Transient Schemes
+ACKNOWLEDGEMENTS
+This work was supported by the Center for Exascale Monte-Carlo Neutron Transport (CEMeNT), a PSAAP-
+III project funded by the Department of Energy, grant number DE-NA003967.
+REFERENCES
+[1] M. L. Adams and E. W. Larsen. “Fast iterative methods for discrete-ordinates particle transport calcu-
+lations.” Progress in nuclear energy ,volume 40 (1), pp. 3–159 (2002).
+[2] R. S. Baker. “An SN Algorithm for Modern Architectures.” Nuclear science and engineering ,volume
+185(1), pp. 107–116 (2017).
+[3] D. Anistratov and Y . Y . Azmy. “Iterative stability analysis of spatial domain decomposition based
+on block Jacobi algorithm for the diamond-difference scheme.” Journal of Computational Physics ,
+volume 297 (C), pp. 462–479 (2015).
+[4] D. S. Hoagland and Y . Y . Azmy. “Hybrid approaches for accelerated convergence of block-Jacobi
+iterative methods for solution of the neutron transport equation.” Journal of Computational Physics ,
+volume 439 (2021). URL https://www.osti.gov/biblio/1815296.
+[5] M. L. Adams. “Subcell balance methods for radiative transfer on arbitrary grids.” Transport The-
+ory and Statistical Physics ,volume 26 (4-5), pp. 385–431 (1997). URL https://doi.org/10.1080/
+00411459708017924.
+[6] I. Variansyah, E. W. Larsen, and W. Martin. “A Robust Second-Order Multiple Balance Method
+for Time-Dependent Neutron Transport Simulations.” The European Physical Journal Conferences ,
+volume 247 , p. 03024 (2021).
+[7] J. P. Morgan and I. Variansyah. “Therefore.” (2023). URL https://doi.org/10.5281/zenodo.7806833.
+[8] “Nvidia cuSPARSE.” (2022). URL https://docs.nvidia.com/cuda/cusparse/.
+[9] S. Balay, S. Abhyankar, M. F. Adams, S. Benson, J. Brown, P. Brune, K. Buschelman, and et. al.
+“PETSc Web page.” https://petsc.org/ (2023). URL https://petsc.org/.
+[10] R. Okuta, Y . Unno, D. Nishino, S. Hido, and C. Loomis. “CuPy: A NumPy-Compatible Library for
+NVIDIA GPU Calculations.” In Proceedings of Workshop on Machine Learning Systems (Learn-
+ingSys) in The Thirty-first Annual Conference on Neural Information Processing Systems (NIPS)
+(2017). URL http://learningsys.org/nips17/assets/papers/paper 16.pdf.
+[11] T. Trilinos Project Team. “The Trilinos Project Website.” (2020 (acccessed May 22, 2020)). URL
+https://trilinos.github.io.
+[12] P. Virtanen, R. Gommers, Oliphant, SciPy 1.0 Contributors, and et. al. “SciPy 1.0: Fundamental
+Algorithms for Scientific Computing in Python.” Nature Methods ,volume 17 , pp. 261–272 (2020).
+[13] S. K. Lam, A. Pitrou, and S. Seibert. “Numba: A LLVM-Based Python JIT Compiler.” In Proceedings
+of the Second Workshop on the LLVM Compiler Infrastructure in HPC , LLVM ’15. Association for
+Computing Machinery, New York, NY , USA (2015). URL https://doi.org/10.1145/2833157.2833162.
+[14] B. Ganapol, R. Baker, J. Dahl, and R. E. Alcouffe. “Homogeneous Infinite Media Time-Dependent
+Analytical Benchmarks.” In International Meeting on Mathematical Methods for Nuclear Applica-
+tions , volume 41(25). Salt Lake City, UT (2001).
+[15] I. Variansyah, J. P. Morgan, K. E. Niemeyer, and R. G. McClarren. “Development of MC/DC: a per-
+formant, scalable, and portable Python-based Monte Carlo neutron transport code.” In International
+Conference on Mathematics and Computational Methods Applied to Nuclear Science and Engineer-
+ing. Niagara Falls, Ontario, Canada (2023).
+[16] J. Warsa. “Analytical SN solutions in heterogeneous slabs using symbolic algebra computer pro-
+grams.” Annals of Nuclear Energy ,volume 29 , pp. 851–874 (2002).
+11

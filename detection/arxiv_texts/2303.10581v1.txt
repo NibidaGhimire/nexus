@@ -1,0 +1,549 @@
+Highlights
+An Evaluation of GPU Filters for Accelerating the 2D Convex Hull
+Roberto Carrasco,Héctor Ferrada,Cristóbal A. Navarro,Nancy Hitschfeld
+•An experimental study of ﬁltering approaches for accelerating the 2D convex hull.
+•Four ﬁltering variants are evaluated; one CUDA kernel, two Thrust functions and one CUB primitive.
+•All approaches are compared to the CGAL library which is a standard reference.
+•Three point distributions are tested; normal, circumference and displaced circumference.
+•The source code and benchmarks are available for the community.arXiv:2303.10581v1  [cs.DC]  19 Mar 2023An Evaluation of GPU Filters for Accelerating the 2D Convex Hull
+Roberto Carrascoa, Héctor Ferradab, Cristóbal A. Navarroband Nancy Hitschfelda
+aDepartamento Ciencias de la Computación, Universidad de Chile.
+bInstituto de Informática Universidad Austral de Chile
+ARTICLE INFO
+Keywords :
+GPUComputing,ComputationalGe-
+ometry,ConvexHull,FilteringTech-
+niques, Parallel ReductionABSTRACT
+TheConvexHullalgorithmisoneofthemostimportantalgorithmsincomputationalgeometry,
+with many applications such as in computer graphics, robotics, and data mining. Despite the
+advancesinthenewalgorithmsinthisarea,itisoftenneededtoimprovetheperformancetosolve
+moresigniﬁcantproblemsquicklyorinreal-timeprocessing. Thisworkpresentsanexperimental
+evaluationofGPUﬁlterstoreducethecostofcomputingthe2Dconvexhull. Thetechniqueﬁrst
+performs a preprocessing of the input set, ﬁltering all points within an eight-vertex polygon in
+logarithmic time, to obtain a reduced set of candidate points. We use parallel computation and
+the use of the Manhattan distance as a metric to ﬁnd the vertices of the polygon and perform
+the point ﬁltering. For the ﬁltering stage we study diﬀerent approaches; from custom CUDA
+kernels to libraries such as Thrust and CUB. Three types of point distributions are tested: a
+normaldistribution(favorablecase),circumference(theworstcase),andacasewherepointsare
+shifted randomly from the circumference (intermediate case). Experimental evaluation shows
+thattheGPUﬁlteringalgorithmcanbeupto 23fasterthanasequentialCPUimplementation,
+and the whole convex hull computation can be up to 30faster than the fastest implementation
+provided by the CGAL library.
+1. Introduction
+The convex hull is a geometric concept represented by the smallest convex polygon that encloses a given set of
+points in the plane [1]. Informally, it is the shape formed by connecting all the points on the outermost boundary of
+a set of points. The study of convex hulls has a rich history, with many diﬀerent algorithms and techniques being
+developed over the years to improve the eﬃciency and accuracy of convex hull computations [2].
+Convexhullshaveawiderangeofapplicationsinvariousﬁeldsofscienceandtechnology. Someexamplesinclude:
+•Computergraphics: convexhullsareusedtocomputetheconvexboundingpolygonsofshapesforaccelerating
+geometric operations over them and for constructing other structures like Delaunay triangulations and Voronoi
+diagrams[1, 3], among others.
+•Collisions: Robotics use convex hulls to compute a robot’s reachable space, which is the set of points that the
+robot can move to without colliding with obstacles [4, 5].
+•Data mining: It uses convex hulls to cluster a set of points into groups based on their spatial relationship. That
+is useful for discovering patterns or trends in large datasets [6].
+Overall, convex hull algorithms have a wide range of applications in many diﬀerent ﬁelds, making them valuable
+tools for solving a variety of problems. The convex hull algorithms have advanced signiﬁcantly over the years, and
+algorithmshavebeendeveloped,suchastheGiftwrapping[7,8]in O.nh/time(where nisthenumberofpointsinthe
+originalsetofpoints,and histhenumberofpointsinthehull),theGrahamscan[9]in O.nlogn/,theQuickHull[10]
+inO.n2/inworsecaseand O.nlogn/inaverage,thedivide-and-conqueralgorithm[11]andtheincrementalapproach
+[12]inO.nlogn/,amongothers. Inaddition,newalgorithmshavebeendevelopedthatcanhandlespecialcases,such
+as computing the convex hull of points on the surface of a sphere or in higher-dimensional spaces. Overall, the state-
+of-the-art in convex hull computation continues to evolve and improve, oﬀering increasingly eﬃcient and accurate
+solutions to a wide range of problems. Two of the most eﬃcient implementations of the convex hull are provided by
+Qhull [10], and CGAL [13] libraries, which implement one or more of the algorithms mentioned above. It should
+be noted that CGAL is considered the standard reference to compare with future solutions in this work. Both QHull
+ORCID(s):
+Carrasco et al.: Preprint submitted to Elsevier Page 1 of 13GPU Filters 2D Convex Hulls
+and CGAL libraries have been optimized for a sequential computation scheme. In the latest years, many applications
+incomputationalgeometryhavemovedfromsequentialsingle-coreCPUcomputationtoparallelcomputation[14]in
+ordertotacklelargerproblemswithoutincurringlongexecutiontimes. Oneofthemostcommontransitionshasbeen
+moving from CPU to GPU-based computation.
+ThegoalofthisworkistostudythevariousprogrammingmethodsavailableformodernGPUsthatincorporatenew
+cores,anddatamanagementlibrariesthatoptimizeeﬃciency. Theproposedalgorithmisimplementedinfourdiﬀerent
+variationsandsubjectedtoathoroughperformanceevaluationtodeterminetheimpactofthesecutting-edgetechniques
+and technologies. Ferrada et al [15], recently developed a sequential optimization of the convex hull algorithm, in
+this research, we develop a way of accelerating the preprocessing stage of the convex hull algorithm, discarding all
+points inside of an eight-sided polygon, taking advantage of parallelization on the modern GPUs. We also show the
+experimental results of four variants implemented using the GPU programming model. All the implementations of
+this work have a special focus on the following key ideas:
+•Fast preprocessing: the main result of this work is the evaluation of four ﬁltering variants for computing the
+convex hull of a set of points.
+•Eﬃcient operations: based on the work of [15], another key to our contribution is the use of the Manhattan
+distance as a metric to determine the initial polygon and parallel techniques for computing the preprocessing.
+•Parallel algorithms: Another key aspect of our contribution is to use the latest GPU programming model [16,
+17, 18] in implementations.
+•Scalability: this work presents a kernel implementation with improved scalability, capable of handling larger
+datasets than those supported by current state-of-the-art libraries.
+Therestofthemanuscriptisorganizedasfollows;relatedworkiscoveredinSection2. Theproblemstatementand
+main contribution are presented in Section 3, and diﬀerent implementation variants of the algorithm are described in
+Section 4. The distributions of points under study are described in Section 5. An in-depth experimental performance
+comparison against a faster implementation available in CGAL is presented in Section 6. Finally, a discussion of the
+results as well as conclusions are given in Section 7.
+2. Related Works
+Previous attempts to speed up the computation of convex hulls have employed parallel algorithms to implement
+someoperationsofthetraditionalalgorithms,suchascalculatingthedistancebetweenpointsordeterminingextreme
+points,amongothers,orusingparallelpreprocessingtechniquestoselectcandidatepoints. Srungarapuetal. proposed
+a parallel GPU-based QuickHull algorithm to accelerate the computation of 2D convex hulls, they oﬀer a QuickHull-
+based algorithm that parallelized the determination of the extreme points, marking the points inside of the polygon
+and scanning but the main loop of the QuickHull is in CPU. They reported a speedup of up to 14over a traditional
+CPU-based convex hull solution [19].
+Mei proposed a GPU-based solution [20] that utilizes a preprocessing approach to classify all points and discard
+those that do not belong to the convex hull in GPU. This preprocessing step resulted in a speedup of up to 6over a
+Qhull implementation. Additionally, Stein et al. presented a parallel algorithm for computing the 3D convex hull of
+a set of points using the CUDA programming model [21]. This approach, based on the QuickHull method, achieved
+30of speedup over a CPU-based Qhull implementation.
+Blellochetal. presentatheoreticalanalysisaboutaparallelincrementalrandomizedalgorithm[22]forcomputing
+the 2D convex hull that, for a set of npoints in any constant dimension, has an O.logn/dependence depth with high
+probability. This leads to a simple, work-optimal parallel algorithm with a polylogarithmic span.
+BarbayandOchoaproposedanadaptivealgorithmformerging kconvexhullsontheplane. Thealgorithmbegins
+bydecomposingtheinputsequenceofpointsintoseveralpartsandcalculatingtheconvexhullforeachpart,bothsteps
+can be done in linear time. They then use a novel and fast merge technique to join all the partial hulls. Both of these
+works demonstrate the potential of using GPU to accelerate convex hull algorithms.
+Themostwidely-usedandeﬃcientmethodforimprovingcomputationalperformanceiseliminatinginteriorpoints
+notcandidatestothehull. However,manyalgorithmsstronglydependontheinputsize,andpreprocessingalgorithms
+can signiﬁcantly reduce the input size by O.n/discarding points irrelevant to the convex hull algorithm [23, 24]. Mei
+Carrasco et al.: Preprint submitted to Elsevier Page 2 of 13GPU Filters 2D Convex Hulls
+has developed a ﬁltering technique for computing the convex hull in 2D and 3D by ﬁrst identifying 16points on the
+convex hull through rotation of all points in GPU at three diﬀerent angles and then discarding all points in parallel
+inside the polygon formed by these identiﬁed points. Additionally, Mei et al. propose iterative ﬁltering techniques in
+GPU to improve the computation of the convex hull further [25].
+One of the most recent works in preprocessing technique for computing the convex hull is the proposal by Al-
+shamranietal. [26],whoproposedaﬁlteringtechniquethatusestheEuclideandistancetoﬁndtheextremepointsby
+ﬁltering all the points within a polygon of four vertices, achieving an acceleration of up to 77and12faster than
+the Graham scan and Jarvis march algorithms, respectively. The other important and recent work is the proposal by
+Ferrada et al. [15], who developed a sequential approach, named heaphull , for discarding points in 2D convex hulls
+usingtheManhattandistanceastheprimarymetric. Thismethoddiscardsallpointsoutsideapolygonformedbyeight
+vertices inO.n/, resulting in a reduced set of candidate points. They reported a speedup of 1:7to10faster than
+convexhullmethodsavailableintheCGALlibrary. Inthislastwork,theyfollowedworkingintheGPUimplementa-
+tion where Alan et al. [27] report 4faster than the sequential CPU-based algorithm ( heaphull ) and 3í4faster
+than other existing GPUs-based approaches in state-of-the-art.
+ManyoftheserecentCPU-basedworkshavethepotentialtobeimplementedusingtheGPUprogrammingmodel,
+such as the work by Ferrada et al. [15], which could obtain signiﬁcant improvements in performance by leveraging
+the parallel processing capabilities of GPUs. This presents an opportunity to enhance current ﬁltering methods by
+incorporating the GPU programming model and low-cost geometric operations.
+3. Parallel Algorithm for the Convex Hull Filtering
+In this section we present a GPU ﬁlter technique that builds on the CPU-based work developed by Ferrada et al.
+[15]thatutilizestheManhattandistanceastheprimarymetricforcalculatingextremepoints. Theproposedalgorithm
+consists of three stages. The ﬁrst stage, outlined in (3.1), involves constructing an octagon polygon with extreme
+points from the input. The second stage, described in (3.2), discards all points not candidates for the hull. The ﬁnal
+stage, outlined in (3.3), calculates the convex hull using an existing state-of-the-art algorithm. Finally, we show the
+complexity of the algorithm.
+3.1. Finding the Eight-side Polygon
+Theﬁrststageofthealgorithminvolvesconstructinganeight-sidedpolygonfromthe ninputpoints,whichisthen
+used to ﬁlter the points and retain the remaining n¨fnpoints as convex hull candidates. Figure 1 illustrates the
+pointclassiﬁcationofthehullcandidatesresultingfromapplyingthisstage,showingtheeight-sidedpolygon,extreme
+points, and corner points. The polygon is formed by the four extreme points (the right-most, the upper-most, the left-
+most, and the lowest-most) and the four points that, according to the Manhattan distance, are closest to the corners of
+the bounding box (see Figure 1) deﬁned by the four extreme points. The extreme points are obtained using parallel
+min-max reduction in each axis in logarithmic time, using a parallel reduction based on the block-warp hierarchy of
+modern GPU architecture. Meanwhile, each one of the four corner points is the lowest Manhattan distance between
+each point and the corner formed by the projection of each consecutive pair of axis extreme points (e.g., the top-right
+corner is the rightmost x-coordinate and the topmost y-coordinate) in a counterclockwise fashion. This is done in
+logarithmic time using parallel reduction to compute the minimum distance. All points inside the polygon formed by
+thesepointsareguaranteednottobelongtotheconvexhull. Thealgorithmtakes O.logn/timetoﬁndallthesepoints.
+The aim of this stage is to ﬁnd the corner points in logarithmic time. For the distance function, the Manhattan
+distance [28] is used, which ﬁnds the point that minimizes the sum of the vertical and horizontal distances to each
+corner. Additionally, the Manhattan distance is a simple and inexpensive computation that only requires addition and
+subtraction,whereastheEuclideandistancerequiresproductsandcomputationallyexpensiveoperationssuchassquare
+roots [29]. Figure 2 shows the time spent to ﬁnd all axis extreme points of a circumference (including the axis and
+corners). In the ﬁgure it is possible to observe that the computation time spent in computing the Manhattan distance
+is less expensive than the Euclidean distance in both cases, GPU and CPU.
+3.2. Building the Filter
+The next stage of the algorithm involves a GPU kernel call, where each point is processed by a separate thread,
+and it checks if it lies within the polygon built in the previous stage. If the point is inside the polygon, it is ﬁltered by
+thealgorithm,ascanbeseeninFigure1wheretheblackpointsareconsideredascandidatesforthehull,andthegray
+Carrasco et al.: Preprint submitted to Elsevier Page 3 of 13GPU Filters 2D Convex Hulls
+Figure 1: The illustration depicts the eight-sided polygon resulting from the ﬁrst stage of the algorithm applied to a point
+cloud. Points colored in black are considered candidates for the hull, while those colored in gray are discarded in the
+ﬁltering stage. The extreme points for each coordinate axis are represented in red, and the corner points are represented
+in green.
+05000100001500020000250003000035000
+01x1082x1083x1084x1085x1086x1087x108Time [ms]
+# PointsSequential Manhattan
+GPU Manhattan
+Sequential Euclidean
+GPU Euclidean
+Figure 2: Performance of ﬁnding extreme points between Manhattan and Euclidean.
+pointsarediscarded. Asaresultofthisstage,wehaveavectorofnbits,whereeachbitsetto 1representsacandidate
+point for the hull, and if it is set to 0, the point does not belong to the hull.
+However, it is not possible to compact all the elements of a sparse array simultaneously in a single parallel kernel
+call, since the position of each element of the original array in the compacted array is not known in advance. Never-
+theless, there are techniques to compact sparse arrays in logarithmic time [30]. The most common way to compact a
+sparse bit array to another non-sparse array of a smaller size is to use the parallel scan or atomic functions, this work
+Carrasco et al.: Preprint submitted to Elsevier Page 4 of 13GPU Filters 2D Convex Hulls
+uses a custom compaction developed for us, based on the tensor cores scan developed by Dakkak et al. [16] adapted
+to work with integer arrays.
+3.3. Computing the Convex Hull
+As a result of the previous stage, we have a set of n¨candidate points from the initial input point set (red, green,
+and black points in Figure 1, all gray points were discarded in the previous stage). The algorithm can be connected
+to any existing convex hull implementation available in the state-of-the-art. In this work, we use an eﬃcient CPU
+implementation provided by CGAL for all experiments, which is described in more detail in Section 6.
+3.4. Complexity of the Algorithm
+The complexity of the algorithm is determined by the sum of the complexities of the ﬁrst two phases, and the
+operations carried out in them. Starting with the construction of the eight-sided polygon, the cost of this phase is
+given by the search for the extreme points, which has a linear cost in sequential and logarithmic cost in parallel. The
+secondphase,whichcorrespondstotheconstructionoftheﬁlter,islogarithmic. Thisisduetothefactthat,unlikeits
+sequential version that has a linear cost, whereas it goes through the points to determine if it is inside the polygon, it
+immediatelywritesinanarrayofleastextension. Inparallel,thisphaseconsistsoftwosubphases. Theﬁrstsubphase
+determinesifthepointsarecandidates,whichonlyrequiresonecalltothekernelinGPUin O.1/,whereasthesecond
+subphase,correspondingtothecompactionofthearrayinstep,hasalogarithmiccost. Consequently,thesumofboth
+phases gives an O.logn/cost, while their CPU counterparts oﬀer only linear-time solutions.
+4. Filter Implementations
+There are various approaches to programming on a GPU that involve diﬀerent programming incorporating new
+typesofcoresandlibrariesforeﬃcientdatamanagement. First,thereisthelower-levelprogrammingkernelsprovided
+by CUDA in the C language. CUDA also provides two higher-level application programming interfaces (APIs), the
+ﬁrst being Thrust, which provides strong support for lambda functions, and the second one is CUB, which provides
+a fast software component for processing data on the GPU. This work implements four variants of the ﬁlter using
+diﬀerent programming strategies, one based on GPU-kernel [31], two based on Thrust, and one based on CUB. The
+code for these implementations is available at https://github.com/rcarrascoc/GPU-2D-Convex_Hull_Filter.
+We deﬁne three functions for the ﬁltering in algorithm 1. The ﬁrst function corresponds to ﬁnding the Eight-side
+polygonphaseas findingPolygon wheretheinputisasetofpoints,andtheoutputisallextremespointsandcorners.
+Thesecondfunctionis buildingFilter whichtakesallextremepointsandmarkswhichpointsarecandidatestothe
+hull. The third function is the compaction of the input using the ﬂag obtained from the ﬁlter in a non-sparse matrix,
+leaving in the output of this function only the hull candidate points. Finally, the convex hull is computed using any
+algorithm available on the-state-of-the-art with the output of the previous function.
+Algorithm 1 Filter
+Require: Set of points S
+Ensure: Set of points candidates to the hull
+1:^left;top;right;down;c 1;c2;c3;c4`}FINDINGPOLYGON(S)
+2:bit_vector_flag}BUILDING FILTER(S;left;top;right;c 1;c2;c3;c4)
+3:filtered_set}COMPACTING FILTEREDPOINTS(bit_vector_flag)
+4:output}CONVEXHULL_ALGORITHM (filtered_set)
+5:returnoutput
+Thenamingconventionforthevariantsmeansthattheﬁrstword,textitThrustor CUB,indicateswhetherthemethod
+of ﬁnding the extreme points is using parallel reductions in a GPU kernel or through the Thrust or CUB functions,
+respectively. The second word ( Scan,Copy, orFlagged) refers to a speciﬁc feature that diﬀerentiates it from the
+others during compaction. This section is divided into three sub-sections that describe the method used to ﬁnd the
+extreme points of the ﬁrst word of the method, and each sub-section has its respective sub-subsection that describes
+the technique used for compaction according to the second word. These techniques are not interchangeable with each
+other, giving as the only combinations those described below.
+Carrasco et al.: Preprint submitted to Elsevier Page 5 of 13GPU Filters 2D Convex Hulls
+4.1. GPU Implementation (kernel)
+The basic idea of this ﬁlter is to use only custom GPU kernels and techniques of the GPU programming, this
+implementation involves getting all extreme points (leftmost, rightmost, highest, and lowest) using parallel reduction
+techniquesbasedoncuda-shuﬄeoperations[32,33]toﬁndtheminimumandmaximumpointcoordinatesofeachaxis.
+Once the extreme points are obtained, the corners are calculated using parallel reductions again to ﬁnd the minimum
+distances from Manhattan to each corner of the bounding box.
+4.1.1. Variant #1: proposed-filter
+Toﬁndthecandidatepointsforthehull,weuseaGPUkerneltocheckifthepointsareinsideoroutsidetheeight-
+sided polygon constructed from the extreme points and corners. The result of this check is a vector of bits of size n
+(the same size as the number of input points), where bits marked with 1indicate that the point is a candidate for the
+hull, and bits marked 0indicate that the point has been discarded from the convex hull computation.
+So now we have a sparse vector that identiﬁes whether a point is a candidate for the hull or not. However, it is
+necessarytoreducetheinputfortheconvexhulltoareducedlistofpoints. Sincesimultaneousglobalmemoryaccess
+inparallelcomputingisnotatrivialproblem,therearesolutionsthattakelogarithmictime. Figure3showsastrategy
+that copies all items marked as 1and discards those marked as 0. Following this idea, the location of each element
+markedwith 1isgivenbythesumaccumulation( scan)[34]relativetotheﬁrstpoint. Thismethodrequiresthreesteps:
+ﬁltering, scanning, and scattering, and it takes logarithmic time.
+•The ﬁrst pass generates a temporary vector in which elements that pass the ﬁlter are considered candidates for
+the convex hull and are set to 1, while the other elements are set to 0, asscaninput.
+•The second step performs a partial sum ( scan) on the bit vector generated in the previous step. Each element
+that passes the ﬁlter and is a candidate for the convex hull adds a position in the scan accumulation.
+•The third step places each point that is a candidate for the convex hull in the output array.
+Figure 3: The illustration shows the underlying idea of parallel scancompaction. The input points that we want to preserve
+are marked in gray, setting a 1at each gray cell. Then the scan of each combined 1is calculated.
+This work uses scanning techniques that take advantage of the tensor cores of modern GPUs, this technique can
+be divided into three main steps:
+•Segmentedscanning: Tensorcoresareusedtoperformasegmentedscan[16]onthetemporaryvectorgenerated
+in the previous step. This step generates the new locations for each point with respect to each segment.
+•Global scanning: using the most signiﬁcant values of each segment is computed the scan of all segments using
+CUDA cores. This scan says the location of each segment with respect to the global position.
+Carrasco et al.: Preprint submitted to Elsevier Page 6 of 13GPU Filters 2D Convex Hulls
+•Compaction: Usingthenewlocationsgeneratedinthepreviousstep,thepointsthatarecandidatesforthehullare
+compactedintotheoutputarray. Wheretheﬁnallocationisgiventhe segment [pos]+global [pos_num_segment ].
+Thistechniqueishighlyeﬃcientandcanhandlelargearrays,allowingforfastercompactioncomparedtootherlibraries
+such as Thrust and CUB.
+4.2. Thrust Implementations
+The Thrust API provides an easy-to-use high-level interface for parallel programming on CUDA-enabled GPUs.
+It oﬀers a wide range of functionalities such as scan, sort, minimum-maximum reductions, data transformations, and
+array compaction, which have been widely used in previous works on convex hull algorithms in GPU [23, 24, 25].
+However, it should be noted that the maximum size of vectors that can be processed with Thrust is 230points, which
+maylimititsuseincaseswherealargerpointsetisrequired. Incontrast,thekernelimplementationsareonlylimited
+by the available GPU memory, providing more scalability in terms of input size.
+APIThrustoﬀersthe min_element andmax_element functions ,whichreturntheindicesoftheminimumand
+maximumelementsofalist,respectively. Toﬁndtheextremepoints,amax-minreductionmustbeperformedoneach
+axis coordinate. To ﬁnd the corners, the Manhattan distances between each point and each corner must be computed,
+followed by a reduction. Finally, a function of transformation is used to check if each point belongs to the hull, using
+a bit vector. Two strategies for compacting the output can also be used, taking advantage of the reductions provided
+by Thrust.
+4.2.1. Variant #2: thrust-scan
+Thisvariantusesthesamestrategyasthescanvariant(subsection4.1.1)bututilizesthe exclusive_scan function
+fromThrusttoobtainthepartialsum( scan)fromabitvectorgeneratedduringtheﬁlterstage. However,itisnecessary
+totransformthevectorresultingfromthepreﬁxsumintoacompatiblearraystoredinGPUmemory,whichisdoneby
+scatteringthecorrectaddressesofeachpointinacalltotheGPUkernel. Thisvarianttakesadvantageoftheeﬃcient
+reduction oﬀered by Thrust. However, it incurs an additional computational cost when casting a Thrust vector to a
+GPU array, which can be avoided, as described in the next variant, by using a slower operation for compaction.
+4.2.2. Variant #3: thrust-copy
+Thecopy_if functionprovidedbyThrustallowscopyingelementsofaninitialarraytoanew,smallerarraybased
+onagivencondition. Inthisscenario,theconditionisdeterminedbytheﬁlter,whereapointisretainedifitismarked
+as1bytheﬁlteranddiscardedifitismarkedas 0. Whilethe copy_if functionperformswellwhentheﬁlterdiscards
+a signiﬁcant number of points, it may become computationally expensive when the ﬁlter retains a large number of
+points.
+4.3. CUB Implementations
+CUB oﬀers cutting-edge, reusable software components for various layers of the CUDA programming model. It
+includes three levels of CUB primitives:
+•Warp-wide "collective" primitives that operate within a single warp.
+•Block-wide "collective" primitives that operate across all threads within a block.
+•Device-wide primitives that operate across all threads and blocks on the device.
+Theﬁrsttwolevelscorrespondtooperationsthattakeplacewithinakernel,andthelastlevelcorrespondstooperations
+on the host.
+CUB provides device-wide primitive functions called ArgMaxandArgMinto ﬁnd the maximum and minimum,
+respectively, represented as a pair of key-value, where the key corresponds to the index of the point, and the value
+corresponds to the coordinate value. CUB also provides a function for the scan, however, during experimentation it
+does not shows better performance than the other implemented variants.
+Carrasco et al.: Preprint submitted to Elsevier Page 7 of 13GPU Filters 2D Convex Hulls
+00.20.40.60.81
+0 0.2 0.4 0.6 0.8 1
+(a) Normal distribution.
+-1.5-1-0.500.511.5
+-1.5 -1 -0.5 0 0.5 1 1.5 (b) Circumference (worst case).
+Figure 4: Graphic representation of the distributions, the ﬁgure on the left side corresponds to a normal distribution with
+a mean 1, and a standard deviation of 0:1; next to it is a circumference centered on the origin of radius 1
+4.3.1. Variant #4: cub-flagged:
+DeviceSelect oﬀers device-wide, parallel operations for compacting selected items from sequences of data stored
+within device-accessible memory. These operations apply a selection criterion to selectively copy items from a spec-
+iﬁed input sequence to a compact output sequence. It uses in terms of the programming language, the d_flags
+sequencetodeterminewhichitemsfrom d_intocopyinto d_out,andthetotalnumberofselecteditemsiswrittento
+d_num_selected_out . This allows for eﬃcient and parallel compaction of data on the device.
+5. Study cases
+The number of ﬁltered points is strongly dependent on the point distribution in the plane, where if the points are
+concentratedatthecenterofthepointscloud,thenumberofﬁlteredpointsisgreaterthanifallthepointsareattheedge
+of the cloud. This work explores three diﬀerent interesting scenarios to study the behavior of the proposed approach,
+(1) a normal distribution, (2) a perfect circumference, and (3) a displaced circumference.
+1.-Normal Distribution - Normal case: Anormaldistributionisusuallyfoundinmanyproblemssuchasphysical
+phenomena, human behavior, sciences, and other disciplines, as these events naturally tend to behave similarly
+toaGaussiandistribution,asinFigure4a. Thistestgenerates nrandompointsnormallydistributedintheplane
+with= 0:5and2= 0:1. Someconvexhullalgorithmsoutput-sensitivelike QuickHull takeadvantageofthis
+type of case.
+2.-Perfect Circumference - Worst case: Figure4bshowsthecasewhenallpointsarepartofacircumference,and
+so all points are in the convex hull. Since no point is ﬁltered, this is the worst case for the proposed algorithm.
+Unlikethenormaldistribution,somealgorithmsareoutput-sensitive,likethe Gift Wrapping algorithm,whichis
+ineﬀective. Inthiscase,itisrecommendabletouseanalgorithmtoguaranteeagoodperformancein O.nlogn/.
+3.-Displaced Circumference - Intermediates cases: Thistestpermitsthemodelofpointdistributionswithmore
+or fewer points belonging to the hull. Here we look for the tipping point where the algorithms start to perform
+well. The test is created by generating n points on a circumference (or very close to it) centered at the origin
+with radiusr= 0:25. The testoﬀers a pparameter tobe chosen, which producesa displacement probability for
+eachpointintherange [r*rp;r +rp]. Thisdisplacementmaymovethepointinwardstothecenteroroutwards
+the circumference, making a band of points surrounding the circumference. Figure 5 shows the displacement
+for diﬀerent pvalues.
+Carrasco et al.: Preprint submitted to Elsevier Page 8 of 13GPU Filters 2D Convex Hulls
+-1.5-1-0.500.511.5
+-1.5 -1 -0.5 0 0.5 1 1.5
+(a)p= 0:01
+-1.5-1-0.500.511.5
+-1.5 -1 -0.5 0 0.5 1 1.5 (b)p= 0:10
+-1.5-1-0.500.511.5
+-1.5 -1 -0.5 0 0.5 1 1.5
+(c)p= 0:30
+-2-1.5-1-0.500.511.52
+-2 -1.5 -1 -0.5 0 0.5 1 1.5 2 (d)p= 1:00
+Figure 5: The intermediate-case test with randomly selected displacement at diﬀerent values.
+6. Experiments and Results
+We implemented the ﬁltering algorithm in C++ with -O3 optimization for the CPU part, and CUDA with NVCC
+11.4.2 for the GPU part. Our implementation uses single-precision ﬂoating-point arithmetic (FP32). We compare its
+performancewiththeCGAL5.5library,oneofthemostwidelyusedandcited libraries. Weperformallexperiments
+onthePatagónsupercomputer[35],whichhasoneNvidiaDGXA100GPUnode,2xAMDEPYC7742CPU(2.6GHz,
+64-cores,256MBL3cache),1TBRAMDDR4-3200Hz,and8xNvidiaA100GPUs40GB.Theexperimentsonlyuse
+oneA100GPU.Foreachvariant,thefollowingmetricswerecollected: ﬁlteringtime,percentageofpointsﬁlteredand
+runtime of the variants developed in this work.
+We benchmarked the performance of the ﬁlter variants by comparing them to their CPU counterparts (using Eu-
+clideanandManhattandistancestoﬁndextremepoints)inﬁgure6. AsshowninFigure6a,thefastestimplementation
+foranormaldistributionis thrust-copy ,achievingaspeedupof 23overcpu-euclidean ﬁlter. However,foracir-
+cumferencedistribution,itistheslowest. Theotherimplementationshavesimilarperformance,inﬁgure6b,achieving
+aspeedupof 11innormaldistributionand 14incircumferencedistribution,andarefasterthanboth thrust-copy
+and CPU variants. It’s important to note that all GPU variants are sensitive to the number of ﬁltered elements.
+Figure7showstheaccelerationofallthevariantsdescribedinthisworkusingthefastestimplementationprovided
+byCGAL( CGAL:convex-hull-2 )tocomputethehull,thespeedupiscalculatedwithrespectto CGAL:convex-hull-2
+withoutaﬁlter. Notethat CGAL:convex-hull-2 correspondstoahybridalgorithmthatchoosesbetweenan O.hn/or
+O.nlogn/algorithmtechniquedependingonthedistributioncalculus. Theaccelerationtimeforanormaldistribution
+showninFigure7aindicatesthat thrust-copy variantoﬀersasigniﬁcantaccelerationof 23. Atthesametime,the
+othervariantsachieveaspeedupof 10. However,foracircumferencedistribution,theaccelerationwithanyprepro-
+cessingalgorithmisnotpossiblegiventhenatureoftheproblem,asshowninFigure7b. UnliketheCPUvariants,the
+Carrasco et al.: Preprint submitted to Elsevier Page 9 of 13GPU Filters 2D Convex Hulls
+05101520253035
+02x1084x1086x1088x1081x109Speedup
+# Points[CPU] cpu-manhattan
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy
+(a) Filter for a normal distribution
+0510152025
+02x1084x1086x1088x1081x109Speedup
+# Points[CPU] cpu-manhattan
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy (b) Filter for a circumference
+Figure 6: Speedup over cpu-euclidean ﬁlter of only the preprocessing ﬁltering phase for a normal and circumference
+distribution, between 225and 230# points.
+01020304050
+02x1084x1086x1088x1081x109Speedup
+# Points[CPU] CGAL:ch-graham-andrew
+[CPU] cpu-manhattan
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy
+(a) Normal distribution.
+00.511.52
+02x1084x1086x1088x1081x109Speedup
+# Points[CPU] CGAL:ch-graham-andrew
+[CPU] cpu-manhattan
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy (b) Circumference.
+Figure 7: Speedup of ﬁlter + CGAL:convex-hull-2 over a CGAL-convex-hull-2 without ﬁlter for a normal and circum-
+ference distribution, respectively, between 225and 230# points.
+GPU variants only have a slight overhead.
+Figure 8 illustrates that a minimum number of points is necessary for the ﬁltering to speed up the computation of
+thelock. Figure8ashowsthetimeittakestoﬁlterasetofsmallpoints. Instead,ﬁgure8bshowstheﬁlteringtimefor
+a large set of points. As can be seen, the behavior of both data sets is diﬀerent, where the table 1 indicates that for a
+small data set, it is required to ﬁlter p < 0:03so that the ﬁltering speeds up the computation of the closure, and for
+large data sets p <0:01is required, which results in the removal of about 6~of points. Furthermore, it is crucial to
+consider that the highest acceleration is achieved with p= 0:1, as observed in both plots of ﬁgure 8, where a valley is
+reachedwiththemaximumacceleration. Finally,wecanseethespeedupforbothdistributionsinFigure9,wherethe
+fastest variant ( thrust-copy ) reaches up to 30over CGAL:convex-hull-2 for a large data set in p= 0:1.
+7. Discussion and Conclusion
+AcompleteperformanceevaluationofthemostrecentGPUﬁlteringtechniqueshasbeenpresentedinthisworkto
+solvethe2DConvexhullproblem. AlthoughthereareGPUimplementationsthatusecustomCUDAcodes,andsome
+othersthatusetheThrustlibrary,thisworkcontributesincomparingthreemainwaysofdoingGPUﬁltering;custom
+CUDA kernel, Thrust and CUB libraries, while highlighting the advantages and disadvantages of each.
+The proposed ﬁltering method builds an eight-vertex polygon, where all interior points are discarded, and utilizes
+parallel min-max reduction and the Manhattan distance to compute the corners. Manhattan distance simpliﬁes the
+Carrasco et al.: Preprint submitted to Elsevier Page 10 of 13GPU Filters 2D Convex Hulls
+n= 107points n= 109points
+pﬁltered % Speedup ﬁltered % Speedup
+0.00 0.01 0.88 0.01 0.92
+0.02 13.08 0.94 13.04 1.02
+0.04 28.58 1.21 28.69 1.24
+0.06 48.48 1.62 48.51 1.75
+0.08 81.88 4.83 81.71 4.82
+0.10 97.16 20.46 97.17 23.42
+Table 1
+Average percentage of discarded points at the ﬁltering stage in the algorithm for a displaced circumference, and speed up
+the fastest variant with respect to CGAL:ch-graham-andrew .
+05001000150020002500
+00.05 0.10.15 0.20.25Time [ms]
+p[CPU] CGAL:convex-hull-2
+[CPU] CGAL:ch-graham-andrew
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy
+(a) Size of 107points
+050000100000150000200000250000300000
+00.05 0.10.15 0.20.25Time [ms]
+p[CPU] CGAL:convex-hull-2
+[CPU] CGAL:ch-graham-andrew
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy (b) Size of 109points
+Figure 8: Running time of the convex hull algorithm for a displaced circumference (intermediate case) varying pbetween
+[0;0:25], and ﬁxed size.
+051015202530354045
+00.05 0.10.15 0.20.25Speedup
+p[CPU] CGAL:ch-graham-andrew
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy
+(a) Size of 107points
+051015202530354045
+00.05 0.10.15 0.20.25Speedup
+p[CPU] CGAL:ch-graham-andrew
+[GPU] proposed-filter
+[GPU] cub-flagged
+[GPU] thrust-scan
+[GPU] thrust-copy (b) Size of 109points
+Figure 9: Speedup of the convex hull algorithm over CGAL:convex-hull-2 for a displaced circumference (intermediate
+case) varying pbetween [0;0:25], and ﬁxed size.
+computation and eliminates the need for square root operations. The experimental results using randomly generated
+points with a normal distribution in 2D space indicate that the proposed method accelerates the computation of the
+convex hull by 30with respect to CGAL:convex-hull-2 function provided by CGAL.
+In cases where all points lie on the convex hull, such as in circular distributions, the proposed approach does not
+oﬀer any beneﬁt as the ﬁltering algorithms do not remove points, a characteristic of all state-of-the-art algorithms.
+Carrasco et al.: Preprint submitted to Elsevier Page 11 of 13GPU Filters 2D Convex Hulls
+However, the cost of running the ﬁltering algorithm on the GPU is minimal (less than 6~) compared to running it on
+the CPU. This means that using the GPU-based ﬁltering process only results in a small increase in computation time
+fortheconvexhull. Insomecases,dependingontheapplication,itmaybeacceptabletobearthecostinexchangefor
+the potential speedup in other scenarios.
+Anpositiveaspectofthisworkisthescalabilityofthealgorithm. ThrustandCUBprovideafastanduser-friendly
+API for developing parallel algorithms. However, its functions for computing the minimum and maximum points are
+unsuitable for processing large data sets (more than 230points). CGAL also has a maximum limit of 230points. On
+theotherhand, theproposedGPU-kernelimplementationiseasilyscalableand canprocessalargernumberofpoints
+as long as the graphic memory allows it. Moreover, the GPU-kernel implementation achieves the same performance
+as the variants based on libraries.
+The experimental results indicate that this methodology is eﬃcient in most cases, and even in the worst-case
+scenario, the ﬁltering eﬀort has a small performance penalty compared to a traditional Convex Hull computation.
+Moreover, the worst-case scenario is in most cases very unlikely to occur. As future work, it would be interesting
+to study a complete parallel convex hull algorithm on the GPU, utilizing the proposed preprocessing aproach and
+avoiding unnecessary data copying between the device and host memory. Additionally, accelerating the 3D convex
+hull and leveraging tensor and ray tracing cores for this task have become relevant topics.
+Acknowledgment
+ThisresearchwassupportedbythePatagónsupercomputerofUniversidadAustraldeChile(FONDEQUIPEQM180042),
+and FONDECYT grants }1211484 ,}1221357 .
+References
+[1] Mark de Berg, Otfried Cheong, Marc van Kreveld, and Mark Overmars. Computational Geometry: Algorithms and Applications . Springer-
+Verlag TELOS, Santa Clara, CA, USA, 3rd ed. edition, 2008.
+[2] Joseph o’Rourke et al. Computational geometry in C . Cambridge university press, 1998.
+[3] Sergio Salinas-Fernández, Nancy Hitschfeld-Kahler, Alejandro Ortiz-Bernardin, and Hang Si. Polylla: Polygonal meshing algorithm based
+on terminal-edge regions. Eng. with Comput. , 38(5):4545–4567, oct 2022.
+[4] S.MeeranandA.Share. Optimumpathplanningusingconvexhullandlocalsearchheuristicalgorithms. Mechatronics ,7(8):737–756,1997.
+[5] A.C.NearchouandN.A.Aspragathos. A Collision-Detection Scheme Based on Convex-Hulls Concept for Generating Kinematically Feasible
+Robot Trajectories , pages 477–484. Springer Netherlands, Dordrecht, 1994.
+[6] A.P. Nemirko and J.H. Dulá. Machine learning algorithm based on convex hull analysis. Procedia Computer Science , 186:381–386, 2021.
+14th International Symposium "Intelligent Systems.
+[7] Donald R. Chand and Sham S. Kapur. An algorithm for convex polytopes. J. ACM, 17(1):78–86, January 1970.
+[8] R.A. Jarvis. On the identiﬁcation of the convex hull of a ﬁnite set of points in the plane. Information Processing Letters , 2(1):18–21, 1973.
+[9] R.L. Graham. An eﬃcient algorithm for determining the convex hull of a ﬁnite planar set. Information Processing Letters , 1(4):132–133,
+1972.
+[10] C. Bradford Barber, David P. Dobkin, and Hannu Huhdanpaa. The quickhull algorithm for convex hulls. ACM Trans. Math. Softw. ,
+22(4):469–483, December 1996.
+[11] F.P.PreparataandS.J.Hong. Convexhullsofﬁnitesetsofpointsintwoandthreedimensions. Commun. ACM ,20(2):87–93,February1977.
+[12] Michael Kallay. The complexity of incremental convex hull algorithms in rd. Information Processing Letters , 19(4):197, 1984.
+[13] Susan Hert and Stefan Schirra. 3D convex hulls, 2018.
+[14] Guy E. Blelloch, Yan Gu, Julian Shun, and Yihan Sun. Parallelism in randomized incremental algorithms. J. ACM, 67(5), sep 2020.
+[15] HéctorFerrada,CristóbalA.Navarro,andNancyHitschfeld. Aﬁlteringtechniqueforfastconvexhullconstructioninr2. Journal of Compu-
+tational and Applied Mathematics , 364:112298, 2020.
+[16] Abdul Dakkak, Cheng Li, Jinjun Xiong, Isaac Gelado, and Wen-mei Hwu. Accelerating reduction and scan using tensor core units. In
+Proceedings of the ACM International Conference on Supercomputing , ICS ’19, page 46–57, New York, NY, USA, 2019. Association for
+Computing Machinery.
+[17] CristóbalA.Navarro,RobertoCarrasco,RicardoJ.Barrientos,JavierA.Riquelme,andRaimundoVega. Gputensorcoresforfastarithmetic
+reductions. IEEE Transactions on Parallel and Distributed Systems , 32(1):72–84, 2021.
+[18] Nvidia. A100 Tensor Core GPU Architecture Whitepaper, 2020.
+[19] S. Srungarapu, D. P. Reddy, K. Kothapalli, and P. J. Narayanan. Fast two dimensional convex hull on the gpu. In 2011 IEEE Workshops of
+International Conference on Advanced Information Networking and Applications , pages 7–12, 2011.
+[20] Jiayu Qin, Gang Mei, Salvatore Cuomo, Guo Sixu, and Yixuan Li. Cudachpre2d: A straightforward preprocessing approach for accelerating
+2d convex hull computations on the gpu. Concurrency and Computation Practice and Experience , 32, 04 2019.
+[21] Ayal Stein, Eran Geva, and Jihad El-Sana. Cudahull: Fast parallel 3d convex hull on the gpu. Computers & Graphics , 36(4):265–271, 2012.
+Applications of Geometry Processing.
+Carrasco et al.: Preprint submitted to Elsevier Page 12 of 13GPU Filters 2D Convex Hulls
+[22] Guy E. Blelloch, Yan Gu, Julian Shun, and Yihan Sun. Randomized incremental convex hull is highly parallel. In Proceedings of the 32nd
+ACM Symposium on Parallelism in Algorithms and Architectures , SPAA ’20, page 103–115, New York, NY, USA, 2020. Association for
+Computing Machinery.
+[23] Jiayu Qin, Gang Mei, Salvatore Cuomo, Guo Sixu, and Yixuan Li. Cudachpre2d: A straightforward preprocessing approach for accelerating
+2d convex hull computations on the gpu. Concurrency and Computation Practice and Experience , 32, 04 2019.
+[24] Gang Mei and Nengxiong Xu. Cudapre3d: An alternative preprocessing algorithm for accelerating 3d convex hull computation on the gpu.
+Advances in Electrical and Computer Engineering , 15:35–44, 05 2015.
+[25] Gang Mei, John Tipper, and Nengxiong Xu. An algorithm for ﬁnding convex hulls of planar point sets. In Proceedings of 2nd International
+Conference on Computer Science and Network Technology, ICCSNT 2012 , 12 2012.
+[26] Reham Alshamrani, Fatimah Alshehri, and Heba Kurdi. A preprocessing technique for fast convex hull computation. Procedia Computer
+Science, 170:317–324, 01 2020.
+[27] Alan Keith, Héctor Ferrada, and Cristóbal A. Navarro. Accelerating the convex hull computation with a parallel gpu algorithm, 2022.
+[28] Eugene F Krause. Taxicab geometry: An adventure in non-Euclidean geometry . Courier Corporation, 1986.
+[29] Michel Marie Deza and Elena Deza. Encyclopedia of Distances , pages 1–583. Springer Berlin Heidelberg, Berlin, Heidelberg, 2009.
+[30] Guy E. Blelloch. Preﬁx sums and their applications. Technical Report CMU-CS-90-190, School of Computer Science, Carnegie Mellon
+University, November 1990.
+[31] CristóbalA.Navarro,NancyHitschfeld-Kahler,andLuisMateu. Asurveyonparallelcomputinganditsapplicationsindata-parallelproblems
+using gpu architectures. Communications in Computational Physics , 15(2):285–329, 2014.
+[32] MarkHarris. OptimizingCUDA. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and
+Analysis, SC ’07, 2007.
+[33] Mark Harris. Mapping computational concepts to gpus. In ACM SIGGRAPH 2005 Courses , SIGGRAPH ’05, New York, NY, USA, 2005.
+ACM.
+[34] G.E. Blelloch. Scans as primitive parallel operations. IEEE Transactions on Computers , 38(11):1526–1538, 1989.
+[35] Patagón Supercomputer. https://patagon.uach.cl , 2021.
+Carrasco et al.: Preprint submitted to Elsevier Page 13 of 13

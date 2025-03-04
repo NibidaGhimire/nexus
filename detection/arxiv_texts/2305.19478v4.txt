@@ -1,0 +1,1219 @@
+Permutation-Aware Activity Segmentation via Unsupervised Frame-to-Segment
+Alignment
+Quoc-Huy Tran∗Ahmed Mehmood∗Muhammad Ahmed Muhammad Naufil
+Anas Zafar Andrey Konin M. Zeeshan Zia
+Retrocausal, Inc., Redmond, WA
+www.retrocausal.ai
+Abstract
+This paper presents an unsupervised transformer-based
+framework for temporal activity segmentation which lever-
+ages not only frame-level cues but also segment-level cues.
+This is in contrast with previous methods which often rely
+on frame-level information only. Our approach begins with
+a frame-level prediction module which estimates framewise
+action classes via a transformer encoder. The frame-level
+prediction module is trained in an unsupervised manner via
+temporal optimal transport. To exploit segment-level infor-
+mation, we utilize a segment-level prediction module and a
+frame-to-segment alignment module. The former includes
+a transformer decoder for estimating video transcripts,
+while the latter matches frame-level features with segment-
+level features, yielding permutation-aware segmentation re-
+sults. Moreover, inspired by temporal optimal transport,
+we introduce simple-yet-effective pseudo labels for unsu-
+pervised training of the above modules. Our experiments on
+four public datasets, i.e., 50 Salads, YouTube Instructions,
+Breakfast, and Desktop Assembly show that our approach
+achieves comparable or better performance than previous
+methods in unsupervised activity segmentation.
+1. Introduction
+Temporal activity segmentation [5, 8, 11, 17, 31, 34, 37,
+43, 54] aims to associate each frame in a video capturing a
+human activity with one of the action/sub-activity classes.
+Temporally segmenting human activities in videos plays an
+important role in several computer vision, robotics, health-
+care, manufacturing, and surveillance applications. Exam-
+ples include visual analytics [2, 22, 23] (i.e., compute time
+and motion statistics such as average cycle time from video
+recordings), ergonomics risk assessment [40, 41] (i.e., seg-
+∗indicates joint first author.
+{huy,ahmedraza,ahmed,naufil,anas,andrey,zeeshan }@retrocausal.ai.
+Frame-Level 
+Prediction Frame-Level 
+Pseudo Labels 
+Framewise 
+Action Classes Segment-Level 
+Prediction Segment-Level 
+Pseudo Labels 
+Video Transcripts Frame-to-Segment 
+Alignment Alignment 
+Pseudo Labels 
+Frame-to-Segment 
+Assignments 
+Video Figure 1. Prior works often use only frame-level cues via frame-
+level prediction modules (i.e., red) to predict framewise action
+classes. We adopt a segment-level prediction module and a frame-
+to-segment alignment module (i.e., green/blue), which exploit
+segment-level cues for permutation-aware results. Also, we intro-
+duce simple-yet-effective pseudo labels for unsupervised training.
+ment actions of interest in videos for analyzing ergonomics
+risks), and task guidance [7, 19, 39] (i.e., offer instructions
+to workers based on expert demonstration videos).
+Considerable efforts have been made in designing fully-
+supervised methods [12,17,32,33,37] or weakly-supervised
+methods [5, 8, 13, 25, 29, 34, 38, 43, 44, 46, 51] for temporal
+activity segmentation due to their great performance. How-
+ever, acquiring dense framewise labels or weak annotations
+such as transcripts [29] and timestamps [38] is generally
+hard and expensive especially for a large number of videos.
+Therefore, we are interested in unsupervised approaches for
+temporal activity segmentation, which simultaneously ex-
+tract actions and segment all video frames into clusters with
+each cluster representing one action. Early unsupervised
+methods [30, 36, 49, 57, 59] separate representation learn-
+ing from clustering, preventing effective feedback between
+them, while using offline clustering, resulting in memory
+inefficiency. To address that, UDE [54] and TOT [31] de-
+velop joint representation learning and online clustering ap-
+1arXiv:2305.19478v4  [cs.CV]  26 Oct 2023proaches. The above methods often leverage frame-level
+information only (i.e., red block in Fig. 1), while not ex-
+plicitly utilizing high-level information such as transcript,
+which is crucial for handling permutations of actions, miss-
+ing actions, and repetitive actions.
+In this work, we present an unsupervised activity seg-
+mentation framework which is based on transformers [56]
+and exploits both frame-level cues and segment-level
+cues. Motivated by the strong performance of supervised
+transformer-based architectures [5, 14] in supervised activ-
+ity segmentation, our unsupervised model includes a trans-
+former encoder and a transformer decoder. The former per-
+forms self-attention to learn dependencies within the video
+sequence, while the latter relies on cross-attention to learn
+dependencies between the video sequence and the tran-
+script sequence, resulting in effective contextual features.
+In addition to the frame-level prediction module for exploit-
+ing frame-level cues, we include a segment-level predic-
+tion module and a frame-to-segment alignment module (i.e.,
+green and blue blocks in Fig. 1) to leverage segment-level
+cues, yielding permutation-aware segmentation results. For
+unsupervised training of the above modules, we propose
+simple-yet-effective pseudo labels based on temporal opti-
+mal transport [31]. We demonstrate comparable or superior
+performance of our approach over previous unsupervised
+activity segmentation methods on four public datasets.
+In summary, our contributions include:
+• We introduce a novel combination of modules and un-
+supervised losses to exploit both frame-level cues and
+segment-level cues for permutation-aware activity seg-
+mentation.
+• We propose simple-yet-effective pseudo labels based
+on temporal optimal transport, enabling unsupervised
+training of the segment-level prediction module and
+the frame-to-segment alignment module.
+• Extensive evaluations on 50 Salads, YouTube Instruc-
+tions, Breakfast, and Desktop Assembly datasets show
+that our approach performs on par with or better than
+prior methods in unsupervised activity segmentation.
+2. Related Work
+Fully-Supervised Activity Segmentation. Early works in
+fully-supervised activity segmentation often rely on sliding
+temporal window with non-maximum suppression [24, 47]
+or structured temporal modeling via hidden Markov mod-
+els [28,55], while recent methods are mostly based on tem-
+poral convolutional networks (TCNs) [12, 17, 32, 33, 37].
+Lea et al. [32] develop the first TCN-based solution, which
+includes an encoder-decoder architecture with temporal
+convolutions and deconvolutions to capture long-range tem-
+poral dependencies. TricorNet [12] replaces the above de-coder by a bi-directional LSTM, while TDRN [33] em-
+ploys deformable temporal convolutions instead. Since
+these methods downsample videos to a temporal resolution,
+they fail to capture fine-grained details. Thus, multi-stage
+TCNs [17, 37] are introduced to maintain a high temporal
+resolution. However, due to performing framewise predic-
+tion, the above methods suffer from over-segmentation. To
+address that, refinement techniques, e.g., graph-based rea-
+soning [20] and boundary detection [21], are proposed.
+Weakly-Supervised Activity Segmentation. Weakly-
+supervised activity segmentation methods utilize different
+forms of weak labels, including the ordered list of actions
+appearing in the video, i.e., transcript supervision [8, 13,
+29, 34, 44, 46], or the set of actions occurring in the video,
+i.e., set supervision [18, 35, 45]. Recently, timestamp su-
+pervision [25, 38, 43, 51], which requires labeling a single
+frame per action segment, has attracted research interests,
+since it has similar annotation costs as transcript supervi-
+sion but it yields better results thanks to the additional ap-
+proximate segment location information in timestamp la-
+bels. More recently, Behrmann et al. [5] introduce a unified
+fully-supervised and timestamp-supervised method, achiev-
+ing competitive results. The above methods need either
+framewise labels for full supervision or weak labels for
+weak supervision, whereas our approach does not.
+Unsupervised Activity Segmentation. Early attempts [3,
+50] in unsupervised activity segmentation often utilize the
+narrations accompanied with the videos, however, these
+narrations are not always provided. That motivates the de-
+velopment of methods with only visual inputs [30, 31, 36,
+49, 54, 57, 59]. Mallow [49] learns an appearance model
+and a temporal model of the activity in an alternating man-
+ner. CTE [30] first learns a temporal embedding and then
+clusters the embedded features with K-Means. To im-
+prove CTE, VTE [57] adds a visual embedding, while
+ASAL [36] adds an action-level embedding. SSCAP [59]
+first uses a video-based self-supervised model for feature
+extraction and then performs co-occurrence action parsing
+to capture the temporal structure of the activity. The afore-
+mentioned methods separate representation learning from
+offline clustering, preventing effective feedback between
+them, whereas we follow recent approaches, i.e., UDE [54]
+and TOT [31], to perform joint representation learning
+and online clustering. Furthermore, unlike UDE [54] and
+TOT [31], which exploit frame-level cues only, we propose
+modules for exploiting segment-level cues and pseudo la-
+bels for unsupervised training, yielding improved results.
+Transformers in Activity Segmentation. After successes
+of transformers [56] in natural language processing, there
+has been a wide adoption of transformers in computer vi-
+sion [4, 6, 9, 14]. Transformers focus on attention mecha-
+nism to extract contextual information over the entire se-
+quence. Recently, a few methods [5,60] have applied trans-
+2formers for temporal activity segmentation. ASFormer [60]
+consists of encoder blocks, each of which includes a dilated
+temporal convolution and a self-attention layer, and decoder
+blocks, where cross-attention is used to gather information
+from encoder blocks. Due to making framewise predic-
+tion, ASFormer suffers from over-segmentation. To address
+that, UV AST [5] uses a transformer decoder to predict the
+transcript and exploit segment-level cues. In this work, we
+adopt the transformer encoder of ASFormer [60] and the
+transformer decoder of UV AST [5]. However, our overall
+architecture is different from them. Also, they require labels
+for supervised training, whereas we propose pseudo labels
+for unsupervised training.
+3. Our Approach
+We present below our main contribution, an unsuper-
+vised transformer-based framework for temporal activity
+segmentation. Fig. 2 shows an overview of our approach.
+Notations. Let us first represent the encoder function
+and the decoder function as fθandgϕrespectively (with
+learnable parameters θandϕ). Our approach takes as
+input a sequence of Bframes, represented as X=
+[x1,x2, . . . ,xB]⊤. The encoder features of Xare ex-
+pressed as E= [e1,e2, . . . ,eB]⊤∈RB×dwithei=
+fθ(xi)∈Rd(dis the feature dimension). Next, let us
+denote A= [1,2, . . . , K ]⊤∈RKas the sequence of K
+action classes in the activity. Our approach learns a group
+ofKprototypes, represented as C= [c1,c2, . . . ,cK]⊤∈
+RK×dwithcj∈Rdcorresponding to the j-th action class
+inA. We denote T= [a1, a2, . . . , a N]⊤∈RN(with
+aj∈A) as the transcript which contains the sequence
+of actions appearing in X, andS∈RN×das the tran-
+script features. The decoder features are written as D=
+[d1,d2, . . . ,dN]⊤∈RN×dwithdj∈Rdcorresponding to
+ajinT. Finally, we represent Pf∈RB×K,Ps∈RN×K,
+andPa∈RB×Kas the predicted assignment probabili-
+ties (i.e., predicted “codes”) at the frame-level prediction
+module (i.e., between frames and actions), the segment-
+level prediction module (i.e., between transcript positions
+and actions), and the frame-to-segment alignment module
+(i.e., between frames and actions) respectively. Similarly,
+Qf∈RB×K,Qs∈RN×K, andQa∈RB×Kdenote the
+corresponding pseudo-label assignment probabilities (i.e.,
+pseudo-label “codes”) for Pf,Ps, andParespectively.
+3.1. Unsupervised Frame-Level Prediction
+Here we describe our frame-level prediction module. In
+particular, we adopt the joint representation learning and
+online clustering method of [31]. Unlike [31], we include
+modules and unsupervised losses in Secs. 3.2 and 3.3 for
+exploiting segment-level cues. Also, instead of the MLP
+encoder of [31], we utilize the transformer encoder of [5] to
+capture long-range dependencies via self-attention.The input frames Xare first fed to the transformer en-
+coder fθto yield the encoder features E. The frame-level
+predicted codes Pf(withPij
+fdenoting the probability that
+thei-th frame in Xis assigned to the j-th action in A) are
+then computed as Pf=softmax
+1
+τEC⊤
+with a temper-
+ature τ. We follow [31] to obtain the frame-level pseudo-
+label codes Qfby solving the below fixed-order temporal
+optimal transport problem:
+max
+Q∈QTr(Q⊤EC⊤)−ρKL (Q||MA), (1)
+Q=
+Q:Q1K=1
+B1B,Q⊤1B=1
+K1K
+,(2)
+where ρis a balancing parameter, and 1Band1Kare vec-
+tors of ones with BandKdimensions respectively. The
+first term in Eq. 1 measures the similarity between the fea-
+turesEand the prototypes C, while the second term de-
+notes the Kullback-Leibler divergence between Qfand the
+prior distribution MA[53]. In particular, MAassumes the
+fixed order of actions A, and enforces initial frames in X
+to be assigned to initial actions in Aand subsequent frames
+inXto be assigned to subsequent actions in A. In Sec. 3.2,
+we will discuss relaxing the above fixed-order prior by in-
+troducing the transcript Tand enabling permutations of ac-
+tions. Eq. 2 represents the equal partition constraint, which
+imposes that each action in Ais assigned the same number
+of frames in Xto avoid a trivial solution. As mentioned
+in [31], the method works relatively well for activities with
+various action lengths since the above equal partition con-
+straint is applied on soft assignments. The solution for the
+above fixed-order temporal optimal transport problem is:
+Qf= diag( u) exp 
+EC⊤+ρlogMA
+ρ!
+diag(v),(3)
+where u∈RBandv∈RKare renormalization vec-
+tors [10]. Fig. 3 shows an example of MAandQf, where
+the red boxes highlight the fixed order of actions {3,4,5}.
+We minimize the below cross-entropy loss with respect to θ
+andC(note that we do not backpropagate through Qf):
+Lf=−1
+BBX
+i=1KX
+j=1Qij
+flogPij
+f. (4)
+3.2. Unsupervised Segment-Level Prediction
+The above module leverages frame-level cues and the
+fixed-order prior. In this section, we describe the segment-
+level prediction module to exploit segment-level cues and
+allow permutations of actions. In particular, we introduce
+the transcript T, which indicates the sequence of actions
+3XE
+PfTransformer 
+Encoder  f𝛉
+QfFixed-Order 
+TOT CTransformer 
+Decoder  g𝛟Ps
+QsD
+TMax  &  SortLs
+LfPaQaLaAlignment
+S
+Embedding  g𝛙Positional 
+Encoding Positional 
+Encoding 
+ℝB x d 
+ℝK x d ℝB x K ℝNℝN x K 
+ℝB x K ℝN x K ℝN x d 
+ℝN x d ℝB x K 
+Prediction  g𝛘Permutation-Aware 
+TOT
+AℝNℝB x K 
+Frame-Level 
+Prediction 
+(Sec. 3.1) Frame-to-Segment 
+Alignment 
+(Sec. 3.3) 
+Segment-Level 
+Prediction 
+(Sec. 3.2) Figure 2. Our approach includes a frame-level prediction module (i.e., red) which extracts frame-level features Evia a transformer
+encoder and uses temporal optimal transport to compute frame-level pseudo labels Qffor unsupervised training. To exploit segment-level
+information, we utilize a segment-level prediction module (i.e., green), which extract segment-level features Dvia a transformer decoder,
+and a frame-to-segment alignment module (i.e., blue), which matches frame-level features Eand segment-level features D. In addition,
+we introduce segment-level pseudo labels Qsand alignment-level pseudo labels Qafor unsupervised training of the above modules.
+(a)MA
+ (b)Qf
+Figure 3. (a) Fixed-order prior distribution MA. (b) Frame-level
+pseudo-label codes Qf.
+1 1
+2 56
+3 80
+5 96
+4 118
+9 133
+6 141
+7 220
+8 241
+10292
+11375Sort 
+T Max 
+(a)T
+ (b)Qs
+Figure 4. (a) Permutation-aware transcript T. (b) Segment-level
+pseudo-label codes Qs.
+ofAoccurring in the input sequence X. For example,
+let us assume A= [1,2,3,4,5], it is possible that T=
+(a)MT
+ (b)Qa
+Figure 5. (a) Permutation-aware prior distribution MT. (b)
+Alignment-level pseudo-label codes Qa.
+[1,3,2,5,4], which is a permutation of A. We will discuss
+later how Tis estimated for unsupervised training.
+Assuming the transcript Tis given, we first pass it to
+the embedding layer gψto obtain the transcript features S,
+which are then fed to the transformer decoder gϕ. In addi-
+tion, we also feed the encoder features E(after positional
+encoding) to the transformer decoder gϕ, which performs
+cross-attention between EandSto yield the decoder fea-
+turesD. The segment-level predicted codes Ps(withPij
+s
+corresponding to the probability that the i-th position in T
+contains the j-th action in A) are computed by passing the
+decoder features Dto the prediction layer gχ. In practice,
+we employ the transformer decoder of [5], which computes
+Psin an auto-regressive manner, i.e., a part of Tup to the
+4i-th position is used to predict the ( i+1)-th row of Ps. In
+parallel, we convert the transcript Tinto the segment-level
+pseudo-label codes Qs. Specifically, we set Qij
+s= 1if the
+i-th position in Tcontains the j-th action in A, andQij
+s= 0
+otherwise. We minimize the following cross-entropy loss
+between PsandQswith respect to θ,ψ,ϕ, andχ(note
+that we do not backpropagate through Qs):
+Ls=−1
+NNX
+i=1KX
+j=1Qij
+slogPij
+s. (5)
+In contrast with the supervised method of [5], where
+framewise labels or timestamp labels are required for su-
+pervised training, we estimate the transcript Tfrom the
+frame-level pseudo-label codes Qffor unsupervised train-
+ing. For each j-th action, we find the i-th frame where Qij
+f
+has the maximum assignment probability along the j-th col-
+umn, yielding an action-frame pair (j, i). Next, we sort all
+action-frame pairs by their frame indexes. The resulting
+temporally sorted list of actions is considered as our esti-
+mated transcript T. Our motivation is that to predict each
+action correctly, the method only needs to select a single
+frame correctly, which is easier than obtaining the correct
+framewise segmentation result. Note that the above imply
+thatN(the length of the transcript T) is equal to K(the
+length of the action list A), and our predicted transcript T
+shares the same set of unique actions with Adespite having
+different orderings. Fig. 4 illustrates an example of comput-
+ingTfromQf, and computing QsfromT. Similar to [31],
+our method tends to assign a small number of frames to
+the missing actions, leading to minor impacts on the over-
+all segmentation accuracy. Handling repetitive actions is
+an interesting topic and remains our future work. As we
+will show later in Sec. 4.2, despite using the above sim-
+ple heuristic for transcript estimation, our method achieves
+state-of-the-art results on four public datasets.
+3.3. Unsupervised Frame-to-Segment Alignment
+To further exploit segment-level cues and improve seg-
+mentation results, we employ the frame-to-segment align-
+ment module of [5], which matches frame-level features
+with segment-level features and models permutations of ac-
+tions. We pass both the encoder features Eand the decoder
+features D(after positional encoding) to the frame-to-
+segment alignment module, which performs cross-attention
+between EandDto predicts the alignment-level predicted
+codes Pa. Here, Pij
+acorresponds to the probability that
+thei-th frame in Xis mapped to the j-th action in A. We
+compute Pa=softmax
+1
+τ′ED⊤
+with a temperature τ′.
+Unlike with the supervised method of [5], where frame-
+wise labels or timestamp labels are required for supervised
+training, we propose a modified temporal optimal trans-
+port module which is capable of handling permutations ofactions to compute the alignment-level pseudo-label codes
+Qafor unsupervised training. Specifically, instead of using
+the prior distribution MAwhich enforces the fixed order
+of actions A, we utilize the prior distribution MTwhich
+imposes the permutation-aware transcript T, yielding the
+permutation-aware temporal optimal transport problem:
+max
+Q∈QTr(Q⊤EC⊤)−ρKL (Q||MT). (6)
+The solution for the permutation-aware temporal optimal
+transport problem is:
+Qa= diag( u) exp 
+EC⊤+ρlogMT
+ρ!
+diag(v).(7)
+Fig. 5 shows an example of MTandQa, where the green
+boxes highlight the permutations of actions {3,5,4}. This
+is in contrast with MAandQfin Fig. 3, where the red
+boxes highlight the fixed order of actions {3,4,5}. As we
+will show later in Sec. 4.1.2, using the permutation-aware
+Qaderived from Tyields better performance than using
+the fixed-order Qaderived from A. We minimize the cross-
+entropy loss between PaandQawith respect to θ,ψ, and
+ϕ(note that we do not backpropagate through Qa):
+La=−1
+BBX
+i=1KX
+j=1Qij
+alogPij
+a. (8)
+Our final loss for unsupervised training is a combination
+of the fixed-order loss Lf(Eq. 4) and the permutation-aware
+losses Ls(Eq. 5) and La(Eq. 8):
+L=Lf+αLs+βLa, (9)
+where αandβare the balancing parameters for LsandLa
+respectively. Following [5], we set α=β= 1.
+4. Experiments
+Implementation Details. We train our model in two stages.
+In the first stage, we train only the frame-level prediction
+module with the loss in Eq. 4 for 30 epochs, which is then
+used for initialization in the second stage, where we train
+the entire model with the loss in Eq. 9 for 70 epochs. Note
+that we reduce the transformer encoder and transformer de-
+coder of [5] to two layers to avoid overfitting. We imple-
+ment our approach in pyTorch [42]. We use ADAM op-
+timization [26] with a learning rate of 10−3and a weight
+decay of 10−5. For inference, we follow [31] to compute
+cluster assignment probabilities for all frames and then pass
+them to a Viterbi decoder which smooths out the probabil-
+ities given the action order T(instead of Ain [31]). More
+details are provided in the supplementary material.
+Competing Methods. We compare our approach,
+namely UFSA (short for Unsupervised Frame-to- Segment
+5Alignment), against a narration-based method [3], sequen-
+tial learning and clustering methods [30, 36, 49, 57, 59], and
+joint learning and clustering methods [31, 54].
+Datasets. We evaluate our approach on four public datasets,
+i.e., 50 Salads [52], YouTube Instructions (YTI) [3], Break-
+fast [27], and Desktop Assembly [31]:
+•50 Salads includes 50 videos capturing 25 actors mak-
+ing 2 types of salads. The total duration of all videos
+is over 4.5 hours with an average of 10k frames per
+video. We test on 2 granularity levels, i.e., Eval with
+12 action classes and Mid with 19 action classes. Fol-
+lowing [30], we use pre-computed features by [58].
+•YouTube Instructions (YTI) contains 150 videos cap-
+turing 5 activities with 47 action classes in total and
+an average video length of about 2 minutes. These
+videos contain many background frames. We use pre-
+computed features provided by [3].
+•Breakfast includes 70 hours of videos (30 seconds to a
+few minutes long per video) capturing 10 cooking ac-
+tivities with 48 action classes in total. We follow [49]
+to use pre-computed features proposed by [28].
+•Desktop Assembly contains 2 sets of videos. Orig con-
+tains 76 videos of 4 actors performing desktop assem-
+bly in a fixed order. Extra includes all Orig videos
+and additionally 52 videos with permuted and missing
+steps, yielding 128 videos in total. We evaluate on both
+sets using pre-computed features provided by [31].
+Evaluation Metrics. Following [30, 31, 49], we perform
+Hungarian matching between ground truth and predicted
+segments, which is conducted at the activity level. This
+is unlike the Hungarian matching performed at the video
+level in [1,15,48]. Note that video-level segmentation, e.g.,
+ABD [15], (i.e., segmenting just a single video) is a sub-
+problem and in general easier than activity-level segmenta-
+tion, e.g., our work, (i.e., jointly segmenting and clustering
+frames across all videos). Due to space limits, we convert
+video-level segmentation results of ABD [15] to activity-
+level segmentation results via K-Means and evaluate them
+in the supplementary material. We compute Mean Over
+Frames (MOF), i.e., the percentage of frames with correct
+predictions averaged over all activities, and F1-Score, i.e.,
+the harmonic mean of precision and recall, where only pos-
+itive detections with more than 50% overlap with ground
+truth segments are considered. We compute F1-Score for
+each video and take the average over all videos.
+4.1. Ablation Studies
+4.1.1 Impacts of Different Model Components
+We first study the effects of various network components on
+the 50 Salads ( Eval granularity) and YTI datasets. The re-Method MOF F1EvalFrame 43.1 34.4
+Frame+Segment 43.2 38.1
+Frame+Segment+Alignment 55.8 50.3YTIFrame 42.8 30.2
+Frame+Segment 45.0 30.8
+Frame+Segment+Alignment 49.6 32.4
+Table 1. Impacts of different model components on 50 Salads with
+the Eval granularity ( Eval) and YouTube Instructions ( YTI). Best
+results are in bold , while second best ones are underlined .
+sults are reported in Tab. 1. Firstly, using only the frame-
+level prediction module presented in Sec. 3.1 yields the
+lowest overall results. The frame-level prediction module
+exploits frame-level cues only and utilizes the fixed-order
+prior which does not account for permutations of actions.
+Next, we expand the network by adding the segment-level
+prediction module described in Sec. 3.2 to exploit segment-
+level cues. For 50 Salads, MOF is not changed much, while
+F1-score is improved by 3.7%. For YTI, MOF is increased
+by 2.2%, while F1-Score is slightly improved by 0.6%. Al-
+though the segment-level prediction module estimates the
+permutation-aware transcript, the framewise predictions are
+still suffered from over-segmentation. To address that, the
+frame-to-segment alignment module proposed in Sec. 3.3 is
+appended to the network to simultaneously leverage frame-
+level cues and segment-level cues and refine the framewise
+predictions, leading to significant performance gains. On
+50 Salads, the results are boosted to 55.8% and 50.3% for
+MOF and F1-Score respectively, while on YTI, MOF is in-
+creased to 49.6% and F1-Score to 32.4%.
+4.1.2 Impacts of Different Pseudo Labels
+Here, we conduct an ablation study on the 50 Salads ( Eval
+granularity) and YTI datasets by using various versions of
+pseudo labels QsandQacomputed from either the fixed
+order of actions Aor the permutation-aware transcript T.
+Tab. 2 presents the results. Firstly, using the fixed or-
+der of actions Afor computing both QsandQa(i.e., we
+useT=Ain both Secs. 3.2 and 3.3) yields the low-
+est overall numbers on both datasets, i.e., on 50 Salads,
+46.1% and 45.2% for MOF and F1-Score respectively, and
+on YTI, 44.3% and 29.4% for MOF and F1-Score respec-
+tively. Next, we experiment with using the permutation-
+aware transcript Tfor computing either QsorQa, resulting
+in performance gains, e.g., for the former ( TforQs,Afor
+Qa), we achieve 50.8% for MOF and 46.9% for F1-Score
+on 50 Salads, while for the latter ( AforQs,TforQa), we
+obtain 54.0% for MOF and 48.7% for F1-Score on 50 Sal-
+ads. Finally, we employ the permutation-aware transcript
+Tfor computing both QsandQa, leading to the best per-
+formance on both datasets, i.e., 55.8% for MOF and 50.3%
+6QsQa MOF F1EvalAA 46.1 45.2
+TA 50.8 46.9
+AT 54.0 48.7
+TT 55.8 50.3YTIAA 44.3 29.4
+TA 45.7 29.7
+AT 46.5 29.8
+TT 49.6 32.4
+Table 2. Impacts of different pseudo labels on 50 Salads with the
+Eval granularity ( Eval) and YouTube Instructions ( YTI). Best re-
+sults are in bold , while second best ones are underlined .
+for F1-Score on 50 Salads, and 49.6% for MOF and 32.4%
+for F1-Score on YTI. The above results confirm the benefits
+of using the permutation-aware transcript Tfor computing
+both pseudo labels QsandQa.
+4.2. Comparisons with the State-of-the-Art
+4.2.1 Results on 50 Salads
+We now compare the performance of our approach with
+state-of-the-art unsupervised activity segmentation methods
+on the 50 Salads dataset for both granularities, i.e., Eval
+andMid. Tab. 3 illustrates the results. It is evident from
+Tab. 3 that our approach obtains the best MOF and F1-Score
+numbers on both granularities, outperforming all compet-
+ing methods. In particular, UFSA outperforms TOT [31]
+by 8.4% and 4.9% on MOF on the Eval andMid granu-
+larities respectively, and UDE [54] by 15.9% on F1-Score
+on the Eval granularity. Although TOT [31] and UDE [54]
+conduct joint representation learning and online cluster-
+ing as our approach, they only exploit frame-level cues,
+whereas UFSA leverages segment-level cues as well. More-
+over, our approach achieves better results than SSCAP [59],
+which uses recent self-supervised learning features [16],
+and ASAL [36], which exploits segment-level cues via ac-
+tion shuffling, e.g., on the Eval granularity, UFSA achieves
+55.8% MOF, whereas SSCAP [59] and ASAL [36] obtain
+41.4% MOF and 39.2% MOF respectively. The substantial
+improvements of UFSA over previous methods demonstrate
+the effectiveness of our approach.
+4.2.2 Results on YouTube Instructions
+Tab. 4 presents the quantitative results of our approach
+along with previous unsupervised activity segmentation
+methods on the YTI dataset. We follow the protocol of
+prior works and report the accuracy excluding the back-
+ground frames. It is clear from Tab. 4 that our approach
+achieves the best MOF, outperforming all previous meth-
+ods, and the second best F1-Score, slightly worse than
+TOT+TCL [31] (note that our approach currently relies
+on TOT only, and can further include TCL for potentialMethod Eval Mid
+MOF F1 MOF F1
+CTE [30] 35.5 36.3 30.2 25.6
+VTE [57] 30.6 - 24.2 -
+ASAL [36] 39.2 - 34.4 -
+UDE [54] 42.2 34.4 - -
+SSCAP [59] 41.4 30.3 - -
+TOT [31] 47.4 42.8 31.8 22.5
+TOT+TCL [31] 44.5 48.2 34.3 28.9
+Ours (UFSA) 55.8 50.3 36.7 30.4
+Table 3. Results on 50 Salads. Eval denotes the Eval granularity,
+while Mid denotes the Mid granularity. Best results are in bold ,
+while second best ones are underlined .
+Method MOF F1
+Frank-Wolfe [3] - 24.4
+Mallow [49] 27.8 27.0
+CTE [30] 39.0 28.3
+VTE [57] - 29.9
+ASAL [36] 44.9 32.1
+UDE [54] 43.8 29.6
+TOT [31] 40.6 30.0
+TOT+TCL [31] 45.3 32.9
+Ours (UFSA) 49.6 32.4
+Table 4. Results on YouTube Instructions. Best results are in bold ,
+while second best ones are underlined .
+TOTGround truth 
+CTEOurs 
+(UFSA) 
+Figure 6. Segmentation results on a YouTube Instructions video
+(changing tire0005 ). Black color indicates background frames.
+improvements). Specifically, UFSA has an improvement
+of 9.0% MOF and 2.4% F1-Score over TOT [31], and
+an improvement of 5.8% MOF and 2.8% F1-Score over
+UDE [54]. In addition, our approach obtains a noticeable
+gain of 4.7% MOF and a slight gain of 0.3% F1-Score
+over ASAL [36]. Fig. 6 plots the qualitative results of
+UFSA, TOT [31], and CTE [30] on a YTI video. Our ap-
+proach demonstrates significant advantages over CTE [30]
+and TOT [31] in terms of capturing the temporal order of
+actions and aligning them closely with the ground truth.
+Due to space constraints, please refer to the supplementary
+material for more qualitative examples, especially with per-
+muted, missing, and repetitive actions.
+7Method MOF F1
+Mallow [49] 34.6 -
+CTE [30] 41.8 26.4
+VTE [57] 48.1 -
+ASAL [36] 52.5 37.9
+UDE [54] 47.4 31.9
+SSCAP [59] 51.1 39.2
+TOT [31] 47.5 31.0
+TOT+TCL [31] 39.0 30.3
+Ours (UFSA) 52.1 38.0
+Table 5. Results on Breakfast. Best results are in bold , while
+second best ones are underlined .
+Method MOF F1OrigCTE [30] 47.6 44.9
+TOT [31] 56.3 51.7
+TOT+TCL [31] 58.1 53.4
+Ours (UFSA) 65.4 63.0ExtraCTE [30] 40.8 35.6
+TOT [31] 51.0 40.4
+TOT+TCL [31] 57.9 54.0
+Ours (UFSA) 58.6 55.9
+Table 6. Results on Desktop Assembly. Orig includes original
+fixed-order videos only, while Extra further includes additional
+permuted-step and missing-step videos. Best results are in bold ,
+while second best ones are underlined .
+4.2.3 Results on Breakfast
+Tab. 5 includes the performance of different methods on
+the Breakfast dataset. From Tab. 5, our results are on par
+with ASAL [36], which leverages segment-level informa-
+tion via action shuffling, and SSCAP [59], which employs
+more sophisticated self-supervised features [16]. Partic-
+ularly, ASAL [36] and SSCAP [59] yield the best MOF
+number (i.e., 52.5%) and the best F1-Score number (i.e.,
+39.2%) respectively, while UFSA achieves the second best
+results for both metrics (i.e., 52.1% and 38.0%). In addition,
+our approach outperforms a number of competing methods,
+namely Mallow [49], CTE [30], VTE [57], UDE [54], and
+TOT [31], which exploit frame-level cues only.
+4.2.4 Results on Desktop Assembly
+We test the performance of our approach on the Desktop
+Assembly dataset for both Orig andExtra sets. The re-
+sults are reported in Tab. 6, which shows superior per-
+formance of our approach over CTE [30], TOT [31], and
+TOT+TCL [31]. For example, UFSA achieves an improve-
+ment of 14.9% MOF and 20.5% F1-Score over TOT [31] on
+theOrig set, and a gain of 7.6% MOF and 15.5% F1-Score
+over TOT [31] on the Extra set. Results on the Orig set
+indicate the effectiveness of our approach in preserving the
+fixed order of actions, while results on the Extra set show
+the ability of our method in handling permuted actions.Method MOF F1EvalCTE [30] 28.6 26.4
+TOT [31] 39.8 37.0
+TOT+TCL [31] 42.8 44.9
+Ours (UFSA) 47.6 41.8YTICTE [30] 38.4 25.5
+TOT [31] 40.4 28.0
+TOT+TCL [31] 40.6 26.7
+Ours (UFSA) 46.8 28.2BreakfastCTE [30] 39.8 25.5
+TOT [31] 40.6 27.6
+TOT+TCL [31] 37.4 23.2
+Ours (UFSA) 44.0 36.7OrigCTE [30] 35.6 31.8
+TOT [31] 55.3 50.2
+TOT+TCL [31] 49.2 44.6
+Ours (UFSA) 63.9 63.7ExtraCTE [30] 35.7 30.4
+TOT [31] 43.6 35.0
+TOT+TCL [31] 45.9 40.0
+Ours (UFSA) 57.9 54.0
+Table 7. Generalization results. Best results are in bold , while
+second best ones are underlined
+.
+4.2.5 Generalization Results
+We follow [31] to evaluate the generalization ability of our
+approach. We divide the datasets, i.e., 50 Salads ( Eval),
+YTI, Breakfast, Desktop Assembly ( Orig ,Extra ) into 80%
+for training and 20% for testing. For instance, for 50 Salads
+with 50 videos, 40 videos are used for training and 10 for
+testing. Tab. 7 shows the results. UFSA continues to outper-
+form CTE [30], TOT [31], and TOT+TCL [31] in this exper-
+iment setting. Note the results of CTE [30], TOT [31], and
+TOT+TCL [31] in Tab. 7 differ from those reported in [31]
+since different training/testing splits are used (we could not
+acquire the splits from the authors of [31]). Our splits are
+available at https://tinyurl.com/57ya6653 .
+5. Conclusion
+We propose a novel combination of modules and un-
+supervised losses to exploit both frame-level cues and
+segment-level cues for permutation-aware activity segmen-
+tation. Our approach includes a frame-level prediction mod-
+ule which uses a transformer encoder for obtaining frame-
+wise action classes and is trained in unsupervised manner
+via temporal optimal transport. To leverage segment-level
+cues, we utilize a segment-level prediction model based on
+a transformer decoder for predicting video transcripts and
+a frame-to-segment alignment module for corresponding
+frame-level features with segment-level features, resulting
+in permutation-aware segmentation results. For unsuper-
+vised training of the above modules, we introduce simple-
+yet-effective pseudo labels. We show comparable or supe-
+rior results over prior methods on four public datasets.
+8A. Supplementary Material
+This supplementary material begins with showing some
+qualitative results in Sec. A.1. Next, we present the
+ablation results of using MLP encoder and using Ain
+segment-/alignment-level modules in Secs. A.2 and A.3 re-
+spectively, and adopt the video-level segmentation method
+of ABD [15] for the activity-level segmentation task in
+Sec. A.4. Finally, Sec. A.5 provides the details of our im-
+plementation, while Sec. A.6 includes a discussion on the
+societal impacts of our work.
+A.1. Qualitative Results
+Fig. 7 illustrates the segmentation results of our approach
+and TOT [31] on two 50 Salads videos ( Eval granularity).
+From Fig. 7, UFSA shows superior performance in extract-
+ing the permutation of actions. For example, let us con-
+sider the ‘Add vinegar’ action (highlighted by red boxes)
+which happens at different temporal positions in the videos,
+UFSA captures the permutation of actions correctly, while
+TOT [31] maintains the fixed order of actions and hence
+fails to recognize the permutation of actions. Next, for ac-
+tions that are missing, such as the ‘Peel cucumber’ action,
+which occurs in Fig. 7a but does not appear in Fig. 7b,
+UFSA associates a negligible number of frames with this
+action class, whereas TOT [31] incorrectly assigns a large
+number of frames (highlighted by a green box).
+Moreover, we include in Fig. 8 the segmentation results
+of our approach, TOT [31], and CTE [30] on other datasets,
+namely YouTube Instructions, Breakfast, and Desktop As-
+sembly ( Orig set). It is evident from Fig. 8 that our segmen-
+tation results are consistently closer to the ground truth than
+those of TOT [31] and CTE [30].
+Nevertheless, our approach has a limitation in handling
+repetitive actions. For example, let us look at the ‘Cut’ ac-
+tion in Fig. 7, which includes ‘Cut tomato’ ,‘Cut cucumber’ ,
+‘Cut cheese’ , and ‘Cut lettuce’ and hence occurs multiple
+times in the videos, our approach merges the multiple oc-
+currences into a large segment (highlighted by blue boxes)
+since it assumes each action can happen only once. In addi-
+tion, although TOT [31] has the same drawback, our com-
+bined segments are closer to the ground truth.
+A.2. Ablation with MLP encoder
+We now perform an ablation study by using MLP en-
+coder (instead of transformer encoder). Tab. 8 presents
+results on 50 Salads ( Eval granularity) and YTI datasets.
+From the results, transformer encoder alone performs sim-
+ilarly as MLP encoder alone (i.e., TOT). Next, MLP en-
+coder+transformer decoder yields small improvements over
+TOT as features extracted by MLP encoder do not cap-
+ture contextual cues that are useful for transformer decoder.
+Lastly, large improvements over TOT are achieved when
+TOTOurs 
+(UFSA) Ground 
+truth
+Add vinegar Peel cucumber Cut tomato Place into bowl Mix ingredients 
+(a) 50 Salads ( rgb-21-01 ).
+TOTOurs 
+(UFSA) Ground 
+truth
+Add vinegar Cut tomato Cut cucumber Place into bowl Mix ingredients 
+(b) 50 Salads ( rgb-15-02 ).
+Figure 7. Segmentation results on two 50 Salads videos ( Eval
+granularity). Red boxes highlight permuted actions. Green boxes
+highlight missing actions. Blue boxes highlight repetitive actions.
+Encoder Decoder MOF F1EvalMLP - 47.4 31.8
+Transformer - 43.1 34.4
+MLP Transformer 47.8 34.8
+Transformer Transformer 55.8 50.3YTIMLP - 40.6 30.0
+Transformer - 42.8 30.2
+MLP Transformer 43.2 30.5
+Transformer Transformer 49.6 32.4
+Table 8. Ablation with MLP encoder. Best results are in bold ,
+while second best ones are underlined .
+transformer encoder is used jointly with transformer de-
+coder (i.e., our complete model).
+A.3. Using Ain segment-/alignment-level modules
+In this section, we repeat the ablation experiment in
+Tab. 1 of the main paper but we use the fixed-order prior
+A(instead of the permutation-aware prior T) in segment-
+/alignment-level modules. Tab. 9 shows results on 50 Salads
+(Eval granularity) and YTI datasets. It can be seen from the
+results that using Ain segment-/alignment-level modules
+improves results of frame-level module only, however, the
+improvements are smaller than those of using T(see Tab. 1
+9Ground truth 
+Ours (UFSA) 
+TOT
+CTE
+(a) YouTube Instructions ( cpr0027 ).
+Ground truth 
+Ours (UFSA) 
+TOT
+CTE
+(b) Breakfast ( P13 webcam01 P13 cereals ).
+Ground truth 
+Ours (UFSA) 
+TOT
+CTE
+(c) Desktop Assembly ( 2020-04-19 17-24-35 ).
+Figure 8. Segmentation results on (a) a YouTube Instructions
+video, (b) a Breakfast video, and (c) a Desktop Assembly video
+(‘Orig’ set).
+Method MOF F1EvalFrame 43.1 34.4
+Frame+Segment 43.3 37.8
+Frame+Segment+Alignment 46.1 45.2YTIFrame 42.8 30.2
+Frame+Segment 43.3 30.5
+Frame+Segment+Alignment 44.3 29.4
+Table 9. Using Ain segment-/alignment-level modules. Best re-
+sults are in bold , while second best ones are underlined .Method MOF F1Eval⋆ABD [15] 71.4 -
+†ABD [15] 34.2 32.8
+†Ours (UFSA) 55.8 50.3YTI⋆ABD [15] 67.2 49.2
+†ABD [15] 29.4 29.4
+†Ours (UFSA) 49.6 32.4Breakfast⋆ABD [15] 64.0 52.3
+†ABD [15] 23.6 21.7
+†Ours (UFSA) 52.1 38.0Orig⋆ABD [15] 63.3 60.9
+†ABD [15] 15.5 11.0
+†Ours (UFSA) 71.2 72.2Extra⋆ABD [15] 60.8 57.1
+†ABD [15] 12.0 10.6
+†Ours (UFSA) 58.6 55.9
+Table 10. Comparisons with ABD [15]. Note that⋆denotes video-
+level results, whereas†denotes activity-level results. Best results
+are in bold , while second best ones are underlined .
+of the main paper).
+A.4. Comparisons with ABD [15]
+Our method addresses the problem of activity-level seg-
+mentation, which jointly segments and clusters frames
+across all input videos. A related problem is video-
+level segmentation, which aims to segment a single input
+video only. Video-level segmentation is a sub-problem
+of activity-level segmentation and in general easier than
+activity-level segmentation. In this section, we evaluate the
+performance of a recent video-level segmentation method,
+i.e., ABD [15], for the task of activity-level segmentation.
+Firstly, for each input video, we run ABD [15] to obtain
+its video-level segmentation result. We then represent each
+segment in the result by its prototype vector, which is the
+average of feature vectors of frames belonging to that seg-
+ment. Next, we perform K-Means clustering (K is set as the
+ground truth number of actions available in the activity) on
+the entire set of prototype vectors from all input videos to
+obtain the activity-level segmentation result, which we eval-
+uate in Tab. 10. From the results, it can be seen that†UFSA
+outperforms†ABD [15] in the activity-level setting on all
+metrics and datasets. A more advanced clustering method
+which incorporates temporal information can be used in-
+stead of K-Means, however, it is out of the scope of our
+work. In addition, the video-level results of⋆ABD [15] are
+mostly better than the activity-level results of†UFSA (ex-
+cept for Desktop Assembly - Orig ), which is due to fine-
+grained video-level Hungarian matching [57].
+A.5. Implementation Details
+Hyperparameter Settings. Tab. 11 presents a summary
+of our hyperparameter settings. For the temporal optimal
+transport problem in our frame-level prediction module and
+frame-to-segment alignment module, we follow the same
+10hyperparameter settings used in TOT [31], including ρand
+number of Sinkhorn-Knopp iterations. We keep the fea-
+ture dimension dthe same as TOT [31]. We use a single
+video, including all frames, per batch. In addition, for our
+transformer encoder and transformer decoder, we follow the
+same hyperparameter settings used in UV AST [5], includ-
+ing encoder dropout ratio and decoder dropout ratio. We
+set the temperature τ= 0.1(same as TOT [31]) in Sec. 3.1
+of the main paper and the temperature τ′= 10−3(same as
+UV AST [5]) in Sec. 3.3 of the main paper.
+Computing Resources. All of our experiments are con-
+ducted with a single Nvidia A100 SXM4 GPU on Lambda
+Cloud.
+A.6. Societal Impacts
+Our approach facilitates video recognition model learn-
+ing without action labels, with potential applications in
+frontline worker training and assistance. Models generated
+from expert demonstration videos in various domains could
+offer guidance to new workers, improving the standard of
+care in fields such as medical surgery. However, at the same
+time, video understanding algorithms in surveillance appli-
+cations may compromise privacy, even if it enhances secu-
+rity and productivity. Thus, we urge caution in the imple-
+mentation of such technologies and advocate for the devel-
+opment of appropriate ethical guidelines.
+References
+[1] Sathyanarayanan N Aakur and Sudeep Sarkar. A percep-
+tual prediction framework for self supervised event segmen-
+tation. In Proceedings of the IEEE/CVF Conference on Com-
+puter Vision and Pattern Recognition , pages 1197–1206,
+2019. 6
+[2] Oguz Akkas, Cheng Hsien Lee, Yu Hen Hu, Carisa Har-
+ris Adamson, David Rempel, and Robert G Radwin. Mea-
+suring exertion time, duty cycle and hand activity level
+for industrial tasks using computer vision. Ergonomics ,
+60(12):1730–1738, 2017. 1
+[3] Jean-Baptiste Alayrac, Piotr Bojanowski, Nishant Agrawal,
+Josef Sivic, Ivan Laptev, and Simon Lacoste-Julien. Unsu-
+pervised learning from narrated instruction videos. In Pro-
+ceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition , pages 4575–4583, 2016. 2, 6, 7
+[4] Anurag Arnab, Mostafa Dehghani, Georg Heigold, Chen
+Sun, Mario Lu ˇci´c, and Cordelia Schmid. Vivit: A video
+vision transformer. In Proceedings of the IEEE/CVF inter-
+national conference on computer vision , pages 6836–6846,
+2021. 2
+[5] Nadine Behrmann, S Alireza Golestaneh, Zico Kolter,
+J¨urgen Gall, and Mehdi Noroozi. Unified fully and times-
+tamp supervised temporal action segmentation via sequence
+to sequence translation. In European Conference on Com-
+puter Vision , pages 52–68. Springer, 2022. 1, 2, 3, 4, 5, 11[6] Gedas Bertasius, Heng Wang, and Lorenzo Torresani. Is
+space-time attention all you need for video understanding?
+InICML , volume 2, page 4, 2021. 2
+[7] Jonas Blattgerste, Benjamin Strenge, Patrick Renner, Thies
+Pfeiffer, and Kai Essig. Comparing conventional and aug-
+mented reality instructions for manual assembly tasks. In
+Proceedings of the 10th international conference on per-
+vasive technologies related to assistive environments , pages
+75–82, 2017. 1
+[8] Chien-Yi Chang, De-An Huang, Yanan Sui, Li Fei-Fei, and
+Juan Carlos Niebles. D3tw: Discriminative differentiable dy-
+namic time warping for weakly supervised action alignment
+and segmentation. In Proceedings of the IEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition , pages
+3546–3555, 2019. 1, 2
+[9] Chun-Fu Richard Chen, Quanfu Fan, and Rameswar Panda.
+Crossvit: Cross-attention multi-scale vision transformer for
+image classification. In Proceedings of the IEEE/CVF in-
+ternational conference on computer vision , pages 357–366,
+2021. 2
+[10] Marco Cuturi. Sinkhorn distances: Lightspeed computation
+of optimal transport. Advances in neural information pro-
+cessing systems , 26:2292–2300, 2013. 3
+[11] Guodong Ding, Fadime Sener, and Angela Yao. Tempo-
+ral action segmentation: An analysis of modern technique.
+arXiv preprint , 2022. 1
+[12] Li Ding and Chenliang Xu. Tricornet: A hybrid temporal
+convolutional and recurrent network for video action seg-
+mentation. arXiv preprint , 2017. 1, 2
+[13] Li Ding and Chenliang Xu. Weakly-supervised action seg-
+mentation with iterative soft boundary assignment. In Pro-
+ceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition , pages 6508–6516, 2018. 1, 2
+[14] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, et al. An image is worth 16x16 words: Trans-
+formers for image recognition at scale. In International Con-
+ference on Learning Representations . 2
+[15] Zexing Du, Xue Wang, Guoqing Zhou, and Qing Wang. Fast
+and unsupervised action boundary detection for action seg-
+mentation. In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition , pages 3323–
+3332, 2022. 6, 9, 10
+[16] Dave Epstein, Boyuan Chen, and Carl V ondrick. Oops!
+predicting unintentional action in video. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern
+recognition , pages 919–929, 2020. 7, 8
+[17] Yazan Abu Farha and Jurgen Gall. Ms-tcn: Multi-stage tem-
+poral convolutional network for action segmentation. In Pro-
+ceedings of the IEEE/CVF conference on computer vision
+and pattern recognition , pages 3575–3584, 2019. 1, 2
+[18] Mohsen Fayyaz and Jurgen Gall. Sct: Set constrained tem-
+poral transformer for set supervised action segmentation. In
+Proceedings of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition , pages 501–510, 2020. 2
+11Hyperparameter Value
+Temperature ( τ) 0.1
+Rho (ρ) 0.07(E),0.08(M),0.08(Y),0.05(B),0.07(O),0.07(A)
+Number of Sinkhorn-Knopp iterations 3
+Feature dimension ( d) 30(E),30(M),200(Y),40(B),30(O),30(A)
+Batch size 1
+Learning rate 10−3
+Weight decay 10−5
+Number of encoder layers 2
+Number of decoder layers 2
+Encoder dropout ratio 0.3
+Decoder dropout ratio 0.1
+Temperature ( τ′) 10−3
+Table 11. Hyperparameter settings. Edenotes 50 Salads ( Eval granularity), Mdenotes 50 Salads ( Mid granularity), Ydenotes YouTube
+Instructions, Bdenotes Breakfast, Odenotes Desktop Assembly ( Orig set), and Adenotes Desktop Assembly ( Extra set).
+[19] Markus Funk, Thomas Kosch, Scott W Greenwald, and Al-
+brecht Schmidt. A benchmark for interactive augmented re-
+ality instructions for assembly tasks. In Proceedings of the
+14th international conference on mobile and ubiquitous mul-
+timedia , pages 253–257, 2015. 1
+[20] Yifei Huang, Yusuke Sugano, and Yoichi Sato. Improving
+action segmentation via graph-based temporal reasoning. In
+Proceedings of the IEEE/CVF conference on computer vi-
+sion and pattern recognition , pages 14024–14034, 2020. 2
+[21] Yuchi Ishikawa, Seito Kasai, Yoshimitsu Aoki, and Hi-
+rokatsu Kataoka. Alleviating over-segmentation errors
+by detecting action boundaries. In Proceedings of the
+IEEE/CVF winter conference on applications of computer
+vision , pages 2322–2331, 2021. 2
+[22] Jirasak Ji, Warut Pannakkong, and Jirachai Buddhakulsom-
+siri. A computer vision-based model for automatic mo-
+tion time study. CMC-COMPUTERS MATERIALS & CON-
+TINUA , 73(2):3557–3574, 2022. 1
+[23] Jirasak Ji, Warut Pannakkong, Pham Duc Tai, Chawalit
+Jeenanunta, and Jirachai Buddhakulsomsiri. Motion time
+study with convolutional neural network. In Integrated Un-
+certainty in Knowledge Modelling and Decision Making:
+8th International Symposium, IUKM 2020, Phuket, Thai-
+land, November 11–13, 2020, Proceedings 8 , pages 249–
+258. Springer, 2020. 1
+[24] Svebor Karaman, Lorenzo Seidenari, and Alberto
+Del Bimbo. Fast saliency based pooling of fisher en-
+coded dense trajectories. In ECCV THUMOS Workshop ,
+volume 1, page 5, 2014. 2
+[25] Hamza Khan, Sanjay Haresh, Awais Ahmed, Shakeeb Sid-
+diqui, Andrey Konin, M Zeeshan Zia, and Quoc-Huy Tran.
+Timestamp-supervised action segmentation with graph con-
+volutional networks. In 2022 IEEE/RSJ International Con-
+ference on Intelligent Robots and Systems (IROS) , pages
+10619–10626. IEEE, 2022. 1, 2
+[26] Diederik P Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. arXiv preprint , 2014. 5
+[27] Hilde Kuehne, Ali Arslan, and Thomas Serre. The language
+of actions: Recovering the syntax and semantics of goal-
+directed human activities. In Proceedings of the IEEE con-ference on computer vision and pattern recognition , pages
+780–787, 2014. 6
+[28] Hilde Kuehne, Juergen Gall, and Thomas Serre. An end-to-
+end generative framework for video segmentation and recog-
+nition. In 2016 IEEE Winter Conference on Applications of
+Computer Vision (WACV) , pages 1–8. IEEE, 2016. 2, 6
+[29] Hilde Kuehne, Alexander Richard, and Juergen Gall. Weakly
+supervised learning of actions from transcripts. Computer
+Vision and Image Understanding , 163:78–89, 2017. 1, 2
+[30] Anna Kukleva, Hilde Kuehne, Fadime Sener, and Jurgen
+Gall. Unsupervised learning of action classes with contin-
+uous temporal embedding. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition ,
+pages 12066–12074, 2019. 1, 2, 6, 7, 8, 9
+[31] Sateesh Kumar, Sanjay Haresh, Awais Ahmed, Andrey
+Konin, M Zeeshan Zia, and Quoc-Huy Tran. Unsupervised
+action segmentation by joint representation learning and on-
+line clustering. In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition , pages 20174–
+20185, 2022. 1, 2, 3, 5, 6, 7, 8, 9, 11
+[32] Colin Lea, Michael D Flynn, Rene Vidal, Austin Reiter, and
+Gregory D Hager. Temporal convolutional networks for ac-
+tion segmentation and detection. In proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition ,
+pages 156–165, 2017. 1, 2
+[33] Peng Lei and Sinisa Todorovic. Temporal deformable resid-
+ual networks for action segmentation in videos. In Proceed-
+ings of the IEEE conference on computer vision and pattern
+recognition , pages 6742–6751, 2018. 1, 2
+[34] Jun Li, Peng Lei, and Sinisa Todorovic. Weakly supervised
+energy-based learning for action segmentation. In Proceed-
+ings of the IEEE/CVF International Conference on Com-
+puter Vision , pages 6243–6251, 2019. 1, 2
+[35] Jun Li and Sinisa Todorovic. Set-constrained viterbi for
+set-supervised action segmentation. In Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 10820–10829, 2020. 2
+[36] Jun Li and Sinisa Todorovic. Action shuffle alternating learn-
+ing for unsupervised action segmentation. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 12628–12636, 2021. 1, 2, 6, 7, 8
+12[37] Shi-Jie Li, Yazan AbuFarha, Yun Liu, Ming-Ming Cheng,
+and Juergen Gall. Ms-tcn++: Multi-stage temporal convolu-
+tional network for action segmentation. IEEE Transactions
+on Pattern Analysis and Machine Intelligence , 2020. 1, 2
+[38] Zhe Li, Yazan Abu Farha, and Jurgen Gall. Temporal action
+segmentation from timestamp supervision. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 8365–8374, 2021. 1, 2
+[39] Lai Xing Ng, Jamie Ng, Keith TW Tang, Liyuan Li, Mark
+Rice, and Marcus Wan. Using visual intelligence to auto-
+mate maintenance task guidance and monitoring on a head-
+mounted display. In Proceedings of the 2019 5th Interna-
+tional Conference on Robotics and Artificial Intelligence ,
+pages 70–75, 2019. 1
+[40] Behnoosh Parsa and Ashis G Banerjee. A multi-task learning
+approach for human activity segmentation and ergonomics
+risk assessment. In Proceedings of the IEEE/CVF Win-
+ter Conference on Applications of Computer Vision , pages
+2352–2362, 2021. 1
+[41] Behnoosh Parsa, Behzad Dariush, et al. Spatio-temporal
+pyramid graph convolutions for human action recognition
+and postural assessment. In Proceedings of the IEEE/CVF
+Winter Conference on Applications of Computer Vision ,
+pages 1080–1090, 2020. 1
+[42] Adam Paszke, Sam Gross, Soumith Chintala, Gregory
+Chanan, Edward Yang, Zachary DeVito, Zeming Lin, Al-
+ban Desmaison, Luca Antiga, and Adam Lerer. Automatic
+differentiation in pytorch. 2017. 5
+[43] Rahul Rahaman, Dipika Singhania, Alexandre Thiery, and
+Angela Yao. A generalized and robust framework for times-
+tamp supervision in temporal action segmentation. In Com-
+puter Vision–ECCV 2022: 17th European Conference, Tel
+Aviv, Israel, October 23–27, 2022, Proceedings, Part IV ,
+pages 279–296. Springer, 2022. 1, 2
+[44] Alexander Richard, Hilde Kuehne, and Juergen Gall. Weakly
+supervised action learning with rnn based fine-to-coarse
+modeling. In Proceedings of the IEEE Conference on Com-
+puter Vision and Pattern Recognition , pages 754–763, 2017.
+1, 2
+[45] Alexander Richard, Hilde Kuehne, and Juergen Gall. Ac-
+tion sets: Weakly supervised action segmentation without
+ordering constraints. In Proceedings of the IEEE conference
+on Computer Vision and Pattern Recognition , pages 5987–
+5996, 2018. 2
+[46] Alexander Richard, Hilde Kuehne, Ahsan Iqbal, and Juer-
+gen Gall. Neuralnetwork-viterbi: A framework for weakly
+supervised video learning. In Proceedings of the IEEE Con-
+ference on Computer Vision and Pattern Recognition , pages
+7386–7395, 2018. 1, 2
+[47] Marcus Rohrbach, Sikandar Amin, Mykhaylo Andriluka,
+and Bernt Schiele. A database for fine grained activity de-
+tection of cooking activities. In 2012 IEEE conference on
+computer vision and pattern recognition , pages 1194–1201.
+IEEE, 2012. 2
+[48] Saquib Sarfraz, Naila Murray, Vivek Sharma, Ali Diba, Luc
+Van Gool, and Rainer Stiefelhagen. Temporally-weighted
+hierarchical clustering for unsupervised action segmentation.InProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , pages 11225–11234, 2021.
+6
+[49] Fadime Sener and Angela Yao. Unsupervised learning and
+segmentation of complex activities from video. In Proceed-
+ings of the IEEE Conference on Computer Vision and Pattern
+Recognition , pages 8368–8376, 2018. 1, 2, 6, 7, 8
+[50] Ozan Sener, Amir R Zamir, Silvio Savarese, and Ashutosh
+Saxena. Unsupervised semantic parsing of video collec-
+tions. In Proceedings of the IEEE International Conference
+on Computer Vision , pages 4480–4488, 2015. 2
+[51] Yaser Souri, Yazan Abu Farha, Emad Bahrami, Gianpiero
+Francesca, and Juergen Gall. Robust action segmentation
+from timestamp supervision. arXiv preprint , 2022. 1, 2
+[52] Sebastian Stein and Stephen J McKenna. Combining em-
+bedded accelerometers with computer vision for recognizing
+food preparation activities. In Proceedings of the 2013 ACM
+international joint conference on Pervasive and ubiquitous
+computing , pages 729–738, 2013. 6
+[53] Bing Su and Gang Hua. Order-preserving wasserstein dis-
+tance for sequence matching. In Proceedings of the IEEE
+conference on computer vision and pattern recognition ,
+pages 1049–1057, 2017. 3
+[54] Sirnam Swetha, Hilde Kuehne, Yogesh S Rawat, and
+Mubarak Shah. Unsupervised discriminative embedding for
+sub-action learning in complex activities. In 2021 IEEE In-
+ternational Conference on Image Processing (ICIP) , pages
+2588–2592. IEEE, 2021. 1, 2, 6, 7, 8
+[55] Kevin Tang, Li Fei-Fei, and Daphne Koller. Learning la-
+tent temporal structure for complex event detection. In 2012
+IEEE Conference on Computer Vision and Pattern Recogni-
+tion, pages 1250–1257. IEEE, 2012. 2
+[56] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. Advances in neural
+information processing systems , 30, 2017. 2
+[57] Rosaura G VidalMata, Walter J Scheirer, Anna Kukleva,
+David Cox, and Hilde Kuehne. Joint visual-temporal em-
+bedding for unsupervised learning of actions in untrimmed
+sequences. In Proceedings of the IEEE/CVF Winter Confer-
+ence on Applications of Computer Vision , pages 1238–1247,
+2021. 1, 2, 6, 7, 8, 10
+[58] Heng Wang and Cordelia Schmid. Action recognition with
+improved trajectories. In Proceedings of the IEEE inter-
+national conference on computer vision , pages 3551–3558,
+2013. 6
+[59] Zhe Wang, Hao Chen, Xinyu Li, Chunhui Liu, Yuan-
+jun Xiong, Joseph Tighe, and Charless Fowlkes. Sscap:
+Self-supervised co-occurrence action parsing for unsuper-
+vised temporal action segmentation. In Proceedings of the
+IEEE/CVF Winter Conference on Applications of Computer
+Vision , pages 1819–1828, 2022. 1, 2, 6, 7, 8
+[60] Fangqiu Yi, Hongyu Wen, and Tingting Jiang. Asformer:
+Transformer for action segmentation. arXiv preprint , 2021.
+2, 3
+13

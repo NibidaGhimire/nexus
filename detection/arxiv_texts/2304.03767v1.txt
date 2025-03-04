@@ -1,0 +1,794 @@
+Embodied Concept Learner:
+Self-supervised Learning of Concepts and Mapping
+through Instruction Following
+Mingyu Ding
+HKU
+MIT CSAILYan Xu
+CUHKZhenfang Chen
+MIT-IBM Watson AI LabDavid Cox
+MIT-IBM Watson AI Lab
+Ping Luo
+HKUJoshua B. Tenenbaum
+MIT BCS, CBMM, CSAILChuang Gan
+UMass Amherst
+MIT-IBM Watson AI Lab
+Abstract: Humans, even at a very early age, can learn visual concepts and under-
+stand geometry and layout through active interaction with the environment, and
+generalize their compositions to complete tasks described by natural languages in
+novel scenes. To mimic such capability, we propose Embodied Concept Learner
+(ECL)1in an interactive 3D environment. Speciﬁcally, a robot agent can ground
+visual concepts, build semantic maps and plan actions to complete tasks by learn-
+ing from human demonstrations and language instructions. ECL consists of: (i) an
+instruction parser that translates the natural languages into executable programs;
+(ii) an embodied concept learner that grounds visual concepts based on language
+descriptions/embeddings and a pretrained object proposal network; (iii) a map
+constructor that estimates depth and constructs semantic maps by leveraging the
+learned concepts; and (iv) a program executor with deterministic policies to exe-
+cute each program. ECL has several appealing beneﬁts thanks to its modularized
+design. Firstly, it enables the robotic agent to learn semantics and depth unsu-
+pervisedly acting like babies, e.g., ground concepts through active interaction and
+perceive depth by disparities when moving forward. Secondly, ECL is fully trans-
+parent and step-by-step interpretable in long-term planning. Thirdly, ECL could
+be beneﬁcial for the embodied instruction following (EIF), outperforming previ-
+ous works on the ALFRED benchmark when the semantic label is not provided.
+Also, the learned concept can be reused for other downstream tasks, such as rea-
+soning of object states.
+Keywords: Embodied AI, Embodied Concept Learner, Instruction Following
+1 Introduction
+Embodied instruction following (EIF) [1] is a popular task in robot learning. Given some multi-
+modal demonstrations (natural language and egocentric vision, as shown in Fig. 1) in a 3D environ-
+ment, a robot is required to complete novel compositional instructions in unseen scenes. The task
+is challenging because it requires accurate 3D scene understanding and semantic mapping, visual
+navigation, and object interaction.
+Recent works for EIF can be typically divided into two streams and they have certain limitations. 1)
+End-to-end imitation learning methods [1, 2, 3, 4] directly input the visual observation of the current
+step and language instructions into the model, and output the action for the next step. For exam-
+ple, Pashevich et al. [4] has presented the episodic transformer to predict the agent’s actions with
+an attention mechanism and a progress monitor. Such models work by simply memorizing train-
+ing scenes and trajectories. While they achieve good performance in seen environments, they fail
+1Project page: http://ecl.csail.mit.edu/
+6th Conference on Robot Learning (CoRL 2022), Auckland, New Zealand.arXiv:2304.03767v1  [cs.CV]  7 Apr 2023to generalize well in unseen scenes. Furthermore, these black-box models often lack transparency,
+interpretability, and generalizability. 2) Mapping-based methods [5, 6] leverage the map representa-
+tions [7, 8, 9, 10] by building a 3D voxel map from the predicted depths and instance segmentation
+masks. A semantic top-down map of the scene is then constructed and updated at each step. These
+works perform explicit exploration and interactions through semantic search policies [6] to achieve
+the natural language goal, which is transparent and interpretable. However, they assume that the
+agent has learned the depth and semantics passively from large amounts of data. The semantic la-
+bels and depth supervision are often labor-intensive and hard to obtain in the real world. We argue
+that such supervision signals are unnecessary since we can learn language concepts and visual dis-
+parity through interactions in the environments. For example, by achieving the goal described in
+Fig. 1, humans can learn what the concepts “knife” and “table” are and perceive that the table in
+frame 2 is physically closer to the agent than frame 1.
+Goal:"place a knifeon the microwaveoven table".
+1.Exploration2.Interaction3.VisualNavigation
+"grab the knifein the back the kitchen sink"
+"walk over tothe microwave"
+"place the knifeon the left sideofthetable"
+"walk over to the kitchen sink"4.Interaction
+Figure 1: An example of a language goal and its corresponding
+four subgoals. The top and bottom rows show visual observations
+by the robotic agent and our grounded semantics, respectively.
+We show that we align object concepts encoded in subgoals with
+visual proposals to learn concepts in the embodied environment.This paper answers a question
+naturally raised from the above
+issues: can we make the agent
+behave like a baby? A baby
+is able to learn domain knowl-
+edge from environmental inter-
+actions and expert demonstra-
+tions without additional supervi-
+sion to achieve the natural lan-
+guage goal. We speculate that
+babies do this possibly in a way
+similar as: (i) Learn skills and
+concepts from expert demon-
+strations (environment observa-
+tions and language instructions),
+e.g., the skill “place” and con-
+cepts “knife” and “table” can be
+grounded from the demonstra-
+tion “place a knife on the mi-
+crowave oven table”. (ii) Given
+a new compositional language goal like “put a clean tomato on the dining table” in Fig. 2, one may
+process it into many subgoals, like “pickup tomato”, “clean tomato”, and “put it on the table”. (iii)
+Explore the scene and build a semantic map, where depth information is estimated automatically
+based on the disparity when moving forward or backward. (iv) Complete each subgoal based on the
+learned semantic map and skills, and update the semantic map dynamically.
+Motivated by the above observations, we propose Embodied Concept Learner (ECL) that mimics
+baby learning for embodied instruction following. It consists of: (i) an instruction parser that parses
+the natural languages into executable programs; (ii) an embodied concept learner that aligns lan-
+guage concepts with visual instances (a pretrained object proposal network and a word embedding
+model are used); (iii) a map constructor based on the grounded semantic concepts and unsupervised
+depth estimation; and (iv) a program executor with deterministic policies to perform each subtask.
+Our contributions are three-fold. 1) We introduce ECL, a modular framework that can ground vi-
+sual concepts, build semantic maps and plan actions to complete complex tasks by learning purely
+from human demonstrations and language instructions. 2) ECL achieves competitive performance
+without semantic labels on embodied instruction following (ALFRED) [1], while maintaining high
+transparency and step-by-step interpretability. 3) We could also transfer the learned concepts to
+other tasks in the embodied environment, like the reasoning of object states.
+2 Related Work
+Embodied Instruction Following. Language-guided embodied tasks have drawn much attention,
+including visual language navigation (VLN) [11, 12, 13, 14, 15, 16, 17], embodied instruction fol-
+lowing (EIF) [18, 19, 20, 21, 22, 1], object goal navigation [23, 24, 25], embodied question answer-
+ing [26, 27], program sketch generation [28, 29], and embodied representation learning [30, 31, 32].
+Among them, EIF is one of the most challenging tasks, requiring simultaneous accurate 3D scene
+2Obj 0Obj 1…Obj 7ConceptGroundingTomatoDiningTableSinkBasinFaucet
+Ⅲ. MapConstructorandIV .Program ExecutorⅠ. Instruction ParsorPickUpPutToggleOnToggleOffPickUpPutTomatoTomato, SinkBasinFaucetFaucetTomatoTomato, Table
+Ⅱ. Embodied Concept Learner
+DeterministicPolicy3DProjection&Mapping
+ObjectProposalsObjectFeaturesWordEmbeddings
+Action:ToggleOnFaucetDepth(unsup.)BEV MapDepth ParsingProposalExtraction
+tt-1t-2BayesianFilteringPutacleanTomatoontheDiningTable.ProgramParsing
+Figure 2: The framework of ECL. (i) Given a natural language goal, the instruction parser ﬁrst
+parses it into a sequence of executable programs. (ii) The embodied concept learner extracts regional
+proposals in current frame and align them with the learned concepts. (iii) The map constructor then
+builds up semantic maps based on estimated depths and grounded visual concepts. (iv) Having the
+semantic maps and executable programs, the program executor predicts the agent’s next action with
+a deterministic policy.
+understanding and memory, visual navigation, and object interaction. [1, 4] present end-to-end mod-
+els with an attention mechanism to process language and visual input and past trajectories, predicting
+the subsequent action directly. After that, works [20, 22, 19] modularly process raw language and
+visual inputs into structured forms by object detectors [33, 34, 35]. The above methods lack trans-
+parency and generalizability to unseen scenes. Recently, [5, 6] proposed mapping-based methods to
+convert visual semantics and estimated depth into Bird’s-eye-view (BEV) semantic maps and navi-
+gate based on the spatial memory. However, such methods require depth and semantic supervisions,
+hence impractical in real-world scenarios.
+Visual Grounding and Concept Learning. Our work is also related to visual grounding [36, 37,
+38, 39, 40, 41, 42, 43, 44] and concept learning [45, 46, 47, 48, 49, 50], which align concepts onto
+objects in the visual scenes. Traditional visual grounding methods [39, 37] map text phrases and
+regional features of images into a common space for cross-modality matching. Recently, there are
+some works [45, 46, 51] learning visual concepts through question answering in passive images or
+videos. Differently, we study learning both visual concepts and physical depths through language
+instructions in the active embodied environment, which is more similar to how humans learn in the
+real world. Some works study language grounding in 3D world [52, 53, 54]. However, they do
+not involve robot agents and active exploration. Hermann et al. [49] interprets language in a sim-
+ple simulated 3D environment, which does not consider diverse objects and actions in challenging
+photorealistic environments.
+3 Method
+In this work, we focus on the embodied instruction following task, i.e., a robotic agent is required to
+achieve the goal in the language instruction by exploring, navigating, and interacting with the em-
+bodied environment. Embodied Concept Learner (ECL) includes an instruction parser, an embodied
+concept learner, a map constructor, and a program executor. The modularized design ensures its
+transparency and step-by-step interpretability. An overview of ECL is shown in Fig. 2.
+3.1 Instruction Parser
+The instruction parser converts high-level instructions into a sequence of subtasks represented by
+programs. Existing works [6, 5, 20, 22, 4, 28, 29] use expert trajectories with subtasks annotations
+as supervision because they are easy to obtain as stated in [6]. Following this strategy, we ﬁne-tune
+3a pre-trained BERT model [55] learned the mapping from a high-level instruction to a sequence of
+subtasks ( e.g., “put a clean tomato on the diningtable” !“(Pickup, Tomato), (Put, SinkBasin), ...”)
+leveraging the subtasks sequences annotations in ALFRED [1]. For each subtask, the instruction
+parser predicts the arguments, which are the same as in [6]: (i) “obj” for the object to be picked
+up, (ii) “recep” for the receptacle where “obj” should be ultimately placed, (iii) “sliced” for whether
+“obj” should be sliced, and (iv) “parent” for tasks with intermediate movable receptacles ( e.g.,
+“cup” in “Put a knife in a cup on the table”). After we get the subtask programs, we extract the
+language embeddings e2R768of the object words in all subprograms through a pretrained Bert
+model (bert-base-uncased) [56] for the follow-up concept learner module.
+3.2 Embodied Concept Learner
+Humans, even at a very early age, naturally perceive and parse the scene as objects for further
+understanding, i.e., grouping pixels to regions without knowing their semantics [57, 58]. They then
+learn the object concepts from active interactions or expert demonstrations. Similarly, the embodied
+concept learner leverages an object proposal network [33] without category labels and grounds the
+object semantics from subgoal programs. There are two cases to be considered: 1) If a subgoal
+completes, the object and its corresponding receptacle objects must be displayed in the current
+visual frame, and most likely in adjacent frames. In this way, the concept of these objects can be
+grounded. For example, “go to microwave ”, “put the mug on the coffeemachine ”, and “put a mug
+with a pen in it on the shelf ” involve 1, 2, and 3 objects, respectively. We sample visual data from
+four frames before completing the subtask and two frames after it to learn the visual concept based
+on the corresponding action descriptions. 2) If the robot agent acts “Pickup an object”, the object
+appears in visual observation until the robot drops it. The two types of interaction data are merged
+and shufﬂed and used as input to our embodied concept learner.
+Concretely, letfo1;o2;:::;o kgdenoteskobjects detected in an visual input, and ff1;f2;:::fkgis
+their corresponding feature representations from the last layer of the object proposal network ( f2
+R1024). Letfe1;e2;:::;e lgrepresentslword embeddings in a subgoal (program representation,
+e2R768, stated in Sec. 3.1). We ﬁrst project the visual representation finto the semantic space
+f02R768where the word embeddings reside by a two-layer perceptron (MLPs). The MLPs have
+dimensions of 1024!1024!768with Layer Normalization [59] and GELU activation [60]
+between the two layers. We then leverage the Hungarian maximum matching algorithm [61] for
+thek-lmatching, and a min(k;l)object visual representations can be matched with their word
+embeddings. Given an assignment matrix x2Rkl, the task could be formulated as a minimum
+cost assignment problem mathematically as follows:
+min
+xkX
+i=1lX
+j=1d(f0
+i;ej)xijs.t.kX
+i=1xij= 1;lX
+j=1xij2f0;1g;xij2f0;1g; (1)
+whered()denotes the mean square error (MSE) and we assume l<k here, vice versa. In this way,
+we solve a min-min optimization problem by Hungarian matching, where the ﬁrst minimization is
+used to ﬁnd the best match among the two sets of features (Hungarian matching); and the second
+minimization is to optimize a smaller L2 loss on the matching for learning better projected represen-
+tationf0. Both the mapping function (MLPs) and the matching are learned at the same time. Thus
+the MLP and the matching matrix xis jointly learned from Hungarian matching.
+During inference, we project each object proposal representation into the semantic space and per-
+form nearest neighbor search (NNS) to assign a category label for it. We also calculate a soft class
+probabilitypifor the i-th object by softmax (f0:1=dijgj), wheredijis the retrieval distance be-
+tween the i-th object feature and the j-th word embedding. The semantic probability pwill be used
+for 1) Bayesian ﬁltering in mapping and 2) statistics of the most likely location of each type of object
+as a navigation policy.
+3.3 Map Constructor
+Human beings understand the semantics and layouts of space, e.g., a room, mainly by ﬁrst moving
+around, then perceiving the depth (geometry), and ﬁnally building up a semantic virtual map in
+our mind [62]. To mimic this process, we propose a semantic map construction module leveraging
+the unsupervised depth learning technique [63, 64] and probabilistic mapping inspired by Bayesian
+4Table 1: Comparison with other methods on ALFRED benchmark. The upper part contains unsu-
+pervised methods while the lower part contains the supervised counterparts with semantic or depth
+supervisions. We also report the ECL-Oracle model as an upper bound, with supervised segmenta-
+tion and depth. The top scores are in bold .Red denotes the top success rate (SR) (ranking metric of
+the leaderboard) on the test unseen set.
+MethodSupervision Test Seen Test Unseen
+Semantic DepthPLWGC
+(%)GC
+(%)PLWSR
+(%)SR
+(%)PLWGC
+(%)GC
+(%)PLWSR
+(%)SR
+(%)
+SEQ2SEQ[1]   6.27 9.42 2.02 3.98 4.26 7.03 0.08 3.90
+MOCA [2]   22.05 28.29 15.10 22.05 9.99 14.28 2.72 5.30
+LAV [3]   13.18 23.21 6.31 13.35 10.47 17.27 3.12 6.38
+E.T. [4]   34.93 45.44 27.78 38.42 11.46 18.56 4.10 8.57
+ECL (O URS)  9.47 18.74 4.97 10.37 11.50 19.51 4.13 9.03
+EMBERT [18]p 32.63 38.40 24.36 31.48 8.87 12.91 2.17 5.05
+LWIT [19]p 23.10 40.53 43.10 30.92 16.34 20.91 5.60 9.42
+HITUT [22]p 17.41 29.97 11.10 21.27 11.51 20.31 5.86 13.87
+ABP [20]p 4.92 51.13 3.88 44.55 2.22 24.76 1.08 15.43
+VLNBERT [21]p 19.48 33.35 13.88 24.79 13.18 22.60 7.66 16.29
+HLSM [5]p p11.53 35.79 6.69 25.11 8.45 27.24 4.34 16.29
+ECL W.DEPTH (OURS)p12.34 27.86 8.02 18.26 11.11 27.30 7.30 17.24
+ECL-O RACLE (OURS)pp15.19 36.40 10.56 25.90 13.08 35.02 9.33 23.68
+ﬁltering. Concretely, we ﬁrst train a monocular depth estimation network unsupervisedly, leveraging
+the photometric consistency [63] among adjacent RGB observations captured by a roaming agent.
+We use the unsupervised depth estimation for map construction. To build up the map, we represent
+the scene as voxels. Each voxel maintains a semantic probability vector pv(obtained from Sec. 3.2)
+and a scalar variable vthat represents the measurement uncertainty of this voxel. As the new
+depth observation come in, we ﬁrst project it to 3D space as a 3D point cloud and then transform
+it into the map space according to the agent ego-motion. The transformed point cloud is voxelized
+for the follow-up map fusion. We denote the newly observed point clouds (after voxelization) as
+S=f(ps;s)gjSj
+s=1and the current voxel map as M=f(pm;m)gjMj
+m=1. The newly observed
+voxels are fused to update the previous map as:
+pm 2
+s
+2s+2mpm+2
+m
+2s+2mps; m ( 2
+s+ 2
+m) 1
+2: (2)
+Here, we assume psandpmare the semantic log probability vectors (obtained from Sec. 3.2) be-
+longing to a pair of corresponding voxels in the new frame and the current map respectively. sand
+mare the estimated variances of these two voxels. Initially, the variance sof the observed voxel
+is predicted by a CNN. This CNN is trained with the depth estimation network in an unsupervised
+manner by assuming a Gaussian noise model following [65]. The uncertainty-aware mapping makes
+it possible to correct previous mapping errors as the exploration goes on. Our probabilistic mapping
+is proven to be essential especially when the depth measurements are erroneous.
+3.4 Program Executor
+After concept learning and mapping, we take the average semantic probability map from demonstra-
+tions as our navigation policy. It indicates the location where each type of object most likely exists.
+Although the previous work FILM [6] trains a semantic policy model to predict the possible location
+of an object given a part of the semantic layout, the model is likely to be over-ﬁtting. In contrast, our
+semantic policy is the averaged semantic map based on statistics without training, producing stable
+results. As shown in Fig. 2, given the predicted subprogram, the current semantic map, and a search
+goal sampled from the semantic policy (averaged semantic map), the deterministic policy outputs a
+navigation or interaction action.
+The deterministic policy is deﬁned as follows. If the object needed in the current subtask is observed
+in the current semantic map, the location of the object is selected as the goal; otherwise, we sample
+the location based on the distribution of the corresponding object class in our averaged semantic
+map as the goal. The robot agent then navigates towards the goal via the Fast Marching Method [66]
+and performs the required interaction actions.
+5Grounding Acc. PLWGC GC PLWSR SR0204060
+49.1
+10.625.4
+6.915.957.6
+11.127.3
+7.317.2Learned Encoding
+Word EmbeddingFigure 3: Results with different language repre-
+sentations in concept learning on test unseen .
+PLWGC GC PLWSR SR0510152025
+6.016.6
+2.87.410.919.8
+4.29.0Maximum Fusion
+Bayesian FilteringFigure 4: Evaluation with different semantic
+mapping techniques on test unseen .
+4 Experiments
+We show the effectiveness of each component of ECL on the ALFRED [1] benchmark. For the EIF
+task, we report Success Rate (SR), goal-condition success (GC), path length weighted SR (PLWSR),
+and path length weighted GC (PLWGC) as the evaluation metrics on both seen and unseen environ-
+ments. SR is a binary indicator of whether all subtasks were completed. GC denotes the ratio of goal
+conditions completed at the end of an episode. Both SR and GC can be weighted by (path length of
+the expert trajectory)/(path length taken by the agent), which are called PLWSR and PLWGC. We
+also report the (grounding) accuracy for the concept learning and downstream reasoning tasks. More
+details of the benchmark and the training settings for each component can be found in Appendix.
+4.1 Embodied Instruction Following on ALFRED
+The results on ALFRED are shown in Tab. 1. ECL achieves new state-of-the-art (SR: 9.03 vs. 8.57)
+on the test unseen set when there are no semantic and depth labels. Though counterparts [4, 2]
+have better performance on test seen , they are likely to be over-ﬁtting by simply memorizing the
+visible scenes. However, our ECL achieves stable results between the test seen set and unseen
+set, demonstrating its generalizability. In Fig. 5, we show a trajectory to execute “place a washed
+sponge in a tub” and the intermediate estimates generated by ECL.
+When depth supervision is used, our ECL w. depth model has a 17.24% success rate on the
+test unseen set, as well as competitive goal-condition success rate and path length weighted re-
+sults. Note that FILM [6] leverages additional dense semantic maps as supervision to train a policy
+network, hence not apple-to-apple comparable to our work. We report the ECL-Oracle model as
+an upper bound, which learns supervised segmentation and depth, and can be seen as a variant of
+FILM [6] without the policy network. It achieves 23.68% SR on test unseen .
+Ablation Study. We conduct experiments to study the effect of the language representation in
+concept learning, and the mapping strategy in map construction. The results are shown in Fig. 3
+and Fig. 4, offering 1) beneﬁting from the natural structure of language, the word embedding is
+better than the learned encoding, and 2) Bayesian ﬁltering outperforms maximum fusion as the soft
+probabilities could correct wrong labels.
+4.2 Evaluation of Concept Learning
+Quantitative Evaluation. We report the per-task evaluation results in Fig. 6. The concept learn-
+ing accuracies of objects “HandTowel”, “Laptop”, “Bowl”, and “Knife” are above 80%, because
+these objects frequently appear alone in the scene (easy to learn and less likely to be confused).
+Objects like “Basketball”, “Glassbottle”, “Cellphone”, and “Teddybear” are rarely shown in the en-
+vironment, thus their concepts are difﬁcult to learn. We also notice that the object “apple” appears
+very rarely, but our model grounds its concept well with the help of language embeddings, e.g., the
+relationship between “tomato” and “apple”.
+Error Modes. Tab. 2 shows the error mode of ECL w. depth on ALFRED validation set. We see
+that “blocking and object not accessible” is the most common error mode, which is mainly caused
+by incorrectly estimated depth or undetected visual objects/concepts. Additionally, around 30% of
+the failures are due to wrongly grounded concepts or the target object not being found. If we replace
+our unsupervised concept learning with supervised semantics (ECL-Oracle), the percentage of the
+6Search for “Sponge”Instruction: Place a washed sponge in a tub.Pick up “sponge”Go to “SinkBasin”Wash “Sponge”Pick up “Sponge”Put “Sponge” in “Hub”
+t=4t=12t=17t=45t=50t=53Egocentric RGB ObservationUnsupervisedDepth EstimationUnsupervisedSemantic GroundingSemantic MapFigure 5: Visualization of intermediate estimates by ECL when an agent tries to accomplish an
+instruction. Based on the RGB observations, our system estimates the depths and semantic masks.
+The BEV semantic map is gradually established with these estimates as the exploration goes on.
+The goals (sub goal/ﬁnal goal) are represented by big blue dots in the semantic map, while the agent
+trajectories are plotted as small red dots.
+Table 2: The percentage of failure cases belong-
+ing to different failure modes on validation set.
+Error mode Seen % Unseen %
+Grounding error/Target not found 36.38 28.53
+Interaction failures 6.59 10.39
+Collisions 4.34 4.43
+Blocking/Object not accessible 31.29 39.75
+Others 21.41 16.90Table 3: Concept reasoning accuracy. We lever-
+age ECL to infer whether an object exists or to
+count its number in a scene.
+Model Grounding % Exist % Count %
+Random Guess – 50.0 25.0
+C3D [67] – 78.1 34.4
+ECL (Ours) 57.6 90.6 56.3
+error mode for “Grounding error/Target not found” changes to 7.38% and “blocking and object not
+accessible” becomes 44.00%.
+Visualization. We visualize our concept learning results in Fig. 8 by showing the original image,
+the supervised learned semantics, and our grounded semantics by the concept learner. We observe
+our concept learning keeps more object proposals than the supervised model. While most of the
+main objects in an image can be grounded correctly, there exist a few wrong labels in overlapped
+or corner areas. We also show two failure cases on the third and fourth rows of Fig. 8. The ﬁrst
+one recognizes “ﬂoor” as “diningtable”, a bug that could be ﬁxed by our Bayesian ﬁltering-based
+semantic mapping. The other one identiﬁes “coffeetable” as “drawer”, which causes the error “target
+not found”. The instruction would succeed if we take the ground truth concept for “coffeetable”.
+4.3 Concept Reasoning
+In addition to EIF, we show the learned concept can be transferred to embodied reasoning tasks,
+e.g., (i) the existence of objects in the scene, (ii) count the number of objects in the scene (Fig. 7).
+We build the reasoning dataset by randomly sampling 16 objects from 10 scenes, of which 8 scenes
+are used for training and the other 2 for testing. A na ¨ıve baseline is random guessing with 50%
+accuracy for the exist task and 25% accuracy for the count task. We also train a C3D model [67]
+that samples 16 frames as input and outputs predictions directly. Our ECL performs clear and
+step-by-step interpretable reasoning through semantic grounding and mapping. As Tab. 3 shows, it
+70 20 40 60 80 100
+Concept Learning Accuracy
+(Small Object) (%)HandTowelKeyChainBowlTelevisionBoxLaptopFloorLampTowelPillowKnifeVaseTomatoNewspaperBookPlateAppleMugCDClothTeddyBearCellPhoneGlassbottleBasketball
+85.483.281.581.174.070.068.167.466.765.961.560.057.553.151.450.246.738.621.418.113.21.30.0 Overall AverageFigure 6: Concept learning ac-
+curacy. Results for challenging
+small objects are shown. Com-
+plete analyses are in appendix.
+Q1: Howmanysofasare intheroom?A: 2.
+VisualFrameSemanticMapQ2: Aretheknifeandspatulaonthesametable?A: Yes.
+VisualFrameLearnedConceptsFigure 7: Examples of con-
+cept reasoning by ECL: the
+count task and the high-level
+question-answering.
+Figure 8: Concept learning vi-
+sualization. From left to right:
+the original image, supervised
+instance segmentation map, and
+our concept learning results.
+outperforms both baselines by a large margin. By embodied concept learning, ECL can also resolve
+high-level 3D question-answering tasks, like “whether two objects appear on a table” in Fig. 7.
+5 Discussions
+This paper proposes ECL, a general framework that can ground visual concepts, build semantic
+maps and plan actions to accomplish tasks by learning purely from human demonstrations and lan-
+guage instructions. While achieving good performance on embodied instruction following, ECL has
+limitations. Although the ALFRED benchmark is photo-realistic, comprehensive, and challenging,
+there still exists a gap between the embodied environment and the real world. We leave the physical
+deployment of the framework as our future work.
+Acknowledgements. This work is supported by MIT-IBM Watson AI Lab and its member company
+Nexplore, Amazon Research Award, ONR MURI, DARPA Machine Common Sense program, ONR
+(N00014-18-1-2847), and Mitsubishi Electric. Ping Luo is supported by the General Research Fund
+of HK No.27208720, No.17212120, and No.17200622.
+References
+[1] M. Shridhar, J. Thomason, D. Gordon, Y . Bisk, W. Han, R. Mottaghi, L. Zettlemoyer, and
+D. Fox. Alfred: A benchmark for interpreting grounded instructions for everyday tasks. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages
+10740–10749, 2020.
+[2] K. P. Singh, S. Bhambri, B. Kim, R. Mottaghi, and J. Choi. Moca: A modular object-centric
+approach for interactive instruction following. arXiv preprint arXiv:2012.03208 , 2020.
+[3] K. Nottingham, L. Liang, D. Shin, C. C. Fowlkes, R. Fox, and S. Singh. Modular framework
+for visuomotor language grounding. arXiv preprint arXiv:2109.02161 , 2021.
+[4] A. Pashevich, C. Schmid, and C. Sun. Episodic transformer for vision-and-language naviga-
+tion. arXiv preprint arXiv:2105.06453 , 2021.
+[5] V . Blukis, C. Paxton, D. Fox, A. Garg, and Y . Artzi. A persistent spatial semantic representation
+for high-level natural language instruction execution. In Proceedings of the Conference on
+Robot Learning (CoRL) , 2021.
+8[6] S. Y . Min, D. S. Chaplot, P. Ravikumar, Y . Bisk, and R. Salakhutdinov. Film: Following
+instructions in language with modular methods. arXiv preprint arXiv:2110.07342 , 2021.
+[7] M. R. Walter, S. M. Hemachandra, B. S. Homberg, S. Tellex, and S. Teller. Learning semantic
+maps from natural language descriptions. In Robotics: Science and Systems , 2013.
+[8] S. Hemachandra, F. Duvallet, T. M. Howard, N. Roy, A. Stentz, and M. R. Walter. Learning
+models for following natural language directions in unknown environments. In 2015 IEEE
+International Conference on Robotics and Automation (ICRA) , pages 5608–5615. IEEE, 2015.
+[9] S. Patki, A. F. Daniele, M. R. Walter, and T. M. Howard. Inferring compact representations for
+efﬁcient natural language understanding of robot instructions. In 2019 International Confer-
+ence on Robotics and Automation (ICRA) , pages 6926–6933. IEEE, 2019.
+[10] I. Kostavelis and A. Gasteratos. Semantic mapping for mobile robotics tasks: A survey.
+Robotics and Autonomous Systems , 66:86–103, 2015.
+[11] P. Anderson, Q. Wu, D. Teney, J. Bruce, M. Johnson, N. S ¨underhauf, I. Reid, S. Gould, and
+A. Van Den Hengel. Vision-and-language navigation: Interpreting visually-grounded naviga-
+tion instructions in real environments. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition , pages 3674–3683, 2018.
+[12] D. Fried, R. Hu, V . Cirik, A. Rohrbach, J. Andreas, L.-P. Morency, T. Berg-Kirkpatrick,
+K. Saenko, D. Klein, and T. Darrell. Speaker-follower models for vision-and-language navi-
+gation. In Advances in Neural Information Processing Systems , 2018.
+[13] F. Zhu, Y . Zhu, X. Chang, and X. Liang. Vision-language navigation with self-supervised
+auxiliary reasoning tasks. In Proceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition , pages 10012–10022, 2020.
+[14] L. Ke, X. Li, Y . Bisk, A. Holtzman, Z. Gan, J. Liu, J. Gao, Y . Choi, and S. Srinivasa. Tactical
+rewind: Self-correction via backtracking in vision-and-language navigation. In Proceedings
+of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 6741–6749,
+2019.
+[15] X. Wang, Q. Huang, A. Celikyilmaz, J. Gao, D. Shen, Y .-F. Wang, W. Y . Wang, and L. Zhang.
+Reinforced cross-modal matching and self-supervised imitation learning for vision-language
+navigation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 6629–6638, 2019.
+[16] C.-Y . Ma, Z. Wu, G. AlRegib, C. Xiong, and Z. Kira. The regretful agent: Heuristic-aided navi-
+gation through progress estimation. In Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , pages 6732–6740, 2019.
+[17] A. Zadaianchuk, G. Martius, and F. Yang. Self-supervised reinforcement learning with inde-
+pendently controllable subgoals. In Conference on Robot Learning . PMLR, 2022.
+[18] A. Suglia, Q. Gao, J. Thomason, G. Thattai, and G. Sukhatme. Embodied bert: A
+transformer model for embodied, language-guided visual task completion. arXiv preprint
+arXiv:2108.04927 , 2021.
+[19] V .-Q. Nguyen, M. Suganuma, and T. Okatani. Look wide and interpret twice: Improving per-
+formance on interactive instruction-following tasks. arXiv preprint arXiv:2106.00596 , 2021.
+[20] B. Kim, S. Bhambri, K. P. Singh, R. Mottaghi, and J. Choi. Agent with the big picture: Per-
+ceiving surroundings for interactive instruction following. In Embodied AI Workshop CVPR ,
+2021.
+[21] C. H. Song, J. Kil, T.-Y . Pan, B. M. Sadler, W.-L. Chao, and Y . Su. One step at a time: Long-
+horizon vision-and-language navigation with milestones. arXiv preprint arXiv:2202.07028 ,
+2022.
+[22] Y . Zhang and J. Chai. Hierarchical task learning from language instructions with uniﬁed trans-
+formers and self-monitoring. arXiv preprint arXiv:2106.03427 , 2021.
+9[23] D. S. Chaplot, D. P. Gandhi, A. Gupta, and R. R. Salakhutdinov. Object goal navigation using
+goal-oriented semantic exploration. Advances in Neural Information Processing Systems , 33,
+2020.
+[24] D. S. Chaplot, D. Gandhi, S. Gupta, A. Gupta, and R. Salakhutdinov. Learning to explore
+using active neural slam. arXiv preprint arXiv:2004.05155 , 2020.
+[25] C. Li, F. Xia, R. Mart ´ın-Mart ´ın, M. Lingelbach, S. Srivastava, B. Shen, K. E. Vainio, C. Gok-
+men, G. Dharan, T. Jain, et al. igibson 2.0: Object-centric simulation for robot learning of
+everyday household tasks. In Conference on Robot Learning . PMLR, 2022.
+[26] A. Das, S. Datta, G. Gkioxari, S. Lee, D. Parikh, and D. Batra. Embodied question answering.
+InProceedings of the IEEE Conference on Computer Vision and Pattern Recognition , pages
+1–10, 2018.
+[27] D. Gordon, A. Kembhavi, M. Rastegari, J. Redmon, D. Fox, and A. Farhadi. Iqa: Visual
+question answering in interactive environments. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pages 4089–4098, 2018.
+[28] Y .-H. Liao, X. Puig, M. Boben, A. Torralba, and S. Fidler. Synthesizing environment-aware
+activities via activity sketches. In Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , pages 6291–6299, 2019.
+[29] D. Trivedi, J. Zhang, S.-H. Sun, and J. J. Lim. Learning to synthesize programs as interpretable
+and generalizable policies. Advances in neural information processing systems , 34:25146–
+25163, 2021.
+[30] R. Wang, J. Mao, S. J. Gershman, and J. Wu. Language-mediated, object-centric representation
+learning. arXiv preprint arXiv:2012.15814 , 2020.
+[31] Y . Bisk, A. Holtzman, J. Thomason, J. Andreas, Y . Bengio, J. Chai, M. Lapata, A. Lazari-
+dou, J. May, A. Nisnevich, et al. Experience grounds language. In Proceedings of the 2020
+Conference on Empirical Methods in Natural Language Processing (EMNLP) , 2020.
+[32] M. Prabhudesai, H.-Y . F. Tung, S. A. Javed, M. Sieb, A. W. Harley, and K. Fragkiadaki.
+Embodied language grounding with 3d visual feature representations. In Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 2220–2229, 2020.
+[33] K. He, G. Gkioxari, P. Doll ´ar, and R. Girshick. Mask r-cnn. In Proceedings of the IEEE
+international conference on computer vision , pages 2961–2969, 2017.
+[34] M. Ding, Y . Huo, H. Yi, Z. Wang, J. Shi, Z. Lu, and P. Luo. Learning depth-guided convolutions
+for monocular 3d object detection. In CVPR , pages 1000–1001, 2020.
+[35] M. Ding, B. Xiao, N. Codella, P. Luo, J. Wang, and L. Yuan. Davit: Dual attention vision
+transformers. In ECCV , 2022.
+[36] C. Kong, D. Lin, M. Bansal, R. Urtasun, and S. Fidler. What are you talking about? text-to-
+image coreference. In CVPR , 2014.
+[37] B. A. Plummer, L. Wang, C. M. Cervantes, J. C. Caicedo, J. Hockenmaier, and S. Lazebnik.
+Flickr30k entities: Collecting region-to-phrase correspondences for richer image-to-sentence
+models. In ICCV , 2015.
+[38] C. Matuszek, N. FitzGerald, L. Zettlemoyer, L. Bo, and D. Fox. A joint model of language
+and perception for grounded attribute learning. In ICML , 2012.
+[39] A. Karpathy and L. Fei-Fei. Deep visual-semantic alignments for generating image descrip-
+tions. In CVPR , 2015.
+[40] J. Mao, J. Huang, A. Toshev, O. Camburu, A. L. Yuille, and K. Murphy. Generation and
+comprehension of unambiguous object descriptions. In CVPR , 2016.
+[41] H. Zhang, Y . Niu, and S.-F. Chang. Grounding referring expressions in images by variational
+context. In CVPR , 2018.
+10[42] J. Yang, H.-Y . Tung, Y . Zhang, G. Pathak, A. Pokle, C. G. Atkeson, and K. Fragkiadaki.
+Visually-grounded library of behaviors for manipulating diverse objects across diverse conﬁg-
+urations and views. In 5th Annual Conference on Robot Learning , 2021.
+[43] Z. Chen, P. Wang, L. Ma, K.-Y . K. Wong, and Q. Wu. Cops-ref: A new dataset and task on
+compositional referring expression comprehension. In Proceedings of the IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition , pages 10086–10095, 2020.
+[44] M. Ding, Y . Shen, L. Fan, Z. Chen, Z. Chen, P. Luo, J. B. Tenenbaum, and C. Gan. Visual
+dependency transformers: Dependency tree emerges from reversed attention. arXiv preprint
+arXiv:2304.03282 , 2023.
+[45] J. Mao, C. Gan, P. Kohli, J. B. Tenenbaum, and J. Wu. The Neuro-Symbolic Concept Learner:
+Interpreting Scenes, Words, and Sentences From Natural Supervision. In ICLR , 2019.
+[46] Z. Chen, J. Mao, J. Wu, K.-Y . K. Wong, J. B. Tenenbaum, and C. Gan. Grounding physical
+concepts of objects and events through dynamic visual reasoning. In ICLR , 2021.
+[47] J. Mao, F. Shi, J. Wu, R. Levy, and J. Tenenbaum. Grammar-based grounded lexicon learning.
+Advances in Neural Information Processing Systems , 2021.
+[48] B. Bergen and J. Feldman. Embodied concept learning. In Handbook of Cognitive Science ,
+pages 313–331. Elsevier, 2008.
+[49] K. M. Hermann, F. Hill, S. Green, F. Wang, R. Faulkner, H. Soyer, D. Szepesvari, W. M.
+Czarnecki, M. Jaderberg, D. Teplyashin, et al. Grounded language learning in a simulated 3d
+world. arXiv , 2017.
+[50] Z. Chen, K. Yi, Y . Li, M. Ding, A. Torralba, J. B. Tenenbaum, and C. Gan. Comphy: Compo-
+sitional physical reasoning of objects and events from videos. In International Conference on
+Learning Representations , 2022.
+[51] M. Ding, Z. Chen, T. Du, P. Luo, J. Tenenbaum, and C. Gan. Dynamic visual reasoning by
+learning differentiable physics models from video and language. Advances in Neural Informa-
+tion Processing Systems , 34, 2021.
+[52] M. Feng, Z. Li, Q. Li, L. Zhang, X. Zhang, G. Zhu, H. Zhang, Y . Wang, and A. Mian. Free-
+form description guided 3d visual graph network for object grounding in point cloud. In ICCV ,
+2021.
+[53] J. Roh, K. Desingh, A. Farhadi, and D. Fox. Languagerefer: Spatial-language model for 3d
+visual grounding. In Conference on Robot Learning . PMLR, 2022.
+[54] P. Achlioptas, A. Abdelreheem, F. Xia, M. Elhoseiny, and L. Guibas. Referit3d: Neural listen-
+ers for ﬁne-grained 3d object identiﬁcation in real-world scenes. In ECCV , 2020.
+[55] M. Lewis, Y . Liu, N. Goyal, M. Ghazvininejad, A. Mohamed, O. Levy, V . Stoyanov, and
+L. Zettlemoyer. BART: Denoising sequence-to-sequence pre-training for natural language
+generation, translation, and comprehension. In Proceedings of the 58th Annual Meeting of
+the Association for Computational Linguistics , pages 7871–7880, Online, July 2020. Asso-
+ciation for Computational Linguistics. doi:10.18653/v1/2020.acl-main.703. URL https:
+//aclanthology.org/2020.acl-main.703 .
+[56] Meelfy. Pytorch pretrained bert, 2019. URL https://github.com/Meelfy/pytorch_
+pretrained_BERT .
+[57] C.-C. Carbon. Understanding human perception by human-made illusions. Frontiers in human
+neuroscience , 8:566, 2014.
+[58] D. Regan. Human perception of objects . Sunderland, MA: Sinauer, 2000.
+[59] J. L. Ba, J. R. Kiros, and G. E. Hinton. Layer normalization. arXiv preprint arXiv:1607.06450 ,
+2016.
+11[60] D. Hendrycks and K. Gimpel. Gaussian error linear units (gelus). arXiv preprint
+arXiv:1606.08415 , 2016.
+[61] H. W. Kuhn. The hungarian method for the assignment problem. Naval research logistics
+quarterly , 2(1-2):83–97, 1955.
+[62] E. A. Maguire, N. Burgess, J. G. Donnett, R. S. Frackowiak, C. D. Frith, and J. O’Keefe.
+Knowing where and getting there: a human navigation network. Science , 280(5365):921–924,
+1998.
+[63] C. Godard, O. Mac Aodha, M. Firman, and G. J. Brostow. Digging into self-supervised monoc-
+ular depth estimation. In Proceedings of the IEEE/CVF International Conference on Computer
+Vision , pages 3828–3838, 2019.
+[64] T. Zhou, M. Brown, N. Snavely, and D. G. Lowe. Unsupervised learning of depth and ego-
+motion from video. In Proceedings of the IEEE conference on computer vision and pattern
+recognition , pages 1851–1858, 2017.
+[65] A. Kendall and Y . Gal. What uncertainties do we need in bayesian deep learning for computer
+vision? Advances in neural information processing systems , 30, 2017.
+[66] J. A. Sethian. A fast marching level set method for monotonically advancing fronts. Pro-
+ceedings of the National Academy of Sciences , 93(4):1591–1595, 1996. ISSN 0027-8424.
+doi:10.1073/pnas.93.4.1591. URL https://www.pnas.org/content/93/4/1591 .
+[67] D. Tran, L. Bourdev, R. Fergus, L. Torresani, and M. Paluri. Learning spatiotemporal fea-
+tures with 3d convolutional networks. In Proceedings of the IEEE international conference on
+computer vision , pages 4489–4497, 2015.
+[68] E. Kolve, R. Mottaghi, W. Han, E. VanderBilt, L. Weihs, A. Herrasti, D. Gordon, Y . Zhu,
+A. Gupta, and A. Farhadi. Ai2-thor: An interactive 3d environment for visual ai, 2019.
+[69] T.-W. Hui. Rm-depth: Unsupervised learning of recurrent monocular depth in dynamic scenes.
+InProceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,
+pages 1675–1684, 2022.
+[70] X. Luo, J.-B. Huang, R. Szeliski, K. Matzen, and J. Kopf. Consistent video depth estimation.
+ACM Transactions on Graphics (ToG) , 39(4):71–1, 2020.
+[71] A. Ranjan, V . Jampani, L. Balles, K. Kim, D. Sun, J. Wulff, and M. J. Black. Competitive
+collaboration: Joint unsupervised learning of depth, camera motion, optical ﬂow and motion
+segmentation. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition , pages 12240–12249, 2019.
+[72] A. Gordon, H. Li, R. Jonschkowski, and A. Angelova. Depth from videos in the wild: Unsu-
+pervised monocular depth learning from unknown cameras. In Proceedings of the IEEE/CVF
+International Conference on Computer Vision , pages 8977–8986, 2019.
+[73] Y . Yao, Z. Luo, S. Li, T. Fang, and L. Quan. Mvsnet: Depth inference for unstructured multi-
+view stereo. In Proceedings of the European Conference on Computer Vision (ECCV) , pages
+767–783, 2018.
+[74] Y . Lu, X. Xu, M. Ding, Z. Lu, and T. Xiang. A global occlusion-aware approach to self-
+supervised monocular visual odometry. In Proceedings of the AAAI Conference on Artiﬁcial
+Intelligence , volume 35, pages 2260–2268, 2021.
+[75] X. Guo, K. Yang, W. Yang, X. Wang, and H. Li. Group-wise correlation stereo network. In
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages
+3273–3282, 2019.
+[76] F. Wang, S. Galliani, C. V ogel, P. Speciale, and M. Pollefeys. Patchmatchnet: Learned multi-
+view patchmatch stereo. In Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition , pages 14194–14203, 2021.
+12[77] J. Tang, F.-P. Tian, W. Feng, J. Li, and P. Tan. Learning guided convolutional network for depth
+completion. IEEE Transactions on Image Processing , 30:1116–1129, 2020.
+[78] Y . Xu, X. Zhu, J. Shi, G. Zhang, H. Bao, and H. Li. Depth completion from sparse lidar data
+with depth-normal constraints. In Proceedings of the IEEE/CVF International Conference on
+Computer Vision , pages 2811–2820, 2019.
+[79] I. Laina, C. Rupprecht, V . Belagiannis, F. Tombari, and N. Navab. Deeper depth prediction
+with fully convolutional residual networks. In 2016 Fourth international conference on 3D
+vision (3DV) , pages 239–248. IEEE, 2016.
+[80] Y . Cao, Z. Wu, and C. Shen. Estimating depth from monocular images as classiﬁcation using
+deep fully convolutional residual networks. IEEE Transactions on Circuits and Systems for
+Video Technology , 28(11):3174–3182, 2017.
+[81] N. Yang, L. v. Stumberg, R. Wang, and D. Cremers. D3vo: Deep depth, deep pose and deep
+uncertainty for monocular visual odometry. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition , pages 1281–1292, 2020.
+[82] B. Li, Y . Huang, Z. Liu, D. Zou, and W. Yu. Structdepth: Leveraging the structural regularities
+for self-supervised indoor depth estimation. In Proceedings of the IEEE/CVF International
+Conference on Computer Vision , pages 12663–12673, 2021.
+[83] P. Ji, R. Li, B. Bhanu, and Y . Xu. Monoindoor: Towards good practice of self-supervised
+monocular depth estimation for indoor environments. In Proceedings of the IEEE/CVF Inter-
+national Conference on Computer Vision , pages 12787–12796, 2021.
+[84] S. Pillai, R. Ambrus ¸, and A. Gaidon. Superdepth: Self-supervised, super-resolved monocular
+depth estimation. In 2019 International Conference on Robotics and Automation (ICRA) , pages
+9250–9256. IEEE, 2019.
+[85] R. Mur-Artal, J. M. M. Montiel, and J. D. Tardos. Orb-slam: a versatile and accurate monocular
+slam system. IEEE transactions on robotics , 31(5):1147–1163, 2015.
+[86] S. Izadi, D. Kim, O. Hilliges, D. Molyneaux, R. Newcombe, P. Kohli, J. Shotton, S. Hodges,
+D. Freeman, A. Davison, et al. Kinectfusion: real-time 3d reconstruction and interaction using
+a moving depth camera. In Proceedings of the 24th annual ACM symposium on User interface
+software and technology , pages 559–568, 2011.
+[87] T. Shan and B. Englot. Lego-loam: Lightweight and ground-optimized lidar odometry and
+mapping on variable terrain. In 2018 IEEE/RSJ International Conference on Intelligent Robots
+and Systems (IROS) , pages 4758–4765. IEEE, 2018.
+[88] G. Klein and D. Murray. Parallel tracking and mapping for small ar workspaces. In 2007
+6th IEEE and ACM international symposium on mixed and augmented reality , pages 225–234.
+IEEE, 2007.
+[89] J. Zhang and S. Singh. Loam: Lidar odometry and mapping in real-time. In Robotics: Science
+and Systems , volume 2, pages 1–9. Berkeley, CA, 2014.
+13Figure 9: Concept learning visualization. From top to bottom: the original image, supervised in-
+stance segmentation map, and our concept learning results.
+Appendix
+A ALFRED Dataset
+We evaluate our method and its counterparts on ALFRED [1], which is a benchmark for connecting
+human language to actions, behaviors, and objects in interactive visual environments. Planner-based
+expert demonstrations are accompanied by both high- and low-level human language instructions in
+120 indoor scenes in AI2-THOR 2.0 [68]. ALFRED [1] includes 25,743 English language directives
+describing 8,055 expert demonstrations averaging 50 steps each, resulting in 428,322 image-action
+pairs. The test set contains “Test seen” (1,533 episodes) and “Test unseen” (1,529 episodes); the
+scenes of the latter entirely consist of rooms that do not appear in the training set, while those of
+the former only consist of scenes seen during training. Similarly, the validation set contains “Valid
+seen” (820 episodes) and “Valid Unseen” (821 episodes). The success rate is the ranking metric
+used in the ofﬁcial leaderboard.
+B Evaluation of the Semantic Policy
+In this section, we evaluate the semantic policy used in our model (average semantic probability
+map from demonstrations), in comparison to the learned semantic policy in FILM [6]. [6] learns a
+semantic policy model using additional map supervision. However, the policy in our work is freely
+available from the grounded average semantic probability map. From Tab. 4, we can see that: our
+average semantic probability map achieves good performance. With the learned semantic policy, the
+success rate improves slightly from 17.24% to 17.92%. To keep our framework clean with reduced
+supervision, we train our model without learning a semantic policy [6].
+C Per-task Performance
+We provide per-task performance (success rate and goal-condition success rate) in Tab. 5 to show
+ECL’s strengths and weaknesses in different types of tasks. We have the following observations: 1)
+“Stack & Place” and “Cool & and Place” are the most challenging tasks, with a low success rate.
+2) The “Examine” task is the easiest task, with a success rate over 30% and 46.81% goal-condition
+14Table 4: Comparison of the semantic policies on the ALFRED benchmark. Red denotes the top
+success rate (SR) (ranking metric of the leaderboard) on the test unseen set. We take our ECL
+w. depth as the baseline model and make comparison between our model and our model + learned
+semantic policy [6].
+MethodSupervision Test Seen Test Unseen
+Semantic Depth PolicyPLWGC
+(%)GC
+(%)PLWSR
+(%)SR
+(%)PLWGC
+(%)GC
+(%)PLWSR
+(%)SR
+(%)
+ECL pprobability map 12.34 27.86 8.02 18.26 11.11 27.30 7.30 17.24
+ECL + P OLICYplearned map 12.74 27.98 8.67 18.79 11.52 27.75 7.45 17.92
+Table 5: Performance by different task types of model ECL w. Depth on the validation set.
+Task TypeVal Seen % Val Unseen %
+Goal-condition Success Rate Goal-condition Success Rate
+Overall 30.83 18.67 21.74 10.50
+Examine 46.81 31.18 47.98 29.65
+Pick & Place 21.36 23.72 3.67 8.49
+Stack & Place 16.38 6.25 7.80 0.99
+Clean & Place 41.44 24.77 29.50 8.85
+Cool & Place 19.64 5.88 13.15 0.00
+Heat & Place 35.75 19.27 31.00 13.67
+Pick 2 & Place 34.48 19.67 19.14 11.84
+success rate. 3) A similar observation with FILM [6] regarding the number of subtasks and success
+rate is found: whereas “Heat & Place” and “Clean & Place” usually involve three more subtasks
+than “Pick & Place”, the metrics of the former are higher than the latter. This is because “Heat &
+Place” only appears in kitchens, and “Clean & Place” only appears in toilets. And the room area of
+these two scenes is relatively small. The results show that the success of a task is highly dependent
+on the type and scale of the scene.
+D Detailed Analysis of Concept Learning
+In addition to the ﬁgure shown in our main paper, we also report the per-object concept grounding
+evaluation results (small) in Tab. 6. Objects “HandTowel”, “KeyChain”, “Bowl”, and “Television”
+have over 80% concept learning accuracy because these objects often appear alone in the scene
+(easy to learn and less likely to be confused). Objects like “HandTowel”, “KeyChain”, “Bowl”, and
+“Television” rarely appear in the environment, so their concepts are difﬁcult to learn.
+Likewise, we perform detailed evaluations and report the per-object concept grounding evaluation
+results (large) in Tab. 7. We notice two classes with ground accuracy of 0: “BathtubBasin” and
+“Desk”. This is because all BathtubBasins are identiﬁed as SinkBasins by our grounding model
+(SinkBasins are shown more frequently than BathtubBasins). As for “Desk”, the object proposals
+are identiﬁed as “CoffeTable”, “DiningTable”, etc. The average grounding accuracy for large objects
+is higher than for small objects, because large objects often appear alone in the scene (easy to learn
+and less confusing).
+E Details of the deterministic policy
+The deterministic policy is based on the Fast Marching Method [56]. If the object needed in the
+current subtask is observed in the current semantic map, the location of the object is selected as the
+goal; otherwise, we sample the location based on the distribution of the corresponding object class in
+our averaged semantic map as the goal. In both cases, we did not use any domain knowledge about
+15Table 6: Concept grounding accuracy (small).
+Category Vase Pillow Plate Laptop FloorLamp Newspaper HandTowel Box
+Accuracy (%) 61.5 66.7 51.4 70.0 68.1 57.5 85.4 74.0
+Category Towel Television Mug Book Bowl Tomato Knife KeyChain
+Accuracy (%) 67.4 81.1 46.7 53.1 81.5 60.0 65.9 83.2
+Category Cloth TeddyBear CellPhone BasketBall Glassbottle Apple CD Others
+Accuracy (%) 21.4 18.1 13.2 0 1.3 50.2 38.6 57.0
+Table 7: Concept grounding accuracy (large).
+Category Shelf TVStand Dresser Fridge Microwave SinkBasin BathtubBasin
+Accuracy (%) 77.9 82.6 75.2 13.6 64.8 99.6 0
+Category CoffeeMachine Cart Cabinet Desk CoffeeTable Safe Drawer
+Accuracy (%) 81.0 59.5 2.6 0 74.3 73.4 38.8
+Category Bed Sofa DiningTable GarbageCan Toilet CounterTop Others
+Accuracy (%) 64.4 72.7 52.9 53.3 81.5 87.2 59.4
+ALFRED. We ﬁnd the goal from the concept learner and plan the shortest path to the goal based on
+our semantic map. It’s a very general solution that can be used in many other tasks or environments
+rather than a hand-coded policy for ALFRED.
+F More Visualization Results
+In this section, we show more visualizations of our concept learning results in Figure 9. We also
+demonstrate two examples of intermediate estimates by ECL when an agent tries to accomplish an
+instruction in Figure 10.
+G Key Assumption for Other Simulators or Real Robots
+Real robotics applications have been one of the longstanding motivations for this work and have
+been carefully considered by the authors in the design of ALFRED. When generalizing our model
+to real-world scenarios:
+• The instruction parser is supervisedly trained, and can be directly employed in the real
+world.
+• The embodied concept learner should work when there are real-world demonstrations. Cur-
+rently, we have some assumptions based on the artifact of the AI2THOR environment.
+However, the assumptions are not strong and are still applied to real environments.
+• Unsupervised depth and mapping are well-studied problems in the real world. We see this
+as a reasonable assumption for the time being.
+• Still, there are some limitations in ALFRED that the action execution is not feasible, i.e,
+picking up an object by only one command without robot manipulation. However, the
+low-level control task and the current embodied instruction following task are orthogonal,
+which means the two tasks can still be decoupled in real-world scenarios, while our model
+focus on instruction following.
+However, it’s really challenging for a robot to perform instruction following in an unseen real-world
+environment, even in a simulated environment (test unseen success rate of only 23.6% even in our
+oracle model). To this end, ALFRED simpliﬁes the hard problem of making meaningful progress
+through tight integration between visual perception, language instruction, and robotic navigation
+and manipulation. To the best of our knowledge, no other benchmarks contain language instructions
+in an interactive 3D environment with visual observation and navigation. As the ﬁeld progresses,
+we are conﬁdent more works and benchmarks will be introduced, and we will take it as our future
+research direction.
+16Go to “White table”Place a clean ladle on a table.Pick up “Ladle”Go to “Sink”Wash “Ladle”Go to “White table”Place “Ladle” on “table”
+t=12t=16t=22t=28t=36t=41Egocentric RGB Observation
+UnsupervisedSemantic GroundingSemantic Map
+Depth Estimation
+Go to “Dresser”Put two newspapers away in a drawer.Pick up “Paper”Put “Paper” in DresserGo to “Couch”Pick up “Paper”
+t=3t=5t=48t=50t=60t=90Egocentric RGB Observation
+UnsupervisedSemantic GroundingSemantic MapID: 70Put “Paper” in Dresser
+Depth EstimationFigure 10: Two examples of intermediate estimates for ECL when the agent tries to accomplish
+the instructions. Based on RGB observations, our system estimates the depths and semantic masks.
+The BEV semantic map is gradually established with these estimates as exploration continues. The
+goals (sub-goal/ﬁnal-goal) are represented by large blue dots in the semantic map, while the agent
+trajectories are plotted as small red dots.
+H Related Work about Depth and Mapping
+Depth estimation [69, 70, 71, 72, 64, 63, 73, 74] has witnessed a boom since the emergence of
+deep learning. Compared with stereo matching [73, 75, 76] and sensor-based methods [77, 78], the
+monocular depth estimation only requires a single-view color image for depth inference, which is
+suitable for practical deployment given its low-cost nature. Following the supervised methods [79,
+80], Zhou et al. [64] ﬁrst demonstrated the possibility of depth learning in an unsupervised manner,
+17inspired by the learning principle of humans. Afterwards, the unsupervised depth estimation are
+well explored in both indoor [81, 82, 83] and outdoor scenarios [63, 84, 69] due to its labeling-free
+advantage. In this work, we also follow their spirits to investigate the learning process of an agent
+baby. After depth estimation, a mapping module [85, 86, 87] is usually included in a robotic system
+to memorize the geometry layouts of the visited regions for path planning and navigation. Given
+different sensor properties and map representations, the mapping procedure could also differ. For
+instance, [88, 85] maintain reliable sparse landmarks, [86] constructs TSDF, and [89, 87] store voxel
+maps.
+18

@@ -1,0 +1,994 @@
+The Contextual Lasso:
+Sparse Linear Models via Deep Neural Networks
+Ryan Thompson∗
+University of New South Wales
+CSIRO’s Data61Amir Dezfouli†
+BIMLOGIQRobert Kohn
+University of New South Wales
+Abstract
+Sparse linear models are one of several core tools for interpretable machine learning,
+a field of emerging importance as predictive models permeate decision-making in
+many domains. Unfortunately, sparse linear models are far less flexible as functions
+of their input features than black-box models like deep neural networks. With
+this capability gap in mind, we study a not-uncommon situation where the input
+features dichotomize into two groups: explanatory features, which are candidates
+for inclusion as variables in an interpretable model, and contextual features, which
+select from the candidate variables and determine their effects. This dichotomy
+leads us to the contextual lasso, a new statistical estimator that fits a sparse linear
+model to the explanatory features such that the sparsity pattern and coefficients
+vary as a function of the contextual features. The fitting process learns this function
+nonparametrically via a deep neural network. To attain sparse coefficients, we
+train the network with a novel lasso regularizer in the form of a projection layer
+that maps the network’s output onto the space of ℓ1-constrained linear models. An
+extensive suite of experiments on real and synthetic data suggests that the learned
+models, which remain highly transparent, can be sparser than the regular lasso
+without sacrificing the predictive power of a standard deep neural network.
+1 Introduction
+Sparse linear models—linear predictive functions in a small subset of features—have a long history
+in statistics, dating back at least to the 1960s (Garside, 1965). Nowadays, against the backdrop of
+elaborate, black-box models such as deep neural networks, the appeal of sparse linear models is
+largely their transparency and intelligibility. These qualities are sought in decision-making settings
+(e.g., consumer finance and criminal justice) and constitute the foundation of interpretable machine
+learning, a topic that has recently received significant attention (Murdoch et al., 2019; Molnar et al.,
+2020; Rudin et al., 2022; Marcinkevi ˇcs and V ogt, 2023). Interpretability, however, comes at a price
+when the underlying phenomenon cannot be predicted accurately without a more expressive model
+capable of well-approximating complex functions, such as a neural network. Unfortunately, one must
+forgo direct interpretation of expressive models and instead resort to post hoc explanations (Ribeiro
+et al., 2016; Lundberg and Lee, 2017), which have their own flaws (Laugel et al., 2019; Rudin, 2019).
+Motivated by a desire for interpretability and expressivity, this paper focuses on a setting where
+sparse linear models and neural networks can collaborate together. The setting is characterized by
+a not-uncommon situation where the input features dichotomize into two groups, which we call
+explanatory features and contextual features. Explanatory features are features whose effects are
+of primary interest. They should be modeled via a low-complexity function such as a sparse linear
+model for interpretability. Meanwhile, contextual features describe the broader predictive context,
+∗Corresponding author. Email: ryan.thompson1@unsw.edu.au
+†Part of this work was carried out while the author was at CSIRO’s Data61.
+37th Conference on Neural Information Processing Systems (NeurIPS 2023).arXiv:2302.00878v4  [stat.ML]  2 Jan 2024Longitude1.5
+0.5
+0.01.0LatitudeRenovation condition
+Longitude0.10
+-0.10-0.050.000.05LatitudeFloor
+Longitude0.08
+0.000.020.040.06LatitudeElevator
+Longitude68
+14
+2LatitudeInterceptFigure 1: Fitted coefficient functions from the contextual lasso for the house pricing dataset. Colored
+points indicate coefficient values at different locations. Grey points indicate coefficients equal to zero.
+e.g., the location of the prediction in time or space (see the house pricing example below). These
+inform which explanatory features are relevant and, for those that are, their exact low-complexity
+effects. Given this role, contextual features are best modeled via an expressive function class.
+The explanatory-contextual feature dichotomy described above leads to the seemingly previously
+unstudied contextually sparse linear model:
+g(E[y|x,z]) =X
+j∈S(z)xjβj(z). (1)
+To parse the notation, y∈Ris a response variable, x= (x1, . . . , x p)⊤∈Rpare explanatory features,
+z= (z1, . . . , z m)⊤∈Rmare contextual features, and gis a link function (e.g., identity for regression
+or logit for classification).3Via the contextual features, the set-valued function S(z)encodes the
+indices of the relevant explanatory features (typically, a small set of js), while the coefficient functions
+βj(z)encode the effects of those relevant features. The model (1)draws inspiration from the varying-
+coefficient model (Hastie and Tibshirani, 1993; Fan and Zhang, 2008; Park et al., 2015), a special
+case that assumes all explanatory features are always relevant, i.e., S(z) ={1, . . . , p }for all z∈Rm.
+We show that this new model is more powerful for various problems, including energy forecasting
+and disease prediction. For these tasks, sparsity patterns can be strongly context-dependent.
+The main contribution of our paper is a new statistical estimator for (1)called the contextual lasso.
+The new estimator is inspired by the lasso (Tibshirani, 1996), a classic sparse learning tool with
+excellent properties (Hastie et al., 2015). We focus on tabular datasets as these are the most common
+use case for the lasso and its cousins. Whereas the lasso fits a sparse linear model that fixes the relevant
+features and their coefficients once and for all (i.e., S(z)andβj(z)are constant), the contextual lasso
+fits a contextually sparse linear model that allows the relevant explanatory features and coefficients
+to change according to the prediction context. To learn the map from contextual feature vector to
+sparse coefficient vector, we use the expressive power of neural networks. Specifically, we train a
+feedforward neural network to output a vector of linear model coefficients sparsified via a novel
+lasso regularizer. In contrast to the lasso, which constraints the coefficients’ ℓ1-norm, our regularizer
+constraints the expectation of the coefficients’ ℓ1-norm with respect to z. To implement this new
+regularizer, we include a novel projection layer at the bottom of the network that maps the network’s
+output onto the space of ℓ1-constrained linear models by solving a convex optimization problem.
+To briefly illustrate our proposal, we consider data on property sales in Beijing, China, studied in Zhou
+and Hooker (2022). We use the contextual lasso to learn a pricing model with longitude and latitude
+as contextual features. The response is price per square meter. Figure 1 plots the fitted coefficient
+functions of three property attributes (explanatory features) and an intercept. The relevance and effect
+of these attributes can vary greatly with location. The elevator indicator, e.g., is irrelevant throughout
+inner Beijing, where buildings tend to be older and typically do not have elevators. The absence of
+elevators also makes it difficult to access higher floors, hence the negative effect of floor on price.
+Beyond the inner city, the floor is mostly irrelevant. Naturally, renovations are valuable everywhere,
+but more so for older buildings in the inner city than elsewhere. The flexibility of the contextual
+lasso to add or remove attributes by location, and simultaneously determine their coefficients, equips
+sellers with personalized interpretable models containing only the attributes most relevant to them.
+At the same time, these models outpredict both the lasso and a deep neural network; see Appendix A.
+3The intercept is omitted throughout this paper to ease notation.
+2The rest of paper is organized as follows. Section 2 introduces the contextual lasso and describes
+techniques for its computation. Section 3 discusses connections with earlier related work. Section 4
+reports experiments on synthetic and real data. Section 5 closes the paper with a discussion.
+2 Contextual lasso
+This section describes our estimator. To facilitate exposition, we first rewrite the contextually sparse
+linear model (1) more concisely:
+g(E[y|x,z]) =x⊤β(z).
+The notation β(z) := 
+β1(z), . . . , β p(z)⊤represents a vector coefficient function which is sparse
+over its codomain. That is, for different values of z, the output of β(z)contains zeros at different po-
+sitions. The function S(z), which encodes the set of active explanatory features in (1), is recoverable
+asS(z) :={j:βj(z)̸= 0}.
+2.1 Problem formulation
+At the population level, the contextual lasso comprises a minimization of the expectation of a loss
+function subject to an inequality on the expectation of a constraint function:
+min
+β∈FE
+l 
+x⊤β(z), y
+s.t.E [∥β(z)∥1]≤λ, (2)
+where the set Fis a class of functions that constitute feasible solutions and l:R2→Ris the loss
+function, e.g., square loss l(ˆy, y) = ( y−ˆy)2for regression or logistic loss l(ˆy, y) =−ylog(ˆy)−
+(1−y) log(1 −ˆy)for classification. Here, the expectations are taken with respect to the random
+variables y,x, andz. The parameter λ≥0controls the level of regularization. Smaller values of λ
+encourage β(z)towards zero over more of its codomain. Larger values have the opposite effect. The
+contextual lasso thus generalizes the lasso, which learns β(z)as a constant:
+min
+βE
+l 
+x⊤β, y
+s.t.∥β∥1≤λ.
+To reiterate the difference: the lasso coaxes the fixed coefficients βtowards zero, while the contextual
+lasso coaxes the expectation of the function β(z)to zero. The result for the latter is coefficients that
+can change in value and sparsity with z, provided the function class Fis suitably chosen.
+Given a sample (yi,xi,zi)n
+i=1, the data version of the population problem (2)replaces the unknown
+expectations with their sample counterparts:
+min
+β∈F1
+nnX
+i=1l 
+x⊤
+iβ(zi), yi
+s.t.1
+nnX
+i=1∥β(zi)∥1≤λ. (3)
+The set of feasible solutions to optimization problem (3)are coefficient functions that lie in the
+ℓ1-ball of radius λwhen averaged over the observed data.4To operationalize this estimator, we take
+F={βw(z) :w}, where βw(z)is a certain architecture of feedforward neural network (described
+shortly) parameterized by weights w. This choice leads to our core proposal:
+min
+w1
+nnX
+i=1l 
+x⊤
+iβw(zi), yi
+s.t.1
+nnX
+i=1∥βw(zi)∥1≤λ. (4)
+Configuring a feedforward neural network such that its outputs are sparse and satisfy the ℓ1-constraint
+is not trivial. We introduce a novel network architecture to address this challenge.
+2.2 Network architecture
+The neural network architecture—depicted in Figure 2—involves two key components. The first and
+most straightforward component is a vanilla feedforward network η(z) :Rm→Rp. The purpose of
+the network is to capture the nonlinear effects of the contextual features on the explanatory features.
+4Theℓ1-ball is the convex compact set {x∈Rp:∥x∥1≤λ}.
+3zη1
+η2
+ηpβ1
+β2
+βpHidden layers Projection layer
+. . .. . .
+. . .
+. . .
+. . .
+Figure 2: Network architecture. The contextual features zpass through a series of hidden layers. The
+resulting dense coefficients η1, . . . , η pthen enter a projection layer to produce sparse coefficients
+β1, . . . , β p. Here, the last coefficient is gray to illustrate that it is zeroed-out by the projection layer.
+Since the network involves only hidden layers with standard affine transformations and nonlinear
+maps (e.g., rectified linear activation functions), the coefficients they produce generally do not satisfy
+the contextual lasso constraint and are not sparse. To enforce the constraint and attain sparsity, we
+employ a novel projection layer as the second main component of our network architecture.
+The projection layer takes the dense coefficients η(z)from the network and maps them to sparse
+coefficients β(z)by performing a projection onto the ℓ1-ball. Because the contextual lasso does not
+constrain each coefficient vector to the ℓ1-ball, but rather constrains the average coefficient vector,
+we project all ncoefficient vectors η(z1), . . . , η(zn)together. That is, we take the final sparse
+coefficients β(z1), . . . , β(zn)as the minimizing arguments of a convex optimization problem:
+β(z1), . . . , β(zn) := arg min
+β1,...,βn:1
+nPn
+i=1∥βi∥1≤λ1
+nnX
+i=1∥η(zi)−βi∥2
+2. (5)
+The minimizers of this optimization problem are typically sparse thanks to the geometry of the ℓ1-ball.
+The idea of including optimization as a layer in a neural network is explored in previous works (see,
+e.g., Amos and Kolter, 2017; Agrawal et al., 2019). Yet, to our knowledge, no previous work has
+studied optimization layers (also known as implicit layers) for inducing sparsity in a neural network.
+The optimization problem (5)does not admit an analytical solution, though it is solvable by general
+purpose convex solvers (see, e.g., Boyd and Vandenberghe, 2004). However, because (5)is a highly
+structured problem, it is also amenable to more specialized algorithms. Such algorithms facilitate
+the type of scalable computation necessary for deep learning. Duchi et al. (2008) provide a low-
+complexity algorithm for solving (5)when n= 1. Algorithm 1 below is an extension to n≥1.
+The algorithm consists of two main steps: (1) computing a thresholding parameter θand (2) soft-
+Algorithm 1 Projection onto ℓ1-ball
+input Dense coefficients η1, . . . , ηnand radius λ
+Setµ= (|η⊤
+1|, . . . ,|η⊤
+n|)⊤
+Sortµin decreasing order: µi≥µjfor all i < j
+Setkmax= maxn
+k:µk>Pk
+l=1µl−nλ
+/ko
+Setθ=Pkmax
+k=1µk−nλ
+/kmax
+Compute β1, . . . , βnasβij= sign( ηij) max( |ηij| −θ,0)fori= 1, . . . , n andj= 1, . . . , p
+output Sparse coefficients β1, . . . , βn
+thresholding the inputs using the computed θ. Critically, the operations comprising Algorithm 1 are
+suitable for computation on a GPU, meaning the model can be trained end-to-end at scale.
+Although the projection algorithm involves some nondifferentiable operations, most deep learning
+libraries provide gradients for these operations, e.g., sort is differentiated by permuting the gradients
+and abs is differentiated by taking the subgradient zero at zero. The gradient obtained by automatically
+differentiating through Algorithm 1 is the same as that from implicitly differentiating through a
+convex solver (e.g., using cvxpylayers of Agrawal et al., 2019), though the latter is slower. In
+subsequent work, Thompson et al. (2023) derive analytical gradients for a projection layer that maps
+matrices onto an ℓ1-ball. Their result readily adapts to the vector case dealt with here.
+Computation of the thresholding parameter is performed only during training. For inference, the
+estimate ˆθfrom the training set is used for soft-thresholding. That is, rather than using Algorithm 1
+4as an activation function when performing inference, we use T(x) := sign( x) max( |x| −ˆθ,0).
+The purpose of using the estimate ˆθrather than recomputing θvia the algorithm is because the
+ℓ1-constraint applies to the expected coefficient vector. It need not be the case that every coefficient
+vector produced at inference time lies in the ℓ1-ball, which would occur if the algorithm is rerun.
+Algorithm 1 computes the thresholding parameter using the full batch of nobservations. The
+algorithm can also be applied to mini-batches during training. Once training is complete, the estimate
+ˆθfor inference can be obtained via a single forward pass of the full batch through the network.
+2.3 Grouped explanatory features
+In certain settings, the explanatory features may be organized into groups such that all the features
+in a group should be selected together. These groups may emerge naturally (e.g., genes in the same
+biological path) or be constructed for a statistical task (e.g., basis expansions for nonparametric
+regression). The prevalence of such problems has led to the development of sparse estimators capable
+of handling groups, one of the most well-known being the group lasso (Yuan and Lin, 2006; Meier
+et al., 2008). Perhaps unsurprisingly, the contextual lasso extends gracefully to grouped selection.
+LetG1, . . . ,Gg⊆ {1, . . . , p }be a set of gnonoverlapping groups, and let βk(z)andxkbe the
+coefficient function and explanatory features restricted to group Gk. In the noncontextual setting, the
+group lasso replaces the ℓ1-norm∥β∥1of the lasso with a sum of group-wise ℓ2-normsPg
+k=1∥βk∥2.
+To define the contextual group lasso , we make the analogous modification to (4):
+min
+w1
+nnX
+i=1l gX
+k=1x⊤
+ikβk,w(zi), yi!
+s.t.1
+nnX
+i=1gX
+k=1∥βk,w(zi)∥2≤λ.
+Similar to how the absolute values of the ℓ1-norm are nondifferentiable at zero, which causes
+individual explanatory features to be selected, the ℓ2-norm is nondifferentiable at the zero vector,
+causing grouped explanatory features to be selected together. To realize the grouped estimator, we
+adopt the same architecture as before but replace the previous (ungrouped) projection layer with its
+grouped counterpart. This change demands a different projection algorithm, presented in Appendix B.
+2.4 Side constraints
+Besides the contextual (group) lasso constraint, our architecture readily accommodates side constraints
+onβ(z)via modifications to the projection. For instance, we follow Zhou and Hooker (2022) in
+the house pricing example (Figure 1) and constrain the coefficients on the elevator and renovation
+features to be nonnegative. Such sign constraints reflect domain knowledge that these features should
+not impact price negatively. Appendix C presents the details and proofs of this extension.
+2.5 Pathwise optimization
+The lasso regularization parameter λ, controlling the size of the ℓ1-ball and thus the sparsity level,
+is typically treated as a tuning parameter. For this reason, algorithms for the lasso usually provide
+multiple models over a grid of varying λ, which can then be compared (Friedman et al., 2010).
+Towards this end, it can be computationally efficient to compute the models pathwise by sequentially
+warm-starting the optimizer. As Friedman et al. (2007) point out, pathwise computation for many λ
+can be as fast as for a single λ. For the contextual lasso, warm starts also reduce run time compared
+with initializing at random weights. More importantly, however, pathwise optimization improves
+the training quality. This last advantage is a consequence of the network’s nonconvex optimization
+surface. Building up a sophisticated network from a simple one helps the optimizer navigate this
+surface. Appendix D presents our pathwise algorithm and an approach for setting the λgrid.
+2.6 Relaxed fit
+A possible drawback to the contextual lasso, and indeed all lasso estimators, is bias of the linear model
+coefficients towards zero. This bias, which is a consequence of shrinkage from the ℓ1-norm, can help
+or hinder depending on the data. Typically, bias is beneficial when the number of observations is low
+or the level of noise is high, while the opposite is true in the converse situation (see, e.g., Hastie et al.,
+2020). This consideration motivates a relaxation of the contextual lasso that unwinds some, or all, of
+5the bias imparted by the ℓ1-norm. We describe an approach in Appendix E that extends the proposal
+of Hastie et al. (2020) for relaxing the lasso. Their relaxation, which simplifies an earlier proposal
+by Meinshausen (2007), involves a convex combination of the lasso’s coefficients and “polished”
+coefficients from an unregularized least squares fit on the lasso’s selected features. We extend this
+idea from the lasso’s fixed coefficients to the contextual lasso’s varying coefficients. The benefits of
+the relaxation are demonstrated empirically in Appendix E, where we present an ablation study.
+2.7 Computational complexity
+A forward or backward pass through the vanilla feedforward component of the network takes
+O(md+hd2+pd)time, where his the number of hidden layers, dis the number of nodes per layer,
+mis the number of contextual features, and pis the number of explanatory features. A forward
+or backward pass through the projection algorithm takes O(p)time (Duchi et al., 2008). The time
+complexity for a pass through the full network over nobservations is thus O(nd(m+hd+p)). This
+result suggests that the training time is linear in the sample size nand number of features mandp.
+Actual training times are reported in Appendix F that demonstrate linear complexity empirically.
+2.8 Package
+We implement the contextual lasso as described in this section in the Julia (Bezanson et al., 2017)
+package ContextualLasso . For training the neural network, we use the deep learning library
+Flux (Innes et al., 2018). Though the experiments throughout this paper involve square or logistic
+loss functions, our package supports anydifferentiable loss function, e.g., those in the family of
+generalized linear models (Nelder and Wedderburn, 1972). ContextualLasso is available at
+https://github.com/ryan-thompson/ContextualLasso.jl .
+3 Related work
+The contextual explanation networks in Al-Shedivat et al. (2020) are cousins of the contextual lasso.
+These neural networks input contextual features and output interpretable models for explanatory
+features. They include the (nonsparse) contextual linear model, a special case of the contextual lasso
+where λ=∞. In their terminology, the contextual linear model is a “linear explanation” model with a
+“deterministic encoding” function. They also explore a “constrained deterministic encoding” function
+that involves a weighted combination of individual fixed linear models with weights determined by
+the contextual features. To avoid overfitting, they apply ℓ1-regularization to the individual models.
+However, they have no mechanism that encourages the network to combine these sparse models such
+that the result is sparse. In contrast, the contextual lasso directly regularizes the sparsity of its outputs.
+The contextual lasso is also related to several estimators that allow varying sparsity patterns. Yamada
+et al. (2017) devise the first of these—the localized lasso—which fits a linear model with a different
+coefficient vector for each observation. The coefficients are sparsified using a lasso regularizer
+that relies on the availability of graph information to link the observations. Yang et al. (2022) and
+Yoshikawa and Iwata (2022) follow with LLSPIN and NGSLL, neural networks that produce linear
+models with varying sparsity patterns via gating mechanisms. These approaches are distinct from
+our own, however. First, they do not dichotomize into xandz, making the resulting model x⊤β(x)
+difficult to interpret. Second, the sparsity level (NGSSL) or nonzero coefficients (LLSPIN) are fixed
+across observations, making them unsuitable for the contextual setting where both may vary.
+Hallac et al. (2015) introduce the network lasso which has a different coefficient vector per observation,
+clustered using a lasso-style regularizer. They consider problems similar to ours, for which contextual
+information is available, but do not impose sparsity on the coefficients. Deleu and Bengio (2021)
+induce structured sparsity over neural network weights to obtain smaller, pruned networks that admit
+efficient computation. In our work, we leave the weights as dense and instead induce sparsity over
+the network’s output for interpretability. Wang et al. (2020) propose a network quantization scheme
+with activation functions that output zeros and ones. Though our approach involves an activation that
+outputs zeros, we also allow a continuous output. Moreover, their end goal differs from ours; whereas
+they pursue sparsity to reduce computational complexity, we pursue sparsity for interpretability.
+6Our work also advances the broader literature at the intersection of feature sparsity and neural
+networks, an area that has gained momentum over the last few years. See, e.g., the lassonet of
+Lemhadri et al. (2021a,b) which selects features in a residual neural network using an ℓ1-regularizer
+on the skip connection. This regularizer is combined with constraints that force a feature’s weights on
+the first hidden layer to zero whenever its skip connection is zero. See also Scardapane et al. (2017)
+and Feng and Simon (2019) for earlier ideas based on the group lasso, and Chen et al. (2021) for
+another approach. Though related, these methods differ from the contextual lasso in that they involve
+uninterpretable neural networks with fixed sparsity patterns. The underlying optimization problems
+also differ—whereas these methods regularize the network’s weights, ours regularizes its outputs.
+4 Experiments
+The contextual lasso is evaluated here via experimentation on synthetic and real data. As benchmark
+methods, we consider the (nonsparse) contextual linear model, which uses no projection layer, and a
+deep neural network, which receives all explanatory and contextual features as inputs.5We further
+include the lasso, lassonet, and LLSPIN, which also receive all features. The localized lasso does not
+scale to the experiments that follow, so we instead compare it with the contextual lasso on smaller
+experiments in Appendix G. Appendix H provides the implementation details of all methods.
+4.1 Synthetic data
+We consider three different settings of increasing complexity: (1) p= 10 andm= 2, (2)p= 50 and
+m= 2, and (3) p= 50 andm= 5. Within each setting, the sample size ranges from n= 102to
+n= 105. The full simulation design is detailed in Appendix I. As a prediction metric, we report the
+square or logistic loss relative to the intercept-only model. As an interpretability metric, we report the
+proportion of nonzero features. As a selection metric, we report the F1-score of the selected features;
+a value of one indicates all true positives recovered and no false positives.6All three metrics are
+evaluated on a testing set with tuning on a validation set, both constructed by drawing nobservations
+independently of the training set. Figure 3 reports the results for regression (i.e., continuous response).
+The contextual lasso performs comparably with most of its competitors when the sample size is small.
+On the other hand, the contextual linear model (the contextual lasso’s unregularized counterpart) can
+perform poorly here (its relative loss had to be omitted from some plots to maintain the aspect ratio).
+Asnincreases, the contextual lasso begins to outperform other methods in prediction, interpretability,
+and selection. Eventually, it learns the correct map from contextual features to relevant explanatory
+features, recovering only the true nonzeros. Though its unregularized counterpart performs nearly
+as well in terms of prediction for large n, it remains much less interpretable, using all explanatory
+features. In contrast, the contextual lasso uses just 10% of the explanatory features on average.
+The deep neural network’s performance is underwhelming for most n. Only for large sample sizes
+does it begin to approach the prediction performance of the contextual lasso. The lassonet often
+performs somewhere between the two. These three methods should predict equally well for large
+enough n, though the function learned by the deep neural network and lassonet will remain opaque.
+The lasso makes some gains with increasing sample size, but lacks the expressive power of the
+contextual lasso needed to adapt to the complex sparsity pattern of the true model. LLSPIN—the
+only other method to allow for varying sparsity patterns—is the second best feature selector for
+p= 10 , though its mediocre performance more generally is likely due to it not exploiting the
+explanatory-contextual feature dichotomy and not allowing its nonzero coefficients to change.
+4.2 Energy consumption data
+We consider a real dataset containing energy readings for a home in Mons, Belgium (Candanedo et al.,
+2017). Besides this continuous response feature, the dataset also contains p= 25 explanatory features
+in the form of temperature and humidity readings in different rooms of the house and local weather
+5The contextual linear model corresponds to the contextual explanation network with a linear explanation
+and deterministic encoding in Al-Shedivat et al. (2020).
+6TheF1-score := 2 TP /(2 TP + FP + FN) , where TP,FP, andFNare the number of true positive, false
+positive, and false negative selections.
+7Sample sizep = 50, m = 5 p = 50, m = 2 p = 10, m = 21021031041051021031041051021031041050.00.51.0F1 of nonzeros0.00.51.0Prop. of nonzeros0.00.51.0Relative lossLLSPIN
+Contextual lassoLasso
+LassonetDeep neural network
+Contextual linear modelFigure 3: Comparisons on synthetic regression data. Metrics are aggregated over 10 synthetic datasets.
+Solid points are averages and error bars are standard errors. Dashed horizontal lines in the middle
+row indicate the true sparsity level.
+data. We define several contextual features from the time stamp to capture seasonality: month of year,
+day of week, hour of day, and a weekend indicator. To reflect their cyclical nature, the first three
+contextual features are transformed using a sine and cosine, leading to m= 7contextual features.
+The dataset, containing n= 19,375observations, is randomly split into training, validation, and
+testing sets in 0.6-0.2-0.2 proportions. We repeat this random split 10 times, each time recording
+performance on the testing set, and report the aggregate results in Table 1. As performance metrics,
+we consider the relative loss and average sparsity level (i.e., average number of selected explanatory
+features). Among all methods, the contextual lasso leads to the lowest test loss, outperforming even
+Table 1: Comparisons on the energy consumption data. Metrics are aggregated over 10 random splits
+of the data. Averages and standard errors are reported.
+Relative loss Avg. sparsity
+Deep neural network 0.433±0.004 25 .0±0.0
+Contextual linear model 0.387±0.003 25 .0±0.0
+Lasso 0.690±0.002 11 .6±0.4
+Lassonet 0.423±0.003 25 .0±0.0
+LLSPIN 0.639±0.005 24 .5±0.1
+Contextual lasso 0.356±0.003 2 .8±0.4
+the deep neural network and lassonet.7Importantly, this excellent prediction performance is achieved
+while maintaining a high level of interpretability. In contrast to most other methods, which use all
+(or nearly all) available explanatory features, the predictions from the contextual lasso arise from
+linear models containing just 2.8 explanatory features on average! These linear models are also much
+simpler than those from the lasso, which typically involve more than four times as many features.
+7The lassonet with tuned λuses nearly all features here. However, manually choosing λto attain a sparsity
+level similar to the contextual lasso substantially degrades its performance.
+8Hour of day0 5 10 15 200.00.10.20.30.4Prop. nonzerosFigure 4: Explanatory feature sparsity as a function of hour of day for the estimated energy consump-
+tion model. The sparsity level varies within each hour because the other contextual features vary.
+The good predictive performance of the contextual lasso suggests a seasonal pattern of sparsity. To
+investigate this phenomenon, we apply the fitted model to a randomly sampled testing set and plot
+the resulting sparsity levels as a function of the hour of day in Figure 4. The model is typically highly
+sparse in the late evening and early morning. Between 10 pm and 6 am, the median proportion of
+nonzero coefficients is 0%. There is likely little or no activity inside the house at these times, so sensor
+readings from within the house—which constitute the majority of the explanatory features—are
+irrelevant. The number of active explanatory features rises later in the day, peaking around lunchtime
+and dinnertime. Overall, a major benefit of the contextual lasso, besides its good predictions, is the
+ability to identify a parsimonious set of factors driving energy use at any given time of day.
+4.3 Parkinson’s telemonitoring data
+We illustrate the contextual lasso on grouped explanatory features using data from a study on the
+progression of Parkinson’s disease in 42 patients (Tsanas et al., 2009). The task is to predict disease
+progression (a continuous variable) using 16 vocal characteristics of the patients as measured at
+different times throughout the study. As Tsanas et al. (2009) point out, these vocal characteristics can
+relate nonlinearly to disease progression. To account for these effects, we compute a five-term cubic
+regression spline per explanatory feature ( p= 16×5 = 80 ). Each spline forms a single group of
+explanatory features ( g= 16 ). The contextual features are the age and sex of the patients ( m= 2).
+The dataset of n= 5,875observations is again partitioned into training, validation, and testing sets in
+the same proportions as before. As a new benchmark, we evaluate the group lasso, which is applied to
+splines of all explanatory and contextual features. The deep neural network and lassonet are applied to
+the original (nonspline) features.8The lasso is also applied to the original features to serve as a linear
+benchmark. The results are reported in Table 2. The purely linear estimator—the lasso–performs
+Table 2: Comparisons on the Parkinson’s telemonitoring data. Metrics are aggregated over 10 random
+splits of the data. Averages and standard errors are reported.
+Relative loss Avg. sparsity
+Deep neural network 0.367±0.015 16 .0±0.0
+Lasso 0.885±0.005 3 .1±0.1
+Group lasso 0.710±0.006 4 .2±0.4
+Lassonet 0.263±0.007 15 .5±0.2
+Contextual group lasso 0.113±0.006 1 .6±0.3
+worst overall. The group lasso improves over the lasso, supporting claims of nonlinearity in the data.
+The contextual group lasso is, however, the star of the show. Its models predict nearly three-times
+better than the next best competitor (lassonet) and are sparser than those from any other method.
+Setting aside predictive accuracy, a major benefit of the contextual group lasso (compared with the
+deep neural network and lassonet) is that it remains highly interpretable. To illustrate, we consider
+the fitted spline function (i.e., the spline multiplied by its coefficients from the contextual group lasso)
+on the detrended fluctuation analysis (DFA) feature, which characterizes turbulent noise in speech.
+Figure 5 plots the function at three different ages of patient. For 70-year-olds, the function is zero,
+indicating DFA is not yet a good predictor of Parkinson’s. At 75, the function becomes nonzero,
+8Inputting the splines to these methods does not improve their performance.
+9Detrended ﬂucation analysis80-year-old 75-year-old 70-year-old0.5 0.6 0.7 0.8 0.9 0.5 0.6 0.7 0.8 0.9 0.5 0.6 0.7 0.8 0.9-150-100-500f̂(x)Figure 5: Fitted spline function from the contextual lasso for the detrended fluctuation analysis (DFA)
+explanatory feature. The age explanatory feature is varied while the sex feature is set to female.
+taking on a concave shape. It becomes even more concave and negative 80. The models reported
+in Tsanas et al. (2009) also had this coefficient negative, but fixed across all ages. In contrast, the
+contextual lasso identifies DFA and other features as relevant only for patients of certain ages and sex.
+4.4 Additional experiments
+Experiments for classification on synthetic and real data are available in Appendix J. In Appendix K,
+we report high-dimensional experiments with p= 1,000and fixed coefficient experiments (i.e., the
+lasso’s home court). Appendix L investigates the stability of the contextual lasso with respect to the
+random initialization. Appendix M provides hyperlinks to the datasets used throughout the paper.
+5 Discussion
+Contextual sparsity is an important extension of the classical notion of feature sparsity. Rather than
+fix the relevant features once and for all, contextual sparsity allows feature relevance to depend on the
+prediction context. To tackle this intricate statistical learning problem, we devise the contextual lasso.
+This new estimator utilizes the expressive power of deep neural networks to learn interpretable sparse
+linear models with sparsity patterns that vary with the contextual features. The optimization problem
+that defines the contextual lasso is solvable at scale using modern deep learning frameworks. Grouped
+explanatory features and side constraints are readily accommodated by the contextual lasso’s neural
+network architecture. An extensive experimental analysis of the new estimator illustrates its good
+prediction, interpretation, and selection properties in various settings. To the best of our knowledge,
+the contextual lasso is the only tool currently available for handling the contextually sparse setting.
+The problem of deciding the explanatory-contextual feature split is the same as that faced with
+varying-coefficient models. Though the literature on varying-coefficient models is extensive, there
+are no definitive rules for partitioning the features in general. In the housing and energy examples,
+the contextual features are spatial or temporal effects, which are distinct from the remaining features.
+In the telemonitoring example, the patient attributes (age and sex) differ fundamentally from the
+vocal characteristics. Ultimately, the partition for any given application should be guided by domain
+expertise with consideration to the end goal. If one needs to interpret the exact effect of a feature, that
+feature should be an explanatory feature. If a feature’s effect is of secondary interest, or it is suspected
+that the feature influences the structural form of the model, that feature should be a contextual feature.
+If the user determines there are no contextual features, the ordinary lasso is a more appropriate tool.
+It remains an important avenue of future research to establish a solid theoretical foundation for the
+contextual lasso. The statistical properties of the lasso in terms of estimation, prediction, and selection
+are now well-established in theory (Bunea et al., 2007; Raskutti et al., 2011; Shen et al., 2013; Zhang
+et al., 2014). The synthetic experiments in our paper suggest that the contextual lasso satisfies similar
+properties, though theoretically establishing these results is challenging. Statistical convergence
+results for vanilla feedforward neural networks (e.g., Schmidt-Hieber, 2020) do not apply in our
+setting due to the projection layer. Moreover, to our knowledge, no statistical guarantees exist for
+neural networks configured with convex optimization layers that otherwise might apply here. It is
+also important to understand when the contextual lasso’s performance is matched by a deep neural
+network, since both should predict well for large samples in the contextually sparse linear regime.
+10References
+Akshay Agrawal, Brandon Amos, Shane Barratt, Stephen Boyd, Steven Diamond, and J Zico Kolter.
+Differentiable convex optimization layers. In Advances in Neural Information Processing Systems ,
+volume 32, 2019.
+Takuya Akiba, Shotaro Sano, Toshihiko Yanase, Takeru Ohta, and Masanori Koyama. Optuna:
+A next-generation hyperparameter optimization framework. In Proceedings of the 25th ACM
+SIGKDD International Conference on Knowledge Discovery and Data Mining , pages 2623–2631,
+2019.
+Maruan Al-Shedivat, Avinava Dubey, and Eric Xing. Contextual explanation networks. Journal of
+Machine Learning Research , 21:1–44, 2020.
+Brandon Amos and J Zico Kolter. Optnet: Differentiable optimization as a layer in neural networks.
+InProceedings of the 34th International Conference on Machine Learning , volume 70, pages
+136–145, 2017.
+Jeff Bezanson, Alan Edelman, Stefan Karpinski, and Viral B Shah. Julia: A fresh approach to
+numerical computing. SIAM Review , 59:65–98, 2017.
+Stephen Boyd and Lieven Vandenberghe. Convex Optimization . Cambridge University Press, 2004.
+Patrick Breheny and Jian Huang. Group descent algorithms for nonconvex penalized linear and
+logistic regression models with grouped predictors. Statistics and Computing , 25:173–187, 2015.
+Florentina Bunea, Alexandre B Tsybakov, and Marten H Wegkamp. Aggregation for Gaussian
+regression. Annals of Statistics , 35(4):1674–1697, 2007.
+Luis M Candanedo, Véronique Feldheim, and Dominique Deramaix. Data driven prediction models
+of energy use of appliances in a low-energy house. Energy and Buildings , 140:81–97, 2017.
+Yao Chen, Qingyi Gao, Faming Liang, and Xiao Wang. Nonlinear variable selection via deep neural
+networks. Journal of Computational and Graphical Statistics , 30:484–492, 2021.
+Tristan Deleu and Yoshua Bengio. Structured sparsity inducing adaptive optimizers for deep learning,
+2021. arXiv: 2102.03869.
+John Duchi, Shai Shalev-Shwartz, Yoram Singer, and Tushar Chandra. Efficient projections onto the
+ℓ1-ball for learning in high dimensions. In Proceedings of the 25th International Conference on
+Machine Learning , pages 272–279, 2008.
+Jianqing Fan and Wenyang Zhang. Statistical methods with varying coefficient models. Statistics
+and Its Interface , 1:179–195, 2008.
+Jean Feng and Noah Simon. Sparse-input neural networks for high-dimensional nonparametric
+regression and classification, 2019. arXiv: 1711.07592.
+Kelwin Fernandes, Pedro Vinagre, and Paulo Cortez. A proactive intelligent decision support system
+for predicting the popularity of online news. In Progress in Artificial Intelligence , volume 9273,
+pages 535–546, 2015.
+Jerome Friedman, Trevor Hastie, Holger Höfling, and Robert Tibshirani. Pathwise coordinate
+optimization. Annals of Applied Statistics , 1:302–332, 2007.
+Jerome Friedman, Trevor Hastie, and Rob Tibshirani. Regularization paths for generalized linear
+models via coordinate descent. Journal of Statistical Software , 33:1–22, 2010.
+M J Garside. The best sub-set in multiple regression analysis. Journal of the Royal Statistical Society:
+Series C (Applied Statistics) , 14:196–200, 1965.
+David Hallac, Jure Leskovec, and Stephen Boyd. Network lasso: Clustering and optimization in
+large graphs. In Proceedings of the 21st ACM SIGKDD International Conference on Knowledge
+Discovery and Data Mining , pages 387–396, 2015.
+11Trevor Hastie and Robert Tibshirani. Varying-coefficient models. Journal of the Royal Statistical
+Society: Series B (Methodological) , 55:757–796, 1993.
+Trevor Hastie, Robert Tibshirani, and Martin Wainwright. Statistical Learning with Sparsity: The
+Lasso and Generalizations . CRC Press, 2015.
+Trevor Hastie, Robert Tibshirani, and Ryan Tibshirani. Best subset, forward stepwise or lasso?
+Analysis and recommendations based on extensive comparisons. Statistical Science , 35:579–592,
+2020.
+Michael J Innes, Elliot Saba, Keno Fischer, Dhairya Gandhi, Marco Concetto Rudilosso,
+Neethu Mariya Joy, Tejan Karmali, Avik Pal, and Viral B Shah. Fashionable modelling with Flux.
+InWorkshop on Systems for ML and Open Source Software at NeurIPS 2018 , 2018.
+Diederik P Kingma and Jimmy Lei Ba. Adam: A method for stochastic optimization. In International
+Conference on Learning Representations , 2015.
+Thibault Laugel, Marie-Jeanne Lesot, Christophe Marsala, Xavier Renard, and Marcin Detyniecki.
+The dangers of post-hoc interpretability: Unjustified counterfactual explanations. Proceedings of
+the 28th International Joint Conference on Artificial Intelligence , pages 2801–2807, 2019.
+Ismael Lemhadri, Feng Ruan, Louis Abraham, and Robert Tibshirani. Lassonet: A neural network
+with feature sparsity. Journal of Machine Learning Research , 22:1–29, 2021a.
+Ismael Lemhadri, Feng Ruan, and Robert Tibshirani. Lassonet: Neural networks with feature sparsity.
+InProceedings of the 24th International Conference on Artificial Intelligence and Statistics , volume
+130, pages 10–18, 2021b.
+Scott M Lundberg and Su-In Lee. A unified approach to interpreting model predictions. In Advances
+in Neural Information Processing Systems , volume 30, 2017.
+Riˇcards Marcinkevi ˇcs and Julia E V ogt. Interpretable and explainable machine learning: A methods-
+centric overview with concrete examples. Wiley Interdisciplinary Reviews: Data Mining and
+Knowledge Discovery , 13, 2023.
+Lukas Meier, Sara van de Geer, and Peter Bühlmann. The group lasso for logistic regression. Journal
+of the Royal Statistical Society: Series B (Statistical Methodology) , 70:53–71, 2008.
+Nicolai Meinshausen. Relaxed lasso. Computational Statistics and Data Analysis , 52:374–393, 2007.
+Christoph Molnar, Giuseppe Casalicchio, and Bernd Bischl. Interpretable machine learning – A brief
+history, state-of-the-art and challenges. In ECML PKDD 2020 Workshops , volume 1323, pages
+417–431, 2020.
+W James Murdoch, Chandan Singh, Karl Kumbier, Reza Abbasi-Asl, and Bin Yu. Definitions,
+methods, and applications in interpretable machine learning. Proceedings of the National Academy
+of Sciences of the United States of America , 116:22071–22080, 2019.
+J A Nelder and R W M Wedderburn. Generalized linear models. Journal of the Royal Statistical
+Society: Series A (General) , 135:370–384, 1972.
+Byeong U Park, Enno Mammen, Young K Lee, and Eun Ryung Lee. Varying coefficient regression
+models: A review and new developments. International Statistical Review , 83:36–64, 2015.
+Garvesh Raskutti, Martin J Wainwright, and Bin Yu. Minimax rates of estimation for high-dimensional
+linear regression over ℓq-balls. IEEE Transactions on Information Theory , 57(10):6976–6994,
+2011.
+Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin. “Why should I trust you?” Explaining the
+predictions of any classifier. In Proceedings of the 22nd ACM SIGKDD International Conference
+on Knowledge Discovery and Data Mining , page 1135–1144, 2016.
+Cynthia Rudin. Stop explaining black box machine learning models for high stakes decisions and use
+interpretable models instead. Nature Machine Intelligence , 1:206–215, 2019.
+12Cynthia Rudin, Chaofan Chen, Zhi Chen, Haiyang Huang, Lesia Semenova, and Chudi Zhong.
+Interpretable machine learning: Fundamental principles and 10 grand challenges. Statistics
+Surveys , 16:1–85, 2022.
+Simone Scardapane, Danilo Comminiello, Amir Hussain, and Aurelio Uncini. Group sparse regular-
+ization for deep neural networks. Neurocomputing , 241:81–89, 2017.
+Johannes Schmidt-Hieber. Nonparametric regression using deep neural networks with ReLU activa-
+tion function. Annals of Statistics , 48:1875–1897, 2020.
+Xiaotong Shen, Wei Pan, Yunzhang Zhu, and Hui Zhou. On constrained and regularized high-
+dimensional regression. Annals of the Institute of Statistical Mathematics , 65(5):807–832, 2013.
+Ryan Thompson, Edwin V Bonilla, and Robert Kohn. Contextual directed ayclic graphs, 2023. arXiv:
+2310.15627.
+Robert Tibshirani. Regression shrinkage and selection via the lasso. Journal of the Royal Statistical
+Society: Series B (Methodological) , 58:267–288, 1996.
+Athanasios Tsanas, Max A Little, Patrick E McSharry, and Lorraine O Ramig. Accurate telemon-
+itoring of Parkinson’s disease progression by noninvasive speech tests. IEEE Transactions on
+Biomedical Engineering , 57:884–893, 2009.
+Ewout van den Berg, Mark Schmidt, Michael P Friedlander, and Kevin Murphy. Group sparsity via
+linear-time projection. Technical Report TR-2008-09, Department of Computer Science, University
+of British Columbia, 2008.
+Peisong Wang, Xiangyu He, Gang Li, Tianli Zhao, and Jian Cheng. Sparsity-inducing binarized
+neural networks. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 34,
+pages 12192–12199, 2020.
+Makoto Yamada, Koh Takeuchi, Tomoharu Iwata, John Shawe-Taylor, and Samuel Kaski. Localized
+lasso for high-dimensional regression. Proceedings of the 20th International Conference on
+Artificial Intelligence and Statistics , 54:325–333, 2017.
+Junchen Yang, Ofir Lindenbaum, and Yuval Kluger. Locally sparse neural networks for tabular
+biomedical data. In Proceedings of the 39th International Conference on Machine Learning ,
+volume 162, pages 25123–25153, 2022.
+Yuya Yoshikawa and Tomoharu Iwata. Neural generators of sparse local linear models for achieving
+both accuracy and interpretability. Information Fusion , 81:116–128, 2022.
+Ming Yuan and Yi Lin. Model selection and estimation in regression with grouped variables. Journal
+of the Royal Statistical Society: Series B (Statistical Methodology) , 68:49–67, 2006.
+Yuchen Zhang, Martin J Wainwright, and Michael I Jordan. Lower bounds on the performance of
+polynomial-time algorithms for sparse linear regression. In Proceedings of the 27th Conference on
+Learning Theory , volume 35, pages 921–948, 2014.
+Yichen Zhou and Giles Hooker. Decision tree boosted varying coefficient models. Data Mining and
+Knowledge Discovery , 36:2237–2271, 2022.
+Hui Zou and Trevor Hastie. Regularization and variable selection via the elastic net. Journal of the
+Royal Statistical Society: Series B (Statistical Methodology) , 67:301–320, 2005.
+13A House pricing data
+We expand the analysis in Section 1 and compare the statistical performance of the contextual lasso
+with its competitors using the house pricing data. Following Zhou and Hooker (2022), the explanatory
+features are the elevator indicator, renovation condition, floor of the apartment, and number of living
+rooms and bathrooms ( p= 5). The contextual features are longitude and latitude ( m= 2). We
+randomly sample training, validation, and testing sets of size n= 15,000and report the results across
+10 random data splits in Table 3. The contextual lasso delivers sparse models and with competitive
+Table 3: Comparisons of methods on the house pricing data. Metrics are aggregated over 10 random
+splits of the data. Averages and standard errors are reported.
+Relative loss Avg. sparsity
+Deep neural network 0.515±0.003 5 .0±0.0
+Contextual linear model 0.505±0.002 5 .0±0.0
+Lasso 0.892±0.001 5 .0±0.0
+Lassonet 0.521±0.003 5 .0±0.0
+LLSPIN 0.729±0.031 4 .5±0.2
+Contextual lasso 0.498±0.002 2 .9±0.3
+prediction performance. The contextual linear model trails closely in prediction, though it does not
+offer a similar level of parsimony. While also producing good predictions, the deep neural network
+and lassonet do not offer the same interpretability. The lasso lags far behind the contextual lasso and
+other neural network-based methods, suggesting that the contextual features have nonlinear effects.
+B Grouped explanatory features
+Algorithm 2 presents the routine for projecting onto the group ℓ1-ball. To summarize the algorithm,
+Algorithm 2 Projection onto group ℓ1-ball
+input Dense group coefficients η(k)
+1, . . . , η(k)
+n(k= 1, . . . , g ) and radius λ
+Compute group-wise norms ξ(k)
+i=∥η(k)
+i∥2fori= 1, . . . , n andk= 1, . . . , g
+Run Algorithm 1 with ξ(k)
+1, . . . , ξ(k)
+n(k= 1, . . . , g ) and λto get ¯ξ(k)
+1, . . . , ¯ξ(k)
+n(k= 1, . . . , g )
+Compute β(k)
+1, . . . , β(k)
+nasβ(k)
+i=η(k)
+i¯ξ(k)
+i/ξ(k)
+ifori= 1, . . . , n andk= 1, . . . , g
+output Group-sparse coefficients β(k)
+1, . . . , β(k)
+n(k= 1, . . . , g )
+the norm of each group is projected onto the ℓ1-ball using Algorithm 1, and then each set of group
+coefficients is rescaled by the resulting projected norms. These projected norms can be zero after
+thresholding, yielding sparsity across the groups. For the correctness of Algorithm 2, refer to Theorem
+4.1 in van den Berg et al. (2008), which establishes the validity of this type of thresholding.
+C Side constraints
+To simplify notation here, we refer to η(zi)by the shorthand ηi. The ℓ1-projection with sign
+constraints is
+min
+β1,...,βn1
+nnX
+i=1∥ηi−βi∥2
+2
+s.t.1
+nnX
+i=1∥βi∥1≤λ
+βij≥0, i= 1, . . . , n, j ∈ P
+βij≤0, i= 1, . . . , n, j ∈ N.(6)
+Here,P ⊆ { 1, . . . , p }andN ⊆ { 1, . . . , p }index the explanatory features whose coefficients are
+restricted nonnegative and nonpositive, respectively. Proposition C.1 states that (6)reduces to a
+simpler problem directly solvable by Algorithm 1.
+14Proposition C.1. Letη1, . . . , ηn∈Rp. Define ˜η1, . . . , ˜ηnelementwise as
+˜ηij=
+
+0 ifηij<0∧j∈ P
+0 ifηij>0∧j∈ N
+ηijotherwise, i= 1, . . . , n, j = 1, . . . , p.
+Then optimization problem (6)admits the same optimal solution as
+min
+β1,...,βn1
+nnX
+i=1∥˜ηi−βi∥2
+2
+s.t.1
+nnX
+i=1∥βi∥1≤λ.(7)
+The proof of this proposition requires the following lemma.
+Lemma C.2. A solution β1, . . . , βnto(6)must satisfy the inequality ηijβij≥0for all iandj.
+Proof. We proceed using proof by contradiction along the lines of Lemma 3 in Duchi et al. (2008).
+Suppose there exists a solution β1, . . . , βnsuch that ηijβij<0for some iandj. Take β⋆
+1, . . . , β⋆
+n
+equal to β1, . . . , βnexcept at index (i, j), where we set β⋆
+ij= 0. Note that β⋆
+1, . . . , β⋆
+ncontinues to
+satisfy the sign constraints and ℓ1-constraint, and hence remains feasible for (6). We also have that
+nX
+i=1∥ηi−βi∥2
+2−nX
+i=1∥ηi−β⋆
+i∥2
+2=β2
+ij−2ηijβij> β2
+ij>0.
+Thus, β⋆
+1, . . . , β⋆
+nattains a lower objective value than the solution β1, . . . , βn. This contradiction
+yields the statement of the lemma.
+The proof of Proposition C.1 now follows.
+Proof. Ifηij<0andj∈ P, then by Lemma C.2, a solution to (6)must satisfy βij= 0. Likewise, if
+ηij>0andj∈ N , then it must hold that βij= 0. Hence, by setting any ηijthat violate the sign
+constraints to zero (i.e., ˜ηij), and noting that a solution to (7)must satisfy βij= 0when ˜ηij= 0, we
+arrive at the result of the proposition.
+D Pathwise optimization
+In a spirit similar to Friedman et al. (2007), we take the sequence of regularization parameters
+{λ(t)}T
+t=1as a grid of values that yields a path between the unregularized model (no sparsity) and
+the fully regularized model (all coefficients zero). Specifically, we set λ(1)such that the contextual
+lasso regularizer does not impart any regularization, i.e., λ(1)=n−1Pn
+i=1∥βˆw(1)(zi)∥1, where the
+weights ˆw(1)are a solution to (4)from setting λ=∞. We then construct the sequence as a grid of
+linearly spaced values between λ(1)andλ(T)= 0, the latter forcing all coefficients to zero. Linear
+spacing of the sequence of λ(t)generally yields linearly spaced sparsity levels. The sequence should
+be decreasing so the optimizer can build on networks that increase in sparsity.
+Algorithm 3 summarizes the complete pathwise optimization process, with gradient descent employed
+as the optimizer. To parse the notation used in the algorithm, L(w;λ) =n−1Pn
+i=1l(x⊤
+iβw(zi), yi)
+is the loss as a function of the network’s weights wgiven λ, and∇wL(w;λ)is its gradient.
+E Relaxed fit
+Denote by ˆβλ(z)a contextual lasso network fit with regularization parameter λ. To unwind bias in
+ˆβλ(z), we train a polished network βp
+λ(z)that selects the same explanatory features but does not
+impose any shrinkage. For this task, we introduce the function ˆsλ(z) :Rm→ {0,1}pthat outputs a
+vector with elements equal to one wherever ˆβλ(z)is nonzero and elsewhere is zero. We then fit the
+15Algorithm 3 Pathwise optimization
+input Initial weights ˆw(0), step size α, and number of regularization parameters T
+Initialize λ(1)=∞
+fort= 1, . . . , T do
+Initialize w(0)=ˆw(t−1)
+Initialize m= 0
+while Not converged do
+Update w(m+1)=w(m)−α· ∇wL(w(m);λ(t))
+Update m=m+ 1
+end while
+Setˆw(t)=w(m)
+ift= 1then
+Setλ(1)=n−1Pn
+i=1∥βˆw(1)(zi)∥1andλ(T)= 0
+Equispace λ(2), . . . , λ(T−1)between λ(1)andλ(T)
+end if
+end for
+output Fitted weights ˆw(1), . . . , ˆw(T)
+polished network as βp
+λ(z) =η(z)◦ˆsλ(z), where ◦means element-wise multiplication and η(z)is
+the same architecture as used for the original contextual lasso network before the projection layer.
+The effect of including ˆsλ(z), which is fixed when training βp
+λ(z), is twofold. First, it guarantees the
+coefficients from the polished network are nonzero in the same positions as the original network, i.e.,
+the same features are selected. Second, it ensures explanatory features only contribute to gradients
+for observations in which they are active, i.e., xijdoes not contribute if the jth component of ˆsλ(zi)
+is zero. Because the polished network does not project onto an ℓ1-ball, its coefficients are not shrunk.
+To arrive at the relaxed contextual lasso fit, we combine ˆβλ(z)and the fitted polished network ˆβp
+λ(z):
+ˆβλ,γ(z) := (1 −γ)ˆβλ(z) +γˆβp
+λ(z),0≤γ≤1. (8)
+When γ= 0, we recover the original biased coefficients, and when γ= 1, we attain the unbiased
+polished coefficients. Between these extremes lies a continuum of relaxed coefficients with varying
+degrees of bias. Since the original and polished networks need only be computed once, we may
+consider any relaxation on this continuum at virtually no computational expense over and above that
+of the two networks. In practice, we choose among the possibilities by tuning γon a validation set.
+To illustrate the benefits of relaxation, we present Figure 6, which compares the relaxed and nonrelaxed
+variants of the contextual lasso under the synthetic experimental design of Section 4. As far as
+prediction accuracy is concerned, the benefits of relaxation are marginal. However, for selection
+and interpretation, the story is quite different. The relaxation yields models that are both sparser
+and contain more true positives and/or fewer false positives. These gains are most pronounced in
+larger samples. In smaller samples, relaxation is less beneficial because the bias from shrinkage helps
+stabilize the models. Yet, the relaxed variant of the contextual lasso typically does no worse than its
+nonrelaxed counterpart because it adapts to the best level of bias (shrinkage) by tuning γ.
+F Run times
+The complexity analysis in Section 2.7 suggests that the training time for the contextual lasso should
+be linear in the sample size nand number of explanatory features p. To verify this result, we record
+the time taken to fit the contextual lasso over a sequence of 50 values of λ. The number of hidden
+layers is three and the number of neurons per layer is 100. Figure 7 reports the results. The run times
+are indeed linear as a function of nandpand, overall, quite reasonable for real world applications.
+G Localized lasso
+We compare the contextual lasso with the localized lasso of Yamada et al. (2017). The graph
+information required by the localized lasso is estimated from the contextual features using the nearest
+neighbors approach of Yamada et al. (2017). We focus on smaller sample sizes than in the main
+16Sample sizep = 50, m = 5 p = 50, m = 2 p = 10, m = 21021031041051021031041051021031041050.00.51.0F1 of nonzeros0.00.51.0Prop. of nonzeros0.00.51.0Relative lossContextual lasso (non-relaxed) Contextual lasso (relaxed)Figure 6: Relaxation ablation on synthetic regression data. Metrics are aggregated over 10 synthetic
+datasets. Solid points are averages and error bars are standard errors. Dashed horizontal lines in the
+middle row indicate the true sparsity level.
+Sample size1000 2000 3000 4000 5000 6000 7000 8000 9000 1000005101520Run time
+Number of explanatory features100 200 300 400 500 600 700 800 900 1000010203040Run time
+Figure 7: Run time in seconds to fit the contextual lasso over a sequence of 50 values of λ, measured
+over 10 synthetic datasets. The number of explanatory features p= 50 in the left plot and the sample
+sizen= 1,000in the right plot. The number of contextual features m= 5. Solid points are averages
+and error bars are one standard errors.
+experiments since each observation requires a new coefficient vector that each constitute additional
+optimization variables. Figure 8 reports the results for regression (the localized lasso does not support
+classification). The localized lasso’s prediction loss improves with growing n, but not nearly as
+well as the contextual lasso. The graph information may be insufficient to encode the underlying
+nonlinearity. Furthermore, the localized lasso’s regularizer never induces fully sparse coefficient
+vectors (all zeros), which may be limiting if there are no relevant explanatory features for certain z.
+H Implementation details
+The contextual lasso is fit using our Julia package ContextualLasso . The network is configured
+with three hidden layers. The number of neurons, which are spread equally across these hidden layers,
+is set so that the dimensionality of the weights wis approximately 32×p×m. This setting ensures
+the network size scales roughly linearly with the number of features. The contextual linear model
+uses the same architecture, excluding the projection layer. The deep neural network is set up similarly.
+These methods all use rectified linear activation functions in the hidden layers and are optimized
+17Sample sizeF1 of nonzeros Prop. of nonzeros Relative loss101.0101.5102.0102.5103.0101.0101.5102.0102.5103.0101.0101.5102.0102.5103.00.00.51.0p = 10, m = 2Contextual lasso Localized lassoFigure 8: Comparisons with the localized lasso on synthetic regression data. Metrics are aggregated
+over 10 synthetic datasets. Solid points are averages and error bars are standard errors. The dashed
+horizontal line in the middle indicates the true sparsity level.
+using Adam (Kingma and Ba, 2015) with a learning rate of 0.001. Convergence is monitored on a
+validation set with the optimizer terminated after 30 iterations without improvement.
+The lasso is fit using the Julia package GLMNet (Friedman et al., 2010). The group lasso is fit using
+theRpackage grpreg (Breheny and Huang, 2015). Since contextual features are always relevant, the
+regularizer for the lasso is applied only to explanatory features and interactions, not the contextual
+features.9The (group) lasso and contextual lasso all allow for relaxed fits, as discussed in Section 2.6.
+The regularization parameter λis swept over a grid of 50 values computed automatically from the
+data using ContextualLasso ,GLMNet , orgrpreg . For each value of λ, the relaxation parameter γ
+is swept over the grid {0,0.1, ...,1}.
+The lassonet is fit using the Python package lassonet (Lemhadri et al., 2021b), which also performs
+its own relaxation. LLSPIN is fit using the authors’ Python implementation (see Yang et al., 2022).
+Their implementation relies on the hyperparameter optimization framework Optuna (Akiba et al.,
+2019) to determine the regularization parameter and learning rate. We use the default grid for tuning
+the learning rate, but increase the maximum regularization parameter to 10, which is roughly the
+smallest value required to achieve a fully sparse solution in our experiments. LLSPIN does not shrink
+and so does not admit a relaxation. Lassonet and LLSPIN use the same convergence criterion, number
+of regularization parameters, and network configuration as the other deep learning methods.
+For all methods, the input features are standardized prior to training. Standardization of the ex-
+planatory features is necessary for the lasso estimators as it places all coefficients on the same scale,
+ensuring equitable regularization. ContextualLasso automates standardization and expresses all
+final coefficients on their original scale.
+All experiments are run on a Linux platform with NVIDIA RTX 4090 GPUs.
+I Synthetic data generation
+The explanatory features x1, . . . ,xnare generated iid as p-dimensional N(0,Σ)random variables,
+where the covariance matrix Σhas elements Σij= 0.5|i−j|. The contextual features z1, . . . ,znare
+generated iid as m-dimensional random variables uniform on [−1,1]m, independent of the xi. With
+the features drawn, we simulate a regression response as
+yi∼N(µi,1), µ i=κ·x⊤
+iβ(zi),
+or a classification response as
+yi∼Bernoulli( pi), p i=1
+1 + exp 
+−κ·x⊤
+iβ(zi),
+fori= 1, . . . , n . Here, κ >0controls the signal strength vis-à-vis the variance of κ·x⊤
+iβ(zi). We
+first estimate the variance of x⊤
+iβ(zi)on the training set and then set κso the variance of the signal
+9grpreg does not provide support for this functionality.
+18z₁-1.0 -0.5 0.0 0.5 1.00.70.91.0
+0.60.8
+0.5β₃β₂β₁
+-1.0-0.50.00.51.0z₂Figure 9: Illustration of coefficient function (9)forp= 3explanatory features and m= 2contextual
+features. The centers cjcorrespond to the dark red in the middle of each sphere.
+is five. The coefficient function β(z) := 
+β1(z), . . . , β p(z)⊤is constructed such that βj(zi)maps
+to a nonzero value whenever zilies within a hypersphere of radius rjcentered at cj:
+βj(zi) =(
+1−1
+2rj∥zi−cj∥2if∥zi−cj∥2≤rj
+0 otherwise. (9)
+This function attains the maximal value one when zi=cjand the minimal value zero when
+∥zi−cj∥2> rj. The centers c1, . . . ,cpare generated with uniform probability on [−1,1]p, and
+the radii r1, . . . , r pare chosen to achieve sparsity levels that vary between 0.05 and 0.15 (average
+0.10). Figure 9 provides a visual illustration. This function is inspired by the house pricing example
+in Figure 1, where the coefficients are nonzero in some central region of the contextual feature space.
+J Classification results
+J.1 Synthetic data
+Figure 10 reports the experimental results for classification on synthetic data, analogous to those for
+regression in Section 4. The findings are broadly in line with the regression ones. The contextual
+lasso performs best overall and is the only method ever able to recover the true nonzeros accurately.
+J.2 News popularity data
+We turn to a real dataset of articles posted to the news platform Mashable (Fernandes et al., 2015).
+The task is to predict if an article will be popular, defined in Fernandes et al. (2015) as more than
+1400 shares. In addition to the zero-one response feature for popularity, the dataset has predictive
+features that quantify the articles (e.g., number of total words, positive words, and images). The data
+channel feature, which identifies the category of the article (lifestyle, entertainment, business, social
+media, technology, world, or viral), is taken as the contextual feature. It is expressed as a sequence of
+indicator variables yielding m= 6contextual features. There remain p= 51 explanatory features.
+Table 4 reports the results over 10 random splits of the dataset’s n= 39 ,643observations into
+training, validation, and testing sets in 0.6-0.2-0.2 proportions. In contrast to the previous datasets, all
+Table 4: Comparisons on the news popularity data. Metrics are aggregated over 10 random splits of
+the data. Averages and standard errors are reported.
+Relative loss Avg. sparsity
+Deep neural network 0.903±0.003 51 .0±0.0
+Contextual linear model 0.906±0.003 51 .0±0.0
+Lasso 0.914±0.002 22 .4±0.7
+Lassonet 0.894±0.002 50 .7±0.3
+LLSPIN 0.923±0.009 51 .0±0.0
+Contextual lasso 0.906±0.002 12 .6±0.9
+methods predict similarly well here. The lassonet performs marginally best overall, while LLSPIN
+performs marginally worst. Though predicting neither best nor worst, the contextual lasso retains a
+19Sample sizep = 50, m = 5 p = 50, m = 2 p = 10, m = 21021031041051021031041051021031041050.51.0F1 of nonzeros0.51.0Prop. of nonzeros0.70.80.91.0Relative lossLLSPIN
+Contextual lassoLasso
+LassonetDeep neural network
+Contextual linear modelFigure 10: Comparisons on synthetic classification data. Metrics are aggregated over 10 synthetic
+datasets. Solid points are averages and error bars are standard errors. Dashed horizontal lines in the
+middle row indicate the true sparsity level.
+significant lead in terms of sparsity, being twice as sparse as the next sparsest method (lasso). Sparsity
+is crucial for this task as it allows the author or editor to focus on a small number of changes necessary
+to improve the article’s likelihood of success. Other methods such as the uninterpretable deep neural
+network, or fully dense contextual linear model, are not nearly as useful for the same purpose.
+K High-dimensional and fixed coefficient results
+Besides interpretability, a major appeal of the lasso is its good performance in high-dimensional
+regimes, where the number of features is comparable to the sample size. It is intriguing to consider
+whether the contextual lasso remains useful in this setting. To this end, we extend the experiments
+of Section 4 to p= 1,000explanatory features. Typically, when there are so many features, only
+a small number are relevant for predicting the response, so we adjust the synthetic data generation
+process so that only 10 explanatory features are relevant for some values of the contextual features z.
+The remaining 990 explanatory features remain irrelevant for all z. Figure 11 reports the results. The
+contextual lasso performs highly competitively, even when n <1,000and there are more explanatory
+features than observations. As with the lower-dimensional experiments, the contextual lasso can still
+filter out the irrelevant explanatory features and achieves near-perfect support recovery for large n.
+A second regime that might arise in practice is where contextual features are present but have no
+effect on the explanatory features. That is, the explanatory features have a fixed sparsity pattern and
+fixed coefficients for all z. Figure 12 reports the results in this setting. Here, the contextual lasso is
+outperformed by the lasso (which is in its home territory) and the lassonet, both of which assume
+the sparsity pattern is fixed. Nonetheless, the contextual lasso is able to recover the true nonzeros by
+learning a constant function for β(z)via the bias term in each neuron. Provided the sample size is
+sufficiently large, it is reasonable to expect the contextual lasso to remain competitive with the lasso.
+20Sample sizeF1 of nonzeros Prop. of nonzeros Relative loss102.0102.5103.0103.5104.0102.0102.5103.0103.5104.0102.0102.5103.0103.5104.00.00.51.0p = 1000, m = 2LLSPIN
+Contextual lassoLasso
+LassonetDeep neural network
+Contextual linear modelFigure 11: Comparisons on high-dimensional synthetic regression data. Metrics are aggregated
+over 10 synthetic datasets. Solid points are averages and error bars are standard errors. The dashed
+horizontal line in the middle indicates the true sparsity level.
+Sample sizeF1 of nonzeros Prop. of nonzeros Relative loss1011021031041011021031041011021031040.00.51.0p = 100, m = 5LLSPIN
+Contextual lassoLasso
+LassonetDeep neural network
+Contextual linear model
+Figure 12: Comparisons on fixed coefficient synthetic regression data. Metrics are aggregated over 10
+synthetic datasets. Solid points are averages and error bars are standard errors. The dashed horizontal
+line in the middle indicates the true sparsity level.
+L Stability analysis
+Since the contextual lasso involves a highly-parameterized neural network, it is insightful to consider
+its selection stability when trained using different random initializations of the network weights. To
+this end, we report Figure 13, which shows selection instability as measured by the Hamming distance
+(scaled by p) between two independently initialized networks. Unsurprisingly, the statistically difficult
+Sample sizep = 50, m = 5 p = 50, m = 2 p = 10, m = 21021031041051021031041051021031041050.00.10.20.3Selection instability
+Figure 13: Selection instability of the contextual lasso over 10 synthetic datasets. Solid points
+represent averages and error bars denote standard errors.
+regimes, where the sample size is small or the number of explanatory/contextual features is large,
+correspond to higher instability. In any case, the contextual lasso grows increasingly stable with the
+sample size. Even when p= 50 andm= 5, the contextual lasso is almost entirely stable by the time
+n= 10,000, which is typical of our real data examples. The concave shape of the stability curve
+21when p= 50 is consistent with the proportion of nonzeros reported in Figure 3, where the contextual
+lasso initially produces highly sparse models that are more restricted and hence more stable.
+M Dataset availability
+The datasets used throughout this paper are publicly available at the following URLs.
+• House pricing data in Section 1:
+https://www.kaggle.com/datasets/ruiqurm/lianjia .
+• Energy consumption data in Section 4:
+https://archive.ics.uci.edu/ml/datasets/Appliances+energy+prediction .
+• Parkinson’s telemonitoring data in Section 4:
+https://archive.ics.uci.edu/ml/datasets/parkinsons+telemonitoring .
+• News popularity data in Appendix J:
+https://archive.ics.uci.edu/ml/datasets/online+news+popularity .
+N Limitations
+The contextual lasso has strong prediction, interpretation, and selection properties. Naturally, it also
+has several weaknesses. As with the ordinary lasso, the contextual lasso may select a single feature
+from a group of highly correlated features. This shortcoming could be remedied by introducing an
+ℓ2
+2-regularizer in a spirit similar to the elastic net (Zou and Hastie, 2005). Another potential drawback
+is that the contextual lasso does not guarantee the complete exclusion of an explanatory feature. That
+is, it cannot ensure the coefficient for a feature is nonzero for every possible z, which might limit
+interpretability in certain settings. Full exclusion could be achieved by adding an ℓ1-regularizer on the
+weights of the first layer, similar to the lassonet. Finally, as is typical of neural networks, the objective
+function of the contextual lasso is nonconvex, which can complicate analysis of its properties.
+22

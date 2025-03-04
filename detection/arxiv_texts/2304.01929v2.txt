@@ -1,0 +1,609 @@
+arXiv:2304.01929v2  [cs.DC]  26 May 2023State-Based∞P-Set Conﬂict-Free Replicated Data Type
+Erick Lavoie
+April, 4th, 2023
+Abstract
+The 2P-Set Conﬂict-Free Replicated Data Type (CRDT) suppor ts two phases for each
+possible element: in the ﬁrst phase an element can be added to the set and the subsequent
+additions are ignored; in the second phase an element can be r emoved after which it will stay
+removed forever regardless of subsequent additions and rem ovals. We generalize the 2P-Set
+to support an inﬁnite sequence of alternating additions and removals of the same element.
+In the presence of concurrent additions and removals on diﬀe rent replicas, all replicas will
+eventuallyconvergetothelongestsequenceofalternating additionsandremovalsthatfollows
+causal history.
+The idea of converging on the longest-causal sequence of opp osite operations had already
+been suggested in the context of an undo-redo framework but t he design was neither given
+a name nor fully developed. In this paper, we present the full design directly, using nothing
+more than the basic formulation of state-based CRDTs. We als o show the connection
+between the set-based deﬁnition of 2P-Set and the counter-b ased deﬁnition of the ∞P-
+Set with simple reasoning. We then give detailed proofs of co nvergence. The underlying
+grow-only dictionary of grow-only counters on which the ∞P-Set is built may be used to
+build other state-based CRDTs. In addition, this paper shou ld be useful as a pedagogical
+example for designing state-based CRDTs, and might help rai se the proﬁle of CRDTs based
+onlongest sequence wins .
+1 Introduction
+Conﬂict-Free Replicated Data Types (CRDTs) [6] are replicated mut able objects that are de-
+signed to ensure converge to the same state eventually ,i.e., at some point in the future after
+updates have stopped, and automatically ,i.e.using deterministic conﬂict-resolution rules in the
+presence of concurrent updates.
+The 2P-Set [5] is a replicated set that supports two phases for eac h possible element: in the
+ﬁrst phase, an element can be added to the set and any subsequen t addition of the same element
+is going to be ignored; in the second phase, an element that is already in the set can be removed
+and any subsequent additions and removals of the same element are going to be ignored.
+TheC-Set[1]enablesadditionofanelementafterremovalbut hasc ounter-intuitivebehaviour
+for some concurrent updates [2]: two replicas may independently iss ue sequences of additions
+and removals both ending in an addition but eventually converge to a s tate in which the element
+is actually not in the set.
+The Observe-Remove-Set (OR-Set) [5] also enables addition of an e lement after removal but
+requires tracking each addition operation with a unique identiﬁer, re sulting in memory usage
+proportional to the number of concurrent additions of the same e lement.
+The Last-Writer-Wins-Set (LWW-Set) [5] also enables addition of an element after removal
+but requires two sets, ordering of concurrent operations accor ding to a timestamp, and garbage
+collection of stale state tuples.
+1The T-Set [3] also enables addition of an element after removal and r epresents whether an
+element is in a set or not by associating it with 0 or 1 with modiﬁcations pe rformed as modulo
+2 operations. However, its operation-based formulation relies on c ausal delivery to determine
+which operation happened last. A similar state-based design, based on the mapping of the state
+of elements in the set to integers, had previously been suggested in the context of a framework
+for undo-redo operations on state-based CRDTs [7]. However, th e complete design had not been
+presented and no name had been given to it.
+In this paper, we present the complete design of a state-based se t design that supports an
+inﬁnite sequence of additions and removals, which we call the ∞P-Set due to its straight-forward
+extension of the 2P-Set semantics. An ∞P-Set represents whether an element is in a set as
+positive integers within a grow-only dictionary of grow-only counters : if the associated counter
+is odd the element is in the set, otherwise if no counter is present or t he counter is even, the
+element is not in the set.
+SimilartotheT-Set[3]andunnamedpredecessor([7], Section5.1),o urdesignderivesfromthe
+following two observations. First, given operations add(e)andremove(e) on a setSimplemented
+as a CRDT, the implementation of Shas only two possible states: one in which an element eis
+in the set S(e∈S) and one in which an element eis not in the set S(e /∈S). When e∈S, only
+aremove(e) modiﬁes the state, and when e /∈S, only an add(e)modiﬁes the state. When only
+observing state changes, any arbitrary sequence of add(e)andremove(e) is actually equivalent to
+a strict alternating sequence of add(e)andremove(e) . Second, two replicas performing the same
+sequence of add(e)andremove(e) will reach the same state, even without communication. When
+two replicas have sequences of diﬀerent lengths, we can see the sm aller as a preﬁx of the longer
+and ignore the smaller, therefore the longest sequence eventually wins and all replicas converge
+to the ﬁnal state of the longest sequence. Note that the longest sequence need not happen on a
+single replica, it may actually have been generated through a sequen ce of replicas according to
+the causal history. Note also that the longest sequence will be give n priority even if a concurrent
+but more recent shorter sequence exists, e.g., according to a global timestamp.
+In the rest of this paper1, we make the following contributions:
+•We presentthe completedesign ofan ∞P-Set. In contrastto the aforementionedundo-redo
+framework [7] which introduces its own formalism, we rely on nothing m ore than the base
+formalism of state-based CRDTs (Section 2). Our explanation of th e connection between
+the 2P-Set and the ∞P-Set is also simpler than the presentation of the T-Set [3]: the
+latter relies on group theory which most undergrad computer scien ce and practitioners are
+unlikely to have been exposed to;
+•We provide a proof that ∞P-Set is indeed a state-based CRDT, with a high-level overview
+in Section 3.1 and a detailed presentation in Appendix A.1. The underlyin ggrow-only
+dictionary of grow-only counters may also be useful for building more sophisticated state-
+based CRDTs. The proofs are written in the structured style sugg ested by Lamport [4]
+and only assume background on discrete mathematics, making them useful as pedagogical
+example for undergrad students and practitioners;
+In addition, we also discuss the lower memory consumption of an ∞P-Set compared to an
+OR-Set or LWW-Set (Section 4). We then conclude with a summary an d some directions for
+future work (Section 5).
+1Sources for this paper are also available here: https://github.com/cn-uofbasel/infinite-P-Set . Pull-
+requests to suggest corrections are welcome.
+22∞P-Set
+The∞P-Set enables each possible element to be either in or out of the set, following a possibly
+inﬁnite sequence of addition and removal operations. Concurrent additions and removals are
+resolved by having the longest sequence of alternating additions an d removals win.
+In this section, we ﬁrst present how the design is an extension of a 2 P-Set (Section 2.1), the
+state and operations specifying its behaviour (Section 2.2), its cau sal and concurrent behaviour
+(Section 2.3), and the system model under which it is valid (Section 2.4 ).
+2.1 From 2P-Set to ∞P-Set
+Our design is a generalization of the behaviour of the 2P-Set [5], whic h we show as follows.
+In a 2P-Set, an element ecan either be ina setS(e∈S) oroutof the same set ( e /∈S).
+An element is initially out of the set. After an addition add(e), the element is in the set, which
+corresponds to the ﬁrst phase. Any subsequent addition of edoes not change the state of S.
+After a removal remove(e) ,eis then considered out of the set forever, which corresponds to t he
+second phase.
+A 2P-Set is implemented by combining 2 grow-only sets AandR.Atracks additions, and is
+accordingly called the add-set;Rtracks removals, and is accordingly called the remove-set (or
+tombstones set). The add(e)operation adds eto the add-set A. Theremove(e) operation adds
+eto the remove-set R, only if eis already in the add-set A. The element eis considered in S
+if and only if eis in the diﬀerence of AandR,i.e.e∈S⇔e∈(A\R). Merging two states
+(A1,R1) and (A2,R2) is simply the union of their components, i.e.(A1∪A2,R1∪R2).
+The 2P-Set can be extended to a 4P-Set by adding another pair of grow-only sets , so that the
+state ofScan be described by two pairs of add-remove-sets ( A1,R1,A2,R2). This enables eto
+be added, then removed, then added again, then removed one last time before staying removed
+forever. During an add(e)operation, if eis not in any of the components, it is added to A1; if it
+is in both in A1andR1, it is added to A2; otherwise, the add(e)is ignored. Similarly, during a
+remove(e) operation, if eis only in A1,eis added to R1; ifeis inA1,R1, andA2,eis added
+toR2; otherwise the remove(e) is ignored. The element eis considered in the set Sif and only
+if the set diﬀerence of either pair includes e,i.e.e∈S⇔e∈((A1\R1)∪(A2\R2)). Merging is
+simply the element-wise union of components.
+The 2P-Set can be extended to an ∞P-Set by adding an inﬁnite number of add-remove-set
+pairs (A1,R1,A2,R2,...). Manipulating an inﬁnite number of sets is unwieldy, so instead we
+can track the number of add-sets and remove-sets eis included in: if eis in all add-sets up to
+Aiand all remove-sets up to Rj, we simply store the state of eas (i,j). Furthermore, because
+the state of eis strictly alternating between being in and out of S, andiandjmonotonically
+grow aseis further added and removed, we can simply map the state of eto a single positive
+integerk=i+j. The element eis inSif and only if kis odd otherwise it is out of S,i.e.
+e∈S⇔odd(k). Merging the state of einSandeinS′corresponds to taking the maximum
+value of the corresponding counters, i.e. max (k,k′), which accordingly is determined by the
+longest sequence of add(e)andremove(e) that happened across replicas.
+2.2 State and Operations
+The behaviourofthe ∞P-Setis listed inAlgorithm 1followingexistingconventions[5]. The state
+of the CRDT is implemented as a dictionary Dthat maps unique elements to a single positive
+integer. The corresponding set Sis obtained by querying the dictionary, i.e.S=query(D).
+The same set Smight be implemented by diﬀerent valid dictionaries so the inverse relat ionship
+3is ambiguous. All operations are speciﬁed in a functional style. When an operation modiﬁes
+the state, its ﬁrst argument is the current state Dand its return value is the modiﬁed state D′
+orD′′. This makes the algorithm easier to associate with the proofs (Sect ion 3). A practical
+implementation might instead encapsulate the state, in an object fo r example.
+Operations are the followings:
+•D=Initialize () creates a new ∞P-Set replica. After initialization, the state of the
+replica,D, is an empty dictionary.
+•S=Query(D) returnsthe set Scorrespondingtothe dictionary D.Scontainsthe elements
+that are currently in S,i.e., all elements in Dassociated with an oddinteger counter.
+•D′=Add(D,e) adds the element eto the set represented by D, returning a new dictionary
+D′. Adding ewheneis already in the set, i.e.,D[e] exists and is odd, is ignored and
+D′=D. Otherwise, if ehad never been added before ( eis not in the keys of D):eis added
+and its counter is initialized to 1, i.e.,D′[e] = 1. Finally, if ehas been added before but
+the last operation was a remove(eis inDandD[e] is even): D′[e] =D[e]+1, making it
+odd and eﬀectively adding eback in the set.
+•D′=Remove(D,e) removes the element efrom the set represented by D, returning a new
+dictionary D′. The element emight not be in the set either because it was never added
+before, in which case ewon’t be in D, or because it was previously removed, in which case
+D[e] is even. In both cases, the remove operation is ignored. Otherwis e, the last operation
+onewas anaddandD[e] is odd. In that case, D′[e] =D[e] +1, making D′[e] even and
+eﬀectively removing efrom the set.
+•b=Compare(D,D′) returns b=trueifD′includes all operations that were performed
+onDand possibly more. Otherwise, it returns b=false. The comparison is true if and
+only if the keys of Dare a subset of those of D′and all the counters associated to every
+element of Dare smaller or equal than corresponding counters in D′. Ifcompare(D,D′) =
+compare(D′,D) there are two possibilities: if both are truethen both dictionaries are
+actually equal and have received the same sequences of operation s; otherwise, the ordering
+is not deﬁned which means that DandD′have been modiﬁed concurrently but not merged
+yet.
+•D′′=Merge(D,D′) combines DandD′such that D′′will be greater than both but as
+small as possible, eﬀectively incorporating all operations that happ ened to both DandD′.
+If an element eis inD′but not in D,eis added with the associated counter from D′, and
+inversely. Otherwise, the counter of eis chosen as the maximum value of the corresponding
+countersin both DandD′, which correspondsto the longest sequence ofalternating add(e)
+andremove(e) applied on either DorD′.
+2.3 Causal and Concurrent Behaviour
+The full behaviour of an ∞P-Set implies the followings. Assume an initial state Dand two
+operations addr(e) andremove r′(e) respectively happening on replicas randr′and a ﬁnal state
+D′after both replicas randr′have merged. The corresponding sets are S=query(D) and
+S′=query(D′):
+1. Ifaddr(e) happens before remove r′(e) (addr(e)→remove r′(e)) then eventually e /∈S′on
+randr′regardless of the state of einS;
+4Algorithm 1∞P-Set CRDT (State-based)
+1:function initialize
+2:D←{} ⊲Dictionary mapping each element eto an integer counter c
+3:returnD
+4:
+5:function query(D)
+6:S←{efor alle∈keys(D)ifD[e] is odd}
+7:returnS
+8:
+9:function add(D, e)
+10:D′←copy(D)
+11:ife /∈keys(D)then
+12: D′[e]←1
+13:else ifD[e] is even then
+14: D′[e]←D[e]+1
+15:returnD′
+16:
+17:function remove(D, e)
+18:D′←copy(D)
+19:ife∈keys(D)andD[e] is oddthen
+20: D′[e]←D[e]+1
+21:returnD′
+22:
+23:function compare (D,D′) ⊲true iﬀD≤D′
+24:returnkeys(D)⊆keys(D′)∧/logicalandtext
+e∈keys(D)D[e]≤D′[e]
+25:
+26:function merge(D,D′)
+27:D′′←{}
+28:K′′←keys(D)∪keys(D′)
+29:fore∈K′′do
+30: ife∈keys(D)∧e∈keys(D′)then
+31: D′′[e]←max(D[e],D′[e])
+32: else ife∈keys(D)then
+33: D′′[e]←D[e]
+34: else
+35: D′′[e]←D′[e]
+36:returnD′′
+52. Ifremove r′(e) happens before addr(e) (remove r′(e)→addr(e)) then eventually e∈S′on
+randr′regardless of the state of einS;
+3. else both are concurrent ( addr(e)||remove r′(e)) and the result depends on S:
+(a) Ife∈S(D[e] is odd) then addr(e) has no eﬀect, remove r′(e) wins, and eventually
+e /∈S′onrandr′;
+(b) Else e /∈S(eithere /∈keys(D) orD[e] is even), remove r′(e) has no eﬀect, addr(e)
+wins, and eventually e∈S′onrandr′.
+If replicas randr′are in diﬀerent states, there still exists a common state Dthey shared in
+the past (the initial state if nothing else), and from that point, the longest alternating sequence
+D→add(e)→remove(e)→add(e)→...across replicas determines the ﬁnal state.
+2.4 System Model
+As customary for state-based CRDTs [5], Algorithm 1 only assumes a n underlying unreliable
+communicationchannelthateventuallydeliversamessage(possibly mutiple times)ifthemessage
+is sent inﬁnitely often. This message is used to merge the state of tw o diﬀerent replicas. In
+addition, transitive connectivity between replicas is assumed so tha t any update may reach any
+replica, even if indirectly. Finally, replicas may become unresponsive f or arbitrarily long and
+inﬁnitely often as long as they do eventually recover and merge stat e updates after each failure.
+Note that Algorithm 1 does not tolerate arbitrary faults: a malicious replica may single-
+handedly determine the state of an element in the set by simply choos ing a counter value arbi-
+trarily large.
+3 Proof Sketches
+In this section, we provide proof sketches. Pleasesee Appendix A.1 for more detailed proof steps.
+3.1 Convergence
+To establish convergence, we need to show that a state-based CR DT deﬁnition is a monotonic
+semi-lattice [6]. A state-based CRDT deﬁnition combines the followings:
+•Theset of possible states S: in the case of an ∞P-Set, this is the set of all possible
+dictionaries that associate an element e, out of all possible elements Ethat could be stored,
+to an integer greater than zero that represents the state of ein the set S=query(D). The
+state of a given replica Dat any time is always one of those of S,i.e.D∈S;
+•Apartial order≤with which we can compare two states D,D′∈Ssuch that D≤D′if
+and only if the the set of updates that led to Dis a subset of the updates that led to D′.
+This is equivalent to say that D≤D′if and only if Dis the same as D′or has happened
+beforeD′;
+•Aninitial state D0for all replicas such that D0∈Sonto which all possible sequences of
+updates are applied. In the case of a ∞P-Set,D0is an empty dictionary and created by
+Initialize ;
+•Aset of query operations Qthat do not modify the state: which in the case of an ∞P-Set
+is{Query,Compare};
+6•Aset of update operations Uthat do modify the state (but not necessarily for all combi-
+nation of state and arguments): which in the case of an ∞P-Set is{Add,Remove};
+•Amergeoperation mthat may potentially modify the state: which in the case of an
+∞P-Set isMerge.
+To establish that our state-based CRDT deﬁnition is a monotonic sem i-lattice, we need to
+verify three propositions: First, that all possible states are orga nized in a semi-lattice Lordered
+by less-or-equal relationship implemented by compare. This is a pre-requisite for the next two
+properties. Second, that merging any two states DandD′computes the Least Upper Bound
+(LUB)of DandD′inL. Thisensuresthatthemergeis commutative ,associative , andidempotent ,
+providing safety,i.e.that replicas will agree on the ﬁnal state regardless of ordering, d elays, or
+duplication of merge operations. Third, that all operations modify t he state Dof a replica such
+that the new state D′is either equal or larger than the previous state DinL(monotonicity ).
+This ensures all state changes will be eventually reﬂected in the new state of all replicas, either
+because the same update(s) will have concurrently been applied or because the new state will be
+the result of a merge. Assuming an underlying communication medium t hat ensures new states
+to be eventually delivered to other replicas, the three propositions combined ensure both liveness
+andsafety: all state changes are going to be replicated on all replicas andall replicas will agree
+on the ﬁnal state automatically, i.e. strong eventual consistency [6].
+Prove: The∞P-Set (Alg. 1) is a state-based (convergent) CRDT.
+Proof sketch : The∞P-Set is the composition of state-based grow-only sets for diction ary
+keys and max-counters for dictionary values. The three propert ies ofordering,least upper bound ,
+andmonotonicity that are suﬃcient to deﬁne a state-based CRDT are the conjunct ion of corre-
+sponding properties on grow-only sets and max-counters.
+/a\}bracketle{t1/a\}bracketri}ht1.(Ordering) Ordering Sbycompare forms a semi-lattice L.
+Proof sketch :Compare istheconjunctionofthe ⊆and≤relationships,respectivelyforming
+partial orders on sets and natural numbers that compose the po ssible states. The conjunction
+of partial orders is also a partial order.
+/a\}bracketle{t1/a\}bracketri}ht2.(Least-Upper Bound) Mergeof states DandD′computes the LUB of DandD′inL.
+Proof sketch :Mergeis the conjunction of performing the union on keys and maximum
+values on counters, which both compute the least upper bound in L, respectively on keys and
+counters. In conditions in which the maximum value cannot be comput ed, the corresponding
+part of the state is equal to one of the state input, e.g.D, and the relationship to the other
+state input, e.g.D′, can safely be ignored.
+/a\}bracketle{t1/a\}bracketri}ht3.(Monotonicity) All operations that may generate a new state, when applied on stat eDand
+any possible arguments, result in a new state either equal or larger thanDinLaccording
+tocompare.
+Proof sketch : Every operation either does not have an input state as argument , does not
+generate a new state, or generate a new state that is equal or lar ger than all state inputs.
+/a\}bracketle{t1/a\}bracketri}ht4. Q.E.D.
+Proof:By deﬁnition,/a\}bracketle{t1/a\}bracketri}ht1,/a\}bracketle{t1/a\}bracketri}ht2,/a\}bracketle{t1/a\}bracketri}ht3 imply that∞P-Set is a state-based CRDT.
+3.2 Known Anomalies Are Avoided
+We show here that anomalies previously identiﬁed [2] are correctly ha ndled by∞P-Set.
+First, the speciﬁc execution in which the eﬀect of a removeis ignored even if it happened
+after anaddfrom a diﬀerent replica (Fig. 1(a) in [2]) does not happen with ∞P-Set because as
+mentioned in Section 2.3, in the presence of a causal relationship, th e remove will apply.
+7Second, the∞P-Set does not exhibit the counter-intuitive merging behaviour of C -Sets [2]
+in which two replicas may both issue a sequence of add(e)andremove(e) that ends in an add(e)
+whileeis not in the set after synchronization (Fig. 1(b) in [2]):
+Prove: Merging any two ∞P-Sets with states DandD′, whose last operation was an add(e)
+(respectively remove(e) ), always results in a state D′′such that e∈query(D′′) (re-
+spectively e /∈query(D′′)).
+Proof: When observing the corresponding dictionaries D,D′, andD′′is which both D[e] and
+D′[e] are odd because their last operation was an add(e), there are two cases:
+1.D[e] =D′[e] and after a merge D′′[e] =D[e] =D′[e];
+2.D[e]> D′[e] orD[e]< D[e′]: after a merge D′′[e] =max(D[e],D′′[e])
+In both cases D′′[e] is also odd and e∈query(D′′). The proof for remove(e) being the last
+operation of both sequences is similar, except that D[e] andD′[e] are even.
+Third, whenever two replicas randr′issue the same sequence of add(e)andremove(e)
+starting from the same state D(Fig. 1 b and c in [2]), randr′will both end in the same state
+D′after synchronization, regardless at which point the synchroniza tion happens and even if no
+synchronization happens, because the same sequence will result in the same counter for eon all
+replicas.
+4 Resource Consumption
+The overhead of the ∞P-Set is a single integer per element plus the associated containers. It
+can be implemented as a set of tuples ( e,c) whereeis the element and cthe associated counter.
+It can also be implemented as a hash-map: current language implemen tations usually represent
+integer literals as tagged pointers allowing counts to reach counts u p toregister size
+2tag bit-length. In
+practice this reaches over billions on today’s architectures which sh ould cover most practical
+sequences of additions and removals. Up to the limit of literal integer representations, the
+memory consumption per element is constant.
+In contrast to Observe-Remove Sets (OR-Sets) [5], each add ope ration does not need to
+be tracked with a separate unique identiﬁer and stored in a set. The OR-set uses memory
+proportional to the number of additions that have happened since the last removal, with one
+unique identiﬁer for each, in addition to the size of the set container for each element that has
+ever been added in the set S.
+In contrast to Last-Writer-Wins Sets (LWW-Sets) [5], no timestam ps are required and only
+a single set (or dictionary) is needed, and garbage collection of stale tuples is unnecessary.
+5 Conclusion and Future Work
+We have presented the state-based ∞P-Set CRDT. This approach requires only a single extra
+integerper element to trackwhether the element waslast addedor removed. We haveshownthat
+it convergesand that it avoids anomalies that aﬀected some other d esigns, such as the C-Set. We
+have also shown that it uses less memory than OR-Sets or LWW-Sets . We have also provided
+proofs that are more accessible than previous papers and establis hed agrow-only dictionary of
+grow-only counters as a basic block for other state-based CRDTs. We plan to extend th e design
+to arbitrary (Byzantine) failures in the future and apply the design in applications to validate
+whether the semantics of longest sequence wins suit both programmers and end users.
+86 Acknowledgements
+We thank Christian F. Tschudin for fostering a research environme nt allowing detours and play-
+fulness in the process, as well as providing ﬁnancial support for th is work and feedback on early
+drafts.
+The current speciﬁcation using a single counter and state testing o n even-oddness was jointly
+rediscovered in collaboration with Christian F. Tschudin and Ramon Lo cher during a CRDT
+SeminaratUniversityofBaselduringtheSpringSemesterof2023. Itwasasmalldisappointment,
+after a literature review, to realize we were 4 years too late to claim o riginality.
+We would also like to thank Jannick Heisch, Fabrizio Parrillo, and Osman B i¸ cer for feedback
+on early versions of the paper, and the material I had prepared fo r the CRDT seminar. Those
+discussions have informed the design and presentation.
+References
+[1] Khaled Aslan, Pascal Molli, Hala Skaf-Molli, and St´ ephane Weiss. C- Set : a Commutative
+Replicated Data Type for Semantic Stores. In RED: Fourth International Workshop on
+REsource Discovery , Heraklion, Greece, May 2011.
+[2] Annette Bieniusa, Marek Zawirski, Nuno Pregui¸ ca, Marc Shapiro , Carlos Baquero, Valter
+Balegas, and S´ ergio Duarte. Brief Announcement: Semantics of E ventually Consistent Repli-
+cated Sets. In Marcos K. Aguilera, editor, DISC 2012 - 26th International Symposium on
+Distributed Computing , volume 7611 of Lecture Notes in Computer Science , pages 441–442,
+Salvador, Bahia, Brazil, October 2012. Springer.
+[3] Stephen Dolan. Brief announcement: The only undoable CRDTs ar e counters. In 39th
+Symposium on Principles of Distributed Computing , PODC 2020, page 57–58. ACM, August
+2020.
+[4] Leslie Lamport. How to write a 21 st century proof. Journal of ﬁxed point theory and
+applications , 11:43–63, 2012.
+[5] Marc Shapiro, Nuno Pregui¸ ca, Carlos Baquero, and Marek Zawir ski. A comprehensive study
+of Convergent and Commutative Replicated Data Types. Research Report RR-7506, Inria –
+Centre Paris-Rocquencourt ; INRIA, January 2011.
+[6] Marc Shapiro, Nuno Pregui¸ ca, Carlos Baquero, and Marek Zawir ski. Conﬂict-free Replicated
+Data Types. In Xavier D´ efago, Franck Petit, and Vincent Villain, ed itors,SSS 2011 - 13th
+International Symposium Stabilization, Safety, and Secur ity of Distributed Systems , volume
+6976 ofLecture Notes in Computer Science , pages 386–400, Grenoble, France, October 2011.
+Springer.
+[7] Weihai Yu, Victorien Elvinger, and Claudia-Lavinia Ignat. A generic undo support for
+state-based CRDTs. In 23rd International Conference on Principles of Distribute d Systems ,
+OPODIS 2019. Dagstuhl LIPIcs, November 2019.
+9A Detailed Proofs
+A.1 Convergence
+Define: 1.(elements )Eis the set of possible elements that can be stored in an ∞P-Set.
+2.(natural numbers) Nare the natural numbers, i.e.the set ofintegers greateror equal
+to 0.
+3.(possible states) The state of an∞P-Set is a set Dof tuples ( e,c) such that e∈E
+and counter value c∈N.Drepresents a dictionary. The state space of all possible
+dictionaries, S, is the power set of the cartesian product of EandN(S=P(E×N))
+with the constraint that for every D∈Sand among all tuples ( e,c)∈D, a given
+elementeappears at most once.
+4.(keys)The keys of Dis the set of elements in D,i.e.keys(D) ={e: (e,c)∈D}.
+5.(counter) The counter associated to einD, written D[e], is the counter ccorre-
+sponding to the tuple ( e,c)∈D,i.e.D[e] =c⇔(e,c)∈D.
+6.(dictionary assignment) Assigning a counter value cto a dictionary key e, written
+D[e]←c, performs one of two actions:
+a.If (e,c′)/∈keys(D), it adds a new tuple ( e,c) inD,i.e.D=D∪{(e,c)};
+b.otherwise, it replaces the tuple with ( e,c),i.e.D=D\{(e,c′)}∪{(e,c)}.
+7.(possible keys) Dictionary keys K={keys(D) :D∈S}.
+8.(possible counters ) Counter values C={D[e] :D∈S∧e∈keys(D)}.
+Prove: The∞P-Set (Alg. 1) is a state-based (convergent) CRDT.
+Proof sketch : The∞P-Set is the composition of state-based grow-only sets for diction ary
+keys and max-counters for dictionary values. The three propert ies ofordering,least upper bound ,
+andmonotonicity that are suﬃcient to deﬁne a state-based CRDT are the conjunct ion of corre-
+sponding properties on grow-only sets and max-counters.
+A.1.1 Ordering
+Assume: 1.D∈SandD′∈Sin the arguments of compare.
+Prove: Ordering Sbycompare forms a semi-lattice L.
+Proof sketch :Compare is the conjunction of the ⊆and≤relationships, respectively forming
+partial orders on sets and natural numbers that compose the po ssible states. The conjunction of
+partial orders is also a partial order. A semi-lattice is a partial orde r on a set.
+/a\}bracketle{t1/a\}bracketri}ht1. All possible dictionary keys Kare partially ordered by ⊆.
+/a\}bracketle{t2/a\}bracketri}ht1.Kis a powerset of elements, i.e.K=P(E)
+By deﬁnitions 3 and 4.
+/a\}bracketle{t2/a\}bracketri}ht2. Sets are partially ordered by ⊆.
+The subset relationship ⊆isreﬂexive,transitive , andantisymmetric , therefore sets ordered
+by⊆are partially-ordered.
+/a\}bracketle{t2/a\}bracketri}ht3. Q.E.D.
+By/a\}bracketle{t2/a\}bracketri}ht1 and/a\}bracketle{t2/a\}bracketri}ht2.
+/a\}bracketle{t1/a\}bracketri}ht2. All possible counter values Care partially ordered by ≤.
+/a\}bracketle{t2/a\}bracketri}ht1.Cis the set of natural numbers, i.e.C=N
+By deﬁnitions 3 and 5.
+/a\}bracketle{t2/a\}bracketri}ht2. Natural numbers are partially ordered by ≤.
+The less or equal relationship ≤isreﬂexive,transitive , andantisymmetric .
+/a\}bracketle{t2/a\}bracketri}ht3. Q.E.D.
+By/a\}bracketle{t2/a\}bracketri}ht1 and/a\}bracketle{t2/a\}bracketri}ht2.
+10/a\}bracketle{t1/a\}bracketri}ht3.Assume: 1. Relations αandβare partial orders over set S.
+2.a,b∈S.
+Define: 1. Conjunction of relations αandβ, written τ, asa τ b= (a α b)∧(a β b)
+Prove:τis a partial order over S.
+Proof sketch :τis alsoreﬂexive,transitive , andantisymmetric because of the associativity
+of∧. The three properties are suﬃcient to deﬁne a partial order.
+/a\}bracketle{t2/a\}bracketri}ht1.αandβare both reﬂexive,transitive , andantisymmetric .
+Bydeﬁnition becausepartialorderrelationsmustbe reﬂexive,transitive , andantisymmetric .
+/a\}bracketle{t2/a\}bracketri}ht2.τis reﬂexive: a τ a=true.
+a τ a= (a α a)∧(a β a) =truebecauseαandβare also reﬂexive.
+/a\}bracketle{t2/a\}bracketri}ht3.τis transitive: ( a τ b)∧(b τ c)⇒a τ c.
+/a\}bracketle{t3/a\}bracketri}ht1. (a τ b)∧(b τ c) = ((a α b)∧(a β b))∧((b α c)∧(b β c))
+By substitution of τdeﬁnition.
+/a\}bracketle{t3/a\}bracketri}ht2. ((a α b)∧(a β b))∧((b α c)∧(b β c)) = ((a α b)∧(b α c))∧((a β b)∧(b β c))
+By associativity of ∧(and) relation.
+/a\}bracketle{t3/a\}bracketri}ht3. ((a α b)∧(b α c))∧((a β b)∧(b β c)) = (a α c)∧(a β c)
+By transitivity of αandβ(/a\}bracketle{t2/a\}bracketri}ht1).
+/a\}bracketle{t3/a\}bracketri}ht4. (a α c)∧(a β c) = (a τ c)
+By deﬁnition 1 in /a\}bracketle{t1/a\}bracketri}ht3.
+/a\}bracketle{t3/a\}bracketri}ht5. Q.E.D.
+/a\}bracketle{t3/a\}bracketri}ht1 =/a\}bracketle{t3/a\}bracketri}ht2 =/a\}bracketle{t3/a\}bracketri}ht3 =/a\}bracketle{t3/a\}bracketri}ht4, therefore ( a τ b)∧(b τ c)⇒(a τ c)
+/a\}bracketle{t2/a\}bracketri}ht4.τis antisymmetric: ( a τ b)∧(b τ a)⇒(a=b).
+/a\}bracketle{t3/a\}bracketri}ht1. (a τ b)∧(b τ a) = ((a α b)∧(a β b))∧((b α a)∧(b β a))
+By substitution of τdeﬁnition.
+/a\}bracketle{t3/a\}bracketri}ht2. ((a α b)∧(a β b))∧((b α a)∧(b β a)) = ((a α b)∧(b α a))∧((a β b)∧(b β a))
+By associativity of ∧(and) relation.
+/a\}bracketle{t3/a\}bracketri}ht3. ((a α b)∧(b α a))∧((a β b)∧(b β a)) = (a=b)∧(a=b)
+By antisymmetry of αandβ(/a\}bracketle{t2/a\}bracketri}ht1).
+/a\}bracketle{t3/a\}bracketri}ht4. (a=b)∧(a=b) = (a=b)
+Tautologie.
+/a\}bracketle{t3/a\}bracketri}ht5. Q.E.D.
+/a\}bracketle{t3/a\}bracketri}ht1 =/a\}bracketle{t3/a\}bracketri}ht2 =/a\}bracketle{t3/a\}bracketri}ht3 =/a\}bracketle{t3/a\}bracketri}ht4
+/a\}bracketle{t2/a\}bracketri}ht5. Q.E.D.
+By/a\}bracketle{t2/a\}bracketri}ht2,/a\}bracketle{t2/a\}bracketri}ht3, and/a\}bracketle{t2/a\}bracketri}ht4, which is the deﬁnition of a partial order.
+/a\}bracketle{t1/a\}bracketri}ht4.Assume: 1.keys(D)⊆keys(D′)
+Prove:/logicalandtext
+e∈keys(D)D[e]≤D′[e] is a partial order
+Because of Assumption 1, e∈keys(D′) as well, therefore both D[e] andD′[e] are deﬁned.
+Because/a\}bracketle{t1/a\}bracketri}ht2,≤is a partial order over counters of DandD′for element e. Because/a\}bracketle{t1/a\}bracketri}ht3,
+the pairwise conjunction of partial orders is also a partial order, a nd therefore the conjunction
+over all keys of Dis also a partial order. Note that contrary to the next step, ther e is no
+logical dependency between the partial orderings of individual key s so the conjunction directly
+applies.
+/a\}bracketle{t1/a\}bracketri}ht5. The conjunction of keys(D)⊆keys(D′) and/a\}bracketle{t1/a\}bracketri}ht4 is a partial order.
+Proof sketch : There is a logical dependency from the left-hand side of the conju nction
+to the right-hand side because the left-hand side is a necessary as sumption to compute the
+right-hand side. The partial order is therefore the conjunction o f both when the left-hand side
+is true, otherwise only the left-hand side is used.
+/a\}bracketle{t2/a\}bracketri}ht1.Case:keys(D)⊆keys(D′) is true
+Then Assumption 1 of /a\}bracketle{t1/a\}bracketri}ht4 is satisﬁed and the resulting partial order is their conjunction.
+11keys(D)⊆keys(D′) is a partial order because /a\}bracketle{t1/a\}bracketri}ht1. The conjunction with /a\}bracketle{t1/a\}bracketri}ht4 is also a
+partial order because of /a\}bracketle{t1/a\}bracketri}ht3.
+/a\}bracketle{t2/a\}bracketri}ht2.Case:keys(D)⊆keys(D′) is false
+The conjunction will always be false, so the additional partial order induced by/a\}bracketle{t1/a\}bracketri}ht4 is
+irrelevant. Therefore, the partial order is only deﬁned by keys(D)⊆keys(D′). Note that
+the right-hand side must be ignored because Assumption 1 is not sat isﬁed and the result is
+therefore not deﬁned.
+/a\}bracketle{t2/a\}bracketri}ht3. Q.E.D.
+All possible cases of the conjunction deﬁne partial orders, so the conjunction of keys(D)⊆
+keys(D′) and/a\}bracketle{t1/a\}bracketri}ht4 is a partial order.
+/a\}bracketle{t1/a\}bracketri}ht6. Q.E.D.
+compare is a partial order over Sbecause its deﬁnition is completely covered by /a\}bracketle{t1/a\}bracketri}ht5. A semi-
+lattice is the combination of possible states and a partial order, the refore both conditions are
+suﬃcient to deﬁne L.
+A.1.2 Least Upper Bound (LUB)
+Assume: 1.D∈SandD′∈S
+Prove:MergeofDandD′computes their LUB D′′inL.
+Proof sketch :Mergeis the conjunction of performing the union on keys and maximum
+valuesoncounters,whichbothcomputethe leastupperbound, re spectivelyonkeysandvalues.
+In conditions when the maximum value cannot be computed, the corr esponding part of the
+state is equal to one of the state input, e.g.D, and the relationship to the other state input,
+e.g.D′, can safely be ignored.
+/a\}bracketle{t2/a\}bracketri}ht1.Assume: 1.P(E) is the power set of elements in E.
+2.S∈P(E) andS′∈P(E).
+3.⊆is a partial order on P(E) forming a semi-lattice LP(E).
+Prove:S′′=S∪S′is the least upper bound of SandS′inLP(E).
+/a\}bracketle{t3/a\}bracketri}ht1.S⊆S′′
+Because S⊆(S∪S′) =S′′(by cases on S⊂S′,S=S′,S⊃S′).
+/a\}bracketle{t3/a\}bracketri}ht2.S′⊆S′′
+Because S′⊆(S∪S′) =S′′(by cases on S⊂S′,S=S′,S⊃S′).
+/a\}bracketle{t3/a\}bracketri}ht3.∄S′′′∈P(E) such that S′′′⊂S′′∧S⊆S′′′∧S′⊆S′′′
+By contradiction: Let’s assume a contrario that there exists such aS′′′. There must exist
+e∈S′′such that e /∈S′′′because S′′′⊂S′′and therefore smaller. Since S′′=S∪S′,
+eithere∈S,e∈S′or both. In that case, it is not possible for S′′′to be a superset of
+bothSandS′since it is missing e.S′′must therefore be the smallest superset of both S
+andS′inLP(E).
+/a\}bracketle{t3/a\}bracketri}ht4. Q.E.D.
+The conjunction of /a\}bracketle{t3/a\}bracketri}ht1,/a\}bracketle{t3/a\}bracketri}ht2, and/a\}bracketle{t3/a\}bracketri}ht3 is the deﬁnition of a least upper bound.
+/a\}bracketle{t2/a\}bracketri}ht2.Assume: 1.x∈Nandx′∈N.
+2.≤is a total order (and partial as well) on Nforming a semi-lattice LN.
+Prove:x′′=max(x,x′) is the least upper bound of xandx′inLN.
+/a\}bracketle{t3/a\}bracketri}ht1.x≤x′′
+Because x≤max(x,x′) =x′′(by cases on x < x′,x=x′,x > x′).
+/a\}bracketle{t3/a\}bracketri}ht2.x′≤x′′
+Because x′≤max(x,x′) =x′′(by cases on x < x′,x=x′,x > x′).
+/a\}bracketle{t3/a\}bracketri}ht3.∄x′′′∈Nsuch that x′′′< x′′∧x≤x′′′∧x′≤x′′′
+By contradiction: Let’s assume a contrariothat there exists such ax′′′. Because x′′′< x′′,
+12x′′′mustbe smallerthan x,x′, orboth because x′′=max(x,x′). However,this contradicts
+x≤x′′′,x′≤x′′′or both. Therefore, x′′must be the smallest Nthat is also greater than
+bothxandx′inLN.
+/a\}bracketle{t3/a\}bracketri}ht4. Q.E.D.
+The conjunction of /a\}bracketle{t3/a\}bracketri}ht1,/a\}bracketle{t3/a\}bracketri}ht2, and/a\}bracketle{t3/a\}bracketri}ht3 is the deﬁnition of a least upper bound.
+/a\}bracketle{t2/a\}bracketri}ht3.keys(D′′) is the least upper bound of keys(D) andkeys(D′).
+keys(D),keys(D′),keys(D′′) are sets; keys(D′′) =keys(D)∪keys(D′), and/a\}bracketle{t2/a\}bracketri}ht1, together
+imply that keys(D′′) is the least upper bound of keys(D) andkeys(D′) inLP(E).
+/a\}bracketle{t2/a\}bracketri}ht4. For every e∈keys(D′′) such that e∈keys(D)∧e∈keys(D′),D′′[e] is the least upper
+bound of D[e] andD′[e].
+D[e],D′[e],D′′[e] are natural numbers, D′′[e] =max(D[e],D′[e]), and/a\}bracketle{t2/a\}bracketri}ht2.
+/a\}bracketle{t2/a\}bracketri}ht5.compare(D,D′′) is true ( D≤D′′, according to L)
+/a\}bracketle{t3/a\}bracketri}ht1.keys(D)⊆keys(D′′)
+K′′=keys(D′′) = (keys(D)∪keys(D′))⊇keys(D)
+/a\}bracketle{t3/a\}bracketri}ht2.∀e∈keys(D) :D[e]≤D′′[e]
+/a\}bracketle{t4/a\}bracketri}ht1.∀e∈keys(D) :e∈keys(D′′)
+Because/a\}bracketle{t3/a\}bracketri}ht1. Necessary condition for following cases.
+/a\}bracketle{t4/a\}bracketri}ht2.Case:D′′[e] =max(D[e],D′[e])
+max(D[e],D′[e])≥D[e] implies D[e]≤D′′[e].
+/a\}bracketle{t4/a\}bracketri}ht3.Case:D′′[e] =D[e]
+Trivially: D′′[e] =D[e] implies D[e]≤D′′[e].
+/a\}bracketle{t4/a\}bracketri}ht4. Q.E.D.
+Note that D′′[e] =D′[e], which happens when e∈keys(D′′)∧e∈keys(D′)∧e /∈keys(D)
+doesnotmatterfor compare(D,D′′)because D[e]≤D′′[e]isonlytestedfor e∈keys(D).
+/a\}bracketle{t3/a\}bracketri}ht3. Q.E.D.
+By the conjunction of /a\}bracketle{t3/a\}bracketri}ht1 and/a\}bracketle{t3/a\}bracketri}ht2.
+/a\}bracketle{t2/a\}bracketri}ht6.compare(D′,D′′) is true ( D′≤D′′, according to L)
+Same argument as /a\}bracketle{t2/a\}bracketri}ht5 but on D′instead of D.
+/a\}bracketle{t2/a\}bracketri}ht7.∄D′′′∈Ssuch that D′′′< D′′∧D≤D′′′∧D′≤D′′′inL.
+/a\}bracketle{t3/a\}bracketri}ht1.∄keys(D′′′) such that keys(D′′′)⊂keys(D′′)∧keys(D)⊆keys(D′′′)∧keys(D′)⊆
+keys(D′′′).
+keys(D′′) =keys(D)∪keys(D′) and/a\}bracketle{t2/a\}bracketri}ht1 imply that keys(D′′) is a least upper bound,
+which by deﬁnition implies there is no D′′′satisfying the above conditions.
+/a\}bracketle{t3/a\}bracketri}ht2.∄e∈keys(D′′)∧c∈N:c < D′′[e]∧D[e]≤c∧D′[e]≤c
+Proof sketch : There are three possible cases for e∈keys(D′′) and none allow c∈N
+with the required conditions.
+/a\}bracketle{t4/a\}bracketri}ht1.Case:e∈keys(D)∧e∈keys(D′)
+D′′[e] =max(D[e],D′[e]), by/a\}bracketle{t2/a\}bracketri}ht2 implies D′′[e] is a least upper bound, which by deﬁ-
+nition implies that such a cdoes not exists.
+/a\}bracketle{t4/a\}bracketri}ht2.Case:e /∈keys(D)∧e∈keys(D′)
+D′′[e] =D′[e] therefore a c∈Ncannot be both smaller than D′′]e] and larger than
+D′[e]. Therefore, D[e]≤c(which is undeﬁned) can be safely ignored because c <
+D′′[e]∧D′[e]≤cis always false.
+/a\}bracketle{t4/a\}bracketri}ht3.Case:e∈keys(D)∧e /∈keys(D′)
+D′′[e] =D[e] therefore a c∈Ncannot be both smaller than D′′]e] and larger than
+D[e]. Therefore, D′[e]≤c(which is undeﬁned) can be safely ignored because c <
+D′′[e]∧D[e]≤cis always false.
+/a\}bracketle{t4/a\}bracketri}ht4. Q.E.D.
+The case e /∈keys(D)∧e /∈keys(D′) contradicts e∈keys(D′′) sincekeys(D′′) =
+13keys(D)∪keys(D′). Since ∄is a negation and the following conditions in /a\}bracketle{t3/a\}bracketri}ht2 are
+always false for all cases, /a\}bracketle{t3/a\}bracketri}ht2 is always true.
+/a\}bracketle{t3/a\}bracketri}ht3. Q.E.D.
+Becausecompare is the conjonction of conditions on keys and counters, respective ly cov-
+ered by/a\}bracketle{t3/a\}bracketri}ht1 and/a\}bracketle{t3/a\}bracketri}ht2 there cannot be such a D′′′. Therefore D′′is the least upper bound
+ofDandD′inL.
+/a\}bracketle{t2/a\}bracketri}ht8. Q.E.D.
+The conjunction of /a\}bracketle{t2/a\}bracketri}ht5,/a\}bracketle{t2/a\}bracketri}ht6, and/a\}bracketle{t2/a\}bracketri}ht7 is the deﬁnition of a least upper bound, therefore
+mergecomputes the least upper bound of DandD′inL.
+A.1.3 Monotonicity
+Assume: 1.Dis the current state
+Prove: All operations that may generate a new state, when applied on sta teDand any
+possible arguments, result in a new state either equal or larger tha nDinLaccording
+tocompare.
+Proof sketch : By case, because every operation either does not have an input s tate as
+argument, does not generate a new state, or generate a new sta te that is equal or larger than all
+state inputs.
+/a\}bracketle{t1/a\}bracketri}ht1.Case:D=Initialize ()
+Initializes a new D, but not from an existing state, so monotonicity does not apply.
+/a\}bracketle{t1/a\}bracketri}ht2.Case:S=Query(D)
+querydoes not generate a new state.
+/a\}bracketle{t1/a\}bracketri}ht3.Case:D′=Add(D,e)≥D
+/a\}bracketle{t2/a\}bracketri}ht1.Case:e /∈keys(D)
+The keyeis added to Dwith counter c= 1, therefore D′> DbecauseD′keys area superset
+ofD’s keys.
+/a\}bracketle{t2/a\}bracketri}ht2.Case:e∈keys(D)∧D[e] is even
+The counter D[e] is increased by 1, therefore D′> D.
+/a\}bracketle{t2/a\}bracketri}ht3.Case:e∈keys(D)∧D[e] is odd
+No keys or counters are modiﬁed, therefore D=D′.
+/a\}bracketle{t2/a\}bracketri}ht4. Q.E.D.
+Covers all possible cases: ein or not in the keys, and counter D[e] is odd or even if epresent.
+/a\}bracketle{t1/a\}bracketri}ht4.Case:D′=Remove(D,e)≥D
+/a\}bracketle{t2/a\}bracketri}ht1.Case:e /∈keys(D)
+No keys or counters are modiﬁed, therefore D=D′.
+/a\}bracketle{t2/a\}bracketri}ht2.Case:e∈keys(D)∧D[e] is odd
+The counter D[e] is increased by 1, therefore D′> D.
+/a\}bracketle{t2/a\}bracketri}ht3.Case:e∈keys(D)∧D[e] is even
+No keys or counters are modiﬁed, therefore D=D′.
+/a\}bracketle{t2/a\}bracketri}ht4. Q.E.D.
+Covers all possible cases: ein or not in the keys, and counter D[e] is odd or even if epresent.
+/a\}bracketle{t1/a\}bracketri}ht5.Case:b=Compare(D,D′)
+compare does not generate a new state.
+/a\}bracketle{t1/a\}bracketri}ht6.Case:D′′=Merge(D,D′) :D′′≥D∧D′′≥D′
+By deﬁnition, because mergecomputes the least upper bound (Appendix A.1.2).
+/a\}bracketle{t1/a\}bracketri}ht7. Q.E.D.
+All functions of Algorithm 1 have been covered.
+14

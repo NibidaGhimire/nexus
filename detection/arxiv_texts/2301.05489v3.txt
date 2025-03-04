@@ -1,0 +1,1639 @@
+A Residual Diffusion Model for High Perceptual Quality Codec Augmentation
+Noor Fathima Ghouse*, Jens Petersen*, Auke Wiggers*, Tianlin Xuz, Guillaume Sauti `ere
+fnoor, jpeterse, auke, gsautie g@qti.qualcomm.com; tianlin.xu1@gmail.com
+Abstract
+Diffusion probabilistic models have recently achieved
+remarkable success in generating high quality image and
+video data. In this work, we build on this class of genera-
+tive models and introduce a method for lossy compression of
+high resolution images. The resulting codec, which we call
+DIffuson-based Residual Augmentation Codec (DIRAC) , is
+the ﬁrst neural codec to allow smooth traversal of the rate-
+distortion-perception tradeoff at test time, while obtaining
+competitive performance with GAN-based methods in per-
+ceptual quality. Furthermore, while sampling from diffusion
+probabilistic models is notoriously expensive, we show that
+in the compression setting the number of steps can be dras-
+tically reduced.
+1. Introduction
+Denoising diffusion probabilistic models (DDPMs) [57]
+have recently shown incredible performance in the genera-
+tion of high-resolution images with high perceptual quality.
+For example, they have powered large text-to-image mod-
+els such as DALL-E 2 [49] and Imagen [55], which are ca-
+pable of producing realistic high-resolution images based
+on arbitrary text prompts. Likewise, diffusion models have
+demonstrated impressive results on image-to-image tasks
+such as super-resolution [56, 20], deblurring [68] or inpaint-
+ing [54], in many cases outperforming generative adversar-
+ial networks (GANs) [13]. Our goal in this work is to lever-
+age these capabilities in the context of learned compression.
+Neural codecs, which learn to compress from example
+data, are typically trained to minimize distortion between
+an input and a reconstruction, as well as the bitrate used
+to transmit the data [63]. However, optimizing for rate-
+distortion may result in blurry reconstructions. A recent
+class of generative models focuses instead on improving
+perceptual quality of reconstructions, either with end-to-end
+trained neural codecs [4, 39]—we refer to such techniques
+Preprint. Qualcomm AI Research is an initiative of Qualcomm Tech-
+nologies, Inc.z: Work completed during an internship at Qualcomm AI
+Research.*: Equal contribution.
+JPEG
+12.8kB        24.5dB PSNR
+81.6 FID/256 (CLIC 2020)
+JPEG+DIRAC-100
+12.8kB        26.0dB PSNR
+18.0 FID/256 (CLIC 2020)
+SwinT-ChARM
+9.3kB        30.2dB PSNR
+9.6 FID/256 (CLIC 2020)
+SwinT-ChARM+DIRAC-100
+9.3kB        28.1dB PSNR
+5.7 FID/256 (CLIC 2020)Figure 1: Base reconstruction (left) and the DIRAC-
+enhanced version (right). Our model combines a base
+codec with a receiver-side enhancement model, and can
+smoothly interpolate between near-state-of-the-art ﬁdelity
+(PSNR, higher better) and near-state-of-the-art perceptual
+quality (FID, lower better). For JPEG ( QF= 5) speciﬁ-
+cally, we achieve a drastic improvement in perceptual qual-
+ity without loss in PSNR. Best viewed digitally, PSNR mea-
+sured on the shown example, FID/256 measured on the full
+CLIC 2020 test dataset.
+asgenerative compression —or by using a receiver-side per-
+ceptual enhancement model [27] to augment the output of
+standard codecs. Either approach will usually come at a
+cost in ﬁdelity, as there is a fundamental tradeoff between
+ﬁdelity and perceptual quality [8]. Finding a good operating
+point for this tradeoff is not trivial and likely application-
+dependent. Ideally, one would like to be able to select this
+operating point at test time. But while adaptive rate control
+is commonly used, few neural image codecs allow trading
+off distortion and perceptual quality dynamically [25, 3].
+In this work, we present a method that allows users to
+navigate the full rate-distortion-perception tradeoff at test
+time with a single model. Our approach, called DIffusion
+Residual Augmentation Codec (DIRAC) , uses a base codec
+to produce an initial reconstruction with minimal distor-
+tion, and then improves its perceptual quality using a de-
+1arXiv:2301.05489v3  [cs.CV]  29 Mar 2023noising diffusion probabilistic model that predicts residuals,
+see Fig. 1 for an example. The intermediate samples corre-
+spond to a smooth traversal between high ﬁdelity and high
+perceptual quality, so that sampling can be stopped when a
+desired tradeoff is reached. Recent work [72, 46] already
+demonstrates that a diffusion-based image codec is feasible
+in practice, but we show that different design choices al-
+low us to outperform their models by a large margin, and
+enable faster sampling as well as selection of the distortion-
+perception operating point. Our contributions are:
+• We demonstrate a practical and ﬂexible diffusion-
+based model that can be combined with any image
+codec to achieve high perceptual quality compression.
+Paired with a neural base codec, it can interpolate be-
+tween high ﬁdelity and high perceptual quality while
+being competitive with the state of the art in both.
+• Our model can be used as a drop-in enhancement
+model for traditional codecs, where we achieve strong
+perceptual quality improvements. For JPEG speciﬁ-
+cally, we improve FID/256 by up to 78% without loss
+in PSNR.
+• We present techniques that make the diffusion sam-
+pling procedure more efﬁcient: we show that in our
+setting we need no more than 20 sampling steps, and
+we introduce rate-dependent thresholding , which im-
+proves performance for multi-rate base codecs.
+2. Related work
+Neural data compression Neural network based codecs
+are systems that learn to compress data from examples.
+These codecs have seen major advances in both the image
+[41, 51, 5, 40] and video domain [69, 36, 52, 17, 2, 24, 23].
+Most modern neural codecs are variations of compres-
+sive autoencoders [63], which transmit data xusing an
+autoencoder-like architecture, resulting in a reconstruction
+~ x. These systems are typically optimized using a rate-
+distortion loss, i.e. a combination of distortion and a rate
+loss that are balanced with a rate-parameter rate.
+Recent work identiﬁes the importance of a third objec-
+tive: perceptual quality , ideally meaning that reconstruc-
+tions look like real data according to human observers. Blau
+and Michali [8] formalize perceptual quality as a distance
+between the image distribution p(x)and the distribution of
+reconstructions p(^ x), and show that rate, distortion and per-
+ception are in a triple tradeoff. To optimize for perceptual
+quality, a common choice is to train the decoder as a (con-
+ditional) generative adversarial network by adding a GAN
+loss term to the rate-distortion loss and training a discrimi-
+nator [4, 39, 75, 3, 43].It is impractical to train and deploy one codec per rate-
+distortion-perception operating point. A common choice
+is therefore to condition the network on the bitrate trade-
+off parameter rate, and vary this parameter during training
+[70, 60, 50]. Recent GAN-based works use similar tech-
+niques to trade off ﬁdelity and perceptual quality, either us-
+ing control parameters, or by masking the transmitted la-
+tent [70, 25, 3]. In particular, the work by Agustsson et
+al. [3] uses receiver side conditioning to trade-off distortion
+and realism at a particular bitrate. However, a codec that
+can navigate all axes of the rate-distortion-perception trade-
+off simultaneously using simple control parameters does not
+exist yet.
+Diffusion probabilistic models Denoising diffusion
+probabilistic models (DDPMs) [57, 19] are latent variable
+models in which the latents x1;:::;xTare deﬁned as a T-
+step Markov chain with Gaussian transitions. Through this
+Markov chain, the forward process gradually corrupts the
+original data x0. The key idea of DDPMs is that, if the
+forward process permits efﬁcient sampling of any variable
+in the chain, we can construct a generative model by learn-
+ing to reverse the forward process. To generate a sample,
+the reverse model is applied iteratively. For a thorough de-
+scription of DDPMs, we refer the reader to the appendix or
+Sohl-Dickstein et al. [57].
+DDPMs have seen success in various application areas,
+including image and video generation [20, 21, 73, 49, 55],
+representation learning [48, 47], and image-to-image tasks
+such as super-resolution [56] and deblurring [68]. Recent
+work applies this model class in the context of data com-
+pression as well. Hoogeboom et al. [22] show that DDPMs
+can be used to perform lossless compression. In the lossy
+compression setting, Ho et al. [19] show that if continuous
+latents could be transmitted, a DDPM enables progressive
+coding. Theis et al. [62] make this approach feasible by us-
+ing reverse channel coding, yet it remains impractical for
+high resolution images due to its high computational cost.
+More practical diffusion-based approaches for lossy im-
+age compression exist, too. Yang and Mandt [72] propose
+a codec where a conditional DDPM takes the role of the
+decoder, directly producing a reconstruction from a latent
+variable. Pan et al . [46] similarly use a pretrained text-
+conditioned diffusion model as decoder, and let the encoder
+extract a text embedding. However, both approaches still
+require a large number of sampling steps, or encoder-side
+optimization of the compressed latent.
+Standard codec restoration A common approach is to
+take a standard codec such as JPEG, and enhance or restore
+its reconstructions. Until recently, most restoration works
+focused on improving distortion metrics such as PSNR
+or SSIM [14, 32, 34, 15, 71, 74]. However, distortion-
+2Enhanced Reconstruction
+𝑟!𝑟"⋯𝑟#⋯𝑥𝑥$Base Codec+𝑥%
+OriginalInitial Reconstruction
+Gaussian NoiseResidual𝑝!(𝑟"|𝑟"#$,𝑥̅,𝑡)𝑞(𝑟"#$|𝑟",𝑡)𝑝𝑟%~	𝑁(0,𝐼)
+Diffusion Probabilistic Model
+Rate-conditioning (𝜆&'"()Figure 2: Overview of our architecture. Given an input image xand target rate factor rate, we obtain a base codec recon-
+struction ~ x. Our DDPM is conditioned on ~ xand learns to model a reverse diffusion process that generates residuals r0from
+sampled gaussian noise latents rT. The enhanced reconstruction ^ xis then obtained by adding the predicted residual to ~ x
+optimized restoration typically leads to blurry images, as
+blur get rids of compression artifacts such as blocking and
+ringing. Consequently, a recent category of work on per-
+ceptual enhancement [27, 28, 54, 67, 59] focuses mainly
+on realism of the enhanced image. This is usually mea-
+sured by perceptual distortion metrics such as LPIPS [76]
+or distribution-based metrics like FID [18]. Although en-
+hanced images are less faithful to the original than the non-
+enhanced version, they may be rated as more realistic by
+human observers. In this setting, DDPMs have mostly been
+applied to JPEG restoration [28, 54, 59]. However, these
+methods have not shown test-time control of perception-
+distortion tradeoff, and were only tested for a single stan-
+dard codec (JPEG) on low-resolution data.
+3. Method
+In this work, we introduce DIRAC, a diffusion-based im-
+age compression approach for high-resolution images. It
+combines a (potentially learned) base codec with a residual
+diffusion model that performs iterative enhancement. This
+setup is shown in Fig. 2. By design, we obtain both a high
+ﬁdelity initial reconstruction, and a high perceptual quality
+enhanced reconstruction. The enhancement is performed on
+the receiver side and can be stopped at any time, enabling
+test-time control over the distortion-perception tradeoff.
+3.1. Residual diffusion models
+Diffusion-based enhancement is typically achieved by
+conditioning the reverse model on the image-to-enhance ~ x,
+effectively modeling the conditional distribution p(x0j~ x)
+[20, 54, 59]. Following Whang et al . [68], we instead
+opt to model the distribution of residuals p(r0j~ x), where
+r0=x ~ xand the index is for conceptual diffusion time.
+From an information theory perspective modeling residualsis equivalent to modeling images, but residuals follow an
+approximately Gaussian distribution, which we believe can
+be easier to model. More details on this choice are given in
+the appendix.
+For training, we use the common loss parametrization
+where the model learns to predict the initial sample instead
+of the noise that was added to it. Yang and Mandt [72]
+note that optimizing the perceptual distortion metric LPIPS
+[76] contributes to perceptual performance, and we adopt a
+similar practice here by adding a loss term, so that our ﬁnal
+loss becomes:
+L(x;~ x) =E
+t;rt
+wtjjr0 r00jj2+LPIPSdLPIPS(x;~ x+r00)
+;
+(1)
+where r00=g(rt;t)is the prediction from our model.
+wtis a weighting factor for which the theoretically derived
+terms become very large for small t(see appendix for the
+derivation), so we choose to set wt= 1 to balance all loss
+terms evenly, similar to how Ho et al. [19] use a weighted
+variational objective in practice.
+3.2. Distortion-perception traversal
+The choice to enhance a base codec reconstruction with
+a generative model has a compelling advantage over ap-
+proaches that learn to trade off rate, distortion and percep-
+tion in an end-to-end manner: in theory, it gives us access
+to an initial reconstruction ~ xwith maximum ﬁdelity, and an
+enhanced reconstruction ^ xwith maximum perceptual qual-
+ity. First, for a perfect encoder and decoder, ~ xhas the lowest
+distortion in expectation. Second, if the encoder and de-
+coder are deterministic, and the enhancement model learns
+p(xj~ x)exactly, then we have p(^ x) =p(x). This means
+perfect quality under the deﬁnition of Blau and Michali [8].
+3One can also view the decoder and enhancement model as
+one joint stochastic decoder, which is required for perfect
+quality at any bitrate [65]. In this picture, the diffusion steps
+will then gradually move the prediction from the mean of
+the learned distribution—which would be 0 for the residu-
+als of an optimal base model—to a sample, corresponding
+to a transition from high ﬁdelity to high perceptual quality.
+3.3. Sampling improvements
+In this work we make use of the noise schedule and sam-
+pling procedure introduced by Denoising Diffusion Implicit
+Models (DDIM) [58]. While we use T= 1000 diffusion
+steps during training, the number of sampling steps can
+be reduced to 100 at test time at negligible cost to perfor-
+mance, by redistributing the timesteps based on the scheme
+described by Nichol and Dhariwal [44]. As explained in the
+previous section, the sampling procedure can be stopped
+at any point, e.g. when the desired perceptual quality is
+achieved or when a compute budget is reached. To indicate
+how many sampling steps are performed, we refer to our
+model as DIRAC-n, going from DIRAC-1 to DIRAC-100.
+We further improve sampling efﬁciency and perfor-
+mance through two contributions: late-start sampling and
+rate-dependent thresholding .
+First, we demonstrate in Section 5.3 that we can skip
+80% of the 100 sampling steps, instead starting sampling at
+DIRAC-80 with noise as model input which is scaled ac-
+cording to the diffusion model’s noise schedule. We are not
+the ﬁrst to introduce late-start sampling [38], but we can
+do it while sampling directly from a scaled standard Gaus-
+sian as opposed to a more complex distribution, simplifying
+the approach. We further explain the effectiveness of this
+approach by showing that the sampling trajectory has very
+small curvature in the early steps.
+Second, we make use of a method we dub rate-
+dependent thresholding . Like most diffusion works, we
+scale our data (which here are residuals) to the range [ 1; 1]
+and clip all intermediate predictions r00to this range. How-
+ever, the distribution of residuals strongly depends on the
+bit rate of the base codec, with high rate resulting in small
+residuals between original and reconstruction, and vice
+versa (see appendix for an analysis of residual distribu-
+tions). Inspired by Saharia et al. [55], who introduce dy-
+namic thresholding , we analyze the training data distribu-
+tion and deﬁne a value range for each rate (more precisely,
+for eachrate we evaluate). Empirically we found that
+choosing a range such that 95% of values fall within it
+works best. During sampling, intermediate predictions are
+then clipped to the range for the given rate parameter in-
+stead of [ 1; 1]. We hypothesize that this reduces outlier
+values that disproportionately affect PSNR. In Section 5.3
+we show that it does indeed improve PSNR, without affect-
+ing perceptual quality. Contrary to Saharia et al. we onlyperform clipping, but not rescaling of intermediate residu-
+als.
+We only apply rate-dependent thresholding in the gener-
+ative compression setting, where we have access to rateon
+the receiver-side, but not for the enhancement of traditional
+codecs as access to the quality factor is not guaranteed.
+4. Experiments
+We evaluate DIRAC both as a generative compression
+model by enhancing a strong neural base codec, and in
+the perceptual enhancement setting by using traditional
+codecs as base codec. In the generative compression set-
+ting, we evaluate both rate-distortion and rate-perception
+performance in comparison to prior work in neural com-
+pression, and demonstrate that DIRAC can smoothly tra-
+verse the entire rate-distortion-perception tradeoff. In the
+enhancement setting, we demonstrate DIRAC’s ﬂexibility
+by comparing it with task-speciﬁc methods from the liter-
+ature, focusing on both distortion and perceptual quality.
+Finally, we present experiments that elucidate why our pro-
+posed sampling improvements—extremely late sampling
+start and rate-dependent thresholding—can be successful in
+the residual enhancement setting.
+Baselines For the generative compression setting, we fo-
+cus on strong GAN-based baselines. One of the strongest
+perceptual codecs is HiFiC [39], a GAN-based codec
+trained for a speciﬁc rate-distortion-perception tradeoff
+point. MultiRealism , a followup work [3], allows navigat-
+ing the distortion-perception tradeoff by sharing decoder
+weights and conditioning the decoder on the tradeoff pa-
+rameter [3] Additionally, MS-ILLM [43] show that better
+discriminator design can further improve perceptual scores
+[43]. Finally, Yang and Mandt [72] propose a codec where
+a conditional DDPM takes the role of the decoder, directly
+producing a reconstruction from a latent variable.
+In the JPEG restoration setting, we compare to
+DDRM [28], which recently outperformed the former state-
+of-the-art method QGAC [15]. They use a pre-trained
+image-to-image diffusion model and relax the diffusion pro-
+cess to nonlinear degradation, as introduced in [27], to en-
+able JPEG restoration for low resolution images.
+Other relevant diffusion-based baselines include
+Palette [54] and GDM [59], which explicitly train for
+JPEG restoration, yet only report perceptual quality on
+low resolution datasets. Finally, for VTM restoration, we
+consider ArabicPerceptual [67], however it is trained and
+evaluated on different datasets and metrics. Due to these
+differences, comparison to these methods can be found in
+the appendix.
+4Our models Creating a DIRAC model consists of two
+stages: (1) training or deﬁning a multi-rate base codec, and
+(2) training a diffusion model to enhance this base codec.
+In the generative compression setting, i.e. when the base
+codec is neural, we use the SwinT-ChARM [77] model.
+It is a near-state-of-the-art compressive autoencoder based
+on the Swin Transformer architecture [35]. We adapt this
+codec to support multiple bitrates using a technique known
+aslatent scaling , see details in appendix.
+In the enhancement setting, we couple DIRAC with two
+standard codecs as base model: the intra codec of VTM
+17.0 [9], as it is one of the best performing standard codecs
+in the low bitrate regime, and the widely-used JPEG [66]
+codec. Later, we refer to SwinT-ChARM+DIRAC as just
+DIRAC, while we explicitly refer to VTM+DIRAC and
+JPEG+DIRAC.
+Metrics and evaluation We evaluate our method us-
+ing both distortion metrics and perceptual quality metrics.
+We always evaluate on full resolution RGB images: we
+replicate-pad the network input so that all sides are mul-
+tiple of the total downsampling factor of the network, and
+crop the output back to the original resolution. We repeat
+scores as reported in the respective publications.
+To measure distortion, we use the common PSNR met-
+ric. We also include the full-reference LPIPS [76] metric
+as it has been shown to align well with human judgment
+of visual quality. As perceptual quality metrics, we pri-
+marily use a variation of the Frechet Inception Distance
+(FID) [18] metric, which measures the distance between the
+target distribution p(x)and the distribution of reconstruc-
+tionsp(^ x). FID requires resizing of input images to a ﬁxed
+resolution, which for high-resolution images will destroy
+generated details. We therefore follow procedure of previ-
+ous compression work and use half-overlapping 256256
+crops [39, 3, 43] for high resolution datasets, this metric is
+referred to as FID/256.
+When we report bitrates, we perform entropy coding and
+take the ﬁle size. This leads to no more than 0:5%overhead
+compared to the theoretical bitrate given by the prior.
+Datasets To train the SwinT-ChARM base model and
+residual diffusion models, we use the training split of the
+high-resolution CLIC2020 dataset [64] (1633 images of
+varying resolutions). For DDPM training, we follow the
+three-step preprocessing pipeline of HiFiC [39]: for each
+image, randomly resize according to a scale factor uni-
+formly sampled from the range [0:5;1:0], then take a ran-
+dom 256256crop, then perform a horizontal ﬂip with
+probability 0.5. For validation and model selection, we use
+the CLIC 2020 validation set (102 images).
+We evaluate on two common image compression bench-
+mark datasets: the CLIC2020 test set (428 images) andthe Kodak dataset [31] (24 images). To enable comparison
+with enhancement literature, we evaluate on the low resolu-
+tion ImageNet-val1k [12, 45]. We follow the preprocessing
+procedure from Kawar et al. [28] where images are center
+cropped along the long edge and then resized to 256.
+Implementation details For the base codec, we imple-
+ment SwinT-ChARM as described in the original paper. We
+ﬁrst train a single rate model for 2M iterations on 256256
+CLIC 2020 train crops, then ﬁnetune it for multiple bitrates
+for 0.5M iterations. The standard base codecs are evaluated
+using the VTM reference software, CompressAI framework
+[6] and libjpeg in Pillow. We provide full details on the im-
+plementation and hyperparameters in the appendix.
+The diffusion residual model is based off DDPM’s ofﬁ-
+cial open source implementation [13], and we base most of
+our default architecture settings on the 256256DDPM
+from Preechakul et al. [48], which uses a U-Net architec-
+ture [53]. Conditioning on the base codec reconstruction ~ x
+is achieved by concatenating ~ xand the DDPM latent rtin
+each step. Our model has 108.4 million parameters. For
+context, the HiFiC baseline has 181.5 million. As HiFiC
+requires only one forward pass to create a reconstruction, it
+is typically less expensive than DIRAC. We provide more
+detail on computational cost in the appendix.
+Finally DIRAC and VTM+DIRAC diffusion models are
+trained for 650k steps, using the Adam optimizer [29] with
+a learning rate of 10 4and no learning rate decay. The
+JPEG+DIRAC model was trained for 1M iterations, as
+JPEG degradations are much more severe than those of
+VTM and SwinT-ChARM.
+5. Results
+5.1. Generative compression
+We visualize the rate-distortion and rate-perception
+tradeoffs in Fig. 3. We show our model in two conﬁgu-
+rations: DIRAC-100 (100 sampling steps) has maximum
+perceptual quality, and DIRAC-1 (single sampling step) has
+minimal distortion.
+Along the distortion axis, i.e. PSNR, DIRAC-1 is close
+to VTM and MultiRealism [3] at= 0, which in turn is
+competitive with the state of the art. On the perceptual qual-
+ity side, HiFiC is the current state of the art of peer-reviewed
+works. DIRAC-100 matches HiFiC in FID/256 with better
+PSNR on both test datasets. Likewise, we match MultiReal-
+ismat= 2:56in FID/256. Note that between DIRAC and
+Multirealism , no model is strictly better than the other, i.e.
+better on both distortion and perception axes at the same
+time. This is reﬂected in the examples in Fig. 4, where
+DIRAC-1, our high-ﬁdelity model, looks a bit sharper than
+[3], while examples with high perceptual quality are hardly
+distinguishable.
+50.1 0.2 0.3 0.4 0.5 0.6283032343638CLIC test full-res
+PSNR [dB, ]
+0.1 0.2 0.3 0.4 0.5 0.605101520
+FID/256 []
+0.1 0.2 0.3 0.4 0.5 0.6
+bpp []
+283032343638Kodak full-res
+PSNR [dB, ]
+DIRAC-100 (percep. quality)
+DIRAC-1 (fidelity)
+VTM
+Yang & Mandt [72]MS-ILLM [43]
+MultiRealism [3] (=2.56)
+MultiRealism [3] (=0)
+HifiC [39]
+0.1 0.2 0.3 0.4 0.5 0.6
+bpp []
+0.000.050.100.150.200.25
+LPIPS []
+Figure 3: Rate-distortion (left) and rate-perception (right) curves for the CLIC2020 test set (top) and Kodak dataset (bottom).
+The Kodak dataset has too few samples for FID/256 evaluation, instead we evaluate LPIPS, a perceptual distortion metric.
+Figure 4: CLIC 2020 test reconstructions comparing our model to MultiRealism [3]. We show original (top left), Swint-
+ChARM base codec (bottom left), DIRAC-1 (high ﬁdelity) and DIRAC-100 (high perceptual quality) in center column,
+MultiRealism counterparts in right column. Shown scores are for full image. Best viewed electronically.
+MS-ILLM [43] achieves a new state of the art in FID/256
+and is unmatched by all other methods, but upon qualitative
+comparison in Fig. 5 we observe that even at a lower bitrate
+compared to MS-ILLM, DIRAC-100 is able to generate per-
+ceptually relevant details in a more meaningful manner. Of
+course, this is only a single datapoint, and stronger claims
+require a thorough perceptual comparison. Similar to Multi-realism [3], our model can target a wide range of distortion-
+perception tradeoffs at test time, indicated by the shaded
+area in Fig. 3. Finally, we compare to the diffusion-based
+codec of Yang and Mandt [72] on Kodak. Our model out-
+performs theirs by a large margin in terms of LPIPS. More
+visual examples can be found in the appendix.
+6Figure 5: CLIC 2020 test reconstruction by DIRAC-100 and MS-ILLM, crop location chosen based on [43].
+5.2. Enhancement of standard codecs
+We evaluate enhancement of two standard codecs: JPEG
+and VTM. In Fig. 6 we compare JPEG+DIRAC to litera-
+ture on the low-resolution dataset ImageNet-1K (left pan-
+els) and evaluate JPEG+DIRAC and VTM+DIRAC on the
+high-resolution dataset CLIC test 2020 (right panels).
+When comparing to enhancement literature (left panels
+in Fig. 6), we compare to QGAC and DDRM, speciﬁcally
+their scores resulting from averaging 8 independent sam-
+ples, denoted DDRM (A). JPEG+DIRAC-1 slightly out-
+performs the competing methods in the low rate regime in
+terms of PSNR, while improving LPIPS by a large margin.
+Further sampling allows JPEG+DIRAC-100 to improve
+LPIPS, at the cost of PSNR. While the difference in LPIPS
+seem small, qualitatively the textures in JPEG+DIRAC-100
+are much better than in JPEG+DIRAC-1, as can be seen in
+the appendix.
+When evaluating JPEG+DIRAC and VTM+DIRAC on
+the high-resolution dataset CLIC test 2020 (right panels
+in Fig. 6), we can see that both VTM+DIRAC-1 and
+JPEG+DIRAC-1 outperform their base codec in ﬁdelity. In
+the perceptual enhancement setting, both VTM+DIRAC-
+100 and JPEG+DIRAC-100 far outperform their base codec
+in FID/256, speciﬁcally at the lowest rate, with a 81% and
+78% improvement respectively. DIRAC offers a consis-
+tent boost in perceptual quality, even as one improves the
+base codec from JPEG to VTM. We show visual examples
+of both systems in the middle panels, showing a drastic
+improvement in visual quality. Notice the lack of texture
+on the top samples, which are from distortion-optimized
+codecs. For VTM, the bottom sample has higher distor-
+tion (i.e. lower PSNR), yet looks far better to the human
+observer.
+5.3. Sampling analysis
+Reverse sampling in diffusion models is equivalent to in-
+tegrating a stochastic differential equation [61]. The error
+incurred in the numerical approximation of the true solu-
+tion trajectory will generally be proportional to its curvature[26], meaning parts with low curvature can be integrated
+with few and large update steps.
+In Fig. 7 (left panel) we show the average curva-
+ture of sampling trajectories for our model on the CLIC
+2020 val dataset, using 100 DDIM steps [58]. Because
+computing the Hessian is not feasible for the number
+of dimensions our model operates in, we approximate it
+with the angle between consecutive update vectors c=
+cos 1(utut 1=jjutjjjjut 1jj), whereut/(r00(t) rt)
+points from the current diffusion latent to the current predic-
+tion of the residual. We ﬁnd that the curvature is small along
+a vast majority of steps in the sampling trajectory, meaning
+it is indeed possible to take a single large update step and
+only incur a small error.
+Moreover, we ﬁnd that instead of starting from standard
+normal noise at time Tand taking a large integration step
+to timet << T , it is sufﬁcient to start directly at t, us-
+ing noise as input to the model that is scaled according to
+the diffusion model’s noise schedule. In our experiments,
+starting sampling at t= 20 was a good tradeoff, with ﬁnal
+performance almost identical to the full 100 steps (as seen
+in the center and right panels of Fig. 7), but saving 80% of
+required compute. One might suspect that the above is due
+to a suboptimal noise schedule (we use the popular linear
+schedule), but we explored several different schedules as
+well as noise schedule learning [30] and found no improve-
+ment in performance.
+Besides showing that our model can work efﬁciently
+using at most 20 sampling steps, in the generative com-
+pression setting we also introduce a concept we call rate-
+dependent thresholding , which we detail in Section 3.3.
+By clipping each intermediate residual prediction to a
+percentile-range obtained from the training data (we deﬁne
+the range to include 95% of the data at a given rate), we
+ﬁnd that we can improve PSNR while not affecting FID.
+This can be seen in the center and right panels of Fig. 7,
+which also shows how our model performs a smooth traver-
+sal between high ﬁdelity (high PSNR) and high perceptual
+quality (low FID/256).
+72426283032PSNR [dB, ]
+ImageNet-val1k
+ JPEG QF=5 64.1kB PSNR=26.0dB
+ VTM QP=40 24.4kB PSNR=32.6dB
+25303540PSNR [dB, ]
+CLIC 2020 test
+0.3 0.4 0.5 0.6 0.7 0.8
+bpp []
+0.10.20.30.40.5LPIPS []
+JPEG
+JPEG+DIRAC-1
+JPEG+DIRAC-100DDRM (A) [28]
+QGAC [15]
+JPEG+DIRAC-100 PSNR=27.9dB
+ VTM+DIRAC-100 PSNR=31.1dB
+0.2 0.4 0.6 0.8
+bpp []
+020406080FID/256 []
+VTM 17.0
+VTM+DIRAC-1
+VTM+DIRAC-100JPEG
+JPEG+DIRAC-1
+JPEG+DIRAC-100Figure 6: Quantitative results for JPEG+ and VTM+DIRAC on ImageNet-val1k (left) and CLIC test 2020 (right) respectively.
+We show rate-distortion (top) and rate-perception (bottom) curves. Qualitative sample is image “3f273e” in CLIC 2020 test.
+0 20 40 60 80 100
+Sampling Step0.00.10.20.3Angle [rad]
+Curvature
+Default threshold
+Rate-dep. threshold
+Rate-dep. threshold
+Skipping 80 steps
+0 20 40 60 80 100
+Sampling Step29.029.530.030.531.0PSNR [dB,]
+Fidelity
+0 20 40 60 80 100
+Sampling Step1015202530FID/256 []
+Perceptual Quality
+Figure 7: Analysis of the curvature of the sampling trajectory (approximated by the angle between update vectors), as well
+as the change in PSNR and FID/256 during sampling. All evaluations done on the CLIC 2020 val subset.
+6. Discussion and Limitations
+In this work, we propose a new neural image compres-
+sion method called Diffusion-based Residual Augmentation
+Codec (DIRAC). Our approach uses a variable bitrate base
+codec to transmit an initial reconstruction with high ﬁdelity
+to the original input, and then uses a diffusion probabilistic
+model to improve its perceptual quality. We show that this
+design choice enables ﬁne control over the rate-distortion-
+perception tradeoff at test time, which for example enables
+users to choose if an image should be decoded with high ﬁ-
+delity or high perceptual quality. Paired with a strong neural
+codec as base model, we can smoothly interpolate between
+performance that is competitive with the state of the art in
+either ﬁdelity or perceptual quality. Our model can also
+work as a receiver-side enhancement model for traditional
+codecs, drastically improving perceptual quality at some-
+times no cost in PSNR. Finally, we demonstrate that our
+model can work with 20 sampling steps or less, and pro-
+pose rate-dependent thresholding , which improves PSNR
+of the diffusion model without affecting perceptual quality
+in the multi-rate setting.Limitations Although our model gives the user control
+over the amount of hallucinated content, we currently do not
+control where such hallucinations occur. Similar to GAN-
+based codecs, we observe that increasing perception some-
+times harms ﬁdelity in small regions with semantically im-
+portant content, such as faces and text. Addressing this lim-
+itation is an important next step for generative codecs. Ad-
+ditionally, it is fairly expensive to use a DDPM on the re-
+ceiver side. Although we drastically reduce the number of
+sampling steps, HiFiC and its variations [39, 3] are less ex-
+pensive to run. We provide more details on computational
+cost in the appendix. On the other hand, sampling efﬁciency
+of diffusion models is a major research direction, and we
+expect our approach to beneﬁt from these advances.
+Acknowledgments
+We thank Johann Brehmer, Taco Cohen, Yunfan Zhang,
+Hoang Le for useful discussions and reviews of early drafts
+of the paper. Thanks to Fabian Mentzer for instructions on
+reproducing HiFiC, and to Matthew Muckley for providing
+the MS-ILLM reconstructions and scores.
+8References
+[1] Enhance Compression Model (ECM). https://vcgit.
+hhi.fraunhofer.de/ecm/ECM , Accessed March 10,
+2023. 16
+[2] Eirikur Agustsson, David Minnen, Nick Johnston, Johannes
+Balle, Sung Jin Hwang, and George Toderici. Scale-space
+ﬂow for end-to-end optimized video compression. In Pro-
+ceedings of the IEEE conference on Computer Vision and
+Pattern Recognition , 2020. 2
+[3] Eirikur Agustsson, David Minnen, George Toderici, and
+Fabian Mentzer. Multi-realism image compression with
+a conditional generator. arXiv preprint arXiv:2212.13824 ,
+2022. 1, 2, 4, 5, 6, 8, 19, 22
+[4] Eirikur Agustsson, Michael Tschannen, Fabian Mentzer,
+Radu Timofte, and Luc Van Gool. Generative adversarial
+networks for extreme learned image compression. In Pro-
+ceedings of the IEEE conference on Computer Vision and
+Pattern Recognition , 2019. 1, 2
+[5] Johannes Ball ´e, David Minnen, Saurabh Singh, Sung Jin
+Hwang, and Nick Johnston. Variational image compres-
+sion with a scale hyperprior. In International Conference
+on Learning Representations , 2018. 2, 14, 15
+[6] Jean B ´egaint, Fabien Racap ´e, Simon Feltman, and Akshay
+Pushparaja. CompressAI: a PyTorch library and evalua-
+tion platform for end-to-end compression research. arXiv
+preprint arXiv:2011.03029 , 2020. 5, 14, 15
+[7] Mikołaj Bi ´nkowski, Danica J. Sutherland, Michael Arbel,
+and Arthur Gretton. Demystifying mmd gans. In Interna-
+tional Conference on Learning Representations , Feb 2022.
+16
+[8] Yochai Blau and Tomer Michaeli. Rethinking lossy com-
+pression: The rate-distortion-perception tradeoff. In Inter-
+national Conference on Machine Learning , pages 675–685.
+PMLR, 2019. 1, 2, 3, 13
+[9] Benjamin Bross, Ye-Kui Wang, Yan Ye, Shan Liu, Jianle
+Chen, Gary J Sullivan, and Jens-Rainer Ohm. Overview of
+the versatile video coding (VVC) standard and its applica-
+tions. IEEE Transactions on Circuits and Systems for Video
+Technology , 31(10):3736–3764, 2021. 5
+[10] Tong Chen and Zhan Ma. Variable bitrate image compres-
+sion with quality scaling factors. In ICASSP 2020-2020
+IEEE International Conference on Acoustics, Speech and
+Signal Processing (ICASSP) , pages 2163–2167. IEEE, 2020.
+15
+[11] Kamil Deja, Anna Kuzina, Tomasz Trzci ´nski, and Jakub M
+Tomczak. On analyzing generative and denoising capabili-
+ties of diffusion-based deep generative models. Neural In-
+formation Processing Systems , 2022. 13
+[12] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,
+and Li Fei-Fei. Imagenet: A large-scale hierarchical image
+database. In 2009 IEEE Conference on Computer Vision and
+Pattern Recognition , pages 248–255, 2009. 5
+[13] Prafulla Dhariwal and Alexander Nichol. Diffusion models
+beat GANs on image synthesis. In Advances in Neural Infor-
+mation Processing Systems , volume 34, pages 8780–8794,
+2021. 1, 5, 14, 16[14] Chao Dong, Yubin Deng, Chen Change Loy, and Xiaoou
+Tang. Compression artifacts reduction by a deep convo-
+lutional network. 2015 IEEE International Conference on
+Computer Vision (ICCV) , Dec 2015. 2
+[15] Max Ehrlich, Larry Davis, Ser-Nam Lim, and Abhinav Shri-
+vastava. Quantization guided jpeg artifact correction. In
+European Conference on Computer Vision , pages 293–309,
+2020. 2, 4, 13
+[16] Zongyu Guo, Zhizheng Zhang, Runsen Feng, and Zhibo
+Chen. Soft then hard: Rethinking the quantization in neural
+image compression. In International Conference on Machine
+Learning , pages 3920–3929. PMLR, 2021. 15
+[17] Amirhossein Habibian, Ties van Rozendaal, Jakub M Tom-
+czak, and Taco S Cohen. Video compression with rate-
+distortion autoencoders. In IEEE International Conference
+on Computer Vision , 2019. 2
+[18] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner,
+Bernhard Nessler, and Sepp Hochreiter. GANs Trained by
+a Two Time-Scale Update Rule Converge to a Local Nash
+Equilibrium, 2017. 3, 5
+[19] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffu-
+sion probabilistic models. Advances in Neural Information
+Processing Systems , 33:6840–6851, 2020. 2, 3, 12, 13
+[20] Jonathan Ho, Chitwan Saharia, William Chan, David J Fleet,
+Mohammad Norouzi, and Tim Salimans. Cascaded diffu-
+sion models for high ﬁdelity image generation. Journal of
+Machine Learning Research , 23:47–1, 2022. 1, 2, 3
+[21] Jonathan Ho, Tim Salimans, Alexey A Gritsenko, William
+Chan, Mohammad Norouzi, and David J Fleet. Video diffu-
+sion models. In ICLR Workshop on Deep Generative Models
+for Highly Structured Data , 2022. 2
+[22] Emiel Hoogeboom, Alexey A Gritsenko, Jasmijn Bastings,
+Ben Poole, Rianne van den Berg, and Tim Salimans. Au-
+toregressive diffusion models. In International Conference
+on Learning Representations , 2021. 2
+[23] Zhihao Hu, Guo Lu, Jinyang Guo, Shan Liu, Wei Jiang, and
+Dong Xu. Coarse-to-ﬁne deep video coding with hyperprior-
+guided mode prediction. In Proceedings of the IEEE confer-
+ence on Computer Vision and Pattern Recognition , 2022. 2
+[24] Zhihao Hu, Guo Lu, and Dong Xu. FVC: A new framework
+towards deep video compression in feature space. In Pro-
+ceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition , pages 1502–1511, 2021. 2
+[25] Shoma Iwai, Tomo Miyazaki, Yoshihiro Sugaya, and
+Shinichiro Omachi. Fidelity-controllable extreme image
+compression with generative adversarial networks. In
+2020 25th International Conference on Pattern Recognition
+(ICPR) , pages 8235–8242. IEEE, 2021. 1, 2
+[26] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine.
+Elucidating the design space of diffusion-based generative
+models. In Neural Information Processing Systems , 2022. 7
+[27] Bahjat Kawar, Michael Elad, Stefano Ermon, and Jiaming
+Song. Denoising diffusion restoration models. In ICLR
+Workshop on Deep Generative Models for Highly Structured
+Data , 2022. 1, 3, 4, 16
+[28] Bahjat Kawar, Jiaming Song, Stefano Ermon, and Michael
+Elad. JPEG artifact correction using denoising diffusion
+9restoration models. arXiv preprint arXiv:2209.11888 , 2022.
+3, 4, 5, 13, 14, 16
+[29] Diederik P Kingma and Jimmy Ba. Adam: A method
+for stochastic optimization. In International Conference on
+Learning Representations , 2015. 5
+[30] Diederik P Kingma, Tim Salimans, Ben Poole, and Jonathan
+Ho. Variational diffusion models. In Advances in Neural
+Information Processing Systems , 2021. 7
+[31] Photocd dataset Kodak. Kodak photocd dataset, 1991. 5
+[32] Nojun Kwak, Jaeyoung Yoo, and Sang-ho Lee. Image
+restoration by estimating frequency distribution of local
+patches. 2018 IEEE/CVF Conference on Computer Vision
+and Pattern Recognition , Jun 2018. 2
+[33] Gustav Larsson, Michael Maire, and Gregory
+Shakhnarovich. Learning representations for automatic
+colorization. In Computer Vision–ECCV 2016: 14th Eu-
+ropean Conference, Amsterdam, The Netherlands, October
+11–14, 2016, Proceedings, Part IV 14 , pages 577–593.
+Springer, 2016. 14
+[34] Jiaying Liu, Dong Liu, Wenhan Yang, Sifeng Xia, Xiaoshuai
+Zhang, and Yuanying Dai. A comprehensive benchmark for
+single image compression artifact reduction. IEEE Transac-
+tions on Image Processing , 29:7845–7860, 2020. 2
+[35] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng
+Zhang, Stephen Lin, and Baining Guo. Swin transformer:
+Hierarchical vision transformer using shifted windows. In
+Proceedings of the IEEE/CVF international conference on
+computer vision , pages 10012–10022, 2021. 5, 15
+[36] Guo Lu, Wanli Ouyang, Dong Xu, Xiaoyun Zhang, Chun-
+lei Cai, and Zhiyong Gao. DVC: An end-to-end deep video
+compression framework. In Proceedings of the IEEE con-
+ference on Computer Vision and Pattern Recognition , 2019.
+2
+[37] Yadong Lu, Yinhao Zhu, Yang Yang, Amir Said, and
+Taco S Cohen. Progressive neural image compression with
+nested quantization and latent ordering. arXiv preprint
+arXiv:2102.02913 , 2021. 15
+[38] Zhaoyang Lyu, Xudong Xu, Ceyuan Yang, Dahua Lin, and
+Bo Dai. Accelerating diffusion models via early stop of the
+diffusion process. arXiv preprint arXiv:2205.12524 , 2022.
+4, 13
+[39] Fabian Mentzer, George Toderici, Michael Tschannen, and
+Eirikur Agustsson. High-ﬁdelity generative image compres-
+sion. In Neural Information Processing Systems , 2020. 1, 2,
+4, 5, 8, 19
+[40] David Minnen, Johannes Ball ´e, and George Toderici. Joint
+autoregressive and hierarchical priors for learned image
+compression. Neural Information Processing Systems , 2018.
+2
+[41] David Minnen, George Toderici, Michele Covell, Troy Chi-
+nen, Nick Johnston, Joel Shor, Sung Jin Hwang, Damien
+Vincent, and Saurabh Singh. Spatially adaptive image com-
+pression using a tiled deep network. In 2017 IEEE Interna-
+tional Conference on Image Processing (ICIP) , pages 2796–
+2800. IEEE, 2017. 2
+[42] Anish Mittal, Rajiv Soundararajan, and Alan C. Bovik. Mak-
+ing a “completely blind” image quality analyzer. IEEE Sig-
+nal Processing Letters , 20(3):209–212, Mar 2013. 16[43] Matthew J Muckley, Alaaeldin El-Nouby, Karen Ullrich,
+Herv ´e J´egou, and Jakob Verbeek. Improving statistical ﬁ-
+delity for neural image compression with implicit local like-
+lihood models. arXiv preprint arXiv:2301.11189 , 2023. 2,
+4, 5, 6, 7, 16, 19, 22
+[44] Alexander Quinn Nichol and Prafulla Dhariwal. Improved
+denoising diffusion probabilistic models. In International
+Conference on Machine Learning , pages 8162–8171. PMLR,
+2021. 4, 12, 13, 16, 17
+[45] Xingang Pan, Xiaohang Zhan, Bo Dai, Dahua Lin,
+Chen Change Loy, and Ping Luo. Exploiting deep generative
+prior for versatile image restoration and manipulation. IEEE
+Transactions on Pattern Analysis and Machine Intelligence ,
+44(11):7474–7489, 2021. 5, 13
+[46] Zhihong Pan, Xin Zhou, and Hao Tian. Extreme generative
+image compression by learning text embedding from diffu-
+sion models. arXiv preprint arXiv:2211.07793 , 2022. 2
+[47] Kushagra Pandey, Avideep Mukherjee, Piyush Rai, and Ab-
+hishek Kumar. DiffuseV AE: Efﬁcient, controllable and high-
+ﬁdelity generation from low-dimensional latents. arXiv
+preprint arXiv:2201.00308 , 2022. 2
+[48] Konpat Preechakul, Nattanat Chatthee, Suttisak Wizad-
+wongsa, and Supasorn Suwajanakorn. Diffusion autoen-
+coders: Toward a meaningful and decodable representation.
+InProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , pages 10619–10629, 2022.
+2, 5, 16
+[49] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu,
+and Mark Chen. Hierarchical text-conditional image gener-
+ation with clip latents, 2022. 1, 2
+[50] Oren Rippel, Alexander G Anderson, Kedar Tatwawadi, San-
+jay Nair, Craig Lytle, and Lubomir Bourdev. ELF-VC: Efﬁ-
+cient Learned Flexible-Rate Video Coding. Neural Informa-
+tion Processing Systems , 2021. 2, 15
+[51] Oren Rippel and Lubomir Bourdev. Real-Time adaptive im-
+age compression. In Doina Precup and Yee Whye Teh, ed-
+itors, Proceedings of the 34th International Conference on
+Machine Learning , volume 70 of Proceedings of Machine
+Learning Research , pages 2922–2930. PMLR, 2017. 2
+[52] Oren Rippel, Sanjay Nair, Carissa Lew, Steve Branson,
+Alexander G. Anderson, and Lubomir Bourdev. Learned
+video compression. In IEEE International Conference on
+Computer Vision , October 2019. 2
+[53] O. Ronneberger, P.Fischer, and T. Brox. U-net: Convolu-
+tional networks for biomedical image segmentation. In Med-
+ical Image Computing and Computer-Assisted Intervention
+(MICCAI) , volume 9351 of LNCS , pages 234–241. Springer,
+2015. (available on arXiv:1505.04597 [cs.CV]). 5
+[54] Chitwan Saharia, William Chan, Huiwen Chang, Chris Lee,
+Jonathan Ho, Tim Salimans, David Fleet, and Mohammad
+Norouzi. Palette: Image-to-image diffusion models. In
+ACM SIGGRAPH 2022 Conference Proceedings , pages 1–
+10, 2022. 1, 3, 4, 14, 16
+[55] Chitwan Saharia, William Chan, Saurabh Saxena, Lala
+Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed
+Ghasemipour, Burcu Karagol Ayan, S. Sara Mahdavi,
+Rapha Gontijo Lopes, Tim Salimans, Jonathan Ho, David J
+10Fleet, and Mohammad Norouzi. Photorealistic text-to-image
+diffusion models with deep language understanding, 2022.
+1, 2, 4
+[56] Chitwan Saharia, Jonathan Ho, William Chan, Tim Sali-
+mans, David J Fleet, and Mohammad Norouzi. Image super-
+resolution via iterative reﬁnement. IEEE Transactions on
+Pattern Analysis and Machine Intelligence , 2022. 1, 2
+[57] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan,
+and Surya Ganguli. Deep unsupervised learning using non-
+equilibrium thermodynamics. In International Conference
+on Machine Learning , pages 2256–2265. PMLR, 2015. 1, 2,
+12
+[58] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denois-
+ing diffusion implicit models. In International Conference
+on Learning Representations , 2020. 4, 7
+[59] Jiaming Song, Arash Vahdat, Morteza Mardani, and Jan
+Kautz. Pseudoinverse-guided diffusion models for inverse
+problems. In International Conference on Learning Repre-
+sentations , 2023. 3, 4, 14, 16
+[60] Myungseo Song, Jinyoung Choi, and Bohyung Han.
+Variable-rate deep image compression through spatially-
+adaptive feature transform. In Proceedings of the IEEE/CVF
+International Conference on Computer Vision , pages 2380–
+2389, 2021. 2, 15
+[61] Yang Song, Jascha Sohl-Dickstein, Diederik P. Kingma, Ab-
+hishek Kumar, Stefano Ermon, and Ben Poole. Score-based
+generative modeling through stochastic differential equa-
+tions. In International Conference on Learning Represen-
+tations , 2020. 7
+[62] Lucas Theis, Tim Salimans, Matthew D Hoffman, and
+Fabian Mentzer. Lossy Compression with Gaussian Diffu-
+sion. arXiv preprint arXiv:2206.08889 , 2022. 2
+[63] Lucas Theis, Wenzhe Shi, Andrew Cunningham, and Ferenc
+Husz ´ar. Lossy image compression with compressive autoen-
+coders. International Conference on Learning Representa-
+tions , 2017. 1, 2
+[64] George Toderici, Wenzhe Shi, Radu Timofte, Lucas Theis,
+Johannes Balle, Eirikur Agustsson, Nick Johnston, and
+Fabian Mentzer. Workshop and challenge on learned image
+compression (clic2020). In Proceedings of the IEEE confer-
+ence on Computer Vision and Pattern Recognition . CVPR,
+2020. 5, 14
+[65] Michael Tschannen, Eirikur Agustsson, and Mario Lucic.
+Deep generative models for distribution-preserving lossy
+compression. Advances in neural information processing
+systems , 31, 2018. 4
+[66] Gregory K. Wallace. The JPEG Still Picture Compression
+Standard. Commun. ACM , 1991. 5
+[67] Huairui Wang, Guangjie Ren, Tong Ouyang, Junxi Zhang,
+Wenwei Han, Zizheng Liu, and Zhenzhong Chen. Percep-
+tual in-loop ﬁlter for image and video compression. In
+2022 IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition Workshops (CVPRW) , page 1769–1772,
+Jun 2022. 3, 4, 14, 16
+[68] Jay Whang, Mauricio Delbracio, Hossein Talebi, Chitwan
+Saharia, Alexandros G Dimakis, and Peyman Milanfar. De-
+blurring via stochastic reﬁnement. In Proceedings of theIEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 16293–16303, 2022. 1, 2, 3
+[69] Chao-Yuan Wu, Nayan Singhal, and Philipp Kr ¨ahenb ¨uhl.
+Video compression through image interpolation. Proceed-
+ings of the European Conference on Computer Vision , 2018.
+2
+[70] Lirong Wu, Kejie Huang, and Haibin Shen. A GAN-based
+tunable image compression system. In Proceedings of the
+IEEE/CVF Winter Conference on Applications of Computer
+Vision , pages 2334–2342, 2020. 2
+[71] Ren Yang. Ntire 2021 challenge on quality enhancement of
+compressed video: Methods and results. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 647–666, 2021. 2
+[72] Ruihan Yang and Stephan Mandt. Lossy image compres-
+sion with conditional diffusion models. arXiv preprint
+arXiv:2209.06950 , 2022. 2, 3, 4, 6
+[73] Ruihan Yang, Prakhar Srivastava, and Stephan Mandt. Dif-
+fusion probabilistic modeling for video generation. arXiv
+preprint arXiv:2203.09481 , Mar 2022. 2
+[74] Ren Yang, Radu Timofte, Meisong Zheng, Qunliang Xing,
+Minglang Qiao, Mai Xu, Lai Jiang, Huaida Liu, Ying
+Chen, Youcheng Ben, et al. Ntire 2022 challenge on
+super-resolution and quality enhancement of compressed
+video: Dataset, methods and results. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , pages 1221–1238, 2022. 2
+[75] Ren Yang, Luc Van Gool, and Radu Timofte. Perceptual
+learned video compression with recurrent conditional GAN.
+arXiv preprint arXiv:2109.03082 , Sept. 2021. 2
+[76] Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shecht-
+man, and Oliver Wang. The Unreasonable Effectiveness of
+Deep Features as a Perceptual Metric. 2018 IEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition , 2018.
+3, 5
+[77] Yinhao Zhu, Yang Yang, and Taco Cohen. Transformer-
+based transform coding. In International Conference on
+Learning Representations , Mar 2022. 5, 14, 15
+11A. Method
+A.1. Derivation of DDPM loss
+For completeness, we show the derivation of the objec-
+tive when a diffusion model learns to predict x0directly
+(equivalently, r0). This is not a new contribution, and a
+similar derivation can be found for example in the work of
+Nichol and Dhariwal [44].
+Following Sohl-Dickstein et al . [57], the ELBO
+on the log likelihood of p(x0)can be writ-
+ten asT-step Kullback–Leibler (KL) divergences:
+KL(q(xt 1jxt;x0)jjp(xt 1jxt))fort= 1;:::;T 1.
+Under the assumption that the two distributions of interest
+are both Gaussian, we further assume (xt;t) =2
+tI
+to be time dependent constants. This reduces the KL
+divergence at step tto a comparison from the model mean
+to the posterior mean of the forward process:
+KL(q(xt 1jxt;x0)jjp(xt 1jxt)) = (2)
+Eq1
+22
+tjj~t(xt;x0) (xt;t)jj2
++C; (3)
+whereCis a constant, and ~tdenotes the posterior mean of
+the forward process conditioned on the data input x0, i.e.,
+q(xt 1jxt;x0).
+Note that, using the Bayes’ rule and the Markovian prop-
+erty of the forward process, we can rewrite
+q(xt 1jxt;x0) =q(xt 1;xtjx0)
+q(xtjx0)
+=q(xt 1jx0)q(xtjxt 1)
+q(xtjx0); (4)
+where the distribution q(xtjx0) =N(xt;ptx0;(1 
+t)I)witht:= 1 tandt:=Qt
+s=1s. Thet=t
+are typically chosen empirically and referred to as the noise
+schedule .
+With the known distribution of q(xtjx0), we can sample
+xtat an arbitrary step t:
+xt(x0;) =ptx0+p
+1 t; N(0;I):(5)
+Now each of the components on the RHS of Eq. (4) is de-
+ﬁned as a Gaussian distribution with known parameters. As
+a result, we can ﬁnd the posterior mean ~tin the following
+explicit form:
+~t(xt;x0) :=pt 1t
+1 tx0+pt(1 t 1)
+1 txt(6)
+=tx0+txt: (7)
+By plugging Eq. (6) into Eq. (2), and choosing a
+parametrization that matches to~tat each diffusion step
+t, for example (xt;t) =tg(xt;t) +txt(wheregisa function that directly predicts x0fromxt), we arrive at an
+objective function at diffusion step t:
+min E
+t;x0;
+wtjjx0 g(xt;t)jj2
+fort= 1;:::;T 1:
+(8)
+wherewt:=2
+t=22
+tandtis absorbed into the expectation
+instead of being summed over.
+A.2. Noise schedule and loss weights
+We work with the so-called linear noise schedule [19],
+deﬁned as:
+t= (T t)=(T 1)1+ (t 1)=(T 1)T;(9)
+wheret= 1;:::;T ,1= 10 4andT= 0:02. We tried
+several different ones, and found that this offered the best
+combination of PSNR and FID/256. We provide an ablation
+in Appendix C.3.
+We reweight the individual loss terms from Eq. (8) to
+wt= 1, inspired by the choice of Ho et al. [19], who do
+the same for the loss formulation that predicts the noise
+instead of the denoised sample. The theoretically derived
+wt=2=(22
+t)result in extremely large weights for small
+t, as seen in Fig. A.1. We ﬁnd that wt= 1 works better,
+likely because of the more evenly distributed loss scales,
+but it is possible that better weightings exist. Note that the
+reweighting of the -objective of Ho et al. results in differ-
+ent weighting than wt= 1due to the reparametrization.
+A.3. Motivation for modeling residuals
+DIRAC outputs an initial reconstruction ~ x, then models
+the distribution of residuals p(rj~ x)using a DDPM, where
+r=x ~ x(we drop the index 0, which denotes the data
+space for our diffusion model). In theory, one could model
+the image distribution p(xj~ x)directly. From an entropy
+perspective, the two approaches are equal: the entropy of
+p(rj~ x)is equal to the entropy of p(xj~ x)since, given the data
+x, the residual ris a deterministic function of the initial re-
+construction. Yet, while their entropy might be similar, the
+shape of these distributions is different.
+In Fig. A.2, we show the histogram of pixel values in the
+target images (left) and the residuals (right) for each RGB
+channel, for randomly varying rate factors rate. We observe
+that residual values approximately follow a normal distribu-
+tion, whereas the pixel values in image space show a more
+intricate distribution. Given the fact that DDPMs (in their
+typical formulation) map Gaussian noise to the target distri-
+bution, we conjecture that it is desirable that the target dis-
+tribution is close to a normal distribution, and that it helps
+reduce the number of sampling steps required to obtain sat-
+isfactory perceptual quality. Moreover, the residuals never
+exceed the bounds of image values, i.e. [ 1;1], so that the
+120 20 40 60 80 100
+Diffusion Step105
+103
+101
+101103Loss weights
+wt=1
+wt=t12
+t/(22
+t(1 t)2)
+Figure A.1: Comparison of magnitudes for the theoretically
+derived loss weights and our reweighting ( wt= 1).
+typical clipping to this range during sampling has no ef-
+fect. As a result, we introduce rate-dependent thresholding,
+which we explain in more detail in Appendix A.4.
+A.4. Details on sampling procedure
+We use this section to provide more details on the sam-
+pling in our diffusion. Speciﬁcally, we describe 1) the early
+stopping that results in a smooth transition between high
+ﬁdelity and high perceptual quality, 2) the late-start sam-
+pling, which allows us to skip many more steps than ear-
+lier works [38], and 3) the rate-dependent thresholding we
+propose. The observed speedup in sampling corroborates
+earlier ﬁndings [19, 44].
+Early stopping The DDPM enhancement model of
+DIRAC predicts the (often sparse) residual r0=x ~ x.
+We ﬁnd that we are able to stop sampling at any point be-
+fore we reach the ﬁnal step, by simply using the interme-
+diate prediction for the residual r0
+0(t) =g(rt;t)as the ﬁ-
+nal sample. Speciﬁcally, we observe that during sampling,
+early intermediate predictions are close to zero, and that
+they become sharper over time. Stopping early then typ-
+ically means higher PSNR, whereas stopping late results
+in high perceptual quality. Intuitively, this makes sense as
+well: we know that in the limit of perfect models, ~ xhas the
+highest possible expected ﬁdelity, and the DDPM can only
+increase quality by decreasing ﬁdelity.
+Stopping early in this manner is somewhat similar to the
+scheme proposed by Ho et al. [19], who use this interme-
+diate prediction to describe a progressive coding scheme.
+However, we have already transmitted the initial reconstruc-
+tion~ x, and all DDPM sampling happens on the receiverside, so the settings are quite different. It is the receiver-
+side generation of residuals that allows to navigate the the
+distortion-perception tradeoff [8], and that enables early
+stopping to achieve a desired tradeoff or to reduce compute
+requirements. Optimizing sampling trajectories of diffusion
+models is an active ﬁeld, and further research on the sam-
+pling in different (conditional) settings may lead to action-
+able insights [11].
+Late start Similar to ﬁndings of [44] and [38], we ob-
+serve that it is possible to skip several sampling steps. In
+particular, we take an initial noise sample and scale it to
+match the expected standard deviation at timestep tgiven by
+the forward process, then plug this “latent” into the reverse
+process. In our case this means rtN(0;2
+t1). Nichol et
+al. [44] mainly use the late-start observation to motivate the
+use of a different noise schedule. Based on the similarity of
+our observations to theirs, it is possible that there are noise
+schedules that are better suited for the image compression
+setting, but we tried several different ones and found that
+our choice worked best out of the ones we tested (see Ap-
+pendix C.3). The key ﬁnding in our work is that we can skip
+a large part (up to 80%) of the initial steps without perfor-
+mance degradation.
+Rate-dependent thresholding Typically, diffusion works
+clip the latents to the [ 1;1]as it corresponds to the normal-
+ized image-space. Yet we observe that both ground-truth
+and DIRAC-predicted residuals occupy a smaller value
+range than [ 1;1]. We seek to make better use of clip-
+ping, and adjust it to the data range at hand. However, early
+experiments adjusting the clipping thresholds to a single
+smaller value—based on range percentiles from the training
+data—did not improve performance. Instead, we set rate-
+dependent thresholds for clipping, choosing the thresholds
+such that 95% of residuals in the training data fall within
+that range, at the given rate factor rate.
+We perform this analysis for 20 different rate, and the
+resulting thresholds range from 0:0706 at the highest rate to
+0:1490 at the lowest rate. At test time, if the desired rate
+is not in the available set, we use the thresholds from its
+nearest neighbor.
+B. Implementation details
+B.1. Reproducibility
+Datasets All datasets used in this work are publicly avail-
+able. We show our three-step data augmentation pipeline
+for DDPM training in Section 4.1 under Datasets.
+To compare to Kawar et al. (DDRM) [28] and QGAC
+[15], we use the Imagenet val-1k dataset. The Imagenet
+val-1k set consists of the ﬁrst image from each class in the
+validation set, alphabetically ordered, as reported in [45].
+131.0
+ 0.5
+ 0.0 0.5 1.00.000.250.500.75densityImage Space
+0.4
+ 0.2
+ 0.0 0.2 0.401020Residual Space
+1.0
+ 0.5
+ 0.0 0.5 1.00.00.20.40.6density
+0.4
+ 0.2
+ 0.0 0.2 0.401020
+1.0
+ 0.5
+ 0.0 0.5 1.0
+value0.00.51.0density
+0.4
+ 0.2
+ 0.0 0.2 0.4
+value01020Figure A.2: Distributions of pixel values in a 1000 random 256x256 crops of the CLIC train dataset, left for the target image
+x, right for the residual r=x ~ xwhere the initial reconstruction ~ xis from our SwinT-ChARM base model, using random
+ratevalues. Rows corresponds to the red, green and blue channels respectively.
+The exact ﬁlenames can also be found in the corresponding
+Github repo. For direct comparison to Kawar et al. [28], we
+use the data augmentation procedure shown in their Github
+repo during evaluation: a square center crop the size of the
+shortest dimension, followed by a resizing to 256256.
+To compare to Palette [54] and GDM [59] in Ap-
+pendix C.2, we use the Imagenet ctest10k dataset. The Im-
+agenet ctest10k subset consists of 10,000 images from the
+Imagenet validation set, as originally reported by [33]. The
+original page is no longer online, but a copy of the ﬁlenames
+can be found on Github. We use PIL to resize each image so
+that the shortest side is of size 256, then perform a 256256
+center crop.
+Finally, to compare to ArabicaPerceptual [67] in Ap-
+pendix C.2, we use the CLIC 2022 validation dataset [64],
+which is comprised of 30 high-resolution images. Note that
+due to its small size, it makes it unreliable for FID/256,
+hence we only report LPIPS as proxy for a perceptual met-
+ric.
+Models The base neural image codec is a variation on a
+mean-scale hyperprior [5] called the SwinT-ChARM hyper-
+prior [77]. High quality implementations of neural image
+codecs are available via CompressAI [6], see for example
+this mean-scale hyperprior implementation link on GitHub.
+This library also provides entropy coding functionality. Areproduced version of the SwinT-ChARM model is pro-
+vided on GitHub by user Nikolai10. We provide more de-
+tails on the neural base codec in Appendix B.2.
+Reconstructions for standard codecs were obtained us-
+ing CompressAI [6]. The commands to reproduce these are
+given in Appendix B.3.
+The DDPM component was trained using the open
+source implementation of [13]. The main change in im-
+plementation is that our DDPM is conditioned on an ini-
+tial reconstruction from a mean-scale hyperprior, which is
+achieved by concatenating it with the DDPM latent (these
+two tensors have the same spatial dimensions). We pro-
+vide information about hyperparameters in Appendix B.4.
+Lastly, we provide information about computational com-
+plexity and training compute in Appendix C.4.
+B.2. Neural base codec
+Training a neural base codec is a two stage process: we
+ﬁrst train a base model for a single bitrate for 2M iterations,
+then ﬁnetune it to operate under multiple bitrates for 500k
+iterations. Hyperparameters for these two stages are shown
+in Table B.1.
+Single rate SwinT-ChARM We use the “SwinT-ChARM
+hyperprior” architecture of Zhu et al. [77] as neural base
+codec. This is a hierarchical V AE with quantized latent
+14Table B.1: Hyperparmeters at each stage of training.
+Single rate Multi-rate
+Parameter SwinT SwinT DDPM
+Steps 2M 500k 650k
+Learning rate 1e-4 1e-4 1e-4
+Batch size 8 8 64
+rate 0.0016 random random
+LPIPS 0.0065 0.0065 0.001
+Table B.2: Hyperparameters for our SwinT-ChARM model.
+Parameter Enc/Dec Hyper Enc/Dec
+Patch size 2 2
+Embed dim 64 64
+Window size 8 4
+Blocks [2,2,6,2] [4,2]
+Head dims 32 32
+Normalization LayerNorm LayerNorm
+Code channels 320 192
+variables, similar to the mean-scale hyperprior of Ball ´eet
+al. [5]. The encoder and decoder networks are built using
+Swin Transformers [35]. The ﬁrst level encoder and de-
+coder produce the quantized latent variable and decode it
+to a reconstruction. The second level, which is the prior
+model, uses a hyper-encoder to produce a so-called quan-
+tized hyper-latent z, then maps that to parameters y;yus-
+ing a hyper-decoder. The hyper-latent distribution is mod-
+eled using an unconditional prior p(z)[5], so that the hyper-
+latent can be transmitted losslessly using entropy coding.
+The probability of the quantized latent under the prior is
+then equal to p(yjz) =N(yjy;y).
+The encoder and decoder contain transformer blocks at
+four resolutions, the hyper-encoder and hyper-decoder at
+two resolutions. Special care must be taken to ensure that
+the latent resolution is a multiple of the hyper codec window
+size. To enable transmission of images that result in latents
+with spatial dimensions not divisible by this factor, we use
+‘replicate’ padding to pad the image, transmit the padded
+image, then crop to the original resolution on the receiver
+side. We transmit the original spatial dimensions as 16 bit
+integers. This bit cost is negligible compared to the cost of
+transmitting the content.
+We use 320 channels for every layer in the en-
+coder/decoder, and 192 channels for the hyper-
+encoder/hyper-decoder. Latent quantization is performed
+using a “mixed” strategy: both decoders see the quantized
+latents during training, and a straight-through estimator is
+used to make sure gradients pass through the hard quan-
+tization operation; the prior computes the loss based onlatents quantized using additive uniform quantization noise
+uU( 0:5;0:5)[16]. For more details and architecture
+visualizations, we refer the reader to [77, 35]. Our used
+hyperparameters are listed in Table B.2.
+Multi-rate SwinT-ChARM To obtain a multi-rate base
+codec, we ﬁrst train a single rate SwinT-ChARM hyper-
+prior for 2 million iterations using rate= 0:0016 . Multi-
+rate capabilities are added to this model using a technique
+known as latent scaling [10, 37]. This procedure effectively
+changes the latent quantization binwidth by scaling the la-
+tent variable according to the tradeoff parameter rate.
+We achieve this in practice by mapping rateto a scaling
+valuesusing an exponential map:
+s=sexp(slograte) =s(rate)s; (10)
+wheresandsare learnable parameters. Other
+parametrizations are possible too, this parametrization has
+the advantage that sis positive if s0, thus avoiding in-
+stability. The unquantized latent is multiplied by this quan-
+tized scalarsbefore being passed to the prior and quantiza-
+tion. The scaling value sis transmitted as a 16 bit integer at
+negligible cost. On the receiver side, the latent is divided by
+safter decompression, before being passed to the decoder.
+Enabling the model to operate under different bitrates,
+and learning sands, then requires that we sample differ-
+entrateduring training. For each training batch, we sample
+a value0U[0;1]. The ﬁnal sampled tradeoff parameter
+rateis then obtained via interpolation in log space between
+a pre-speciﬁed minimum and maximum:
+log2rate= (log2(max) log2(min))0+ log2(min);
+(11)
+where we choose max= 0:0160 andmin= 0:0004 . Given
+rate, the multirate codec—which now includes the original
+single rate model and the parameters s;s—is trained us-
+ing a rate-distortion loss.
+At test time, the user picks the rate-distortion operating
+point by selecting a ratevalue. The mapping in Eq. (10)
+is used to get the corresponding scalar sfor latent scaling.
+We ﬁnd in practice that latent scaling, when compared to
+schemes similar to the one-hot conditioning of [60, 50], per-
+forms slightly better near scale s= 1, and slightly worse at
+the extreme bitrates.
+B.3. Standard base codecs
+VTM base model VTM is the reference implementation
+of the VVC standard. We run VTM-17.0, and use Com-
+pressAI [6] to prepare the encoding command. CompressAI
+converts given input RGB images to YUV444 before cod-
+ing them in “all intra” mode, then converts the reconstructed
+YUV444 images back to RGB. These conversions are loss-
+less. We use the default all intra conﬁguration, and use QPs
+15f22;27;32;37;40g, where higher QPs corresponds to low
+bitrate and vice versa.
+Speciﬁcally, let $VTM be the path to the VTM-17.0
+folder, and $IMAGEFOLDER be the path to an input image
+folder. The command used to gather VTM-17.0 evaluations
+is then:
+python -m compressai.utils.bench vtm
+$IMAGEFOLDER
+-c $VTM/cfg/encoder_intra_vtm.cfg
+-b $VTM/bin
+-q [22, 27, 32, 37, 40]
+JPEG base model JPEG is a well-known standard image
+codec. To produce JPEG reconstructions and bitstreams,
+we use the JPEG functionality in Pillow. Similar to VTM,
+we use CompressAI to prepare the encoding command for
+multiple quality factors:
+python3 -m compressai.utils.bench jpeg
+$IMAGEFOLDER
+-q [5, 10, 15, 20, 25, 30, 35, ..., 95]
+B.4. DIRAC
+Assume a multirate base image codec is available. We
+train the DDPM to enhance the reconstructions ~ xby condi-
+tioning on this image-to-enhance. In order to support mul-
+tiple bitrates, the DDPM needs to see reconstructions for
+many different rateat training time. In practice, this can
+be achieved by using the ratesampling technique used for
+multi-rate SwinT-Charm hyperprior training, meaning the
+DDPM will see reconstructions with random compression
+rates during training. For the VTM and JPEG base models,
+we follow a similar procedure to sample rate, and discretize
+it to the integer grid so that it can be used as QP or quality
+parameter. The DDPM is trained for 650,000 iterations, see
+the hyperparameter settings speciﬁed in Table B.1. It is not
+conditioned on rate, as we found it to have no additional
+beneﬁt.
+Many of our U-Net architecture choices were adopted
+from the open-source implementation of [13], and we re-
+fer the reader to [44, 13] for a detailed explanation of all
+hyperparameters. Table B.3 provides an overview of the
+hyperparameter settings for the DIRAC model. Horizontal
+lines separate U-Net parameters and diffusion process pa-
+rameters.
+The channel multiplier corresponds to the increase in
+width with respect to the base number of channels in each
+layer. Following [48], we train our largest models using
+a U-Net with 6 separate blocks, increasing the multiplier
+every 2 blocks. Self-attention layers are removed from all
+layers except the bottleneck of the U-Net. We use the linear
+noise schedule of [44], as we saw better performance with
+this schedule in early experiments, see also Appendix C.3
+for results with different noise schedules.C. Results
+C.1. Additional metrics
+In Fig. C.1 we show additional metrics for DIRAC on the
+CLIC 2020 test dataset, namely Kernel Inception Distance
+(KID) [7] and LPIPS [42]. KID is a distribution metric and
+thus not very reliable on Kodak, and we therefore only show
+metrics for CLIC 2020 test. As for the notation FID/256, we
+denote KID/256 the KID computed over all 256x256 half
+overlapping patches in the evaluation dataset.
+It is interesting to see that KID/256 paints a similar story
+to FID/256. MS-ILLM [43] achieves state-of-the-art in
+KID/256 and remains unmatched by other methods. How-
+ever, qualitatively we observe DIRAC-100 sample contains
+relevant details as seen in Section 5.1, Fig. 5. While com-
+paring LPIPS, we see DIRAC-1 and DIRAC-100 achieve
+similar LPIPS scores, further conﬁrming its lower correla-
+tion with human judgement.
+C.2. Comparison to enhancement literature
+In Fig. C.2, we report two additional sets of results com-
+paring to enhancement literature on slightly different tasks
+and/or datasets.
+The ﬁrst two plots in Fig. C.2 compare VTM+DIRAC
+to the latest standard codec Enhanced Compression Model
+(ECM) [1] and its GAN-based learned in-loop ﬁlter meth-
+ods ( i.e. enhancement) Arabic andArabicPerceptual [67] on
+the CLIC 2022 val dataset. The work ArabicPerceptual [67]
+is trained with a perceptual loss (LPIPS and discriminator),
+and is most relevant to our perceptual enhancement work
+i.e., to be compared to VTM+DIRAC-100.
+The right-most plot in Fig. C.2 compares JPEG+DIRAC
+to the diffusion-based image-to-image models Palette [54]
+and its follow-up work GDM [59]. Palette is explicitly
+trained for JPEG restoration, while GDM introduce an al-
+gorithm to re-purpose a pre-trained diffusion model to solve
+any inverse problem, including JPEG restoration, similar to
+[27, 28]. While both outperform JPEG+DIRAC in terms
+of FID (not FID/256) on ImageNet-ctest10k, it is good to
+remember the comparison might not be the fairest. Both
+Palette and GDM were trained on ImageNet 256x256 re-
+sized crops, and hence cater well to low resolution datasets
+as well as being closer to the test data distribution. JPEG-
+DIRAC was trained on the much higher resolution CLIC
+2020 train dataset. Furthermore, Palette has more than 5x
+the number of parameters of JPEG+DIRAC, and uses 10x
+the number of sampling steps.
+C.3. Noise schedule ablation
+The choice of noise schedule can be important for perfor-
+mance [44], and we tried several different options early in
+our experiments. The so-called linear andcosine schedules
+[44] are two popular choices. Because some of our results
+16Table B.3: Hyperparameters for DIRAC during training and sampling. We refer the reader to the ofﬁcial open source
+implementation of Nichol and Dhariwal [44] for more details on these parameters.
+Parameter Command line DIRAC parameter value
+Channel multiplier channel mult 1,1,2,2,4,4
+Base num. channels numchannels 128
+Learnt learn sigma false
+Group normalization group norm true
+Attention resolutions attention none
+Num. attention heads numheads 1
+Objective predict xstart true
+Num. ResBlocks numresblocks 2
+Scale shift conditioning usescale shift norm false
+Diffusion steps diffusion steps 1000
+Noise schedule noise schedule linear
+Use DDIM sampling useddim true
+Resampling timesteps timestep respacing ddim100
+0.1 0.2 0.3 0.4 0.5 0.6
+bpp []
+212
+210
+28
+26
+CLIC test full-res
+KID/256 []
+0.1 0.2 0.3 0.4 0.5 0.6
+bpp []
+0.050.100.150.200.25
+LPIPS []
+DIRAC-100 (percep. quality)
+DIRAC-1 (fidelity)
+VTM
+MS-ILLM [43]
+HifiC [39]
+Figure C.1: Additional perceptual and distortion metrics for the CLIC 2020 test set.
+suggested that our chosen linear schedule is not ideal (see
+discussion in Appendix A.4), we also decided to try more
+extreme approaches, meaning schedules where the decay
+from sample to 0 (characterized by t) happens either early
+or very late. For those schedules we devised a generic for-
+mula that allows us to model a wide variety of shapes for
+t:
+t(L;p) =1
+1+exp(2Ltp L) 1(L;p)
+0(L;p) 1(L;p); (12)
+whereLandpare the parameters that deﬁne the shapeof the decay, and a generalized time t2[0;1]is used.
+We deﬁne the following three schedules: 1) early decay
+(L= 5;p= 0:3), which decays faster than the linear
+schedule; 2) late decay (L= 1;p= 3), which decays
+later than the cosine schedule; and 3) smooth late decay
+(L= 6;p= 3), which also decays late, but has close to zero
+gradient in the ﬁnal forward steps. All schedules are visu-
+alized in Fig. C.3, along with their performance in PSNR
+and FID/256. We ﬁnd that the linear schedule offers the
+best tradeoff between ﬁdelity and perceptual quality. Note
+that this evaluation was done with intermediate checkpoints
+170.05 0.10 0.15 0.20 0.25 0.30 0.35
+bpp []
+2830323436384042CLIC 2022 val full-res
+PSNR []
+Arabica [67]
+ArabicaPerceptual [67]
+ECM [1]
+BPG444VTM 17.0
+VTM+DIRAC-1
+VTM+DIRAC-100
+0.05 0.10 0.15 0.20 0.25 0.30 0.35
+bpp []
+0.050.100.150.200.250.30
+LPIPS []
+0.3 0.4 0.5 0.6 0.7 0.8
+bpp []
+5101520253035ImageNet-ctest10k
+FID []
+Palette [54]
+GDM [59]
+JPEG+DIRAC-100Figure C.2: Additional quantitative comparisons of VTM+DIRAC and JPEG+DIRAC to enhancement literature on CLIC
+2022 val and ImageNet-ctest10k respectively. Note that all models were trained on different datasets and have different
+number of parameters, which does not favor fair comparison. In particular Palette has about 5x the number of parameters as
+JPEG+DIRAC, was trained on ImageNet low-resolution dataset and is evaluated with 10x the number of sampling steps.
+0 20 40 60 80 100
+t0.00.20.40.60.81.0t
+0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40
+bpp []
+282930313233343536
+PSNR [dB, ]
+0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40
+bpp []
+012345678
+FID/256 []
+linear
+cosine
+late decay
+early decay
+smooth late decay
+Figure C.3: Shape of the tcurves for the different noise schedules (left panel) and their PSNR and FID/256 performance
+on CLIC 2020 test (center and right panel). Evaluation done with intermediate DIRAC checkpoints (150k steps).
+(after 150k training steps), as we did not continue training
+with the other schedules.
+C.4. Compute
+We provide information on the computational complex-
+ity of model components, and the cost of sampling, in Table
+C.1. We run benchmarking on a desktop workstation with
+a Nvidia 3080 Ti card, CUDA driver version is 455.32.00,
+CUDA 11.1. We use 1,000 forward passes on square in-
+puts of size 256256and10241024 , use GPU warmup,
+and record inference time using CUDA events. We do not
+include time to entropy code here.
+All our (base codec) multi-rate SwinT-ChARM models
+were trained on a single Nvidia V100 card. Final DIRAC
+models were trained on 2 Nvidia A100 cards using data par-alellism.
+A fair comparison between methods would not only re-
+quire equalization of bitrate, but ideally also equalization of
+training and test-time compute. For example, HiFiC decod-
+ing complexity is substantially lower than that of DIRAC
+if many sampling steps are used, which will give DIRAC-
+100 an unfair advantage. DDPMs also see more datapoints
+than HiFiC during training as a larger batch size is typically
+used. In this work, we mainly focused on feasibility of the
+approach, and have therefore not equalized training com-
+pute.
+18Table C.1: Computational complexity. Runtime mean and standard deviation were obtained using 1,000 forward passes,
+either for a 256256or a10241024 input. Note that none of the models here were explicitly optimized for inference
+speed, numbers are indications only.
+Parameter count Runtime 256 (ms) Runtime 1024 (ms)
+SwinT-ChARM 28.4M 37:90:5 153 :80:4
+DIRAC U-Net 108.4M 37:50:8 486 :31:2
+HiFiC 181.5M 17:00:4 129 :20:5
+C.5. Texture differences JPEG+DIRAC-1 vs.
+JPEG+DIRAC-100
+In Sec. 5.2, in particular in Fig. 6, we observed
+little difference in LPIPS on ImageNet-val1k between
+JPEG+DIRAC-1 and JPEG+DIRAC-100 i.e., between 1
+and 100 sampling steps. Upon qualitative assessment
+in Fig. C.4, it becomes obvious how sampling drasti-
+cally improves the textures and cleans JPEG artefacts.
+JPEG+DIRAC-1 gets rid of most of the blocking, and in-
+cluding removal / dampening of wrong color hues, like the
+typical purple artefact. One of the main failure modes of
+JPEG+DIRAC is small text and small faces—typical for
+generative compression models—and both can be seen in
+example “81815”.
+It is good to note that FID/256 on CLIC 2020 test
+does improve substantially, which better aligns with hu-
+man judgement. It is yet another signal pointing towards
+FID/256 as the objective metric correlating best with hu-
+man evaluation [39]. On the contrary, JPEG+DIRAC-100
+always has worse PSNR than JPEG+DIRAC-1, as it mea-
+sures ﬁdelity but poorly correlates with human judgement.
+Finally, for completeness we include the same set of
+samples for VTM+DIRAC in Fig. C.5. In most if not all
+cases human judgement would favor VTM+DIRAC-100,
+although it consistently has worse PSNR. We can see that,
+contrary to JPEG+DIRAC, small text is better handled. It is
+most likely due to much better conditioning / starting point.
+Yet some artefacts can still creep in, as in “d8ed4” where
+the wine label tends to be “overtextured”.
+C.6. Qualitative results
+We include more qualitative results below. In Fig. C.6,
+Fig. C.7, we show crops from images from the CLIC 2020
+test set and reconstructions by various image codecs. We in-
+clude images chosen by [3, 43] to ensure a fair comparison.
+We match the bitrate to the Multirealism model of Agusts-
+sonet al. [3]. The HiFiC reconstructions are obtained from
+a reimplemented HiFiC model, trained for the 0.15 bits per
+pixel range, and we do not perform bitrate matching.
+19id: 1ac06  830:1080 950:1300 
+ JPEG QF=5 83.9kB PSNR=23.3dB
+ JPEG+DIRAC-1 PSNR=25.4dB
+ JPEG+DIRAC-100 PSNR=23.0dB
+id: 3f273  550:800 710:1060 
+ JPEG QF=5 64.1kB PSNR=26.0dB
+ JPEG+DIRAC-1 PSNR=29.4dB
+ JPEG+DIRAC-100 PSNR=27.9dB
+id: 88c58  500:750 600:950 
+ JPEG QF=5 53.7kB PSNR=26.8dB
+ JPEG+DIRAC-1 PSNR=30.4dB
+ JPEG+DIRAC-100 PSNR=28.5dB
+id: 81815  1750:2000 650:1000 
+ JPEG QF=5 80.8kB PSNR=24.6dB
+ JPEG+DIRAC-1 PSNR=27.2dB
+ JPEG+DIRAC-100 PSNR=25.3dB
+id: d8ed4  1570:1820 725:1075 
+ JPEG QF=5 61.1kB PSNR=26.9dB
+ JPEG+DIRAC-1 PSNR=31.0dB
+ JPEG+DIRAC-100 PSNR=29.3dB
+id: 82051  750:1000 500:850 
+ JPEG QF=5 101.0kB PSNR=21.7dB
+ JPEG+DIRAC-1 PSNR=23.9dB
+ JPEG+DIRAC-100 PSNR=21.4dBFigure C.4: Samples from the JPEG enhancement model. Note the large texture differences between JPEG+DIRAC-1 and
+JPEG+DIRAC-100, and the overall drastic improvement over JPEG on CLIC test 2020 crops. Best viewed electronically.
+20id: 1ac06  830:1080 950:1300 
+ VTM QP=40 73.8kB PSNR=29.3dB
+ VTM+DIRAC-1 PSNR=29.7dB
+ VTM+DIRAC-100 PSNR=27.1dB
+id: 3f273  550:800 710:1060 
+ VTM QP=40 24.4kB PSNR=32.6dB
+ VTM+DIRAC-1 PSNR=33.2dB
+ VTM+DIRAC-100 PSNR=31.1dB
+id: 88c58  500:750 600:950 
+ VTM QP=40 16.3kB PSNR=33.5dB
+ VTM+DIRAC-1 PSNR=34.0dB
+ VTM+DIRAC-100 PSNR=31.5dB
+id: 81815  1750:2000 650:1000 
+ VTM QP=40 43.1kB PSNR=30.3dB
+ VTM+DIRAC-1 PSNR=30.9dB
+ VTM+DIRAC-100 PSNR=28.6dB
+id: d8ed4  1570:1820 725:1075 
+ VTM QP=40 14.7kB PSNR=35.1dB
+ VTM+DIRAC-1 PSNR=36.0dB
+ VTM+DIRAC-100 PSNR=33.5dB
+id: 82051  750:1000 500:850 
+ VTM QP=40 100.8kB PSNR=28.0dB
+ VTM+DIRAC-1 PSNR=28.8dB
+ VTM+DIRAC-100 PSNR=26.2dBFigure C.5: Samples from the VTM enhancement model. Note the large texture differences between VTM+DIRAC-1 and
+VTM+DIRAC-100, and the overall improvement over VTM on CLIC test 2020 crops. Best viewed electronically.
+21Figure C.6: Reconstructions from various image codecs on CLIC 2020 test data. Crop locations were chosen to match related
+work to ensure a fair comparison [3, 43]. Bitrates were chosen so that they match the Multirealism baseline [3].
+22Figure C.7: Reconstructions from various image codecs on CLIC 2020 test data. Crop locations were chosen to show text
+and salient features such as ﬁne lines and small faces.
+23

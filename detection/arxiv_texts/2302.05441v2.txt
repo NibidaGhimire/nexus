@@ -1,0 +1,1095 @@
+Project and Probe: Sample-Efficient Domain
+Adaptation by Interpolating Orthogonal Features
+Annie S. Chen∗1, Yoonho Lee∗1, Amrith Setlur2, Sergey Levine3, Chelsea Finn1
+Stanford University1, Carnegie Mellon University2, UC Berkeley3
+asc8@stanford.edu, yoonho@stanford.edu
+Abstract
+Transfer learning with a small amount of target data is an effective and common
+approach to adapting a pre-trained model to distribution shifts. In some situations,
+target data labels may be expensive to obtain, so we may only have access to a
+limited number of target data points. To make the most of a very small target
+dataset, we propose a lightweight, sample-efficient approach that learns a diverse
+set of features and adapts to a target distribution by interpolating these features.
+Our approach, P ROJECT AND PROBE (PRO2), first learns a linear projection that
+maps a pre-trained embedding onto orthogonal directions while being predictive
+of labels in the source dataset. The goal of this step is to learn a variety of predic-
+tive features, so that at least some of them remain useful after distribution shift.
+PRO2then learns a linear classifier on top of these projected features using a small
+target dataset. Theoretically, we find that P RO2results in more sample-efficient
+generalization by inducing a favorable bias-variance tradeoff. Our experiments
+on four datasets, with multiple distribution shift settings for each, show that P RO2
+improves performance by 5-15% when given limited target data compared to prior
+methods such as standard linear probing.
+1 Introduction
+Machine learning models can face significant challenges when there is a distribution shift between
+training and evaluation data. A model trained on a specific source dataset may not perform well
+when deployed on a target domain with a distribution of inputs that differs significantly from the
+source domain. One common and reliable approach for adapting to distribution shifts is fine-tuning
+a trained model on a small amount of labeled data from the new target domain. However, in some
+situations, target data labels may be expensive to obtain, which limits the number of available labeled
+datapoints for fine-tuning. As an example, a hospital may have imaging software that slightly differs
+from what was used for dataset collection, but they may not be able to acquire many new labeled
+samples. In such conditions, conventional fine-tuning approaches may overfit to the small target
+dataset and distort the information learned during initial training. Therefore, we require a method
+that can reliably extract information from the new target domain with less overfitting.
+Recent works have demonstrated the effectiveness of re-training a final linear head using target
+data for adapting to distribution shifts due to spurious correlations or domain shift [43, 21, 36].
+However, it is unclear whether this standard approach of re-training a linear layer is the most data-
+efficient method to adapt pre-trained features to various target distributions. While versatile, feature
+embeddings may not necessarily contain the most suitable set of features for adapting to target
+distributions: they may also contain redundant, non-predictive, or noisy information. Our primary
+insight is that the key to more sample-efficient adaptation to target domains lies in starting with a
+compact and diverse set of useful features. Each feature in this set should not only be predictive,
+but also hold unique information distinct from others inside the set. We leverage source data, which
+Preprint. Under review.arXiv:2302.05441v2  [cs.LG]  25 May 2023Figure 1: The Project and Probe (P RO2) framework for adapting to different target distribu-
+tions. (a) We first use a large source dataset to project pre-trained feature embeddings onto a set
+of predictive features while enforcing orthogonality. (b) For a new target distribution, we learn a
+linear layer on top of the projected features. This step adaptively chooses features in a data-efficient
+manner.
+is substantially more abundant than target data, in performing this selection of features for target
+adaptation.
+We propose P ROJECT AND PROBE (PRO2), a simple and sample-efficient method for adapting to
+unknown target distributions. P RO2first learns a projection of pre-trained embedding vectors, which
+is optimized to extract a diverse set of features that are each predictive of labels. More specifically,
+we first use a source dataset to project pre-trained feature embeddings onto a smaller set of pre-
+dictive features. We enforce pairwise orthogonality among all features, thereby ensuring that each
+projected dimension carries unique information not present in others. We expect this learned feature
+space to compactly contain a diverse set of predictive features while discarding information that is
+redundant or not predictive on the task. P RO2then uses the reduced set of features as a basis space
+for adaptation. Specifically, we fit a linear head on top of the projected embedding using labeled
+target data. Both the linear projection and the linear head require minimal computational overhead,
+making P RO2a practical method for adapting to new target distributions. Fig. 1 shows a visual
+summary of P RO2.
+To support our approach, we provide a theoretical analysis, in both a general setting with minimal
+distribution assumptions as well as the more specific setting of a shifted homoscedastic Gaussian
+model, showing how P RO2learns a projection matrix that results in better generalization due to a
+favorable bias-variance tradeoff. From this analysis, P RO2improves sample efficiency because it
+can learn useful, diverse features so that it is more likely to better recover the important directions
+for adaptation with a smaller projection dimension, allowing us to combat the variance introduced
+by a very small target dataset while maintaining low bias. We conduct experiments on a variety of
+distribution shift settings across 4 datasets. We find that standard linear probing, which is the default
+method used by prior works, is not the most data-efficient adaptation approach. Using P RO2, i.e.
+projecting with source data onto an informative feature-space basis and probing with target data,
+improves performance by 5-15% in few-shot adaptation to new target distributions.
+2 Related Work
+Robustness and zero-shot generalization. Many prior works aim to improve robustness to various
+distribution shifts [54, 14, 2, 44, 38, 8, 30, 63]. Additionally, prior works have studied how to adapt
+pre-trained features to a target distribution via fine-tuning [39, 60, 48]. Such fine-tuning works
+typically frame robustness to distribution shift as a zero-shot generalization problem [23, 61, 58,
+24], where the model is trained on source and evaluated on target. Both of the above classes of
+approaches fundamentally cannot handle the problem settings we consider, where a single function
+is insufficient for achieving good performance on different distributions. In this paper, we evaluate
+on a variety of test distributions, some of which are mutually exclusive, and it is therefore crucial to
+perform adaptation on the target distribution.
+Adapting to distribution shifts. Recent works have proposed various methods for adapting models
+at test time with some labeled target data [50, 55, 18, 57, 62, 13, 26]. In particular, given a feature
+embedding produced by a pretrained network with sufficient expressivity, training a final linear head,
+also known as linear probing, suffices for adapting to datasets with spurious correlations [21, 36, 19]
+2as well as in the setting of domain generalization [43]. As detailed further in Sec. 3, we specifically
+focus on scenarios in which we have very little target data (only 4 ∼256 datapoints). We find that
+in this setting, training a final linear head in the default manner is not the most data-efficient way to
+adapt. P RO2, which breaks this training down into 2 steps, is able to more effectively extract useful
+features and interpolate between them for varying target distributions, leading to improved sample
+efficiency with limited target data.
+Learning diverse features for spurious datasets. Neural networks tend to be biased towards learn-
+ing simple functions that rely on shortcut features [3, 16, 47, 15, 42, 29, 34]. To better handle novel
+distributions, it is important to consider the entire set of functions that are predictive on the train-
+ing data [12, 46, 59]. Recent diversification methods discover such a set [52, 40, 27]. The latter
+two methods use additional assumptions such as unlabeled data. With a similar motivation to ours,
+Teney et al. [52] penalizes the similarity between different features, but does so with an additional
+loss term instead of explicitly enforcing orthogonality. We observe that this implementation detail
+matters in Sec. 6, where P RO2outperforms Teney et al. [52]. A concurrent work [37] also proposes
+an orthogonal projection method to learn diverse classifiers. However, the Probe step of P RO2ad-
+ditionally interpolates between the orthogonal features, and we provide theoretical and empirical
+analysis of how distribution shift severity affects sample efficiency during probing.
+Compression & feature selection. In aiming to extract important features and discarding repetitive
+information, P RO2is related to work on compression [35] and information bottlenecks [53, 1].
+Our method is also closely related to methods that learn projections such as principal component
+analysis (PCA) and linear discriminant analysis (LDA). Beyond these representative methods, there
+is an immense body of work on feature selection [10, 31, 7, 28] and dimensionality reduction [25,
+49, 9]. Among all projection-based methods, LDA is the most related to ours, but it only learns
+the single most discriminative direction. In Corollary 9, we show that P RO2with dimensionality
+d= 1 provably recovers the LDA direction in a shifted homoscedastic Gaussian model, and that
+using higher values of dis critical in adapting to higher degrees of distribution shift. Generally,
+most methods (including LDA) operate in the setting without distribution shift.
+3 Adaptation to Distribution Shift
+We now describe our problem setting, where the goal is to adapt a model so as to provide an accurate
+decision boundary under distribution shift given a limited amount of target distribution information.
+We consider a source distribution pS(x, y)and multiple target distributions p1
+T(x, y), p2
+T(x, y), . . ..
+The source dataset DS∈(X × Y )Nis sampled from the source distribution pS. We evaluate
+adaptation to each target distribution pi
+Tgiven a small set of labeled target data Di
+T∈(X × Y )M,
+where M≪Nso the model must learn from both the source and target data for best performance.
+We measure the post-adaptation average accuracy of the model on a held-out target dataset from the
+same distribution pi
+T.
+We note that this setting differs from the setting studied in prior works on spurious correlations [44],
+which train a model only on source data DSand evaluate the model’s performance on the hardest
+target distribution (i.e., worst-group accuracy). This is also different from the setting used in fine-
+tuning methods for zero-shot generalization [58, 24]: such methods fine-tune a pretrained model
+on source data DSand directly evaluate performance on target data Di
+Twithout any exposure to
+labeled target data. Compared to these zero-shot evaluation settings, we argue that a small amount
+of target data may realistically be required to handle the arbitrary distribution shifts that arise in the
+real world. Target data can be an effective point of leverage because it can be available or easy to
+collect, and we find that even a small dataset can reveal a lot about what features are effective in the
+target distribution. Our problem setting of adapting with target data has been used in some recent
+works [21, 43, 19, 26], but we specifically focus on the setting in which we only have access to a
+very small target dataset, i.e., M≪N.
+4 Project and Probe
+We now describe P RO2, a framework for few-shot adaptation to distribution shifts. P RO2is com-
+posed of two steps: (1) learn a projection Πthat maps pre-trained embeddings onto orthogonal
+directions, and (2) learn a classifier gusing projected embeddings.
+Before Step (1), we use a pre-trained backbone model f:X → RDto map the datapoints to D-
+dimensional embeddings. This backbone model extracts meaningful features from the raw inputs,
+3Algorithm 1 Project and Probe
+Input: Source data DS, Target data DT,
+Backbone f:X →RD
+Initialize Π :RD→Rd#Project with source
+foriin1. . . d do
+Πi←arg min LS(Πi(f(x)), y)
+subject to Πj⊥Πifor all j < i
+end for
+Initialize g:Rd→ Y #Probe with target
+g←arg min LT(g(Π(f(x))), y)
+Figure 2: Visualization of P RO2: (a) orthog-
+onal decision boundaries learned during the
+Project stage, and (b) the interpolated classi-
+fier learned during the Probe stage.
+resulting in a low-dimensional embedding space, for example 224×224×3images to D= 1024 -
+dimensional embeddings.
+Step 1: Project with source. Recall that we operate in the few-shot setting, where we may have
+fewer target datapoints than even embedding dimensions ( M < D ). Intuitively, we would like to
+select a suitable decision boundary from a set of decision boundaries that worked well in the source
+domain. If this set is discrete, that might correspond to training some sort of diversified ensemble of
+linear classifiers on top of the features, a strategy adopted in some prior works [51, 27, 40].
+However, in general, we might need the expressive power of a continuous set of decision boundaries
+to adapt to the target domain, and we can construct this set by interpolating over a basis of decision
+boundaries. Mathematically, this is identical to selecting a set of linear features. Thus, the question
+we must answer is: which set of linear features of the D-dimensional feature space should we retain?
+First, it should be clear that the features should form an orthogonal basis, as otherwise they will be
+redundant. Second, the features should be discriminative, in the sense that they are sufficient to solve
+the desired prediction task. Lastly, there should not be too many of them, since the more features we
+include (i.e., the larger the rank of the basis we learn), the more samples we’ll need from the target
+domain to find the best decision boundary in the corresponding set.
+To learn a feature space that satisfies these desiderata, we parameterize a linear projection Π :RD→
+Rdthat maps the embeddings to a reduced space ( d≤D). Specifically, we use the source data to
+learn a complete orthonormal basis for the embedding space Π1,Π2, . . . , Πd∈RD, by learning
+each basis vector with the constraint that it is orthogonal to all vectors before it:
+Πi= arg min E(x,y)∼DSL(Πi(f(x)), y)s.t. Πj⊥Πifor all j < i. (PRO2)
+Note that this induces a natural ranking among the basis vectors. This collection of orthogonal
+vectors constitute the rows of our projection matrix Π. In our implementation, we do projected
+gradient descent, enforcing orthogonality using QR decomposition on the projection matrix after
+every gradient step. See Appendix B for a short PyTorch implementation.
+Empirically and theoretically, we find that it is particularly beneficial to use a small d≪D, even
+d= 1, in when adapting to small distribution shifts and use larger dfor more severe distribution
+shifts.
+Step 2: Probe with target. After learning Π, we learn a classifier g:Rd→ Y that maps the
+projected embeddings to the target labels:
+g= arg min E(x,y)∼DTL(g(Π(f(x))), y).
+Since the projection Πwas optimized to a diverse set of the most discriminative features for the
+source data, we expect the initial projected features to be particularly predictive when the distribution
+shift is relatively small.
+In summary, P RO2is a simple and lightweight framework that addresses the problem of few-shot
+adaptation in the presence of distribution shifts. We summarize its overall structure in Algorithm 1
+and show a simplified 3D visualization in Fig. 2. In our implementation, we use cached embeddings
+for all source and target datapoints, such that feeding raw inputs through fis a one-time cost that
+is amortized over epochs and experiments, making our framework scalable and efficient. As an
+4orthogonal improvement to our work, one could additionally fine-tune the backbone network on
+source data. In Sec. 5, we theoretically analyze the properties of the projection and classifier learned
+by P RO2. We then empirically evaluate P RO2on a variety of distribution shifts and publicly available
+backbone networks in Sec. 6.
+5 Analysis
+In this section, we present a theoretical analysis of P RO2, aiming to understand how our proposed
+orthogonal feature selection procedure can lead to sample-efficient adaptation under distribution
+shifts. Intuitively, the more shift we can expect, the more features we should need to adapt to it,
+which in turn requires more samples during adaptation (to fit the features accurately). However, the
+choice of how we extract features influences the rate at which the sample complexity grows under
+distribution shift: while large shifts may still require many features, if the features are prioritized
+well, then smaller shifts might require only a very small number of features, and thus require fewer
+samples.
+In our analysis, we first show that using fewer features (d)leads to lower variance, which scales
+as(O(p
+d/M))given Mtarget samples, but at a cost in bias, which in some cases scales as
+O(p
+1−(d/D)·KL(pS||pT)), which grows with the amount of shift between the source and tar-
+get distributions ( pS, pT). In Sec. 5.1, we first analyze the specific features learned by P RO2with
+minimal distributional assumptions. Then, in Sec. 5.2, we apply our general results to a shifted
+homoscedastic Gaussian (SHOG) model, where the bias and variance terms involve more intuitive
+terms. We also empirically verify our results using synthetic SHOG data. Additional theoretical
+results and proofs can be found in Appendix A.
+5.1 Bias-variance tradeoffs for general shifts.
+In this section, we analyze the properties of the learned projection Πon the target distribution to
+understand why P RO2may improve sample efficiency during adaptation by first extracting a set of
+diverse, useful features.
+Probing on the target distribution. We first introduce some additional notation specific to the
+target distribution. For projection Π, letΠddenote the projection matrix for span({Πi}d
+i=1), i.e.,
+Πd= [Π 1, ..,Πd][Π1, ..,Πd]⊤. (1)
+Denote the target error for classifier wasLT(w)≜EpTl(⟨w,x⟩,y),and the bias incurred by
+probing over the projected features span({Πi}d
+i=1)as:
+bd≜ min
+w′∈span({Πi}d
+i=1)LT(w′)−min
+w∈WLT(w).
+We also denote the d-dimensional weight vector learned by P RO2on the Mprojected target samples
+as:
+ˆwd≜ min
+w∈span({Πi}d
+i=1)
+∥w∥2≤1MX
+i=1l(⟨w,x(i)⟩,y(i)).
+We are now ready to bound the bias bdin Lemma 1, with a term that reduces to 0as we add more
+features d→D. The rate at which bd→0is controlled by the relationship of the optimal linear
+classifier on target w∗
+Twith the projection matrix Πdlearnt on the source data. When there is
+no distribution shift, we know that for the projection Π1returned by P RO2,Π1∝w∗
+T, and thus
+(ID−Π1)w∗
+T= 0, i.e., the bias bd→0with just one direction. On the other hand if Πdis
+returned by a random projection then bias bddecreases at rate O(p
+1−(d/D))even when there
+is no distribution shift. In simpler terms, the rate at which the bias reduces as we increase dis
+controlled by degree of distribution shift, and how informative the source features (in Πd) remain
+under this shift.
+Lemma 1 (bias induced by shift) .For some w∗
+Tthat is the Bayes optimal linear predictor on
+distribution pTover the full feature space, and an L-Lipschitz smooth convex loss l, the bias
+bd≤L· ∥(ID−Πd)w∗
+T∥2. When Πdis a random rank dprojection matrix with columns drawn
+uniformly over the sphere Sd−1, then bd<∼Lq
+1−d
+D· ∥w∗
+T∥2.
+51 5 10 15 20
+Number of Source Directions0.00.20.40.60.81.0Nullspace Norm
+Far OOD
+Near OOD
+ID
+2 8 32 128 512 2048 8192
+T arget Datset Size60708090100Accuracy
+ID
+1
+2
+5
+10
+20
+2 8 32 128 512 2048 8192
+T arget Datset Size5060708090
+Near OOD
+2 8 32 128 512 2048 8192
+T arget Datset Size5060708090100
+Far OODFigure 3: Evaluation of P RO2on shifted homoscedastic Gaussian data. (Left) The x- and y-axes
+denote dimensionality of Adand nullspace norm, respectively. Nullspace norm drops slowly for
+more severe distribution shifts. (Right) For less severe distribution shifts (ID and Near OOD), low-
+dimensional projections suffer from less bias, resulting in higher accuracy in the low-data regime.
+For the Far OOD distribution, using all 20-dimensional features is best, as bias drops more slowly.
+In Theorem 2, we describe the full bias-variance tradeoff where we see that the variance term is
+also controlled by the number of features dbut unlike the bias is independent of the nature of shift
+between source and the target.
+Theorem 2 (bias-variance tradeoff) .When the conditions in Lemma 1 hold and when ∥x∥∞=
+O(1), forB-bounded loss l, w.h.p. 1−δ, the excess risk for the solution ˆwdofPRO2that uses d
+features is LT(ˆwd)−minw∈WLT(w)
+<∼∥(ID−Πd)w∗
+T∥2+ √
+d+Bp
+log(1/δ)√
+M!
+, (2)
+where the first term controls the bias and the second controls the variance.
+This result provides insights on what factors affect generalization when probing on target data.
+Tighter compression of the original representation, i.e., using a smaller d, increases bias while de-
+creasing variance. The rate of bias increase is determined by the degree of distribution shift, where
+more severe shifts correspond to a steeper increase in bias. However, this bias can be mitigated as
+long as the important features needed for prediction on the target domain are covered by the com-
+pressed representation. Thus, P RO2induces a favorable bias-variance tradeoff, as the features ex-
+tracted are predictive and diverse and hence are more likely to cover the important features needed
+for the target domain, allowing compression to a smaller dwhile still maintaining low bias. The
+distribution shift has no effect on variance, and variance can only be decreased by using a low-
+dimensional represent (at the cost of bias) or learning from a larger dataset.
+5.2 Bias-variance tradeoff in shifted Gaussian model.
+In this subsection, we consider a simplified setting of a shifted homoscedastic Gaussian (SHOG).
+Within this model, we show that the more general statement in Theorem 2 can be simplified further
+to provide a more intuitive relationship between the factors that affect generalization. Furthermore,
+we empirically demonstrate the behavior predicted by our bounds on synthetic SHOG data.
+Shifted homoscedastic Gaussian (SHOG) model of distribution shift. We model the source dis-
+tribution as a Bernoulli mixture model of data in which binary labels are balanced (y ∼Bern(0.5))
+and the class conditional distributions are homoscedastic multi-variate Gaussians:
+x|y∼ N(µy,ΣS)for y ∈ {0,1},
+where µ1, µ2∈RDare mean vectors and ΣS∈RD×Dis the shared covariance matrix. The target
+distribution has the same label distribution and Gaussian means, but a different covariance matrix
+given by ΣT. We study how the relation between the two covariance matrices ΣS,ΣTcan affect the
+bias term bdwhen Πdis either returned by P RO2or a random projection matrix with columns drawn
+uniformly over the sphere Sd−1.
+We specialize the more general bias-variance tradeoff result to a shifted homoscedastic Gaussian
+(SHOG) model in Corollary 3, where we derive a simpler bound characterizing the tradeoff between
+performance, the value of d, and the amount of distributional shift.
+6Corollary 3 (tradeoff under SHOG) .Under our SHOG model of shift, and conditions for a random
+projection Πdin Lemma 10, the target error LT(ˆwd)<∼Oq
+1−d
+D·KL(pS||pT)
++q
+d
+M, when
+∥ΣT∥op=O(1).
+In Fig. 3, we plot the nullspace norm ∥ΣS∥opfor different din three target distributions of varying
+distribution shift severity in the SHOG model. We see that the more severe shifts have a higher
+norm, indicating that the OOD distributions suffer from high bias when dis low. Indeed, we see
+that the ID distribution suffers from virtually no bias, making d= 1achieve highest target accuracy
+for all dataset sizes. In contrast, the Near OOD and Far OOD distributions suffer from high bias
+of up to 40% accuracy, and higher projection dimension dis needed for adaptation, as predicted by
+Corollary 3.
+6 Experiments
+In this section, we aim to empirically answer the following questions: (1) Can P RO2identify a
+feature-space basis for rapid adaptation, and how does it compare to other methods for extracting
+features? (2) How does the dimensionality of the feature-space basis affect sample efficiency in
+different distribution shift conditions? We provide additional empirical results and analyses, such
+as showing that the adaptation performance of P RO2improves with better pre-trained backbones, in
+Appendix C. Details on pre-trained models and training details are in Appendix B.
+6.1 Experimental Setup
+Datasets. We run experiments on six datasets with distribution shifts: 4-way collages [51], Wa-
+terbirds [44], CelebA [32], Camelyon [4], Living17 [45], and FMoW [22] datasets. Each of these
+datasets have a source distribution that we use for training. For the first four datasets, we construct
+multiple target distributions for evaluation, representative of a range of potential test distributions.
+For the latter two datasets, which are larger datasets representing shifts that may occur in the wild,
+we evaluate on the given test set. For all settings, we use the original source datasets, which each
+contain thousands of datapoints. For target data, we subsample very small label-balanced datasets
+for adaptation, with {2,8,32,128}images per label for the first four datasets and {1,2,5}images
+per label for the latter two datasets. The remaining target distribution datapoints are used for evalu-
+ation. Due to space constraints, we describe the different target distributions in Appendix B.
+Computational efficiency. Similarly to Mehta et al. [36], we use feature embeddings from a pre-
+trained backbone without fine-tuning. Our aim is to develop methods that can leverage pretrained
+models out-of-the-box with minimal computational requirements: our training involves at most two
+linear layers on top of cached feature vectors. For all comparisons, we hyperparameter tune over
+3 different learning rates (0.1, 0.01, and 0.001) as well as 3 different L2regularization weights
+(0.1, 0.01, 0.001). In our main experiments in Sec. 6.2, we also sweep over 6 different projection
+dimensions ( d= 1,4,16,64,256,1024 ) and report results over 10 runs. For hyperparameter tuning,
+we adopt the typical practice of using a target validation set, which is common in prior work in
+similar transfer learning settings [21, 36, 26]. The challenge of hyperparameter tuning for a target
+domain without additional domain-specific information remains an open problem that we hope can
+be addressed in future work. As a demonstration of the computational efficiency of P RO2, after
+caching pre-trained embeddings, we can collectively run all experiments in Sec. 6.2, which is nearly
+30k runs due to hyperparameter tuning, within 24hours using four standard CPUs and no GPUs .
+We find that P RO2is robust to learning rate, which is expected as the optimization problem is linear.
+6.2 Comparison to prior projection methods
+We investigate whether P RO2can extract features that can facilitate adaptation to different distri-
+bution shifts, and how it compares other feature extraction methods. We perform a comprehensive
+experimental evaluation on the six datasets, comparing P RO2against four other projection methods:
+(1) Random Projection, (2) DFR [21], which uses standard linear probing, and (3) Teney et al. [51],
+which aims to learn multiple predictive patterns by minimizing the alignment of input gradients over
+pairs of features. Experiments in Fig. 4 and Tab. 1 indicate that across all different target distribu-
+tions six datasets, P RO2significantly outperforms Random Projection and DFR, especially in the
+low-data regime. In particular, these results show that DFR or standard linear probing, the strategy
+7WaterbirdsCelebACamelyon17CollagesFigure 4: Main results. We compare 4different methods for learning features to adapt to a target distribution:
+(1) Random Projection, (2) DFR [21], (3) Teney et al. [51], and (4) P RO2. We report average target accuracies
+after probing with different target dataset sizes ranging from 2 to 128 datapoints per label; error bars indicate
+standard error across 10runs. P RO2is the best performing or tied for best performing method across each of
+these 4 datasets with any amount of target data . PRO2substantially outperforms Random Projection and DFR
+in the low-data regime on all four datasets. P RO2also outperforms Teney et al. [51] on average on 3 of the 4
+datasets particularly when given more target data.
+Living17 FMoW
+Target Train Data Size (per label) 1 2 5 1 2 5
+Random Projection 85.7 (0.6) 92.7 (1.0) 99.2 (0.1) 16.3 (0.7) 23.6 (0.6) 33.3 (0.6)
+DFR (Kirichenko et al.) 87.1 (0.9) 95.0 (0.9) 98.8 (0.3) 17.5 (0.8) 24.0 (0.6) 35.1 (0.6)
+PRO291.2 (0.4) 95.7 (0.7) 99.2 (0.06) 20.2 (0.9) 28.7 (1.1) 37.2 (0.8)
+Table 1: Additional main results. We run additional experiments on the Living17 dataset from the Breeds
+benchmark [45] and FMoW [22], reporting adaptation accuracy and standard error across 10 runs. Both of
+these datasets are challenging multi-class distribution shift tasks and are representative of real-world scenarios.
+We find that similar to the other datasets, P RO2is the best performing or tied for best performing method on
+these datasets when given a limited amount of target data.
+adopted by several additional prior works by default [36, 19], is not the most data-efficient way to
+utilize pre-trained embeddings when given limited target data. This is because such embeddings
+contain redundant or non-predictive information, and including these features during adaptation
+leads to higher variance without decreasing bias, which in turn means that we need more labeled
+samples. In contrast, P RO2improves sample efficiency by first extracting a predictive feature-space
+basis from the source distribution, removing redundant information. Teney et al. [51] is sufficient in
+some scenarios with milder distribution shift, where a diverse range of features are not needed for
+adaptation. However, it fails to achieve high accuracy given a large target dataset on more severe dis-
+tribution shifts, such as the Minority distributions on Waterbirds and CelebA or the Fashion-MNIST
+and CIFAR distributions in 4-Way Collages. This indicates that the feature diversity from the or-
+thogonality constraint gives P RO2better coverage of different features, enabling better adaptation
+to severe distribution shifts given enough target data. These results demonstrate the effectiveness of
+PRO2compared to existing methods in the few-shot adaptation problem setting.
+8WaterbirdsCelebACamelyon17CollagesNumber of FeaturesFigure 5: Feature-space dimensionality of P RO2and severity of distribution shift. We vary the feature-
+space dimensions d(y-axis) of P RO2and report held-out accuracy after training on target datasets of different
+size (x-axis) on our 4 datasets. Higher accuracies are in blue and lower accuracies are in red. We see that
+smaller feature-space dimensions suffice for target distributions with milder distribution shifts while higher
+dimensions are required for more severe shifts. For example, on the spurious test distribution (small dist. shift)
+of Waterbirds/CelebA, the bottom row, which uses d= 1 is bluest, while the blue is concentrated in the top
+right squares (which use more features and more data) for more difficult distribution shifts such as Minority for
+Waterbirds/CelebA and the collages test sets.
+6.3 Projection dimension and shift severity
+In this subsection, we investigate how the feature-space dimension daffects the sample efficiency of
+PRO2, for different degrees of distribution shift. Experiments in Fig. 5 show that when the distribu-
+tion shift is less severe, such as the Spurious test distributions on Waterbirds and CelebA, it is helpful
+to reduce the number of features used. This scenario is analogous to the ID setting in Fig. 3. In such
+scenarios, the top-ranked features from the source data are also predictive on the target distribution,
+and incorporating additional features worsens generalization because it increases variance without
+sufficiently decreasing bias. However, when the distribution shift is more severe, such as the Minor-
+ity distributions on Waterbirds and CelebA or Collages-Fashion MNIST and Collages-CIFAR, it is
+helpful to increase the number of features used. This scenario is analogous to the Far OOD setting
+in Fig. 3. These empirical results are supported formally by our theoretical results in Sec. 5, which
+show that the optimal number of features to use increases with distribution shift severity.
+7 Conclusion
+In this paper, we propose P RO2, a lightweight framework consisting of 2 steps: (1) a projection
+step that extracts a diverse and predictive feature-space basis and (2) a probing step that interpolates
+between the projected features to efficiently adapt varying target distributions. Our theoretical and
+empirical analyses reveal a number of interesting novel insights: (i) standard linear probing is not the
+best approach for few-shot adaptation; (ii) Retaining a diverse range of potentially useful features
+that different target distributions may require improves sample efficiency, (iii) we can trade off how
+much to adapt (size of the feature-space basis) vs number of samples, picking the best basis to adapt
+for each level of shift. These insights open up a range of exciting paths for future work. First, our
+framework may be extended to other problem settings, such as the active learning setting, in which
+the model can adaptively request target labels. Another interesting direction is developing methods
+to better determine the optimal number of features and best feature basis to use when adapting.
+Integrating P RO2with other fine-tuning methods is also a promising direction for further improving
+adaptation performance. Finally, another interesting direction would be selecting which features to
+use in an unsupervised fashion, without any labeled target data.
+9Acknowledgments
+We thank members of the IRIS and RAIL labs for helpful discussions on this project. This work
+was supported by NSF, KFAS, Apple, Juniper, and ONR grant N00014-20-1-2675.
+References
+[1] Alemi, A. A., Fischer, I., Dillon, J. V ., and Murphy, K. (2016). Deep variational information
+bottleneck. arXiv preprint arXiv:1612.00410 .
+[2] Arjovsky, M., Bottou, L., Gulrajani, I., and Lopez-Paz, D. (2019). Invariant risk minimization.
+arXiv preprint arXiv:1907.02893 .
+[3] Arpit, D., Jastrzebski, S., Ballas, N., Krueger, D., Bengio, E., Kanwal, M. S., Maharaj, T.,
+Fischer, A., Courville, A., Bengio, Y ., et al. (2017). A closer look at memorization in deep
+networks. In International Conference on Machine Learning .
+[4] Bandi, P., Geessink, O., Manson, Q., Van Dijk, M., Balkenhol, M., Hermsen, M., Bejnordi,
+B. E., Lee, B., Paeng, K., Zhong, A., et al. (2018). From detection of individual metastases
+to classification of lymph node status at the patient level: the camelyon17 challenge. IEEE
+Transactions on Medical Imaging .
+[5] Bartlett, P. L. and Mendelson, S. (2002). Rademacher and gaussian complexities: Risk bounds
+and structural results. Journal of Machine Learning Research , 3(Nov):463–482.
+[6] Caron, M., Misra, I., Mairal, J., Goyal, P., Bojanowski, P., and Joulin, A. (2020). Unsupervised
+learning of visual features by contrasting cluster assignments. Advances in Neural Information
+Processing Systems , 33:9912–9924.
+[7] Chandrashekar, G. and Sahin, F. (2014). A survey on feature selection methods. Computers &
+Electrical Engineering , 40(1):16–28.
+[8] Creager, E., Jacobsen, J.-H., and Zemel, R. (2021). Environment inference for invariant learn-
+ing. In International Conference on Machine Learning .
+[9] Cunningham, J. P. and Ghahramani, Z. (2015). Linear dimensionality reduction: Survey, in-
+sights, and generalizations. The Journal of Machine Learning Research , 16(1):2859–2900.
+[10] Dash, M. and Liu, H. (1997). Feature selection for classification. Intelligent data analysis ,
+1(1-4):131–156.
+[11] Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner, T., De-
+hghani, M., Minderer, M., Heigold, G., Gelly, S., et al. (2020). An image is worth 16x16 words:
+Transformers for image recognition at scale. arXiv preprint arXiv:2010.11929 .
+[12] Fisher, A., Rudin, C., and Dominici, F. (2019). All models are wrong, but many are useful:
+Learning a variable’s importance by studying an entire class of prediction models simultaneously.
+J. Mach. Learn. Res. , 20(177):1–81.
+[13] Gandelsman, Y ., Sun, Y ., Chen, X., and Efros, A. A. (2022). Test-time training with masked
+autoencoders. arXiv preprint arXiv:2209.07522 .
+[14] Ganin, Y ., Ustinova, E., Ajakan, H., Germain, P., Larochelle, H., Laviolette, F., Marchand,
+M., and Lempitsky, V . (2016). Domain-adversarial training of neural networks. The journal of
+machine learning research , 17(1):2096–2030.
+[15] Geirhos, R., Jacobsen, J.-H., Michaelis, C., Zemel, R., Brendel, W., Bethge, M., and Wich-
+mann, F. A. (2020). Shortcut learning in deep neural networks. Nature Machine Intelligence ,
+2(11):665–673.
+[16] Gunasekar, S., Lee, J. D., Soudry, D., and Srebro, N. (2018). Implicit bias of gradient descent
+on linear convolutional networks. In Bengio, S., Wallach, H., Larochelle, H., Grauman, K.,
+Cesa-Bianchi, N., and Garnett, R., editors, Advances in Neural Information Processing Systems .
+10[17] He, K., Zhang, X., Ren, S., and Sun, J. (2016). Deep residual learning for image recognition. In
+Proceedings of the IEEE conference on computer vision and pattern recognition , pages 770–778.
+[18] Iwasawa, Y . and Matsuo, Y . (2021). Test-time classifier adjustment module for model-agnostic
+domain generalization. Advances in Neural Information Processing Systems , 34:2427–2440.
+[19] Izmailov, P., Kirichenko, P., Gruver, N., and Wilson, A. G. (2022). On feature learning in the
+presence of spurious correlations. arXiv preprint arXiv:2210.11369 .
+[20] Kakade, S. M., Sridharan, K., and Tewari, A. (2008). On the complexity of linear prediction:
+Risk bounds, margin bounds, and regularization. Advances in neural information processing
+systems , 21.
+[21] Kirichenko, P., Izmailov, P., and Wilson, A. G. (2022). Last layer re-training is sufficient for
+robustness to spurious correlations. arXiv preprint arXiv:2204.02937 .
+[22] Koh, P. W., Sagawa, S., Xie, S. M., Zhang, M., Balsubramani, A., Hu, W., Yasunaga, M.,
+Phillips, R. L., Gao, I., Lee, T., et al. (2021). Wilds: A benchmark of in-the-wild distribution
+shifts. In International Conference on Machine Learning , pages 5637–5664. PMLR.
+[23] Kornblith, S., Shlens, J., and Le, Q. (2018). Do better imagenet models transfer better? arxiv
+2018. arXiv preprint arXiv:1805.08974 .
+[24] Kumar, A., Raghunathan, A., Jones, R., Ma, T., and Liang, P. (2022). Fine-tuning can distort
+pretrained features and underperform out-of-distribution. arXiv preprint arXiv:2202.10054 .
+[25] Lee, J. A., Verleysen, M., et al. (2007). Nonlinear dimensionality reduction , volume 1.
+Springer.
+[26] Lee, Y ., Chen, A. S., Tajwar, F., Kumar, A., Yao, H., Liang, P., and Finn, C. (2022a). Surgical
+fine-tuning improves adaptation to distribution shifts. arXiv preprint arXiv:2210.11466 .
+[27] Lee, Y ., Yao, H., and Finn, C. (2022b). Diversify and disambiguate: Learning from underspec-
+ified data. arXiv preprint arXiv:2202.03418 .
+[28] Li, J., Cheng, K., Wang, S., Morstatter, F., Trevino, R. P., Tang, J., and Liu, H. (2017). Feature
+selection: A data perspective. ACM computing surveys (CSUR) , 50(6):1–45.
+[29] Li, Z., Evtimov, I., Gordo, A., Hazirbas, C., Hassner, T., Ferrer, C. C., Xu, C., and Ibrahim, M.
+(2022). A whac-a-mole dilemma: Shortcuts come in multiples where mitigating one amplifies
+others.
+[30] Liu, E. Z., Haghgoo, B., Chen, A. S., Raghunathan, A., Koh, P. W., Sagawa, S., Liang, P., and
+Finn, C. (2021). Just train twice: Improving group robustness without training group information.
+InInternational Conference on Machine Learning , pages 6781–6792. PMLR.
+[31] Liu, H. and Motoda, H. (2007). Computational methods of feature selection . CRC press.
+[32] Liu, Z., Luo, P., Wang, X., and Tang, X. (2015). Deep learning face attributes in the wild. In
+Proceedings of International Conference on Computer Vision (ICCV) .
+[33] Loshchilov, I. and Hutter, F. (2017). Decoupled weight decay regularization. arXiv preprint
+arXiv:1711.05101 .
+[34] Lubana, E. S., Bigelow, E. J., Dick, R. P., Krueger, D., and Tanaka, H. (2022). Mechanistic
+mode connectivity. arXiv preprint arXiv:2211.08422 .
+[35] May, A., Zhang, J., Dao, T., and R ´e, C. (2019). On the downstream performance of compressed
+word embeddings. In Wallach, H., Larochelle, H., Beygelzimer, A., d'Alch ´e-Buc, F., Fox, E., and
+Garnett, R., editors, Advances in Neural Information Processing Systems , volume 32. Curran
+Associates, Inc.
+[36] Mehta, R., Albiero, V ., Chen, L., Evtimov, I., Glaser, T., Li, Z., and Hassner, T. (2022). You
+only need a good embeddings extractor to fix spurious correlations.
+11[37] Morwani, D., Batra, J., Jain, P., and Netrapalli, P. (2023). Simplicity bias in 1-hidden layer
+neural networks. arXiv preprint arXiv:2302.00457 .
+[38] Nam, J., Cha, H., Ahn, S., Lee, J., and Shin, J. (2020). Learning from failure: Training debiased
+classifier from biased classifier. Conference on Neural Information Processing Systems .
+[39] Oquab, M., Bottou, L., Laptev, I., and Sivic, J. (2014). Learning and transferring mid-level im-
+age representations using convolutional neural networks. In Proceedings of the IEEE conference
+on computer vision and pattern recognition , pages 1717–1724.
+[40] Pagliardini, M., Jaggi, M., Fleuret, F., and Karimireddy, S. P. (2022). Agree to disagree:
+Diversity through disagreement for better transferability. arXiv preprint arXiv:2202.04414 .
+[41] Petridis, S. and Perantonis, S. J. (2004). On the relation between discriminant analysis and
+mutual information for supervised linear feature extraction. Pattern Recognition , 37(5):857–874.
+[42] Pezeshki, M., Kaba, S.-O., Bengio, Y ., Courville, A., Precup, D., and Lajoie, G. (2021). Gradi-
+ent starvation: A learning proclivity in neural networks. In Beygelzimer, A., Dauphin, Y ., Liang,
+P., and Vaughan, J. W., editors, Advances in Neural Information Processing Systems .
+[43] Rosenfeld, E., Ravikumar, P., and Risteski, A. (2022). Domain-adjusted regression or:
+Erm may already learn features sufficient for out-of-distribution generalization. arXiv preprint
+arXiv:2202.06856 .
+[44] Sagawa, S., Koh, P. W., Hashimoto, T. B., and Liang, P. (2020). Distributionally robust neural
+networks for group shifts: On the importance of regularization for worst-case generalization.
+International Conference on Learning Representations .
+[45] Santurkar, S., Tsipras, D., and Madry, A. (2020). Breeds: Benchmarks for subpopulation shift.
+arXiv preprint arXiv:2008.04859 .
+[46] Semenova, L., Rudin, C., and Parr, R. (2019). A study in rashomon curves and volumes:
+A new perspective on generalization and model simplicity in machine learning. arXiv preprint
+arXiv:1908.01755 .
+[47] Shah, H., Tamuly, K., Raghunathan, A., Jain, P., and Netrapalli, P. (2020). The pitfalls of
+simplicity bias in neural networks. Conference on Neural Information Processing Systems .
+[48] Sharif Razavian, A., Azizpour, H., Sullivan, J., and Carlsson, S. (2014). Cnn features off-
+the-shelf: an astounding baseline for recognition. In Proceedings of the IEEE conference on
+computer vision and pattern recognition workshops , pages 806–813.
+[49] Sorzano, C. O. S., Vargas, J., and Montano, A. P. (2014). A survey of dimensionality reduction
+techniques. arXiv preprint arXiv:1403.2877 .
+[50] Sun, Y ., Wang, X., Liu, Z., Miller, J., Efros, A., and Hardt, M. (2020). Test-time training
+with self-supervision for generalization under distribution shifts. In International conference on
+machine learning , pages 9229–9248. PMLR.
+[51] Teney, D., Abbasnejad, E., Lucey, S., and Hengel, A. v. d. (2021). Evading the simplicity
+bias: Training a diverse set of models discovers solutions with superior ood generalization. arXiv
+preprint arXiv:2105.05612 .
+[52] Teney, D., Abbasnejad, E., Lucey, S., and van den Hengel, A. (2022). Evading the simplicity
+bias: Training a diverse set of models discovers solutions with superior ood generalization. In
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages
+16761–16772.
+[53] Tishby, N., Pereira, F. C., and Bialek, W. (2000). The information bottleneck method. arXiv
+preprint physics/0004057 .
+[54] Tzeng, E., Hoffman, J., Zhang, N., Saenko, K., and Darrell, T. (2014). Deep domain confusion:
+Maximizing for domain invariance. arXiv preprint arXiv:1412.3474 .
+12[55] Varsavsky, T., Orbes-Arteaga, M., Sudre, C. H., Graham, M. S., Nachev, P., and Cardoso, M. J.
+(2020). Test-time unsupervised domain adaptation. In International Conference on Medical
+Image Computing and Computer-Assisted Intervention , pages 428–436. Springer.
+[56] Wainwright, M. J. (2019). High-dimensional statistics: A non-asymptotic viewpoint , vol-
+ume 48. Cambridge university press.
+[57] Wang, D., Shelhamer, E., Liu, S., Olshausen, B., and Darrell, T. (2020). Tent: Fully test-time
+adaptation by entropy minimization. arXiv preprint arXiv:2006.10726 .
+[58] Wortsman, M., Ilharco, G., Kim, J. W., Li, M., Kornblith, S., Roelofs, R., Lopes, R. G.,
+Hajishirzi, H., Farhadi, A., Namkoong, H., and Schmidt, L. (2022). Robust fine-tuning of zero-
+shot models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pages 7959–7971.
+[59] Xu, Y ., He, H., Shen, T., and Jaakkola, T. (2022). Controlling directions orthogonal to a
+classifier. arXiv preprint arXiv:2201.11259 .
+[60] Yosinski, J., Clune, J., Bengio, Y ., and Lipson, H. (2014). How transferable are features in
+deep neural networks? Advances in neural information processing systems , 27.
+[61] Zhai, X., Puigcerver, J., Kolesnikov, A., Ruyssen, P., Riquelme, C., Lucic, M., Djolonga, J.,
+Pinto, A. S., Neumann, M., Dosovitskiy, A., et al. (2019). A large-scale study of representation
+learning with the visual task adaptation benchmark. arXiv preprint arXiv:1910.04867 .
+[62] Zhang, M., Marklund, H., Dhawan, N., Gupta, A., Levine, S., and Finn, C. (2021). Adaptive
+risk minimization: Learning to adapt to domain shift. Advances in Neural Information Processing
+Systems , 34:23664–23678.
+[63] Zhang, M. and R ´e, C. (2022). Contrastive adapters for foundation model group robustness.
+arXiv preprint arXiv:2207.07180 .
+13A Proofs for Theoretical Analysis
+We present proofs for our theoretical analysis in Sec. 5 along with some additional statements. As
+in the main paper, we denote the dimensionality of the feature-space basis learned by P RO2asd, the
+original dimension of the representations given by the feature backbone fasD, source and target
+distributions as pSandpT, and the number of source and target datapoints as NandM. We let
+Πddenote the projection matrix for span({Πi}d
+i=1), i.e.,Πd=[Π 1, ..,Πd][Π1, ..,Πd]⊤. If the target
+error for the feature wisLT(w) :=EDTl(⟨w,x⟩,y), then the bias incurred by probing on the
+subspace Πdconsisting of source features is:
+bd:= min
+w′∈span({Πi}d
+i=1)LT(w′)−min
+w∈WLT(w),
+and we denote the feature-space basis of dimensionality dlearned by P RO2as follows:
+ˆwd:= arg min
+w∈span({Πi}d
+i=1)MX
+i=1l(⟨w,x(i)⟩,y(i)). (3)
+From the original D-dimensional feature representations given by our feature backbone f, we want
+our learned linear projections Π :RD→Rdto retain as much information as possible that is
+relevant in predicting the label y. In other words, we want to maximize the mutual information
+between the projected features Π(x)and the labels y. In Theorem 6, We first formally characterize
+the solution found by the projection step in P RO2as maximizing this mutual information amongst
+all rank dmatrices with orthogonal columns, using the following two lemmas.
+Lemma 4 (Entropy of a sub-gaussian under low rank projection) .For a σ−sub-gaussian random
+variable x, and rank rorthonormal matrix A∈Rd×Dthe differential entropy H(Ax)for projection
+AxisO(1/d)when logσ=O(1/d2).
+Proof. LetAidenote the ithrow of A, then:
+H(Ax) =H([A⊤
+1x, . . . ,A⊤
+rx]⊤) =H(A⊤
+1x) +i=dX
+i=2H(A⊤
+ix|A⊤
+1x, . . . ,A⊤
+i−1x)≤i=dX
+i=1H(A⊤
+ix)
+Since, xisσ−sub-gaussian, using standard bounds on differential entropy and the inequality above
+we can argue that:
+Eh
+et2A⊤
+ixi
+≤et2σ2/2,∀i, t
+=⇒H(A⊤
+ix)≤1
+2log(2πeσ2)∀i
+=⇒H(A⊤
+ix)<∼(1/d2)∀i(since logσ=O(1/d2))
+=⇒H(Ax) =O(1/d)
+Lemma 5 (Entropy for a mixture of σ−sub-gaussians) .For a d−dimensional random variable x
+that is a mixture of two σ−sub-gaussian random variables x1andx2with overlapping supports,
+bounded Jensen-Shannon divergence JS(v⊤x1||v⊤x2)≤βand mixture proportion α∈[0,1]i.e.,
+the density function p(x) =α·p1(x) + (1 −α)·p2(x), then the entropy H(v⊤x)for∥v∥2= 1, is
+at most O(logσ+β).
+Proof. Using Jensen inequality and the definition of KL divergence, the differential entropy can be
+broken down as follows:
+H(v⊤x) =−Z
+(α·p1(v⊤x) + (1 −α)·p2(v⊤x)) log( α·p1(v⊤x) + (1 −α)·p2(v⊤x))dx
+≤α2H(v⊤x1) + (1 −α)2H(v⊤x2)
+−α(1−α)Z
+p1v⊤x) logp2(v⊤x)dx−α(1−α)Z
+p2(v⊤x) logp1(v⊤x)dx
+≤αH(v⊤x1) + (1 −α)H(v⊤x2) + 2α(1−α)β
+<∼log(σ) +β
+where the last step follows from the first two arguments made in the proof for Lemma 4.
+14Theorem 6 (Information in projected input) .When the distributions p(x|y)areexp (d−2)−sub-
+gaussian for each yand the Jensen-Shannon divergence JS(p(v⊤x|y= 0) ||p(v⊤x|y=
+1)) = O(1/d). the solution {Πi}d
+i=1returned by PRO2maximizes a tight lower bound (difference
+bounded by an O(1)constant) on the mutual information criterion I(Ax;y)among all d×D
+row-orthonormal matrices A. (See end of the proof for discussion on assumptions and remark on
+tightness ).
+Proof. We use an inductive argument on d. Consider the following maximization problem where
+Bdis the set of all row orthonormal matrices of row rank d≪D:
+max
+A∈BdI(Ax;y). (4)
+Letd >1. Then, we can re-write the above as:
+max
+A∈Bd×DI(Ax;y) = max
+A′∈Bd−1,v∈RDI
+A′x,v⊤x⊤;y
+where, v∈NullSpace( A′),∥v∥2= 1.
+(5)
+Now, we can decompose this expression using the conditional mutual information identities:
+I
+A′x,v⊤x⊤;y
+=I(A′x;y) +I(v⊤x;y)−I(v⊤x;A′x) +I(v⊤x;A′x|y)
+=I(A′x;y) +I(v⊤x;y)− 
+I(v⊤x;A′x)−I(v⊤x;A′x|y)
+(6)
+Now, we upper bound the drop in information when we condition on y: (I(v⊤x;A′x)−
+I(v⊤x;A′x|y))using Lemma 4 and Lemma 5.
+I(v⊤x;A′x)−I(v⊤x;A′x|y) =H([v⊤x;A′x]⊤|y)−H(v⊤x|y)−H(A′x|y) +I(v⊤x;A′x)
+≤H([v⊤x;A′x]⊤|y) +H(v⊤x) =H(Ax|y) +H(v⊤x)
+<∼logσ+β=O(1/d), (7)
+where the last statement applies Lemma 4 to bound H(Ax|y)(sinceAx|y= 0andAx|y= 1
+areσ−sub-gaussian) and Lemma 5 to bound the entropy on the mixture of sub-gaussians H(v⊤x).
+Also, note that the conditional distributions differ in Jensen-Shannon divergence by O(1/d)and the
+sub-gaussian assumption gives us logσ=O(1/d2).
+Using equation 6, equation 7 we have:
+max
+A∈BdI(Ax;y)≥ max
+A′∈Bd−1,
+v∈NullSpace(A) ,∥v∥2=1I(A′x;y) +I(v⊤x;y)− O(1/d). (8)
+LetAidenote the ithrow of A, then. Then, applying the above inductively for all d:
+max
+A∈BdI(Ax;y)≥ max
+A∈Bd i=dX
+i=1I(A⊤
+ix;y)!
+− O(1) (9)
+LetA∗be the solution of the right hand side and v∗= arg max v:∥v∥2=1I(v⊤x;y). Next, we note
+that∃isuch that A∗
+i=v∗. It is easy to prove this by contradiction. Consider the case where ∄isuch
+thatA∗
+i=v∗. Then, we can construct a solution {(ID−v∗v∗⊤)A∗
+i}d
+i=1, order them by mutual
+information I((A∗
+i)⊤(ID−v∗v∗⊤)x;y), take the top d−1entries and append to this set v∗. The
+new solution would have a higher value of the objective on the right hand side of equation 9, since
+the new solution retains optimal directions perpendicular to v∗while adding v∗to the set. Thus, we
+arrive at a contradiction and it is clear that v∗belongs to the solution A∗for the objective on the
+right side of equation 9.
+Knowing that v∗has to be part of A∗, we can now write the right side of equation 9 as the following:
+max
+A∈Rd×DI(Ax;y)≥max
+v1∈RDI 
+v⊤
+1x;y
++ max
+v2∈RDI
+v⊤
+2
+I−v∗
+1v∗
+1⊤
+x;y
++ max
+v3∈RDI
+v⊤
+3
+I−v∗
+2v⋆
+2⊤
+I−v⋆
+1v⋆
+1⊤
+x;y
++. . .− O(1), (10)
+15where v⋆
+1,v⋆
+2, . . . ,v⋆
+ddenote the solutions to each subsequent max term. This sequence of solutions
+is the same as that returned by solving the following iterative optimization problem because max-
+imizing mutual information with label for a linear projection of the input is the same as finding a
+direction that minimizes Bayes error of the linear projection (Petridis and Perantonis [41] connects
+mutual information to cross entropy loss and Bayes error):
+1.v∗
+1= arg min ∥v∥≤1l(⟨v,x⟩,y)
+2. Project data in the null space of v∗
+1:(I−v∗
+1v∗
+1⊤)x
+3. Re-solve (1.) to get next v∗
+iand so on.
+Finally, it is easy to see that solution returned by the above iterative optimization is the same as that
+returned by the project step of P RO2.
+Discussion on assumptions: Following are some remarks and intuitions behind the assumptions we
+make:
+•Sub-gaussianity : We need sub-gaussianity to bound the entropy of linear projections,
+which is easily satisfied for inputs with bounded support. Note that the sub-gaussian pa-
+rameter σneed only satisfy logσ=O(1/d2),where d≪Dwhich is the input dimension
+of the data.
+•Bounded JS-divergence : The main intuition behind why we need the class conditional
+distributions to not differ too much (bounded JS-divergence) along linear projections is
+that if they are very different from each other it is possible that even with sub-gaussianity
+assumptions there may exist linear projections that have a high mutual information over the
+mixture of conditionals (which is the marginal input distribution p(x)i.e.,I(v⊤x;A′x)is
+high) but not when we condition on the label (i.e., I(v⊤x;A′x|y)is low). Now, since we
+iteratively search for linear projections, our project step is oblivious to these interactions
+and we may recover both of these directions (see equation 6 and Lemma 5). But only one
+may be present in the information theoretically optimal linear projection.
+Remark on tightness of our lower bound: We show that we maximize a lower bound in equation 9.
+But, in the special case when the class conditionals are log-concave (e.g., multivariate Gaussian) we
+can also show something much tighter: maxA∈BdI(Ax;y) = max A∈BdPi=d
+i=1I(A⊤
+ix;y)
+−
+Θ(1) . This is because our upper bounds on the entropy terms have matching lower bounds for log-
+concave distributions, which can then be applied to lower bound the negative terms in the first step
+of equation 6.
+We now provide proofs of the generalization bounds in Section 5 showing the bias-variance tradeoff.
+Lemma 7 (generalization bound for probing projected features) .For an L-Lipshitz, B-bounded
+lossl, with probability ≥1−δ,ˆwdin equation 3 has generalization error <∼√
+d+B√
+log(1/δ)√
+M, when
+∥x∥∞=O(1).
+Proof. For this proof, we invoke the following two lemmas.
+Lemma 1 (generalization bound for linear functions Bartlett and Mendelson [5]) .For an L-Lipshitz
+B-bounded loss l, the generalization error for predictor ˆwd, contained in the class of l2norm
+bounded linear predictors Wis bounded with probability ≥1−δ:
+l(⟨ˆwd,x⟩,y)−MX
+i=1l(⟨w,Πdx(i)⟩,y(i))≤2LRn(W) +Br
+log(1/δ)
+2M
+where Rn(W)is the empirical Rademacher complexity of l2norm bounded linear predictors.
+16Lemma 2 (Rn(W)bound for linear functions [20]) .LetWbe a convex set inducing the set of
+linear functions F(W)≜{⟨w,x⟩:X 7→ R|w∈ W} for some input space X, bounded in
+norm∥ · ∥ by some value R > 0. If there exists a mapping h:W 7→ Rthat is κ-strongly convex
+with respect to the dual norm ∥ · ∥∗and some subset W′⊆ W takes bounded values of h(·)i.e.,
+{h(w)≤K|w∈ W′}for some K > 0, then the empirical Rademacher complexity of the subset
+W′is bounded by Rn(F(W′))≤Rq
+2K
+κn.
+Let∥ · ∥2
+2be the function h:W 7→ Rin Lemma 2; we know that ∥ · ∥2
+2is2-strongly convex in
+l2norm. Further, take the standard l2norm as the norm over X. So, the dual norm ∥ · ∥∗is also
+given by l2norm. Thus, κ= 2. We also know that Wis bounded in ∥ · ∥ 2by1, based on our setup
+definition. Thus, K= 1.
+Further, we note that ∥x∥∞=O(1). We apply Cauchy-Schwartz and use the fact that ∥Πd∥op= 1
+to bound the norm of the projected vector:
+∥Πdx∥ ≤ ∥Πd∥op∥x∥2≤ ∥Πd∥op√
+d∥x∥∞<∼√
+d. (11)
+By Lemma 2 we get the empirical Rademacher complexity RM(W)<∼p
+d/M , and plugging this
+into Lemma 1 yields the main result in Lemma 7.
+Theorem 8 (bias-variance tradeoff, Theorem 2) .When the conditions in Lemma 1 hold and when
+∥x∥∞=O(1), forB-bounded loss l, w.h.p. 1−δ, the excess risk for the solution ˆwdofPRO2that
+usesdfeatures is
+LT(ˆwd)−min
+w∈WLT(w)<∼∥(ID−Πd)w∗
+T∥2+ √
+d+Bp
+log(1/δ)√
+M!
+, (12)
+where the first term of the RHS controls the bias and the second controls the variance.
+Proof. The excess risk for ˆwdis
+LT(ˆwd)−min
+w∈WLT(w)
+=LT(ˆwd)− min
+w∈span{Πi}d
+i=1LT(w) + min
+w∈span{Πi}d
+i=1LT(w)−min
+w∈WLT(w)
+= 
+min
+w∈span{Πi}d
+i=1LT(w)−min
+w∈WLT(w)!
++ 
+LT(ˆwd)− min
+w∈span{Πi}d
+i=1LT(w)!
+<∼∥(ID−Πd)w∗
+T∥2+ √
+d+Bp
+log(1/δ)√
+M!
+(13)
+where the first term is the bias (bounded using Lemma 1), and the second term is the generalization
+error or the variance (bounded using Lemma 7).
+Corollary 9. Under the SHOG model, Π1recovers the linear discriminant analysis (LDA) solution,
+i.e.,Π1= Σ−1(µ2−µ1)/(∥Σ−1(µ2−µ1)∥2).
+Proof. Since the LDA solution is Bayes optimal under the HOG model, it is exactly characterized
+by the top eigen vector of Σ−1(µ2−µ1)(µ2−µ1)⊤. Thus, the Bayes optimal solution on target
+w∗
+T∝Σ−1(µ2−µ1), and since Π1returns the Bayes optimal linear predictor, following Theorem 6,
+the above corollary is proven.
+Lemma 10 (bias under SHOG) .LetΠdbe the projection returned by PRO2. The bias bdterm
+under our SHOG is bd<∼∥(ID−vSv⊤
+S)vT∥. Here, vS=Σ−1
+Sµ
+∥Σ−1
+Sµ∥2andvT=Σ−1
+Tµ
+∥Σ−1
+Tµ∥2.
+Further, when ∥ΣS∥opis bounded, and Πdis a random rank dprojection matrix, bd=
+Oq
+1−d
+D·KL(pS||pT)
+.
+17Proof. From Corollary 9, we know that Π1is exactly the rank-1 projection matrix given by the
+direction Σ−1
+S(µ2−µ1)/(∥Σ−1
+S(µ2−µ1)∥2). Therefore
+bd≤ ∥(ID−Πd)w∗
+T∥2≤ |(ID−Π1)w∗
+T∥2=∥(ID−vSv⊤
+S)vT∥. (14)
+This gives us the first result for vS,vT.
+For the second result, we note that the KL divergence between multivariate Gaussian distributions
+is convex.
+KL(pS||pT) =KL(p(y)pS(x|y)||p(y)pT(x|y))
+≤KL(pS(x|y)||pT(x|y))
+= 0.5·KL(N(µ1,ΣS)||N(µ1,ΣT)) + 0 .5·KL(N(µ2,ΣS)||N(µ2,ΣT))
+=1
+2tr(Σ−1
+TΣS)−DX
+i=1logλS
+i+DX
+i=1logλT
+i−D. (15)
+Refer to Wainwright [56] for the final step, where λS
+iandλT
+iare the eigenvalues of source and
+target covariance matrices, respectively. The final term in the above derivation is O(tr(Σ−1
+T))when
+∥ΣS∥op=O(1). From Lemma 1 we know that under random projections onto ddimensions,
+bd≤L·p
+1−(d/D)∥w∗
+T∥<∼p
+1−(d/D)∥Σ−1
+T(µ2−µ1)∥<∼tr(Σ−1
+T) (16)
+where we use Corollary 9. Thus from (16) and (15), we get our desired bound:
+bd<∼ r
+1−d
+D·KL(pS||pT)!
+.
+Corollary 11 (tradeoff under SHOG, Corollary 3) .Under our SHOG model of
+shift, and conditions for a random projection Πdin Lemma 10, the target error
+LT(ˆwd)<∼Oq
+1−d
+D·KL(pS||pT)
++q
+d
+M, when ∥ΣT∥op=O(1).
+Proof. Direct application of the variance result in Lemma 7 and bias result in Lemma 10, using the
+same technique used to prove Theorem 2.
+B Experimental Details
+B.1 PyTorch pseudocode for the projection step
+Below, we provide PyTorch pseudocode for the projection step of P RO2for binary classification
+datasets.
+def learn_feature_space_basis (x, y, num_features ):
+projection = torch .nn. Linear (x. shape [1], num_features )
+opt = torch . optim . AdamW ( projection . parameters () , lr=0.01 ,
+weight_decay =0.01)
+max_steps = 100
+for i in range ( max_steps ):
+logits = projection (x)
+loss = F. binary_cross_entropy_with_logits ( logits , y, reduction
+=" none "). mean ()
+opt . zero_grad ()
+loss . backward ()
+opt . step ()
+# Enforce orthogonality ; we ’re performing projected gradient
+descent
+Q, R = torch . linalg .qr( projection . weight . detach ().T)
+projection . weight . data = (Q * torch . diag (R)).T
+feature_space = projection . weight . detach ().T
+return feature_space
+18B.2 Additional dataset details
+•4-Way Collages [51]. This binary classification dataset consists of 4-way collages of four
+images per datapoint, one from each of (1) CIFAR, (2) MNIST, (3) Fashion-MNIST, and
+(4) SVHN. All four image features are completely correlated in the source data, and we
+consider four target distributions, where only one of the image features are predictive of
+the label in each target distribution.
+•Waterbirds [44]. This dataset tasks the model with classifying images of birds as either a
+waterbird or landbird. The label is spurious correlated with the background of the image,
+which is either water or land. There are 4,795 training samples, of which 95% of the data
+follows the spurious correlation. We use the original training set as the source data and
+evaluate on 3 different target distributions constructed from the original test dataset: (1)
+Minority, which contains the test data points that do not follow the spurious correlation, (2)
+Spurious, containing the points that do, and (3) Balanced, which contains an equal number
+of points from each of the 4 (bird, background) groups.
+•CelebA [32]. Similar to Waterbirds, we use the original training set as source data and
+evaluate on (1) Minority, (2) Spurious, and (3) Balanced target distributions. In our main
+experiments in Sec. 6, we use target distributions corresponding to the spurious correlation
+typically used for evaluation (spurious attribute–gender with label–hair color). Below, in
+Appendix C include additional results on 4 other variants following the settings used in
+[27]: (1) CelebA-1 uses slightly open mouth as the label and wearing lipstick as the spuri-
+ous attribute, (2) CelebA-2 uses attractive as the label and smiling as the spurious attribute,
+(3) CelebA-3 uses wavy hair as the label and high cheekbones as the spurious attribute, and
+finally (4) CelebA-4 uses heavy makeup as the label and big lips as the spurious attribute.
+•Camelyon17 [4]. This dataset is part of the WILDS benchmark [22] and contains medical
+images where variations in data collection from different hospitals induce naturally occur-
+ring distribution shifts. We evaluate on 2 target distributions: (1) ID-Test: a held out test
+set of images from the source distribution, and (2) OOD-Test: the actual test distribution
+with a distribution shift due to evaluating data from a different hospital.
+•Living17 [45]. The task is to classify images into one of 17 animal categorie. This dataset
+presents a subpopulation shift, in that while the ID and OOD distributions have the same
+overall classes, they contain different subpopulations. We test on the given test set.
+•FMoW [22]. This dataset contains satellite images from 5 geographic regions, and the task
+is the classify the image as one of 62 building or land use types. For the target distribution,
+we use the subset of the OOD test data belonging to the Africa region.
+Pre-trained models and additional training details. We extract penultimate embeddings of all
+source and target datapoints from a pre-trained backbone. We preprocess all datapoints according
+to the augmentation used during pre-training, and obtain feature embeddings with eval-mode batch
+normalization. We cache all embeddings for a (backbone, dataset) pair to a single file and train our
+linear models from the cached file. We use CLIP-ViT-L/16 [11] in our main experiments, and ad-
+ditionally experiment with ResNet18 [17], ResNet50, ResNet50-SWaV [6], CLIP-ViT-B/16 models
+in Appendix C.3. All pretrained models are publicly available online. We train all models using
+the AdamW optimizer [33] with weight decay 0.01. For all experiments, we perform early stopping
+with accuracy on held-out target data and report mean and standard deviation across 10runs.
+C Additional Experimental Results
+C.1 Additional visualizations for synthetic Gaussian experiment
+In Fig. 6, we approximate the bias and variance in the synthetic HOG experiment studied in Fig. 3.
+On the left, for each test distribution (ID, Near OOD, and Far OOD), we plot the relationship be-
+tween approximate bias (using error at the largest target dataset size) and nullspace norm and find
+that they have a roughly linear relationship. Thus, this plot empirically supports the connection sup-
+ported in the theory between bias and the number of features used, as the nullspace norm decreases
+as the dimension of the feature-space basis increases.
+190.0 0.2 0.4 0.6 0.8 1.0
+Nullspace Norm010203040Bias
+Far OOD
+Near OOD
+ID
+2 8 32 128 512 2048 8192
+T arget Dataset Size010203040Excess Error
+1
+2
+5
+10
+20Figure 6: Visualization of bias and variance in the synthetic homoscedastic Gaussian experi-
+ment Fig. 3. (Left) We approximate bias by the error at the largest target dataset size, and compare to
+the nullspace norm. The two quantities have a roughly linear relationship. (Right) We approximate
+variance by the difference between the error at each dataset size and the error at the largest. We
+report the average across the three test distributions. Note on the left plot, ID is easily learned and
+so the corresponding line is therefore clustered near (0, 0), as the nullspace norm and bias are both
+near 0.
+C.2 Empirical analysis of projected feature space
+We begin by observing the empirical properties of the projected feature space learned during the
+first projection phase of P RO2. The Waterbirds dataset consists of “spurious” groups where the
+background type (land or water) correlates with the bird type (land or water), on which using a
+shortcut feature that relies on background type will perform optimally, as well as “minority” groups
+in which the correlation does not hold and requires a robust feature that focuses on the bird itself. On
+this dataset, we first extract oracle shortcut and robust features by minimizing loss on spurious and
+minority groups on target data, respectively. These two directions serve as proxies for the optimal
+classifier on two different target distributions. In addition to P RO2, we also evaluate a random
+feature extraction method, which simply samples a random orthonormal basis for the original RD
+embedding space. We plot the nullspace norm of these two features in the subspace spanned by the
+firstkdirections, for 1≤k≤D= 1024 in??. As expected, we see that the earlier features learned
+by P RO2are more similar to the shortcut feature than the robust feature. Because the orthogonality
+constraint forces the features to be different from each other, the nullspace norm reduces to zero at
+the highest value k= 1024 . This experiment shows that the basis learned by P RO2contains both the
+robust and shortcut features for this dataset, and that the robust and shortcut features emerge even for
+very low-rank bases (i.e., for small values of d). In contrast, a random orthogonal basis only captures
+these two predictive features when the rank is larger. This indicates that our orthogonal projection
+approach quickly picks up on the most important directions in feature space, which in this case
+correspond to the shortcut feature representing the background and the robust feature representing
+the type of bird, as discussed in prior work [44].
+C.3 Using various pretrained backbones
+Finally, as P RO2relies on using a pre-trained backbone model that is not fine-tuned to initially extract
+features, we study how different backbones affect performance. In Fig. 7, we plot the accuracy of
+PRO2using 5 pre-trained backbone models that achieve a range of Image-Net accuracies. We find
+that P RO2improves significantly with better pre-trained backbones. These experiments demonstrate
+the promise of the P RO2framework. The quality of pre-trained feature extractors will continue
+to improve with future datasets and architectures, and P RO2leverages such pre-trained backbone
+models for distribution-shift adaptation in a computationally efficient manner.
+C.4 Ablation on the importance of enforcing orthogonality
+For the purposes of our empirical analysis, we additionally consider a simpler variant that optimizes
+the projection matrix Πwith NoConstraint on orthogonality:
+Πi= arg min E(x,y)∼DSL(Πi(f(x)), y). (PRO2-NC)
+20WaterbirdsCelebAFigure 7: Different backbones. We show the accuracy of P RO2, where we use various pretrained
+backbones, which are not fine-tuned. P RO2is able to leverage improvements in the backbone with
+minimal computational overhead.
+WaterbirdsCelebACamelyon17Collages
+Figure 8: Importance of orthogonality. We show the adaptation accuracy of P RO2compared to
+PRO2-NC, a variant without orthogonality enforced, averaged across the varying target distributions
+for each dataset.
+We compare P RO2to P RO2-NC in Fig. 8. While P RO2-NC is is sufficient in some scenarios with
+milder distribution shift, where the shortcut feature continues to be informative, it fails to learn a
+diverse set of predictive features and often only learns shortcut features, often failing on more severe
+distribution shifts.
+C.5 Evaluation on additional CelebA variants
+Finally, in Fig. 9 we supplement our main results in Fig. 4 with additional results from 4 additional
+variants of CelebA. The takeaways from these results line up with those from Fig. 4. In the few-shot
+adaptation problem setting, P RO2is consistently the most effective, compared to Random Projection,
+DFR [21], which uses standard linear probing, and [51].
+21CelebA-1CelebA-2CelebA-3CelebA-4Figure 9: Main results on additional CelebA variants. We compare 4different methods for
+learning features to adapt to a target distribution: (1) Random Projection, (2) DFR Kirichenko et al.
+[21], i.e. standard linear probing, (3) [51], and (4) P RO2. We report target accuracies after probing
+with different target dataset sizes; we report mean and standard deviation across 10runs. Similar
+to the trends seen in Fig. 4, P RO2achieves high accuracy in the low-data regime, substantially
+outperforming both random orthogonal projection and no projection in most target distributions on
+all four datasets.
+22

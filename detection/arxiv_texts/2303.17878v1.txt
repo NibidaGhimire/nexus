@@ -1,0 +1,642 @@
+Fused Depthwise Tiling for Memory Optimization in TinyML
+Deep Neural Network Inference
+Rafael Stahl, Daniel Mueller-Gritschneder, Ulf Schlichtmann
+{r.stahl,daniel.mueller,ulf.schlichtmann}@tum.de
+Technical University of Munich
+Munich, Germany
+ABSTRACT
+Memory optimization for deep neural network (DNN) inference
+gains high relevance with the emergence of TinyML, which refers
+to the deployment of DNN inference tasks on tiny, low-power mi-
+crocontrollers. Applications such as audio keyword detection or
+radar-based gesture recognition are heavily constrained by the lim-
+ited memory on such tiny devices because DNN inference requires
+large intermediate run-time buffers to store activations and other
+intermediate data, which leads to high memory usage. In this paper,
+we propose a new Fused Depthwise Tiling (FDT) method for the
+memory optimization of DNNs, which, compared to existing tiling
+methods, reduces memory usage without inducing any run time
+overhead. FDT applies to a larger variety of network layers than
+existing tiling methods that focus on convolutions. It improves
+TinyML memory optimization significantly by reducing memory
+of models where this was not possible before and additionally pro-
+viding alternative design points for models that show high run
+time overhead with existing methods. In order to identify the best
+tiling configuration, an end-to-end flow with a new path discovery
+method is proposed, which applies FDT and existing tiling methods
+in a fully automated way, including the scheduling of the operations
+and planning of the layout of buffers in memory. Out of seven eval-
+uated models, FDT achieved significant memory reduction for two
+models by 76.2% and 18.1% where existing tiling methods could not
+be applied. Two other models showed a significant run time over-
+head with existing methods and FDT provided alternative design
+points with no overhead but reduced memory savings.
+KEYWORDS
+neural networks, embedded software
+ACM Reference Format:
+Rafael Stahl, Daniel Mueller-Gritschneder, Ulf Schlichtmann. 2023. Fused
+Depthwise Tiling for Memory Optimization in TinyML Deep Neural Net-
+work Inference. In Proceedings of tinyML Research Symposium (tinyML Re-
+search Symposium’23). ACM, New York, NY, USA, 6 pages.
+1 INTRODUCTION
+Edge machine learning applications offer superior possibilities over
+cloud computing approaches in terms of communication demand,
+Permission to make digital or hard copies of part or all of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for third-party components of this work must be honored.
+For all other uses, contact the owner/author(s).
+tinyML Research Symposium’23, March 2023, Burlingame, CA
+©2023 Copyright held by the owner/author(s).latency and data privacy. Edge devices have a wide range of com-
+putation classes. It was shown that for certain machine learning
+workloads, the inference of Deep Neural Networks (DNNs) can be
+performed even on tiny, low-power microcontroller-type devices.
+The solutions that enable DNN inference on microcontrollers are
+known as TinyML orExtreme Edge AI and were successfully applied
+to applications such as keyword spotting, visual wake-up, anomaly
+detection or radar-based gesture recognition. A central challenge
+that TinyML deployment faces is the narrowly constrained em-
+bedded memory that may only offer several hundred kB of SRAM.
+Therefore, TinyML solutions include methods to reduce the mem-
+ory usage of any given DNN inference task, such as quantization,
+pruning and Network Architecture Search (NAS). All these methods
+have in common that they change DNN parameters and, therefore,
+the DNN’s behavior and inference results. One method to reduce
+memory usage without changing any DNN behavior is fused tiling.
+If the lifetimes of two intermediate tensor buffers do not overlap,
+their storage buffers may overlap, allowing to reduce the overall
+memory demand. The size of intermediate buffers can be reduced
+by mutating the DNN graph with tiling and their lifetimes can be
+decoupled by fusing multiple consecutive operations.
+The main contribution of this paper is the introduction of Fused
+Depthwise Tiling (FDT) for the memory optimization of DNNs.
+By tiling depthwise (i.e., by channels for convolutions), new tiling
+opportunities are enabled that reduce peak memory usage with-
+out any run time overheads that would be induced by existing
+tiling methods. Even though convolutions and dense operations
+require all inputs for each output, two of them can be fused to tile
+an intermediate buffer. Additionally, FDT can be applied to more
+layer types than existing methods that focus solely on convolu-
+tions, such that a wider range of models can be tiled. The new FDT
+tiling method overall improves TinyML memory optimization sig-
+nificantly, not by replacing existing tiling methods, but expanding
+the tiling design space in combination with existing methods. To
+explore this expanded tiling design space, we provide an end-to-end
+deployment flow that automatically determines where and how
+to apply fused tiling optimally on any given DNN. Exploitation of
+the tiled graphs for memory reduction additionally requires a suit-
+able memory-aware scheduling of operations and memory buffer
+layout planning. Hence, these two steps are also automated and
+efficiently implemented to conduct a fast exploration. To quickly
+find optimized tiling opportunities, we also run a process called
+path discovery that analyzes the DNN graph and explores possible
+tiling configurations. In summary, our contributions are as follows.
+(1)The tiling method FDT applied for the memory optimization
+of DNNs to expand the design space by reducing memory
+further or eliminating run time overheads.arXiv:2303.17878v1  [cs.LG]  31 Mar 2023tinyML Research Symposium’23, March 2023, Burlingame, CA Rafael Stahl, et al.
+Conv(channels=8, kernel=3x3)
+Conv(channels=2, kernel=3x3)FDT FFMT
+Figure 1: FFMT compared to FDT.
+(2)An automated exploration with a new block-based path dis-
+covery to find suitable tiling configurations, a memory-aware
+scheduling and optimal memory layout planning.
+In a sample of seven models that benefit from fused tiling, FDT
+achieved significant memory reduction for two models by 76.2%
+and 18.1% where existing tiling methods could not be applied. Two
+other models showed a significant run time overhead with existing
+methods and FDT provided an alternative design point with no
+overhead but reduced memory savings.
+2 RELATED WORK
+Inference on resource-constrained devices can be tackled in a num-
+ber of ways. Offloading computation to other infrastructure such
+as the cloud is widely used, but introduces challenges of high band-
+width and energy requirements for data transfer, network latency
+and privacy concerns [ 16]. Orthogonal methods to fused tiling are
+quantization [12], pruning [14] and NAS [3, 20].
+Tiling is the splitting of DNN graph operations such that in-
+dividual partitions can be computed independently of each other.
+It is used primarily within a single DNN operation to accelerate
+execution [ 20]. Another application of tiling is the partitioning of
+DNNs so that they can be run distributed over several devices [ 32]
+or can be offloaded to one or more accelerators [ 2]. A novel aspect
+of these works are their use of fusing to keep consecutive tiled parti-
+tions independent of each other. The basic principle is summarized
+in Fig. 1 on the left and will be referred to as Fused Feature Map
+Tiling (FFMT). The figure shows two consecutive convolutional
+operations as part of a DNN. The three sets of feature maps are the
+input of the first operation, an intermediate buffer and the output
+of the second operation. Since the intermediate buffer is larger than
+the input and output, tiling it could reduce memory requirements.
+FFMT does this by splitting all feature maps of the intermediate
+tensor buffer into partitions. Convolution operations have spatial
+locality, which allows to produce output feature maps from split
+inputs mostly independently. However, convolution kernels larger
+than 1x1 cause an overlap in the input partitions that accumulates
+additively over all tiled operations. Two partitions are shown in
+Fig. 1 in different colors/patterns, and their overlap caused by 3x3
+convolutions is marked in purple/crossed. FFMT was first employed
+for reducing peak memory usage in [ 9], but their path discoveryTable 1: Comparison of Tiling Methods
+Work FFMT FDT
+Distributed Inference [32] RAM reduction -
+Full Distributed Inference [30] RAM reduction ROM reduction
+Partly Manual Tiling [5, 9] RAM reduction -
+Automated Tiling [6, 10, 19, 23–26] RAM reduction -
+Our Automated Tiling RAM reduction RAM reduction
+Dense(n=8) Dense(n=2) MergeFDT Fan-In FDT Fan-Out
+fact(∑(•)) ∑(∏(•)) fact(∑(∏(•)))
+Figure 2: FDT applied to two dense layers.
+requires partially manual user effort. Other works that use FFMT
+with automated path discovery are [ 5,10,19,25,26]. FFMT along
+with tiling in the depthwise dimension for single layers without
+operator fusion was explored in [ 6,23]. Based on these, the work
+in [24] identifies the full FFMT search space of loop scheduling
+in a memory hierarchy and adds a new cost model. [ 24] further
+states: "in most convolution layers all input channels are required to
+calculate any output feature, which makes cross-layer tiling across
+the channel dimensions impossible", which we challenge with this
+work. Our distinction from existing work is summarized in Table 1.
+Our work is the first to exploit FDT for optimization of working
+memory (RAM) in DNN inference while also keeping the path dis-
+covery fully automated. FDT will be explained in full detail in the
+following section.
+3 FUSED DEPTHWISE TILING (FDT)
+FDT is first proposed in [ 30] (named Fused Layer Partitioning ) for
+partitioning DNN weights of fully connected and convolutional
+layers that have a large number of weights. Our work is the first
+that applies it for the optimization of working memory, i.e. RAM,
+where the original work targeted the static parameters, i.e. ROM.
+The primary goal of fused tiling for memory optimization is the
+splitting of large intermediate tensor buffers so that their partitions
+can be computed independently with reduced memory demand. As
+shown in Fig. 1 on the right, FDT does this in the depthwise dimen-
+sion instead of along the feature maps as with FFMT. Switching
+to the depthwise dimension avoids any overlap in the intermedi-
+ate buffer and makes the method independent of the kernel size
+because the two dimensional convolutions are not split. However,
+it requires that the input and output buffers are fully available to
+every partition, because every single output feature map is the
+result of summing all input feature maps after applying a convolu-
+tional filter. Fig. 2 helps explain this concept with two consecutive
+dense (also called fully connected) layers tiled into two partitions.Fused Depthwise Tiling for Memory Optimization in TinyML Deep Neural Network Inference tinyML Research Symposium’23, March 2023, Burlingame, CA
+Gin Sched LayoutPlan CritBufIdent Gopt S L
+empty take nextBi
+Gopt PathDisc Cj
+Sched LayoutPlan Sj Ljsize(Lmin) < size(L)else
+Gopt = G minTransform Gj
+Figure 3: Automated Tiling Exploration Flow.
+Part of the output neurons of the first layer ( FDT Fan-Out ) are com-
+puted in each partition using all input neurons. For the second layer
+(FDT Fan-In) , the output neurons can only be computed partially,
+because not all input neurons are available to every partition. How-
+ever, since a dense operation is a sum of products, all partial values
+of all partitions can be recombined by summing them element-wise
+and applying the activation function in a new appended Merge
+operation. Since activation functions are nonlinear, this imposes
+a limit of two FDT-partitioned operations for each tiled sequence.
+In FFMT there is no inherent limit to the number of consecutive
+convolutions until the overlap becomes too large to achieve mem-
+ory savings or the run time overhead becomes impractical. We call
+such a tiled sequence path and they may contain other operations
+interleaved with the FFMT/FDT ones. For example, element-wise
+or pooling operations can be inserted, because they do not intro-
+duce cross-dependencies between partitions. FFMT requires spatial
+locality, while FDT can be applied to a wider range of operations
+where all output elements depend on all input elements as long as
+there is no interdependence among the output elements. Examples
+of operations that can only be tiled by FDT are dense operations
+and pairs of embedding lookup (e.g. TensorFlow gather function)
+and axis reduction (e.g. by taking the mean).
+4 AUTOMATED TILING EXPLORATION
+It is not meaningful to demonstrate the theoretical memory usage
+of fused tiling methods in isolation, because the practical memory
+usage is heavily affected by the entire end-to-end deployment flow
+with the interdependent problems of tiling configuration, operation
+scheduling and layout planning. Each of these problems will be
+addressed in this section. The entire automated tiling exploration
+flow is shown in Fig. 3. Firstly, the operations of DNN graph 𝐺𝑖𝑛
+are scheduled in a memory-optimized order 𝑆. After the schedule
+has been fixed, all required intermediate buffers are placed into a
+linear memory space such that the total required peak memory is
+minimal. From the resulting memory layout 𝐿a list is extracted that
+consists of intermediate buffer candidates 𝐵𝑖which may reduce the
+total memory usage if they were to be tiled. These 𝐵𝑖are passed
+to the path discovery in descending order by their size. The path
+discovery step identifies tiling configuration candidates 𝐶𝑗for the
+first buffer candidate. All configuration candidates are passed to
+the actual graph transformation pass that applies tiling on the DNN
+graph to produce graph candidates 𝐺𝑗. These are again evaluated by
+performing scheduling and memory layout planning. If the memory
+size of the smallest found layout 𝐿𝑚𝑖𝑛is smaller than the current
+layout𝐿, the corresponding tiling configuration did improve mem-
+ory usage and the currently best graph candidate 𝐺𝑜𝑝𝑡is updated.
+If no configuration could be found that reduces the memory usage,
+the next buffer candidate is tested. The newly generated tiled DNNgraph𝐺𝑜𝑝𝑡is evaluated iteratively. The flow terminates when no
+buffer candidate 𝐵𝑖produces a tiling configuration that reduces the
+layout size further. In the following, we describe each step in detail,
+starting with the scheduling and layout planning as these are the
+prerequisites for path discovery.
+4.1 Memory-aware Scheduling
+For many DNNs, scheduling is trivial because their graphs do not
+contain any branches. The operation nodes are scheduled in the
+order as they are located on the single path of the graph. However,
+with tiling, parallel paths are introduced in the DNN graph and
+different schedules become possible that determine the lifetime of
+the intermediate buffers and hence, peak memory. While optimal
+memory-aware scheduling has been achieved before in [ 1], tiled
+graphs with large number of partitions and many split operations
+can quickly cause unmanageable run times. Tiled DNNs resemble
+series-parallel graphs (SP-graphs) , i.e. graphs that only comprise
+of series and parallel compositions of other SP-graphs and the
+base case of a single node. Optimal memory-aware scheduling
+of SP-graphs has been solved with a polynomial-time algorithm
+by [17] based on [ 21]. We implemented this algorithm and adjusted
+the task model to match that of DNN inference. In contrast to
+typical task models in distributed computing, the output of an
+operation can be used by all subsequent operations without distinct
+buffers for each edge. For non-SP-graphs, we formulated an Mixed
+Integer Linear Program (MILP), because we deemed it easier than
+the method by [ 1]. If the SP-graph algorithm (it is still O(𝑛3))
+times out, we use a simple heuristic based on hill-valley segments
+introduced in [ 21], but compromising optimality for trivial run
+time complexity. For each parallel path, the heuristic determines
+the node𝑁𝑖,𝑚𝑎𝑥 with the maximum memory usage and the node
+𝑁𝑖,𝑚𝑖𝑛 with the minimum memory usage which is also a descendant
+of𝑁𝑖,𝑚𝑎𝑥 . The paths are now scheduled in their descending order
+of𝑁𝑖,𝑑𝑖𝑓𝑓 =𝑁𝑖,𝑚𝑎𝑥−𝑁𝑖,𝑚𝑖𝑛 and used as-is, instead of merging
+them as in the optimal algorithm.
+4.2 Memory Layout Planning
+After the optimal schedule has been determined, all intermediate
+buffers of the DNN graph have to be mapped to concrete mem-
+ory locations. This is a nontrivial task because buffers can overlap
+in memory, as long as they are not live at the same time. The
+DNN graph describes the dependencies between buffers and oper-
+ations, and the schedule indicates in what order these operations
+are executed. Together, these two determine the exact lifetime and,
+therefore, conflicts that exist between any buffers. The following
+MILP is formulated to perform optimal memory layout planning.
+𝑚𝑖𝑛 e𝑚𝑎𝑥𝑖(𝑒𝑖) (1)
+𝑠.𝑡. 𝑒𝑖≥𝑠𝑖𝑒𝑖∈N∀𝑖=1...𝑁 (2)
+𝑒𝑢−𝑠𝑢≥𝑒𝑣∨𝑒𝑣−𝑠𝑣≥𝑒𝑢
+(𝑢,𝑣)∈𝑐𝑗∀𝑗=1...𝐶 (3)
+The𝑖-th of a total of 𝑁buffers has the ending offset 𝑒𝑖and the size
+𝑠𝑖. The𝑗-th of a total of 𝐶conflicts is described by 𝑐𝑗and contains
+the indices𝑢and𝑣that refer to the buffer list. The objective function
+(1) minimizes the largest ending offset of all buffers which is equal
+to the peak memory usage of all mapped buffers. The constraint (2)tinyML Research Symposium’23, March 2023, Burlingame, CA Rafael Stahl, et al.
+FDT Fan-OutSPLIT FFMT
+FDT Fan-InCONCA T PART
+dense, conv , gatheradd, sub, mul, div , shift,
+round, clip, relu, pad,
+dwconv , pool, ...conv
+dense, conv , meanI
+I PDDPDFM PDFM
+PDD PDDPDFM PDFMO
+O PDDPDFM
+PDD OPDFM
+I PDD
+Figure 4: Path discovery blocks with supported operations.
+ensures that all buffers can only start after the address zero. Finally,
+the constraint (3) ensures that there are no address overlaps in the
+list of conflicting buffers. The nonlinear disjunctions are modeled
+with the Big M Method . The final offsets of each buffer are obtained
+trivially by𝑒𝑖−𝑠𝑖.
+4.3 Block-based Path Discovery
+Path discovery has the goal of proposing optimized fused tiling con-
+figurations that dictate where and how DNN operations are tiled.
+The process starts at a buffer that should be split into multiple parti-
+tions, called the critical buffer. It then walks the DNN graph up and
+down to find suitable split and merge points. After memory-aware
+scheduling and memory layout planning, the critical buffers are
+identified by selecting buffers from the memory layout that would
+reduce the total layout size if their size were to be reduced. This is
+achieved by checking whether a buffer is the sole one responsible
+for the final layout size. In our work, the input or output buffers of
+the model cannot be tiled because they are assumed to be written
+and read as a whole by the application. The method can be adapted
+easily if this were not the case. All critical buffers are considered
+for path discovery, but the largest ones are checked first.
+The blocks of our block-based path discovery along with their
+supported operations are shown in Fig. 4. The input I is the start
+of any path and can either be split explicitly by a SPLIT opera-
+tion or implicitly through an FDT Fan-Out operation. SPLIT may
+produce depthwise partitioned (PD D) or feature map partitioned
+(PD FM) values. Partitioned operations ( PART ) compute part of the
+output values by using their respective input values and are com-
+patible with any partitioned values. The concatenation operation
+(CONCAT ) concatenates multiple partitioned values back into the
+original non-partitioned buffer O. The same can be realized im-
+plicitly with the FDT Fan-In which includes the second partitioned
+operation of FDT along with the final merge operation as discussed
+in Section 3. FFMT represents an operation that is split with FFMT
+and is only applicable to convolutional operations. FDT Fan-Out ,
+PART ,FDT Fan-In andFFMT replace their original operation with
+the tiled variant, while SPLIT andCONCAT are additionally inserted
+operations to build a valid path.
+Fig. 5 shows an example DNN at the top with a highlighted
+critical buffer. At the critical buffer, multiple candidate paths are
+proposed for type PD Dor PD FMif possible. One proposal is cre-
+ated for each number of partitions 𝑁∈ {2,...,25}with the up-
+per limit chosen to reduce overheads while observing that higher
+limits rarely provide additional memory savings. For FFMT , qua-
+dratic two-dimensional tiling configurations are added as 𝑁∈
+{2𝑥2,3𝑥3,4𝑥4,5𝑥5}. Next, the path is discovered starting from the
+critical buffer in both directions where any compatible block can
+conv pool conv 250 200 100 1000
+conv conv conv 100 100 50
+conv P AR T FDT PD D 200 I PD D
+FDT conv conv 100 O 50
+SPLIT P AR T FFMT PD FM 200 PD FM PD FM
+FFMT CONCA T FFMT 100 PDFM PDFMconv I
+O convUntiled
+FDT
+FFMTFigure 5: Path discovery applying FDT and FFMT.
+be chosen. Whenever the FDT Fan-In method is used, one version
+of the path without FDT Fan-In is kept, because a CONCAT could
+require less memory than continuing with partial values. Whenever
+anFFMT -partitioned operation that has overlap is encountered, one
+version that stops before that operation is kept and finalized with
+SPLIT orCONCAT . This is done because overlaps that become too
+large may cause inferior paths compared to shorter ones. The dis-
+covery has to stop at any operation that is incompatible with fused
+tiling (e.g. softmax, slice, concat). For each of the proposed path
+candidates, the operation before the critical buffer with the lowest
+input buffer size is selected as start of the path and the operation
+after the critical buffer with the lowest output buffer size is selected
+as end of the path. If no such operation could be determined before
+and after the critical buffer, the path is discarded and if no valid
+paths are left, the discovery fails. The second and third graphs in
+Fig. 5 show the longest paths of the example for FDT and FFMT
+respectively. Note that initially the FFMT path included the out-
+ermost convolutions, but since their input/output buffer is larger
+than the one before, the path terminals are selected as shown. In
+the final step, path discovery determines the path that is expected
+to cause the lowest memory usage. As mentioned in the overview,
+this is done by evaluating the memory size with memory-aware
+scheduling and memory layout planning. The best configuration is
+the one with the lowest memory size.
+4.4 Automated Graph Transformation
+Once the best path configuration has been determined, it is ap-
+plied by transforming the DNN graph with the given parameters.
+At the start of the split path, either an explicit or implicit split
+has to be realized. For an explicit split, a new operation has to
+be inserted that slices the input into partitions according to the
+tiling configuration. An implicit split is implemented by replicat-
+ing the convolutional or dense layer by the number of partitions
+and splitting their weight dimension that is responsible for pro-
+ducing outputs. Any following operations are also replicated on
+each partition and need their parameters changed to match their
+new input dimensions. For example, a bias addition no longer adds
+its original constants, but only the ones corresponding to the re-
+spective partition. Another example are padding operations where
+their padding needs to be eliminated at split boundaries to preserve
+the original DNN behavior. Depthwise convolutions can be split
+trivially along the channel dimension as tiling method PART , since
+every output channel only depends on its respective input channel.
+The associated filter weights must still be split accordingly. TheFused Depthwise Tiling for Memory Optimization in TinyML Deep Neural Network Inference tinyML Research Symposium’23, March 2023, Burlingame, CA
+exact splitting logic for every operator has to be determined on a
+case-by-case basis. However, it is possible to define categories with
+similar splitting logic. FDT Fan-In operations are split equivalently
+toFDT Fan-Out ones, just that the input channel dimension of the
+weight tensor is split. Care has to be taken to prohibit automatic
+fusing of the last operations on the split paths with the CONCAT
+orFDT Fan-In operation, because that would lead to keeping their
+inputs alive on multiple split paths. After all transformations have
+been applied to the graph, the flow goes back to scheduling it as
+shown in Fig. 3.
+4.5 Implementation
+The complete end-to-end flow for comparing FDT to FFMT has
+been implemented in Apache TVM [7]. TVM is a state-of-the-art
+machine learning compiler that takes DNNs and converts them
+into its own Intermediate Representation (IR). This IR is used to
+optimize the DNN through compiler transformations that are aware
+of the machine learning domain. Finally, various backends are able
+to produce output for different deployment targets like GPUs or
+microcontrollers. We chose TVM because its IR is very suitable for
+implementing complex transformation passes. To achieve competi-
+tive results compared to widely-used frameworks like TensorFlow
+Lite for Microcontrollers , we chose the Ahead-of-Time (AoT) TVM
+backend that generates static code that is able to run the DNN infer-
+ence without the full TVM run-time libraries. In TVM, many DNN
+operations are fused to eliminate intermediate buffers entirely. For
+example, a convolution with bias addition and activation function
+is carried out by adding the bias and applying the activation func-
+tion while calculating each individual convolution output value.
+All intermediate buffers between such fused operations do not con-
+tribute to the peak memory usage. Therefore, when analyzing a
+DNN for critical buffers, only the buffers of non-fused operations
+are taken into consideration. However, during path discovery, all
+fused operations are transformed into their fine-grained operations
+because they may contain operations that are suitable as terminals
+of the split path. While this may have an effect on inference latency
+through increased number of memory accesses, the goal of the
+optimization is having small buffers at the path terminals, so that
+those possible extra accesses will never dominate other accesses.
+After the graph transformation step, operations are fused again at
+every possible opportunity.
+5 RESULTS
+From a wide range of models, the following subset was identified
+that benefits from fused tiling. All models are quantized to 8 bits.
+(1)Keyword Spotting (KWS) : Detection of keywords from audio.
+Part of the MLPerf Tiny benchmark [4].
+(2)Text Sentiment Analysis (TXT) : [13, 22].
+(3)Magic Wand (MW) : TinyML gesture recognition with an
+accelerometer [11].
+(4)PoseNet (POS) : Pose estimation [27].
+(5)MobileNet V2 SSDLite (SSD) : COCO classifier [29].
+(6)Cifar10 classifier (CIF) : Own CNN [18].
+(7)Radar Gesture Recognition (RAD) : Own TinyML CNN for
+gesture recognition with a radar sensor.The target architecture for all experiments was RISC-V in the
+RV32GC configuration. The GNU toolchain at version 11.1.0 was
+used with the optimization flag set to -Osand options to prune all
+unused code and data. The RAM and ROM usage is determined
+from the section sizes in the compiled binary. The run time is esti-
+mated by statically determining the number of multiply-accumulate
+(MAC) operations required in the final optimized DNN graph. This
+gives a good estimate because the computational cost of DNNs is
+dominated by matrix multiplications and therefore MACs [ 31]. This
+is not equivalent to the run time after deployment, but is sufficient
+for a relative comparison. Dynamic instruction counts were also
+gathered on an instruction set simulator, but they showed high sen-
+sitivity to TVM’s automatic kernel generation, rather than the cho-
+sen tiling configurations. This could be explained by TVM’s lack of
+operator schedules that are optimized for RISC-V. The MILPs were
+implemented in ORTools 9.3 [ 28] using the Gurobi 9.1.2 solver [ 15].
+5.1 Automated Tiling Exploration
+Our optimal memory layout planning algorithm was compared
+to the best-performing heuristic approach in TVM that uses hill-
+climbing and simulated annealing. The heuristic finds the optimum
+for most models, but in one case (the TXT model) we achieved a
+memory reduction of 16.8% compared to the heuristic.
+Our MILP memory-aware scheduling solution is optimal, as
+defined by its cost function. The work in [ 1] reports a run time
+of 37.9 seconds for the SwiftNet model [ 8]. When running our
+MILP scheduling with the same SwiftNet model, we measured a
+run time of 37 seconds. While not being able to directly compare
+these numbers due to different used machines, our result on an
+AMD Ryzen 9 3900X processor shows comparable performance.
+Our path discovery is able to traverse a large variety of models
+and selects the optimal solution within its search space. This search
+space ranges from zero to hundreds depending on the critical buffer
+dimensions and operations used to create a path. Further factors
+are the variants with early path stops and the iterative application
+of tiling. The innermost operations of graph transformation, sched-
+uling and layout planning have to be executed that number of times.
+For the evaluated models, the entire flow has a run time of 3 min-
+utes for the RAD model (38 tiling configurations) up to an hour for
+the POS model (172 tiling configurations). [ 5,10,19,25,26] do not
+provide flow run times. The work of [ 9] reports 82 to 375 seconds
+for searching nine configurations, while still having to manually
+select the number of partitions and their axes. This shows that the
+implemented flow runs efficiently and, in contrast to existing work,
+requires no manual choice for the tiling configuration.
+5.2 Fused Depthwise Tiling
+The results in Table 2 show the working memory (RAM) usage
+and estimated MAC operations for each untiled network and the
+improvements by applying FFMT or FDT individually. The first
+two models are only able to be tiled by FDT. In the case of KWS,
+the critical buffer is involved in a sequence of convolutions that
+reduce the feature map size down to 1x1, which can not be split by
+FFMT. The TXT model’s critical buffer exists within an embedding
+lookup followed by a mean axis reduction that can only be tiled by
+FDT. The remaining models are all CNNs with sufficient featuretinyML Research Symposium’23, March 2023, Burlingame, CA Rafael Stahl, et al.
+Table 2: Memory reduction of FDT compared to FFMT
+Mem [kB] [%] MACs [1 million] [%]Model
+Untiled
+FFMT
+FDT
+FFMT
+Savings
+FDT
+Savings
+Untiled
+FFMT
+FDT
+FFMT
+Overhead
+FDT
+Overhead
+KWS 65.6 65.6 53.7 0.0 18.1 2.66 2.66 2.66 0.0 0.0
+TXT 18.6 18.6 4.43 0.0 76.2 0.00 0.00 0.00 0.0 0.0
+MW 17.6 7.04 11.3 60.9 35.5 0.06 0.06 0.06 0.0 0.0
+POS 9.35k 5.11k 8.94k 45.3 4.4 837 1215 837 45.1 0.0
+SSD 14.3k 8.66k 12.2k 39.4 14.6 313 314 313 0.2 0.0
+CIF 179 76.7 170 57.1 5.0 5.52 6.02 5.52 9.0 0.0
+RAD 36.2 26.7 29.4 26.3 18.8 0.09 0.09 0.09 0.0 0.0
+Avg. 32.7 24.7 7.8 0.0
+map sizes such that either method is applicable. FDT never incurs
+any run time overhead at the cost of lower memory reduction
+compared to FFMT. The average memory savings are 32.7% for
+FFMT and 24.7% for FDT with the highest savings achieved for
+the TXT model with FDT at 76.2%. Mostly, the run time overheads
+of both methods are negligible, but the POS and CIF models with
+FFMT showed a significant overhead of 45.1% and 9.0% because
+they contain larger chains of fused operations that cause more
+redundant calculations from overlapping partitions. In these cases,
+FDT offers an alternative design point without any overhead, but
+often reduced memory savings. For the remaining three models,
+FDT did not achieve higher memory savings than FFMT and FFMT
+did not cause a significant run time overhead. The limitation of
+FDT is therefore its limited applicability to models in general. The
+ROM overheads are not shown because they are negligible with
+impacts below 1%. Although [ 30] used FDT and FFMT as well, that
+work only investigated memory usage without inference, which
+mainly amounts to ROM usage.
+Enhancing an FFMT-only TinyML deployment flow with FDT
+expands the tiling design space for memory and performance goals.
+In the case of a memory-optimized design, the fused tiling method
+with the highest memory savings can be selected. In the case of a
+performance-optimized design, the highest memory savings should
+be selected with the constraint that the run time overhead may
+not exceed a certain threshold. The exploration also found tiling
+configurations, in which FFMT and FDT are applied in conjunction.
+However, the results were in the best case as good as the best
+configuration with a single tiling method. Still, for possible new
+models, the combination could also yield benefits.
+6 CONCLUSION
+In this paper, we apply Fused Depthwise Tiling to DNN graphs
+for memory optimization for the first time. We built a state-of-
+the-art, end-to-end deployment flow for its evaluation. In TinyML
+scenarios, integrating this new tiling reduces the memory usage of
+two evaluated models significantly and offered additional design
+points for two other models that eliminate the run time overhead
+at reduced memory savings.
+ACKNOWLEDGMENTS
+This work was supported in part by the German Federal Ministry
+of Education and Research (BMBF) within the project Scale4Edge
+under contract no. 16ME0131.REFERENCES
+[1]Byung Hoon Ahn et al .2020. Ordering chaos: Memory-aware scheduling of
+irregularly wired neural networks for edge devices. Proceedings of Machine
+Learning and Systems 2 (2020), 44–57.
+[2]Manoj Alwani et al .2016. Fused-layer CNN accelerators. In 2016 49th Annual
+IEEE/ACM International Symposium on Microarchitecture (MICRO) . IEEE, 1–12.
+[3]Colby Banbury et al .2021. Micronets: Neural network architectures for deploying
+tinyml applications on commodity microcontrollers. Proceedings of Machine
+Learning and Systems 3 (2021), 517–532.
+[4]Colby Banbury et al .2021. MLPerf Tiny Benchmark. arXiv preprint
+arXiv:2106.07597 (2021).
+[5]Matthew Barrett. 2021. Miniaturizing Models for microNPUs: a Cascading
+Scheduler for TVM. TVMCon Presentation. https://www.tvmcon.org/events/
+miniaturizing-models-for-micronpus-a-cascading-scheduler-for-tvm
+[6]Alessio Burrello et al .2021. Dory: Automatic end-to-end deployment of real-
+world dnns on low-cost iot mcus. IEEE Trans. Comput. 70, 8 (2021), 1253–1268.
+[7]Tianqi Chen et al .2018. TVM: An automated end-to-end optimizing compiler
+for deep learning. In 13th USENIX Symposium on OSDI . 578–594.
+[8]Hsin-Pai Cheng et al .2019. Swiftnet: Using graph propagation as meta-
+knowledge to search highly representative neural architectures. arXiv preprint
+arXiv:1906.08305 (2019).
+[9]Antonio Cipolletta and Andrea Calimera. 2021. Dataflow Restructuring for Active
+Memory Reduction in Deep Neural Networks. In DATE . IEEE, 114–119.
+[10] Steven Colleman and Marian Verhelst. 2021. High-utilization, high-flexibility
+depth-first cnn coprocessor for image pixel processing on fpga. IEEE Transactions
+on Very Large Scale Integration Systems 29, 3 (2021).
+[11] Robert David et al .2020. Tensorflow lite micro: Embedded machine learning on
+tinyml systems. arXiv preprint arXiv:2010.08678 (2020).
+[12] Amir Gholami et al .2021. A survey of quantization methods for efficient neural
+network inference. arXiv preprint arXiv:2103.13630 (2021).
+[13] Google. 2022. TensorFlow Text Classification. https://www.tensorflow.org/lite/
+examples/text_classification/overview
+[14] Jinyang Guo et al .2020. Channel pruning guided by classification loss and feature
+importance. In AAAI Conference on Artificial Intelligence , Vol. 34. 10885–10892.
+[15] Gurobi Optimization, LLC. 2022. Gurobi Optimizer Reference Manual. https:
+//www.gurobi.com
+[16] Yiping Kang et al .2017. Neurosurgeon: Collaborative intelligence between the
+cloud and mobile edge. ACM SIGARCH Computer Architecture News 45, 1 (2017).
+[17] Enver Kayaaslan et al .2018. Scheduling series-parallel task graphs to minimize
+peak memory. Theoretical Computer Science 707 (2018), 1–23.
+[18] Alex Krizhevsky, Geoffrey Hinton, et al .2009. Learning multiple layers of features
+from tiny images. Technical Report (2009).
+[19] Ji Lin et al .2021. Mcunetv2: Memory-efficient patch-based inference for tiny
+deep learning. arXiv preprint arXiv:2110.15352 (2021).
+[20] Ji Lin, Wei-Ming Chen, Yujun Lin, John Cohn, Chuang Gan, and Song Han. 2020.
+Mcunet: Tiny deep learning on iot devices. arXiv preprint arXiv:2007.10319 (2020).
+[21] Joseph WH Liu. 1987. An application of generalized tree pebbling to sparse matrix
+factorization. SIAM Jour. on Algebraic Discrete Methods 8, 3 (1987), 375–395.
+[22] Andrew L. others Maas. 2011. Learning Word Vectors for Sentiment Analysis.
+InProceedings of the 49th Annual Meeting of the Association for Computational
+Linguistics: Human Language Technologies . 142–150.
+[23] Linyan Mei et al .2021. Zigzag: Enlarging joint architecture-mapping design space
+exploration for dnn accelerators. IEEE Trans. Comput. 70, 8 (2021), 1160–1174.
+[24] Linyan Mei, Koen Goetschalckx, Arne Symons, and Marian Verhelst. 2022. De-
+FiNES: Enabling Fast Exploration of the Depth-first Scheduling Space for DNN
+Accelerators through Analytical Modeling. arXiv preprint arXiv:2212.05344 (2022).
+[25] Svetlana Minakova and Todor Stefanov. 2020. Buffer sizes reduction for memory-
+efficient CNN inference on mobile and embedded devices. In 2020 23rd Euromicro
+Conference on Digital System Design (DSD) . IEEE, 133–140.
+[26] Svetlana Minakova and Todor Stefanov. 2022. Memory-Throughput Trade-off for
+CNN-based Applications at the Edge. ACM Transactions on Design Automation of
+Electronic Systems (TODAES) (2022).
+[27] George Papandreou et al .2018. Personlab: Person pose estimation and instance
+segmentation with a bottom-up, part-based, geometric embedding model. In
+Proceedings of the European conference on computer vision (ECCV) . 269–286.
+[28] Laurent Perron and Vincent Furnon. 2019. OR-Tools. https://developers.google.
+com/optimization/
+[29] Mark Sandler et al .2018. Mobilenetv2: Inverted residuals and linear bottlenecks.
+InProceedings of the IEEE conference on computer vision and pattern recognition .
+[30] Rafael Stahl et al .2021. DeeperThings: Fully Distributed CNN Inference on
+Resource-Constrained Edge Devices. International Journal of Parallel Program-
+ming (2021), 1–25.
+[31] Hsinyu Tsai et al .2018. Recent progress in analog memory-based accelerators
+for deep learning. Journal of Physics D: Applied Physics 51, 28 (2018), 283001.
+[32] Zhuoran Zhao et al .2018. Deepthings: Distributed adaptive deep learning infer-
+ence on resource-constrained iot edge clusters. IEEE Transactions on Computer-
+Aided Design of Integrated Circuits and Systems 37, 11 (2018), 2348–2359.

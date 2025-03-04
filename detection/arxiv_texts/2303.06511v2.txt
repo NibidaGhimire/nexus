@@ -1,0 +1,967 @@
+Need for Speed: Fast Correspondence-Free Lidar-Inertial Odometry
+Using Doppler Velocity
+David J. Yoon1, Keenan Burnett1, Johann Laconte1, Yi Chen2, Heethesh Vhavle2,
+Soeren Kammel2, James Reuther2, and Timothy D. Barfoot1
+Abstract — In this paper, we present a fast, lightweight
+odometry method that uses the Doppler velocity measurements
+from a Frequency-Modulated Continuous-Wave (FMCW) lidar
+without data association. FMCW lidar is a recently emerging
+technology that enables per-return relative radial velocity mea-
+surements via the Doppler effect. Since the Doppler measure-
+ment model is linear with respect to the 6-degrees-of-freedom
+(DOF) vehicle velocity, we can formulate a linear continuous-
+time estimation problem for the velocity and numerically inte-
+grate for the 6-DOF pose estimate afterward. The caveat is that
+angular velocity is not observable with a single FMCW lidar.
+We address this limitation by also incorporating the angular
+velocity measurements from a gyroscope. This results in an
+extremely efficient odometry method that processes lidar frames
+at an average wall-clock time of 5.64ms on a single thread,
+well below the 10Hz operating rate of the lidar we tested.
+We show experimental results on real-world driving sequences
+and compare against state-of-the-art Iterative Closest Point
+(ICP)-based odometry methods, presenting a compelling trade-
+off between accuracy and computation. We also present an
+algebraic observability study, where we demonstrate in theory
+that the Doppler measurements from multiple FMCW lidars
+are capable of observing all 6 degrees of freedom (translational
+and angular velocity).
+I. I NTRODUCTION
+Lidar sensors have proven to be a reliable modality for
+vehicle state estimation in a variety of applications such
+as self-driving, mining, and search & rescue. Modern lidars
+are long range, high resolution, and relatively unaffected by
+lighting conditions. State-of-the-art estimation is achieved by
+algorithms that geometrically align lidar pointclouds through
+an iterative process of nearest-neighbour data association
+(i.e., Iterative Closest Point (ICP)-based methods [1], [2]).
+However, alignment relying on scene geometry can fail in
+degenerate environments such as tunnels, bridges, or long
+highways with a barren landscape. Frequency-Modulated
+Continuous Wave (FMCW) lidar is a recent type of lidar
+sensor that additionally measures per-return relative radial
+velocities via the Doppler effect (see Figure 1). Incorporating
+these Doppler measurements into ICP-based methods has re-
+cently been demonstrated to substantially improve estimation
+robustness in these difficult scenarios [3], [4].
+ICP-based methods perform accurately, but are relatively
+expensive in computation due to the iterative data asso-
+ciation. More computationally efficient odometry may be
+1University of Toronto Institute for Aerospace Studies (UTIAS),
+4925 Dufferin St, Ontario, Canada.2Aeva Inc., Mountain
+View, CA 94043, USA. {david.yoon, keenan.burnett,
+johann.laconte }@robotics.utias.utoronto.ca,
+{ychen, heethesh, soeren, jreuther }@aeva.ai,
+tim.barfoot@utoronto.ca
+yi
+dop
+yi+1
+dop
+yi+2
+dop
+yi+3
+dopFs
+yj
+gyroFvFig. 1: A 2D illustration of our method. We use the Doppler
+measurements from a FMCW lidar and the angular velocity
+measurements from a gyroscope to efficiently estimate 6-
+DOF vehicle motion without data association.
+desirable to leave compute available for other processes in an
+autonomous navigation pipeline (e.g., localization, planning,
+control). We present an efficient lidar odometry method that
+leverages the Doppler measurements and does not perform
+data association as it is a major computational bottleneck.
+In this work, we propose a lightweight odometry method
+that estimates for the 6-degrees-of-freedom (DOF) vehicle
+velocity, which can afterward be numerically integrated
+into a SE(3)pose estimate. Velocity, rather than pose, is
+estimated because the Doppler measurement model is linear
+with respect to the vehicle velocity, permitting a linear
+continuous-time estimation formulation. A caveat is that
+the vehicle velocity is not fully observable with a single
+FMCW lidar. We address this problem by also using the
+gyroscope measurements from an Inertial Measurement Unit
+(IMU), conveniently built into the Aeries I FMCW lidar that
+we used for testing. The resulting method produces pose
+estimates at an average wall-clock time of 5.64ms on a single
+thread, which is substantially lower than the 100ms time
+budget required for the 10Hz operating rate of the lidar. In
+comparison to the state of the art, we believe we offer a
+compelling trade-off between accuracy and performance.
+The following are the main contributions of this paper:
+•A lightweight, linear estimator for the vehicle velocity
+using Doppler and gyroscope measurements.
+•An observability study of the vehicle velocity estimated
+using Doppler measurements, showing in theory that the
+Doppler measurements from multiple FMCW lidars can
+result in the observability of all 6 degrees of freedom
+(encouraging future research on this topic).
+•Experimental results on real-world driving sequences
+for our proposed odometry method and comparisons to
+state-of-the-art ICP-based methods.
+The remainder of the paper is as follows: Section IIarXiv:2303.06511v2  [cs.RO]  29 Sep 2023presents relevant literature; Section III presents the odometry
+methodology; Section IV presents the observability study;
+Section V presents the results and analysis; and finally,
+Section VI presents the conclusion and future work.
+II. R ELATED WORK
+A. ICP-based Lidar Odometry
+ICP estimates the relative transformation between two
+pointclouds by iteratively re-associating point measurements
+via nearest-neighbour search [1], [2]. Lidar odometry meth-
+ods that achieve state-of-the-art performance apply this
+simple-but-powerful concept of nearest-neighbour data asso-
+ciation in a low-dimensional space (e.g., Cartesian). In this
+paper, we refer to these algorithms as ICP-based. LOAM
+[5], a top contender in the publicly available KITTI odom-
+etry benchmark [6], extracts edge and plane features, and
+iteratively matches them via nearest-neighbour association.
+SuMa [7] matches measurements using projective data as-
+sociation (i.e., azimuth-elevation space) and leverages GPU
+computation to perform this operation quickly.
+Modern lidars output high-resolution, three-dimensional
+(3D) pointclouds by mechanical actuation. Consequently,
+pointclouds acquired from a moving vehicle will be motion
+distorted, similar to a rolling-shutter effect. One can motion-
+compensate (de-skew, or undistort) the data as a preprocess-
+ing step [8], [9]. Alternatively, data can be incorporated at
+their exact measurement times by estimating a continuous-
+time trajectory [10], [11], [12]. Continuous-time ICP-based
+methods have been successfully demonstrated in several
+works [13], [14]. State-of-the-art lidar odometry methods
+address the motion compensation problem and are capable
+of achieving highly accurate, real-time performance [15],
+[14], [9]. Pan et al. [15] extract low-level geometric features
+to apply multiple error metrics in their ICP optimization.
+Dellenbach et al. [14] use a sparse voxel data structure
+for downsampling and nearest-neighbour search in a single-
+threaded implementation. Vizzo et al. [9] demonstrate faster
+performance with comparable accuracy by proposing a sim-
+plified registration pipeline that requires few tuning param-
+eters in a multi-threaded implementation.
+Recently, FMCW lidars have been demonstrated to be ben-
+eficial in improving odometry. Hexsel et al. [3] incorporate
+Doppler measurements into ICP to improve estimation in
+difficult, geometrically degenerate locations. Wu et al. [4]
+improve upon this by using a continuous-time estimator, not
+requiring motion compensation as a preprocessing step.
+A major bottleneck in lidar odometry is data association
+due to (i) the vast amount of data, and (ii) the need for
+iterative data association. With the introduction of Doppler
+measurements from FMCW lidars, we propose a more effi-
+cient odometry method that avoids data association entirely.
+B. Inertial Measurements and Lidar
+Lidar odometry algorithms have proven to be highly
+accurate in nominal conditions, but will struggle to perform
+in geometrically degenerate environments (e.g., long tunnels,
+barren landscapes). Using IMU data is a way of handlingthese difficult scenarios, with the added benefit of being
+able to use the IMU to motion-compensate pointclouds as a
+preprocessing step. Loosely coupled methods may only use
+the IMU data for motion compensation [16], but can also fuse
+the pose estimates from pointcloud alignment with IMU data
+downstream [17]. Zhao et al. [18] implement an odometry es-
+timator for each sensor modality, where each estimator uses
+the outputs of the other estimators as additional observations.
+Chen et al. [19] combine their pose estimates from ICP with
+IMU data using a hierarchical geometric observer. Tightly
+coupled methods incorporate IMU data into the pointcloud
+alignment optimization directly, which has been shown using
+an iterated extended Kalman filter [20], [21] and factor graph
+optimization over a sliding window [8], [22].
+Our work differs from existing lidar-inertial methods in
+both motivation and implementation. We propose an ap-
+proach that does not require data association by using the
+Doppler measurements of a FMCW lidar. Our motivation for
+using IMU data is to compensate for the degrees of freedom
+not observable from the Doppler measurements of a single
+FMCW lidar. We only require gyroscope data (i.e., angular
+velocities) and exclude the accelerometer1, permitting a
+linear continuous-time formulation. We do not require pre-
+integration of the gyroscope data [23], and instead efficiently
+incorporate data at their exact measurement times.
+C. Radar Odometry
+FMCW is a relatively new technology for lidar, but not
+for radar. Radar, in contrast to FMCW lidar, returns two-
+dimensional (2D) detections (azimuth and range). Similar
+to our proposed method, Kellner et al. [24] estimate vehicle
+motion using radar Doppler measurements without data asso-
+ciation. Using a single radar, they estimate a 2-DOF vehicle
+velocity (forward velocity and yaw rotation) by applying a
+kinematic constraint on the lateral velocity to be zero. Using
+multiple radars allowed them to estimate a 3-DOF vehicle
+velocity [25]. As radars produce 2D data in lesser quantities
+compared to lidar, Kellner et al. [24], [25] limited their
+experiments to driven sequences that were a few hundred
+meters in length. Our FMCW lidar produces thousands of
+3D measurements at a rate of 10Hz. We take advantage of
+the richer data by efficiently applying them in a continuous-
+time linear estimator, and demonstrate reasonably accurate
+odometry over several kilometers.
+Kramer et al. [26] estimate the motion of a handheld
+sensor rig by combining radar Doppler measurements and
+IMU data. Park et al. [27] estimate for 6-DOF motion by
+first estimating the 3D translational velocities, then loosely
+coupling them with IMU data in a factor graph optimization.
+We similarly use IMU data to help estimate 6-DOF motion.
+However, we only use the gyroscope data to keep the esti-
+mator linear and efficient. We also present an observability
+study, demonstrating in theory how multiple FMCW sensors
+constrain all degrees of freedom of the velocity.
+1The gravity vector would require a nonlinear estimator for orientation.III. M ETHODOLOGY
+A. Problem Formulation
+We formulate our odometry as linear continuous-time
+batch estimation for the 6-DOF vehicle body velocities using
+a Maximum A Posteriori (MAP) [28] objective. This is
+possible due to how the Doppler velocity and gyroscope
+measurement models are both linear with respect to the
+vehicle velocity. A continuous-time formulation allows each
+measurement to be applied at their exact measurement times
+efficiently. The relative pose estimate can be computed via
+numerical integration as a final step.
+The proposed method is extremely lightweight as the
+estimation problem is linear and we do not require data
+association for the lidar data. We can apply our method
+online by incrementally marginalizing out all past velocity
+state variables (e.g., a linear Kalman filter that handles
+measurements asynchronously (continuous-time)).
+B. Motion Prior
+We apply the continuous-time estimation framework of
+Barfoot et al. [12] to estimate the trajectory as a Gaussian
+process (GP). We model our vehicle velocity prior as White-
+Noise-on-Acceleration (WNOA) [28],
+˙ϖ(t) =w(t),w(t)∼ GP (0,Qcδ(t−t′)), (1)
+where w(t)is a (stationary) zero-mean GP with a power
+spectral density matrix, Qc.
+In addition, we found it beneficial to incorporate vehicle
+kinematics by penalizing velocities in specific dimensions.
+We center our vehicle frame at the rear-axle of the vehicle
+and orient it such that the x-axis points forward, y-axis points
+left, and z-axis points up. We can penalize velocities in the
+lateral, vertical, roll, and pitch dimensions:
+ekin
+k=Hϖk, (2)
+where a constant Hextracts the dimensions of interest.
+C. Measurement Models
+We use the same Doppler measurement model as presented
+by Wu et al. [4]. The (scalar) linear error model is
+ei
+dop=yi
+dop−1
+(qisTqis)1
+2h
+qi
+sT0i
+Tsvϖ(ti)−h(ψi),(3)
+where yi
+dopis the ithDoppler measurement, qi
+s∈R3are the
+corresponding point coordinates in the sensor frame, Tsv∈
+Ad(SE(3)) is the (known) extrinsic adjoint transformation
+between the sensor and vehicle frames, and ϖ(ti)∈R6is
+our continuous-time vehicle velocity queried at the corre-
+sponding measurement time. We are simply projecting the
+vehicle velocity into the radial direction of the measurement
+in the sensor frame (see Figure 1).
+We identified a non-zero bias in the Doppler measurements
+through experimentation. Wu et al. [4] calibrated this bias
+using stationary lidar data collected from a flat wall at
+a fixed distance. Measurements were partitioned into (ap-
+proximately) uniform bins of azimuth and elevation, and a
+25 50 75 100 125 150
+range [m]0.100.150.20RMS error [m/s]no regression
+with regressionFig. 2: A plot of the root-mean-square Doppler error ver-
+sus measurement range aggregated over a driven test data
+sequence. Discretizing the azimuth-elevation domain and
+learning a linear regression model in each bin with range
+as the input feature noticeably improves the error. Note that
+the linear dependance on range is not visible in this plot as
+we aggregate over all azimuth-elevation bins.
+constant bias was calibrated for each bin. In our recent work,
+we further identified that the bias has an approximately linear
+dependance on the range measurement. Therefore we instead
+model the Doppler velocity bias using a linear regression
+model, h(ψ), with input feature vector, ψ= [1 ( qTq)1
+2]T,
+for each azimuth-elevation bin. We will investigate other
+input features (e.g., incidence angle, intensity) and nonlinear
+regression models (if the need arises) in future work to
+improve performance. Figure 2 demonstrates a before-and-
+after comparison of applying our learned regression models
+on a real-world test sequence2.
+Partitioning the lidar data by azimuth and elevation also
+has the effect of downsampling since we keep one mea-
+surement per azimuth-elevation bin. We uniformly partition
+along the azimuth by 0.2◦. The data are already partitioned in
+elevation by the scan pattern of the sensor, which produces 80
+horizontal sweeps. This downsampling effectively projects
+each lidar frame into a 80×500 image. In practice, a raw
+lidar frame has approximately 100,000 measurements, which
+is then downsampled to 10,000 to 20,000 depending on the
+scene geometry3.
+In addition to the Doppler measurements, we use gyro-
+scope data to compensate for the degrees of freedom not
+observed by the Doppler velocities of a single lidar (see
+Section IV for an algebraic study). The error model is
+ej
+gyro=yj
+gyro−RsvDϖ(tj), (4)
+where yj
+gyro∈R3is the jthangular velocity measurement in
+the sensor frame, Rsv∈SO(3)is the known extrinsic rota-
+tion between the sensor frame and vehicle frame, and ϖ(tj)
+is our continuous-time velocity of the vehicle frame queried
+at the corresponding measurement time. The constant 3×6
+projection matrix Dremoves the translational elements of the
+body velocity, leaving only the angular elements. Similar to
+the Doppler model, this function is linear with respect to the
+vehicle velocity. We verified empirically that the gyroscope
+2Evaluated using the velocity estimates from an Applanix POS-LV as
+groundtruth.
+3This is typically an order of magnitude more data than what is used in
+state-of-the-art ICP-based methods [14], [4].bias is reasonably constant. We apply an offline calibration
+for a constant bias on training data. In future work, we plan
+on improving this aspect of the implementation by including
+the bias as part of the state.
+D. Estimation
+The measurement factors of our estimation problem are
+ϕi
+dop=1
+2(ei
+dop)2R−1
+dop (5)
+for the Doppler measurements and
+ϕj
+gyro=1
+2ej
+gyroTR−1
+gyroej
+gyro (6)
+for the gyroscope measurements, where Rdopis the Doppler
+measurement variance and Rgyrois the gyroscope covariance.
+The motion prior factor of our WNOA prior is
+ϕk
+wnoa=1
+2(ϖk−ϖk−1)TQ−1
+k(ϖk−ϖk−1) (7)
+for the set of discrete states, ϖk, that we estimate in our
+continuous-time trajectory. We space these discrete states
+uniformly in time, corresponding to the start and end times
+of each lidar frame, making Qk= (tk−tk−1)Qcconstant.
+This prior conveniently results in linear interpolation in time
+for our velocity-only state [28]:
+ϖ(τ) = (1 −α)ϖk+αϖk+1, α =τ−tk
+tk+1−tk∈[0,1],
+(8)
+withτ∈[tk, tk+1]. The vehicle kinematics factor is
+ϕk
+kin=1
+2(Hϖk)TQ−1
+z(Hϖk), (9)
+where Qzis the corresponding covariance matrix4.
+Our MAP objective function is
+J=X
+k(ϕk
+wnoa+ϕk
+kin) +X
+iϕi
+dop+X
+jϕj
+gyro. (10)
+Differentiating this objective with respect to the state and
+setting it to zero for an optimum will result in a linear
+system Σ−1ϖ∗=b, where ϖ= [ϖT
+1ϖT
+2. . .ϖT
+K]T
+is a stacked vector of all the vehicle velocities, Σ−1is the
+corresponding block-tridiagonal inverse covariance, and ϖ∗
+can be computed using a sparse solver.
+Figure 3 illustrates the states and factors in our online
+problem. For the latest lidar frame, k, the Doppler mea-
+surements are incorporated at their measurement times using
+our continuous-time interpolation scheme. The gyroscope
+measurements are similarly handled at their respective mea-
+surement times. We incrementally marginalize5out older
+state variables, ϖi, where i < k , and estimate the latest
+velocity, ϖk(i.e., a filter implementation).
+After the vehicle velocity is estimated, we approximate the
+relative pose estimate by numerically sampling ϖ(t)with a
+4Rgyro,Qc, and Qzwere empirically tuned as diagonal matrices. All
+noise parameter values will be accessible from our implementation.
+5In the interest of space, see Barfoot [28] for the details.
+/pi1k−1 /pi1kkthlidar frame
+motion prior gyroscope lidar measurement
+estimated state interpolated stateFig. 3: An illustration of the factors involved in the online
+velocity estimation problem. The Doppler and gyroscope
+measurements are applied at their exact measurement times
+using our continuous-time interpolation scheme. There is no
+data association for the lidar measurements. We marginalize
+out past state variables (i.e., ϖk−1), resulting in a filter for
+the latest velocity, ϖk.
+small timestep, △t, and creating a chain of SE(3)matrices
+spanning the time interval [11]:
+Tk,k−1≈exp(△tϖ(tk)∧). . . (11)
+×exp(△tϖ(tk−1+ 2△t)∧) exp(△tϖ(tk−1+△t)∧),
+where exp(·)is the exponential map6,ϖ(t)is the vehicle
+velocity interpolated between boundary velocities ϖk−1and
+ϖk, and we have divided the time interval by Ssteps,
+making △t= (tk−tk−1)/S. In practice, our vehicle
+pose estimate drifts while the vehicle is stationary (e.g., no
+movement due to traffic). This is easily detected by checking
+a tolerance (we use 0.03m/s) on the forward translational
+speed estimate. If the speed of a boundary estimate is less
+than the tolerance, we set that boundary estimate ϖi=0
+before interpolation to mitigate pose drift.
+E. RANSAC for Outlier Rejection
+Outliers in the Doppler measurements are often caused by
+erroneous reflections and moving objects in the environment.
+Fortunately, each lidar frame is dense and, in practice, the
+majority of the measurements are of the stationary envi-
+ronment (inliers). Similar to Kellner et al. [24], we found
+RANSAC [29] to be a suitable method for outlier filtering.
+We classify between inliers and outliers using a constant
+threshold (0.2m/s) on the Doppler error model (3). We run
+RANSAC on each lidar frame independently. We assume
+the vehicle velocity is constant throughout each frame and
+solve for it using two randomly sampled Doppler measure-
+ments. The solve is made observable by enforcing vehicle
+kinematic constraints, i.e., we solve for a 2-DOF velocity7
+ϖ= [v0 0 0 0 ω]. We could include the gyroscope
+measurements and solve for more dimensions, but found the
+benefits in performance to be minor. In practice, 20 iterations
+of RANSAC was sufficient for each lidar frame.
+6The (·)∧here is for R6and is an overloading of the (·)∧forR3. See
+Barfoot [28] for the details.
+7Our vehicle frame is oriented such that the x-axis points forward, y-axis
+points left, and z-axis points up.IV. O BSERVABILITY STUDY
+A. Observability Study - Multiple FMCW Lidars
+We present an observability study for the 6-DOF vehicle
+velocity using Doppler measurements from multiple FMCW
+lidars. In order to simplify the proof, we focus on estimating
+the vehicle velocity over the interval of one lidar frame,
+assuming that the data from multiple lidars are synchro-
+nized and each have mmeasurements. We also remove
+the continuous-time aspect of the problem by assuming the
+vehicle velocity is constant throughout the frame duration.
+For the ithmeasurement seen by the jthsensor,
+eij
+dop=yij
+dop−1
+(qij
+jTqij
+j)1
+2h
+qij
+jT0i
+Tjvϖ
+=yij
+dop−1
+(qij
+jTqij
+j)1
+2h
+qij
+jTRjvqij
+jTtvj
+j∧Rjvi
+ϖ
+=yij
+dop−cT
+ijϖ,
+(12)
+where the additional superscript jindicates the sensor8,
+Tsv∈Ad(SE(3)) is the extrinsic adjoint transformation
+between the jthsensor and vehicle frames, and
+cT
+ij=h
+ˆqij
+vTˆqij
+vTtvj
+v∧i
+,ˆqij
+v=RT
+jvqij
+j
+∥qij
+j∥. (13)
+Note how the measurement model does not depend on the
+magnitude (range) of qsince ˆqare unit vectors. We define
+the stacked quantity Cj= [c1j···cmj]Tfor sensor j. In the
+case of Nsensors, we have
+CTC=NX
+j=1CT
+jCj=X
+j"
+Qj Qjtvj
+v∧
+tvj
+v∧TQjtvj
+v∧TQjtvj
+v∧#
+,
+(14)
+where Qj=P
+iˆqij
+vˆqij
+vTis the sum of the outer product
+of the points seen by the jthsensor. The velocity is fully
+observable from a single lidar frame if and only if CTC
+is full rank, or equivalently that the nullspace of CTChas
+dimension zero [28]. In the following, we assume Qjto be
+full rank (best case scenario), meaning that the unit velocities
+seen by the jthsensor are not all contained in a line or a
+plane. In the case of a 3D lidar sensor, Qjwill always be
+full rank regardless of the environment geometry.
+Lemma 1: LetAandBbe two symmetric positive
+semidefinite matrices. Then, we have
+null (A+B) = null ( A)∩null (B).
+A proof of this lemma is given in Appendix A.
+First, note that each member can be factorized as
+CT
+jCj="
+1 0
+tvj
+v∧T1#
+|{z}
+full rank"
+Qj0
+0 0#
+|{z}
+PSD, rank =3"
+1tvj
+v∧
+0 1#
+|{z}
+full rank, (15)
+thus being positive semidefinite. Using Lemma 1, we find
+the nullspace of CTCusing the nullspace of each member
+8qij
+fare the coordinates of the ithpoint from sensor jth, in frame f.of the sum. The nullspace of CT
+jCjis
+null 
+CT
+jCj
+= null "
+Qj0
+0 0#"
+1tvj
+v∧
+0 1#!
+=
+
+"
+1tvj
+v∧
+0 1#−1"
+0
+k#
+,k∈R3
+
+
+=("
+−tvj
+v∧k
+k#
+,k∈R3)
+.(16)
+Thus for one sensor, CTCis rank deficient by 3. For two
+sensors, the nullspace of CT
+1C1+CT
+2C2is
+("
+−tv1
+v∧k
+k#
+,k∈R3)
+∩("
+−tv2
+v∧l
+l#
+,l∈R3)
+=
+
+("
+αtv2
+v∧tv1
+v
+α(tv2
+v−tv1
+v)#
+, α∈R)
+iftv1
+v̸=tv2
+v
+("
+−tv1
+v∧k
+k#
+,k∈R3)
+iftv1
+v=tv2
+v,(17)
+therefore being of dimension 1 if the two sensors are not
+at the same position, and dimension 3 otherwise. Adding a
+third sensor, we obtain
+("
+αtv2
+v∧tv1
+v
+α(tv2
+v−tv1
+v)#
+, α∈R)
+∩("
+−tv3
+v∧k
+k#
+,k∈R3)
+=
+("
+αtv2
+v∧tv1
+v
+α(tv2
+v−tv1
+v)#tv2
+v∧tv1
+v=−tv3
+v∧ 
+tv2
+v−tv1
+v
+, α∈R)
+.
+(18)
+Looking at the condition, we remark that
+tv2
+v∧tv1
+v,−tv3
+v∧ 
+tv2
+v−tv1
+v
+∈tv2
+v⊥∩tv3
+v⊥is necessary,
+where (·)⊥denotes the orthogonal complement. As such,
+we can re-write the condition as(
+tv2
+v∧tv1
+v =βtv2
+v∧tv3
+v, β∈R
+−tv3
+v∧ 
+tv2
+v−tv1
+v
+=βtv2
+v∧tv3
+v
+⇔(
+tv1
+v=γtv2
+v+βtv3
+v, γ∈R
+β = 1−γ
+⇔tv1
+v=γtv2
+v+ (1−γ)tv3
+v.(19)
+The nullspace of CTCfor three sensors has dimension 1 if
+all three tvj
+vare on the same line, and dimension 0 otherwise.
+As such, the full state is observable as long as the three
+lidar sensors form the vertices of a triangle. Note that using
+induction with Lemma 1, we can intuitively add more sensors
+and the system remains fully observable.
+B. Observability Study - Single FMCW Lidar + Gyroscope
+Considering now the case of one lidar with one gyroscope
+measurement, we show that adding the gyroscope measure-
+ment leads to a fully observable system. With one gyroscope
+measurement, the measurement matrix becomes
+C′T="
+ˆq1
+v ··· ˆqN
+v 0
+tvj
+v∧Tˆq1
+v···tvj
+v∧TˆqN
+vRsv#
+, (20)Aeva FMCW Lidar
+Aeva FMCW Lidar
+Fig. 4: Our data collection platform, Boreas , was established
+for the Boreas dataset [30]. It was recently equipped with an
+Aeva Aeries I FMCW lidar by Wu et al. [4].
+leading to
+C′TC′="
+1 0
+tvj
+v∧T1#
+|{z}
+full rank"
+Q0
+0 1#
+|{z}
+full rank"
+1tvj
+v∧
+0 1#
+|{z}
+full rank. (21)
+As such, the system becomes fully observable with only one
+lidar sensor and one gyroscope.
+V. E XPERIMENTS
+A. Experiment Setup
+An image of our data collection vehicle, Boreas , is shown
+in Figure 4. The vehicle was previously used for the Boreas
+dataset [30] and demonstrating STEAM-ICP with Doppler
+velocity measurements [4]. Boreas is equipped with an Aeva
+Aeries I FMCW lidar sensor, which has a horizontal field-
+of-view of 120◦, a vertical field-of-view of 30◦, a 300m
+maximum operating range, and a sampling rate of 10Hz.
+The lidar includes a Bosch BM160 IMU, which we use for
+our experiments. We use the post-processed estimates from
+an Applanix POS LV as our groundtruth.
+We collected 5 data sequences near the University of
+Toronto Institute for Aerospace Studies. Sequences 1 to 4
+follow the Glen Shields route of the Boreas dataset [30].
+Sequence 5 is a different route collected in the same area.
+Following existing work, we evaluate odometry using the
+KITTI error metric, which averages errors over path lengths
+that vary from 100m to 800m in 100m increments. We
+present results for two variants of our method: an offline
+batch implementation and an online filter implementation.
+B. Implementation
+We ran all experiments using the same compute hardware9.
+Our C++ filter implementation10is single-threaded. Average
+wall-clock times of the main modules in our pipeline are:
+9Lenovo Thinkpad P53, Intel Core i7-9750H CPU.
+10Code for the C++ implementation: https://github.com/
+utiasASRL/doppler_odom .
+0 500 1000 1500 2000
+x [m]05001000y [m]STEAM-ICP
+CT-ICP
+Filter (ours)
+GroundtruthFig. 5: A qualitative plot of the estimated odometry paths
+on sequence 1 of our collected dataset. Our proposed filter
+runs at 5.64ms on average for each lidar frame on a single
+thread. See Figure 6 for an example of sequence 5.
+1) Preprocessing (4.19ms): Downsampling by azimuth
+and elevation (most expensive computation) and evaluation
+of the linear regression model (negligible computation).
+2) RANSAC (0.95ms): RANSAC for the latest lidar frame
+to filter out outliers.
+3) Solve (0.49ms): Solving for the latest velocity estimate
+corresponding to the last timestamp of the latest lidar frame.
+4) Numerical integration (0.01ms): Approximate the lat-
+est pose estimate using numerical integration (100 steps).
+The total average wall-clock time for processing the latest
+lidar frame is 5.64ms. This is well under 100ms, which is the
+requirement for processing Aeva Aeries I lidar data in real
+time. We note that the Aeries I firmware does not support
+outputting the raw azimuths, elevations, and range of the
+lidar points, requiring re-calculation of these values from the
+coordinates. These calculations result in an additional 1.5ms
+on average in the preprocessing step, which we have included
+in the above timing results. Outputting the raw azimuths and
+elevations is supported in later sensor models (i.e., Aeries
+II), which will further reduce our compute time.
+C. Results
+We compare our proposed methods (filter and batch) to
+the current state of the art for ICP-based lidar odometry
+and demonstrate the trade-offs between computation and
+accuracy. We present results using STEAM-ICP [4] as a
+representative of an accurate method that is not optimized
+for real-time application, while CT-ICP [14] is a real-time
+capable method that is still very accurate.
+As our methods require training for the linear regression
+models and constant gyroscope bias, we train on one se-
+quence and show test results on the remaining four. Table
+I shows the results for all five possible folds and compares
+them to STEAM-ICP and CT-ICP. STEAM-ICP performs
+better than our filter by a factor of ∼5in translation, but
+runs slower by a factor of ∼120 on a single thread. A
+multi-threaded implementation of STEAM-ICP runs slower
+than our filter (single-threaded) by a factor of ∼36. CT-ICP
+performs better than our filter by a factor of ∼4in translation,TABLE I: Quantitative results using the KITTI odometry error metrics on our data sequences. For our methods, we train on
+one sequence and test on the others. All folds are presented with the training sequence in grey (not counted in the average).
+The average wall-clock time (single-threaded) per lidar frame is shown in brackets for each online method. Multi-threading
+reduces the runtimes to 201.69ms and 33.91ms for STEAM-ICP and CT-ICP, respectively. Best results are in bold font.
+Compute [ms] Translation Error [%] Rotation Error [◦/(100m)]
+ICP-based 01 02 03 04 05 A VG 01 02 03 04 05 A VG
+STEAM-ICP [4] 678.74 0.24 0.24 0.23 0.21 0.25 0.23 0.087 0.083 0.083 0.080 0.084 0.083
+CT-ICP [14] 93.78 0.28 0.39 0.26 0.25 0.30 0.29 0.099 0.104 0.098 0.094 0.100 0.099
+Train on 01 (Ours) 01 02 03 04 05 A VG 01 02 03 04 05 A VG
+Batch – 0.94 1.20 1.22 1.03 1.03 1.12 0.317 0.403 0.392 0.356 0.376 0.382
+Filter 5.64 1.10 1.26 1.22 1.16 1.06 1.17 0.386 0.463 0.440 0.415 0.397 0.429
+Train on 02 (Ours) 01 02 03 04 05 A VG 01 02 03 04 05 A VG
+Batch – 1.20 1.00 1.02 0.96 0.94 1.03 0.387 0.344 0.357 0.340 0.344 0.357
+Filter 5.64 1.34 1.10 1.18 1.12 1.08 1.18 0.448 0.410 0.439 0.407 0.391 0.421
+Train on 03 (Ours) 01 02 03 04 05 A VG 01 02 03 04 05 A VG
+Batch – 1.11 1.09 0.97 0.91 0.85 0.99 0.368 0.380 0.335 0.324 0.325 0.349
+Filter 5.64 1.22 1.21 1.12 1.12 1.06 1.15 0.414 0.450 0.415 0.403 0.383 0.412
+Train on 04 (Ours) 01 02 03 04 05 A VG 01 02 03 04 05 A VG
+Batch – 1.07 1.06 0.98 0.89 0.85 0.99 0.354 0.369 0.340 0.323 0.328 0.348
+Filter 5.64 1.19 1.18 1.12 1.10 1.03 1.13 0.408 0.442 0.419 0.401 0.383 0.413
+Train on 05 (Ours) 01 02 03 04 05 A VG 01 02 03 04 05 A VG
+Batch – 1.03 1.03 1.04 0.92 0.89 1.01 0.346 0.354 0.347 0.326 0.332 0.343
+Filter 5.64 1.17 1.14 1.15 1.09 1.00 1.14 0.408 0.425 0.424 0.398 0.378 0.414
+but runs slower by a factor of ∼17on a single thread. A
+multi-threaded implementation of CT-ICP runs slower than
+our filter (single-threaded) by a factor of ∼6. Figure 5 and 6
+show a qualitative plot of the estimated paths on sequences
+1 and 5, respectively. Our method operates on approximately
+10,000 to 20,000 measurements for each lidar frame, while
+STEAM-ICP and CT-ICP operate on approximately 2,000 to
+4,000 measurements.
+We believe our method presents a compelling trade-off
+between accuracy and computational cost. As seen in Figure
+6, our filter performs reasonably over several kilometers
+such that a loop-closure algorithm could detect points of
+intersection. This poses a potential application where our
+lightweight odometry operates at a fast rate, while a slower
+ICP-based optimization can execute in parallel at a slower
+rate for localization and/or loop closure. As an additional
+benefit, our odometry can motion-compensate the lidar data
+such that rigid ICP can be applied instead of a motion-
+compensated implementation. Our method is fast on a single
+thread, leaving threads available for other important tasks in
+an autonomy pipeline (e.g., localization, planning, control).
+VI. C ONCLUSION
+We presented a continuous-time linear estimator for the
+6-DOF vehicle velocity using FMCW lidar and gyroscope
+measurements. As our method is linear and does not require
+data association, it is efficient and capable of operating atan average wall-clock time of 5.64ms for each lidar frame.
+We demonstrate our method on real-world driving sequences
+over several kilometers, presenting a compelling trade-off in
+computation versus accuracy compared to existing state-of-
+the-art lidar odometry.
+As demonstrated in our observability study, and experi-
+mentally by Kellner et al. [25] for 3-DOF motion, multiple
+FMCW sensors are required for the Doppler measurements
+to fully constrain the vehicle motion. We plan on using
+multiple FMCW lidars to estimate vehicle motion without the
+built-in gyroscope. We will further investigate the Doppler
+measurement bias and work on improving the regression
+model by introducing more input features (e.g., angle of
+incidence). We will also incorporate these features into
+learning a feature-dependant Doppler noise variance.
+APPENDIX
+A. Proof of Lemma 1
+Assume x∈null (A)∩null (B). It is straightforward
+to see that x∈null (A+B), hence null (A+B)⊇
+null (A)∩null (B). Then, assume x∈null (A+B), we
+have
+xT(A+B)x=xTAx|{z}
+≥0+xTBx|{z}
+≥0= 0
+Recall that for any symmetric PSD matrix M, we have
+M=STS. As such, xTMx = 0⇔(Sx)TSx =
+0⇒x∈null (S)⇒x∈null (M). Therefore, x∈−1000 0 1000 2000 3000
+x [m]−1500−1000−5000y [m]
+STEAM-ICP
+CT-ICP
+Filter (ours)
+Groundtruth
+−500 0 500
+z [m]−1500−1000−5000y [m]Fig. 6: A qualitative plot of the estimated odometry paths on sequence 5. The ICP-based methods (STEAM-ICP and CT-ICP)
+perform extremely well with little drift over several kilometers, but require more compute. Our proposed filter presents a
+trade-off in accuracy for less computation, executing at 5.64ms on average per lidar frame on a single thread.
+null (A)∩null (B)andnull (A+B)⊆null (A)∩null (B),
+which concludes the proof.
+ACKNOWLEDGMENTS
+We would like to thank the Natural Sciences and Engineer-
+ing Research Council of Canada (NSERC) and the Ontario
+Research Fund: Research Excellence (ORF-RE) program for
+supporting this work.
+REFERENCES
+[1] P. Besl and N. D. McKay, “A method for registration of 3-d shapes,”
+IEEE Transactions on Pattern Analysis and Machine Intelligence ,
+vol. 14, no. 2, pp. 239–256, 1992.
+[2] F. Pomerleau, F. Colas, and R. Siegwart, A Review of Point Cloud
+Registration Algorithms for Mobile Robotics , 2015.
+[3] B. Hexsel, H. Vhavle, and Y . Chen, “DICP: Doppler Iterative Closest
+Point Algorithm,” in RSS, 2022.
+[4] Y . Wu, D. J. Yoon, K. Burnett, S. Kammel, Y . Chen, H. Vhavle,
+and T. D. Barfoot, “Picking up speed: Continuous-time lidar-only
+odometry using doppler velocity measurements,” IEEE RAL , vol. 8,
+no. 1, pp. 264–271, 2023.
+[5] J. Zhang and S. Singh, “Low-drift and real-time lidar odometry and
+mapping,” vol. 41, no. 2, pp. 401–416, 2017.
+[6] A. Geiger, P. Lenz, and R. Urtasun, “Are we ready for autonomous
+driving? the kitti vision benchmark suite,” in IEEE Conference on
+Computer Vision and Pattern Recognition , 2012, pp. 3354–3361.
+[7] J. Behley and C. Stachniss, “Efficient surfel-based slam using 3d laser
+range data in urban environments,” in RSS, 2018.
+[8] H. Ye, Y . Chen, and M. Liu, “Tightly coupled 3d lidar inertial
+odometry and mapping,” in ICRA , 2019, pp. 3144–3150.
+[9] I. Vizzo, T. Guadagnino, B. Mersch, L. Wiesmann, J. Behley, and
+C. Stachniss, “KISS-ICP: In Defense of Point-to-Point ICP – Simple,
+Accurate, and Robust Registration If Done the Right Way,” IEEE RAL ,
+vol. 8, no. 2, pp. 1029–1036, 2023.
+[10] P. Furgale, T. D. Barfoot, and G. Sibley, “Continuous-time batch
+estimation using temporal basis functions,” in ICRA , 2012.
+[11] S. Anderson and T. D. Barfoot, “Towards relative continuous-time
+slam,” in ICRA , 2013, pp. 1033–1040.
+[12] T. Barfoot, C. Hay Tong, and S. Sarkka, “Batch Continuous-Time
+Trajectory Estimation as Exactly Sparse Gaussian Process Regression,”
+inRSS, 2014.
+[13] J. N. Wong, D. J. Yoon, A. P. Schoellig, and T. D. Barfoot, “A Data-
+Driven Motion Prior for Continuous-Time Trajectory Estimation on
+SE(3),” vol. 5, no. 2, pp. 1429–1436, 2020.
+[14] P. Dellenbach, J.-E. Deschaud, B. Jacquet, and F. G. Goulette, “Ct-icp:
+Real-time elastic lidar odometry with loop closure,” in ICRA , 2022,
+pp. 5580–5586.
+[15] Y . Pan, P. Xiao, Y . He, Z. Shao, and Z. Li, “Mulls: Versatile lidar slam
+via multi-metric linear least square,” in ICRA , 2021.[16] M. Palieri, B. Morrell, A. Thakur, K. Ebadi, J. Nash, A. Chat-
+terjee, C. Kanellakis, L. Carlone, C. Guaragnella, and A.-a. Agha-
+Mohammadi, “Locus: A multi-sensor lidar-centric solution for high-
+precision odometry and 3d mapping in real-time,” IEEE RAL , pp. 421–
+428, 2020.
+[17] A. Tagliabue, J. Tordesillas, X. Cai, A. Santamaria-Navarro, J. P.
+How, L. Carlone, and A.-a. Agha-mohammadi, “Lion: Lidar-inertial
+observability-aware navigator for vision-denied environments,” in Ex-
+perimental Robotics: The 17th International Symposium . Springer,
+2021, pp. 380–390.
+[18] S. Zhao, H. Zhang, P. Wang, L. Nogueira, and S. Scherer, “Super
+odometry: Imu-centric lidar-visual-inertial estimator for challenging
+environments,” IROS , pp. 8729–8736, 2021.
+[19] K. Chen, R. Nemiroff, and B. T. Lopez, “Direct lidar-inertial odome-
+try: Lightweight lio with continuous-time motion correction,” in 2023
+IEEE International Conference on Robotics and Automation (ICRA) ,
+2023, pp. 3983–3989.
+[20] C. Qin, H. Ye, C. E. Pranata, J. Han, S. Zhang, and M. Liu, “Lins: A
+lidar-inertial state estimator for robust and efficient navigation,” ICRA ,
+pp. 8899–8905, 5 2020.
+[21] W. Xu, Y . Cai, D. He, J. Lin, and F. Zhang, “Fast-lio2: Fast direct lidar-
+inertial odometry,” IEEE Transactions on Robotics , vol. 38, no. 4, pp.
+2053–2073, 2022.
+[22] T. Shan, B. Englot, D. Meyers, W. Wang, C. Ratti, and D. Rus,
+“Lio-sam: Tightly-coupled lidar inertial odometry via smoothing and
+mapping,” in IROS , 2020, pp. 5135–5142.
+[23] C. Forster, L. Carlone, F. Dellaert, and D. Scaramuzza, “On-manifold
+preintegration for real-time visual–inertial odometry,” IEEE Transac-
+tions on Robotics , vol. 33, no. 1, pp. 1–21, 2016.
+[24] D. Kellner, M. Barjenbruch, J. Klappstein, J. Dickmann, and K. Diet-
+mayer, “Instantaneous ego-motion estimation using doppler radar,” in
+International IEEE Conference on Intelligent Transportation Systems ,
+2013, pp. 869–874.
+[25] ——, “Instantaneous ego-motion estimation using multiple doppler
+radars,” in ICRA , 2014, pp. 1592–1597.
+[26] A. Kramer, C. Stahoviak, A. Santamaria-Navarro, A.-A. Agha-
+Mohammadi, and C. Heckman, “Radar-inertial ego-velocity estimation
+for visually degraded environments,” in ICRA , 2020, pp. 5739–5746.
+[27] Y . S. Park, Y .-S. Shin, J. Kim, and A. Kim, “3d ego-motion estimation
+using low-cost mmwave radars via radar velocity factor for pose-graph
+slam,” IEEE RAL , vol. 6, no. 4, pp. 7691–7698, 2021.
+[28] T. D. Barfoot, State Estimation for Robotics , 2017.
+[29] M. A. Fischler and R. C. Bolles, “Random sample consensus: a
+paradigm for model fitting with applications to image analysis and
+automated cartography,” Communications of the ACM , vol. 24, no. 6,
+pp. 381–395, 1981.
+[30] K. Burnett, D. J. Yoon, Y . Wu, A. Z. Li, H. Zhang, S. Lu, J. Qian,
+W.-K. Tseng, A. Lambert, K. Y . Leung, A. P. Schoellig, and T. D.
+Barfoot, “Boreas: A multi-season autonomous driving dataset,” The
+International Journal of Robotics Research , vol. 42, no. 1-2, pp. 33–
+42, 2023.

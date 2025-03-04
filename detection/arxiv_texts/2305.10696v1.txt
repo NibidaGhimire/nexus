@@ -1,0 +1,1300 @@
+Unbiased Gradient Boosting Decision Tree with Unbiased Feature Importance
+Zheyu Zhang∗,Tianping Zhang∗andJian Li
+Institute for Interdisciplinary Information Sciences (IIIS), Tsinghua University
+fzheyu-zh20, ztp18 g@mails.tsinghua.edu.cn, lijian83@mail.tsinghua.edu.cn
+Abstract
+Gradient Boosting Decision Tree (GBDT) has
+achieved remarkable success in a wide variety of
+applications. The split ﬁnding algorithm, which
+determines the tree construction process, is one of
+the most crucial components of GBDT. However,
+the split ﬁnding algorithm has long been criticized
+for its bias towards features with a large number
+of potential splits. This bias introduces severe in-
+terpretability and overﬁtting issues in GBDT. To
+this end, we provide a ﬁne-grained analysis of bias
+in GBDT and demonstrate that the bias originates
+from 1) the systematic bias in the gain estimation
+of each split and 2) the bias in the split ﬁnding
+algorithm resulting from the use of the same data
+to evaluate the split improvement and determine
+the best split. Based on the analysis, we propose
+unbiased gain , a new unbiased measurement of
+gain importance using out-of-bag samples. More-
+over, we incorporate the unbiased property into the
+split ﬁnding algorithm and develop UnbiasedGBM
+to solve the overﬁtting issue of GBDT. We assess
+the performance of UnbiasedGBM and unbiased
+gain in a large-scale empirical study comprising
+60 datasets and show that: 1) UnbiasedGBM ex-
+hibits better performance than popular GBDT im-
+plementations such as LightGBM, XGBoost, and
+Catboost on average on the 60 datasets and 2) unbi-
+ased gain achieves better average performance in
+feature selection than popular feature importance
+methods. The codes are available at https://github.
+com/ZheyuAqaZhang/UnbiasedGBM.
+1 Introduction
+Gradient Boosting Decision Tree (GBDT) is one of the most
+widely used machine learning models and has been ap-
+plied in numerous domains, including medicine, ﬁnance, cli-
+mate science, and healthcare. GBDT is particularly pop-
+ular in modeling tabular data [Chen and Guestrin, 2016;
+Shwartz-Ziv and Armon, 2022; Gorishniy et al. , 2021; Grin-
+sztajn et al. , 2022 ]. In the training process of a GBDT model,
+*Equal Contribution.we need to construct decision trees one by one. During tree
+construction, we need to determine the best split and the
+split ﬁnding algorithm is one of the most crucial components
+in GBDT. In the standard implementation [Friedman, 2001;
+Chen and Guestrin, 2016; Ke et al. , 2017 ], the best split
+is chosen based on the reduction in loss (decrease in impu-
+rity) of all candidate splits in all features. However, this
+split ﬁnding algorithm has long been criticized for its bias
+towards features that exhibit more potential splits [Breiman
+et al. , 1984; Strobl et al. , 2007; Boulesteix et al. , 2012;
+Nicodemus, 2011 ]. Due to the increased ﬂexibility afforded
+by a larger number of potential split points, features with
+higher cardinality (such as continuous features and features
+with a large number of categories) have a higher probability
+of being split than features with lower cardinality (such as bi-
+nary features). This bias introduces two problems in GBDT:
+• Interpretability issue. The gain importance [Breiman et
+al., 1984; Hastie et al. , 2001 ]in GBDT sums up the to-
+tal reduction of loss in all splits for a given feature, and
+is frequently used to explain how inﬂuential a feature is
+on the models’ predictions. However, gain importance
+is not reliable due to its bias towards features with high
+cardinality [Breiman et al. , 1984 ]. As we illustrate in
+Example 1 in Section 4, a continuous feature indepen-
+dent of the target may have higher gain importance than
+a binary feature related to the target.
+• Overﬁtting issue. During tree construction, the split
+ﬁnding algorithm biases towards choosing features with
+high cardinality [Breiman et al. , 1984; Strobl et al. ,
+2007 ]. Moreover, the split ﬁnding algorithm uses train-
+ing set statistics to determine the best split and does not
+evaluate the generalization performance of each split.
+Existing studies to address the bias problems mostly fall
+into two categories: 1) they propose a post hoc approach to
+calculate unbiased or debiased feature importance measure-
+ment [Zhou and Hooker, 2021; Li et al. , 2019 ], and 2) they
+propose new tree building algorithms by redesigning split
+ﬁnding algorithms [Loh and Shih, 1997; Kim and Loh, 2001;
+Loh, 2009; Strobl et al. , 2007 ]. However, these methods
+mostly focus on random forests, and cannot generalize to
+GBDT. One of the main reasons is that, different from most
+random forest implementations, existing GBDT implementa-
+tions employ the second-order approximation of the objectivearXiv:2305.10696v1  [cs.LG]  18 May 2023function to evaluate split-improvement [Chen and Guestrin,
+2016; Ke et al. , 2017 ](see more detailed discussions in the
+related work section). Since popular GBDT implementa-
+tions, such as XGBoost [Chen and Guestrin, 2016 ]and Cat-
+Boost [Dorogush et al. , 2018 ], have been dominating tabu-
+lar data modeling [Gorishniy et al. , 2021; Shwartz-Ziv and
+Armon, 2022 ], there is an urgent need to address the inter-
+pretability and overﬁtting issues caused by the bias in GBDT.
+To study the causes of the bias in GBDT, we conduct a ﬁne-
+grained analysis, which reveals that the bias originates from:
+1) the systematic bias in each split’s gain estimation. We dis-
+cover that the calculation of gain is a biased estimation of the
+split improvement, and is almost always positive. 2) The bias
+in the split ﬁnding algorithm due to the fact that it evaluates
+the split improvement and determines the best split using the
+same set of data. According to the analysis, ﬁrst, we construct
+an unbiased measurement of feature importance for GBDT
+by using out-of-bag samples. This new measurement is un-
+biased in the sense that features with no predictive power for
+the target variable has an importance score of zero in expec-
+tation. Next, we incorporate the unbiased property into the
+split ﬁnding algorithm during tree construction and propose
+UnbiasedGBM. Compared with existing GBDT implementa-
+tions (such as LightGBM [Keet al. , 2017 ], XGBoost [Chen
+and Guestrin, 2016 ], and CatBoost [Dorogush et al. , 2018 ]),
+UnbiasedGBM has two advantages:
+1. The split ﬁnding algorithm unbiasedly chooses among
+features with different cardinality to mitigate overﬁtting.
+2. UnbiasedGBM evaluates the generalization perfor-
+mance of each split and performs leaf-wise early-
+stopping to avoid overﬁtting splits.
+The contributions of this paper are summarized as follows:
+1. We propose unbiased gain, an unbiased measurement of
+feature importance in GBDT to address the interpretabil-
+ity issue due to the bias in the split ﬁnding algorithm.
+2. We propose UnbiasedGBM by integrating the unbiased
+property into the split ﬁnding algorithm to mitigate over-
+ﬁtting.
+3. We provide a large-scale empirical study comprising 60
+datasets to show that: 1) UnbiasedGBM exhibits better
+performance on average than LightGBM, XGBoost, and
+Catboost, and 2) unbiased gain achieves better average
+performance in feature selection than gain importance,
+permutation feature importance, and SHAP importance.
+2 Related Work
+Existing methods to correct the bias in the split ﬁnding al-
+gorithm fall primarily into two categories: 1) they propose a
+new method to compute debiased or unbiased feature impor-
+tance measurement. 2) They propose new tree construction
+algorithms by redesigning the split ﬁnding algorithm.
+There has been a line of work to develop new meth-
+ods for computing debiased or unbiased feature importance.
+Quinlan [Quinlan, 1986 ]proposed information gain ratio to
+overcome the bias in classiﬁcation trees. Sandri and Zuc-
+colotto [Sandri and Zuccolotto, 2008 ]decomposed split-
+improvement into the reduction in loss and a positive bias.They used a pseudo dataset to estimate and subtract the
+bias. Nembrini et al. [Nembrini et al. , 2018 ]then improved
+the computing efﬁciency of this approach. Li et al. [Liet
+al., 2019 ]proposed a debiased feature importance measure.
+However, their method still yields biased results. Zhou and
+Hooker [Zhou and Hooker, 2021 ]proposed an unbiased mea-
+surement of feature importance in random forests. Nonethe-
+less, the theoretical analysis relies on using mean squared
+error to justify the unbiased property of their method and
+cannot be generalized to GBDT, which often employs dif-
+ferent loss functions for tree construction. In this paper, we
+propose unbiased gain, an unbiased measurement of feature
+importance in GBDT. Our method enjoys several advantages
+compared with previous methods: 1) Our method does not
+generate pseudo data that incurs additional cost as in Sandri
+and Zuccolotto [Sandri and Zuccolotto, 2008 ]and Nembrini
+et al. [Nembrini et al. , 2018 ]. 2) Our method can be easily
+used in GBDT implementations and has the theoretical guar-
+antee of being unbiased, whereas Zhou and Hooker [Zhou
+and Hooker, 2021 ]cannot generalize to GBDT.
+There has been another line of works that develop
+new tree building algorithms to remove the bias, such as
+QUEST [Loh and Shih, 1997 ], CRUISE [Kim and Loh,
+2001 ], GUIDE [Loh, 2009 ], and cforest [Strobl et al. , 2007 ].
+However, these methods cannot generalize to GBDT for a va-
+riety of reasons. For example, QUEST, CRUISE, and GUIDE
+use classiﬁcation trees, whereas GBDT uses regression trees
+for both classiﬁcation and regression tasks and supports var-
+ious loss functions. cforest [Strobl et al. , 2007 ]separates
+the variable selection and the splitting procedure to remove
+the bias. However, this method incurs an excessive amount
+of computational overhead, as variable selection is typically
+costly. We are the ﬁrst to integrate the unbiased property into
+GBDT and develop UnbiasedGBM to address the overﬁtting
+problem caused by the bias in GBDT.
+3 Background
+We brieﬂy introduce the GBDT model in which the second
+order approximation is used in the training (e.g., XGBoost
+[Chen and Guestrin, 2016 ], LightGBM [Keet al. , 2017 ]).
+Note that we formulate the GBDT objective under the pop-
+ulation distribution as opposed to the traditional formula-
+tion of GBDT utilizing the empirical distribution [Chen and
+Guestrin, 2016; Li, 2012 ]. This formulation is essential, and
+it allows us to examine and comprehend the bias in GBDT.
+3.1 Gradient Boosting Decision Trees
+Consider the dataset D={(x;y)}, where(x;y)are indepen-
+dent and identically distributed from an unknown distribution
+T. A tree ensemble model uses Kadditive functions to model
+the distribution Tand predict the output:
+^y=(x)=K
+/summation.disp
+k=1fk(x);fk∈F;
+whereF={f(x)=wq(x)}is the space of regression trees.
+Hereqrepresents the tree structure and q(x)maps an ex-
+ample xto the leaf index. We construct the tree ensem-
+ble in an additive manner to minimize the objective functionL()=Ex;y[l((x);y)]:Lettbe the model at the t-th it-
+eration and ^ytbe the corresponding prediction. We greedily
+add a new regression tree ftthat most improves the objective
+function L(t−1+ft). This is achieved by using the second-
+order approximation:
+L(t−1+ft)≈Ex;y[l(^yt−1;y)+g(x;y)ft(x)
++1
+2h(x;y)ft(x)2];
+where
+g(x;y)=@l(t−1(x);y)
+@t−1(x); h(x;y)=@2l(t−1(x);y)
+(@t−1(x))2:
+We can simplify the objective function by removing the con-
+stant terms:
+~L(t−1+ft)=Ex;y/bracketleft.alt3g(x;y)ft(x)+1
+2h(x;y)ft(x)2/bracketright.alt3:
+For a leaf node Iin the tree structure, the loss L(I)con-
+tributed by the leaf is
+L(I)=Ex;y/bracketleft.alt31{q(x)=I}/parenleft.alt3g(x;y)f(x)+1
+2h(x;y)f(x)2/parenright.alt3/bracketright.alt3
+=Ex;y/bracketleft.alt31{q(x)=I}/parenleft.alt3g(x;y)wI+1
+2h(x;y)w2
+I/parenright.alt3/bracketright.alt3
+=P(x∈I)/parenleft.alt3g(I)wI+1
+2h(I)w2
+I/parenright.alt3;
+whereg(I)=Ex;y[g(x;y)]andh(I)=Ex;y[h(x;y)].
+We can calculate the optimal weight wIof leafIby
+wI=−g(I)
+h(I)
+and compute the corresponding optimal loss by
+L(I)=−1
+2g(I)2
+h(I)P(x∈I): (1)
+Consider a split on feature Xjat a splitting point s, which
+results in two child nodes IL={(x;y)/divides.alt0xj≤s}andIR=
+{(x;y)/divides.alt0xj>s}. The gain of the split =(j;s)is deﬁned as
+the reduction in loss:
+Gain(I;)=L(I)−L(IL)−L(IR): (2)
+In practice, the distribution Tis usually unknown, there-
+fore we cannot directly calculate g(I)andh(I). Instead,
+we use the training dataset to estimate g(I)andh(I).
+Given a training dataset with nexamples and mfeatures
+Dtr=(X;Y)={(xi;yi)}, where /divides.alt0Dtr/divides.alt0=nand(xi;yi)iid∼
+T, we estimate the loss on leaf Iand the gain of a split by
+̃L(I)=−1
+2/parenleft.alt21
+nI∑i∈Igi/parenright.alt22
+1
+nI∑i∈IhinI
+n=−1
+2nG2
+I
+HI; (3)
+/tildecomb.alt3Gain(I;)=1
+2n/parenleft.alt4G2
+L
+HL+G2
+R
+HR−G2
+I
+HI/parenright.alt4; (4)
+whereGI=∑i∈Igi,HI=∑i∈Ihi, andnIis the number of
+samples on node I.3.2 Gain Importance
+Gain importance [Breiman et al. , 1984; Hastie et al. , 2001 ],
+also known as mean decrease in impurity, is a kind of feature
+importance in tree-based methods. It is frequently used to
+explain how inﬂuential a feature is on the model’s predictions.
+Gain importance is calculated by summing up the split gain
+in Eq 4 of all the splits for each feature respectively.
+4 Analysis of Bias in GBDT
+We analyze the bias in GBDT and demonstrate that it stems
+from the systematic bias in the gain estimation and the bias in
+the split ﬁnding algorithm. We show how this bias might lead
+to serious interpretability and overﬁtting problems in GBDT.
+4.1 Bias in The Gain Estimation
+/tildecomb.alt3Gain estimates the reduction in loss of a given split on a fea-
+ture, which is used in both tree construction and the interpre-
+tation of a feature’s importance in the tree ensemble model.
+Intuitively, we would like the /tildecomb.alt3Gain to be unbiased, i.e., it
+should be zero in expectation when randomly splitting on a
+feature that is independent of the target. However, /tildecomb.alt3Gain is
+always non-negative for any split on any feature.
+Theorem 1. For a dataset (X;Y)sampled from a distribu-
+tionT, for any split of nodeIon a given feature Xj, we
+always have
+/tildecomb.alt3Gain(I;)≥0:
+According to the theorem, the split gain for a random split
+on a feature independent of the target is almost always pos-
+itive (the split gain is zero in very rare cases, see the proof
+and more discussions in Appendix A). This implies that 1)
+we may split on an uninformative feature, and 2) a positive
+split gain does not necessarily indicate that the feature con-
+tributes to the model. One of the reasons causing this bias is
+that,(1
+n∑n
+i=1gi)2is not an unbiased estimation of 2
+g:
+ED/uni23A1/uni23A2/uni23A2/uni23A2/uni23A2/uni23A3/parenleft.alt41
+nI/summation.disp
+i∈Igi/parenright.alt42/uni23A4/uni23A5/uni23A5/uni23A5/uni23A5/uni23A6
+=ED/uni23A1/uni23A2/uni23A2/uni23A2/uni23A2/uni23A31
+n2
+I/summation.disp
+i;j∈I;i≠j2gigj/uni23A4/uni23A5/uni23A5/uni23A5/uni23A5/uni23A6+ED/bracketleft.alt41
+n2
+I/summation.disp
+i∈Ig2
+i/bracketright.alt4
+=nI−1
+nIg(I)2+1
+nI/parenleft.alt1g(I)2+g(I)2/parenright.alt1
+=g(I)2+1
+nIg(I)2:
+For an uninformative feature that is independent of the target,
+any split on the feature yields g(I)=g(IL)=g(IR)and
+g(I)=g(IL)=g(IR). Consider a regression problem
+with the MSE loss where the hessian is always a constant,
+according to Eq. 3 we have
+ED/bracketleft.alt1̃L(I)/bracketright.alt=1
+2n/parenleft.alt1ED[nI]g(I)2+g(I)2/parenright.alt1;X1 X2 X3
+feature0.00.10.20.30.40.5importance(a) Gain importance of GBDT
+X1 X2 X3
+feature0.5
+0.00.51.01.5importance (b) Unbiased gain of GBDT
+Figure 1: The features’ importance under different importance mea-
+surements in the synthetic dataset. The box plot is based on 1000
+repetitions. Unbiased gain correctly assigns the highest importance
+toX1and an importance of zero in expectation to X2andX3.
+hence the split gain on the uninformative feature is
+ED/bracketleft.alt1/tildecomb.alt3Gain(I;)/bracketright.alt
+=ED/bracketleft.alt1̃L(IL)/bracketright.alt+ED/bracketleft.alt1̃L(IR)/bracketright.alt−ED/bracketleft.alt1̃L(I)/bracketright.alt
+=1
+2n/parenleft.alt1g(I)2+ED[nL+nR−nI]g(I)2/parenright.alt1
+=1
+2ng(I)2≥0:
+4.2 Bias in The Split Finding Algorithm
+One of the main challenges in tree learning is to ﬁnd the op-
+timal split that maximize the reduction of the loss, as shown
+in Eq. 2. To do this, a split ﬁnding algorithm iterates over
+candidate splits on all features to identify the optimal split
+that minimizes loss on the training dataset. This strategy for
+identifying the optimal split introduces two problems in tree
+learning: 1) the split ﬁnding algorithm favors features with
+high cardinality (such as continuous features or categorical
+features with many categories). Higher cardinality features
+have a greater number of candidate splits, and thus a greater
+likelihood of being split. 2) The split ﬁnding algorithm al-
+ways selects the best split on the training set, without evalu-
+ating the generalization performance of each split. The two
+problems together lead to the overﬁtting problem in GBDT.
+We use an example to illustrate how these two problems ad-
+versely affect tree learning.
+Example 1. We generate a synthetic dataset, so that X1is a
+binary feature, X2is a categorical feature with 6 categories
+(each category has equal probability), and X3∼N(0;1)is
+continuous. Consider a regression problem with y=0:1X1+
+where∼N(0;1). We train a GBDT on the synthetic dataset
+and plot the gain importance of each feature in Figure 1(a).
+We can see that the importance of X2andX3is larger than
+that ofX1, even ifX2andX3are independent with the target
+variable. This shows that GBDT overﬁts on the noise due
+to the bias in the split ﬁnding algorithm. In addition, this
+bias introduces interpretability issues, as X2andX3are more
+important than X1based on the gain importance.5 Our Method
+To solve the interpretability issue caused by the bias in
+GBDT, we propose “unbiased gain”, an unbiased measure-
+ment of feature importance in Section 5.1. Then we incorpo-
+rate the unbiased property into the split ﬁnding algorithm and
+propose UnbiasedGBM in Section 5.2 to address the issue of
+overﬁtting caused by the bias in GBDT.
+5.1 Unbiased Gain
+Our earlier analysis revealed that there are two sources of the
+bias in gain importance. First, gain importance biases towards
+features with high cardinality due to the split ﬁnding algo-
+rithm. Second, gain importance is always non-negative due to
+the biased estimation of Eq 2. Our goal is to propose an un-
+biased measurement of feature importance (unbiased gain).
+This new measurement is unbiased in a sense that an unin-
+formative feature will receive an importance score of zero in
+expectation.
+In order to design an unbiased measurement of feature im-
+portance, we need to eliminate two sources of bias in the cur-
+rent gain importance measurement mentioned above. The in-
+tuitive rationale for the ﬁrst source of bias is that we should
+not determine the best split and assess its performance us-
+ing the same set of data. Therefore, a separate validation set
+is considered to estimate the gain importance. However, di-
+rectly computing gain importance using the validation set still
+suffers from the second source of bias. Therefore, we con-
+struct a new form of estimation using the validation set that
+meets the zero-expectation criterion.
+Assume we have a training dataset D={(xi;yi)}and a
+validation dataset D′={(x′
+i;y′
+i)}. For a given leaf node I
+and a given split I=IL∪IR, there arenI,nL,nRtraining
+examples and n′
+I,n′
+L,n′
+Rvalidation examples that fall into
+leaf nodeI,IL, andIR. First, we estimate g(I)using the
+training examples
+^g(I)=1
+nIGI=1
+nI/summation.disp
+q(xi)=Igi:
+Then, we randomly select kexamples from n′
+Ivalidation
+examples, where k=min(n′
+L;n′
+R). Next, we estimate g(I)
+andh(I)usingkrandomly selected validation examples
+^′
+g(I)=1
+kG′
+I=1
+k/summation.disp
+q(x′
+i)=Ig′
+i⋅(I;i);
+^′
+h(I)=1
+kH′
+I=1
+k/summation.disp
+q(x′
+i)=Ih′
+i⋅(I;i);
+where(I;i)is a binary indicator showing whether a valida-
+tion sample has been selected. Finally we can calculate the
+loss of leaf node Iby
+̃L(I)=1
+2^g(I)⋅^′
+g(I)
+^′
+h(I)⋅nI
+n=−1
+2nGI⋅G′
+I
+H′
+I:
+Here,GIis computed using the training set while G′
+Iand
+H′
+Iare computed using the validation set. We can also cal-
+culatẽL(IL)and̃L(IR)in a similar way (the number of se-
+lected validation example kis the same for I,IL, andIR).Finally, the unbiased gain is calculated as
+/tildecomb.alt3Gain ub(I;)=̃L(I)−̃L(IL)−̃L(IR): (5)
+Theorem 2. For a feature Xj, a leaf node I, and a split , if
+Xjis marginally independent of ywithin the region deﬁned
+by the leaf node I, then
+ED′/bracketleft.alt1/tildecomb.alt3Gain ub(I;)/bracketright.alt=0:
+A critical design in the unbiased gain is that, instead of es-
+timatingg(I),g(IL), andg(IR)using all the validation
+examples on node I,IL, andIR, we randomly select kexam-
+ples from node I,IL, andIRrespectively for estimation. This
+design is critical for the unbiased property of Eq 7 (see the
+proof of Theorem 2 and more explanations in Appendix B)
+The unbiased gain we propose serves as a post hoc method
+to address the interpretability issue. In Figure 1(b), we plot
+the unbiased gain of the GBDT trained on the synthetic data.
+We can see that the unbiased gain correctly assigns X1with
+the highest importance, and the importance of X2andX3is
+zero in expectation.
+5.2 UnbiasedGBM
+We propose UnbiasedGBM to address the overﬁtting problem
+introduced by the bias in GBDT: 1) The choice of each split
+biases towards features with high cardinality. 2) We always
+choose the best split on the training set, without evaluating
+the generalization performance of each split.
+In order to eliminate these two biases, we need two val-
+idation sets. Assume we divide the training set into a sub-
+training set Dand two validation sets D′
+1andD′
+2. Unbi-
+asedGBM eliminates the bias by redesigning the split ﬁnding
+algorithm. The design is conceptually simple but requires a
+good understanding of the bias in GBDT. First, we calculate
+the gain of each split /tildecomb.alt3Gain 1in the original fashion using the
+sub-training set D. We determine the best split of each feature
+using/tildecomb.alt3Gain 1of each split. Next, we calculate the gain /tildecomb.alt3Gain 2
+of each feature’s best split using the validation set D′
+1. We de-
+termine which feature to split using /tildecomb.alt3Gain 2of each feature’s
+best split. Since we determine the best split of each feature
+and the feature to split using different data, we only need to
+consider the best split of each feature when choosing the fea-
+ture to split, thus eliminating the bias towards features with
+high cardinality. Finally, we use the data set D′
+2to calculate
+the unbiased gain /tildecomb.alt3Gain ubof the best split. /tildecomb.alt3Gain ubmeasures
+the generalization performance of the best split. We split on
+the leaf node if /tildecomb.alt3Gain ub>0and stop if /tildecomb.alt3Gain ub≤0.
+Remark . We perform early-stopping on a leaf node when
+the best split has /tildecomb.alt3Gain ub≤0. However, this negative /tildecomb.alt3Gain ub
+is taken into account when computing the importance of each
+feature in UnbiasedGBM to maintain the unbiased property.
+To sum up, UnbiasedGBM enjoys two advantages over
+the existing GBDT: 1) UnbiasedGBM unbiasedly chooses
+among features with different cardinality to mitigate overﬁt-
+ting. 2) UnbiasedGBM measures the generalization perfor-
+mance of each split and performs leaf-wise early-stopping to
+avoid overﬁtting splits.Discussion. Existing GBDT implementations can also per-
+form leaf-wise early-stopping by using the minimal gain to
+split. However, this method and our method have two con-
+ceptual differences. First, we measure the generalization per-
+formance of each split, whereas existing methods only use
+statistics on the training set. Second, our “minimal gain to
+split” is zero on a theoretic basis, whereas existing methods
+require heuristic tuning of the minimal gain to split.
+Implementation details. An important detail is how to
+divide the dataset into D,D′
+1, andD′
+2. We experiment with
+different ratios of splitting the dataset and ﬁnd out that we
+achieve the best performance when /divides.alt0D/divides.alt0=/divides.alt0D′
+1/divides.alt0=/divides.alt0D′
+2/divides.alt0(see
+more details in Appendix E). An intuitive explanation is that
+different datasets are equally important in our algorithm and
+should have the same number of samples.
+6 Experiments
+In this section, we aim at answering two questions through
+extensive experiments:
+•Q1. How does UnbiasedGBM perform compared with
+well-developed GBDT implementations such as XG-
+Boost, LightGBM, and CatBoost?
+•Q2. How does the proposed unbiased gain perform in
+terms of feature selection compared with existing feature
+importance methods?
+6.1 Datasets
+We collect 60 classiﬁcation datasets in various application
+domains provided by Kaggle, UCI [Dua and Graff, 2017 ],
+and OpenML [Vanschoren et al. , 2013 ]platforms. We se-
+lect datasets according to the following criteria: 1) Real-
+world data . We remove artiﬁcial datasets that are designed
+to test speciﬁc models. 2) Not high dimensional . We re-
+move datasets with m/slash.leftnratio above 1.3) Not too small .
+We remove datasets with too few samples ( <500).4) Not
+too easy . We remove datasets if a LightGBM with the de-
+fault hyperparameters can reach a score larger than 0:95. The
+detailed properties of datasets are presented in Appendix C.
+6.2 Q1. UnbiasedGBM
+In this subsection, we answer the Q1 question by comparing
+UnbiasedGBM with XGBoost, LightGBM, and CatBoost us-
+ing extensive experiments.
+Evaluation Metrics
+We use the area under the ROC curve (AUC) in the test set to
+measure the model performance. In order to aggregate results
+across datasets of different difﬁculty, we employ a metric
+similar to the distance to the minimum, which is introduced
+in[Wistuba et al. , 2015 ]and used in [Feurer et al. , 2020;
+Grinsztajn et al. , 2022 ]. This metric normalize each test AUC
+between 0 and 1 via a min-max normalization using the worst
+AUC and the best AUC of all the models on the dataset.
+Baseline Methods
+We compare with the following baseline methods:
+•XGBoost [Chen and Guestrin, 2016 ].
+•LightGBM [Keet al. , 2017 ].100101102
+Number of tuning iterations0.30.40.50.60.70.8Normalized test AUCCatBoost
+XGBoost
+LightGBM
+UnbiasedGBM-w/o-SE
+UnbiasedGBM-w/o-UB
+UnbiasedGBM(a) 20 small-scale datasets with only numerical features.
+100101102
+Number of tuning iterations0.30.40.50.60.70.8Normalized test AUCCatBoost
+XGBoost
+LightGBM
+UnbiasedGBM-w/o-SE
+UnbiasedGBM-w/o-UB
+UnbiasedGBM (b) 20 small-scale datasets with num. and cat. features.
+100101102
+Number of tuning iterations0.30.40.50.60.70.80.9Normalized test AUCCatBoost
+XGBoost
+LightGBM
+UnbiasedGBM-w/o-SE
+UnbiasedGBM-w/o-UB
+UnbiasedGBM
+(c) 10 medium-scale datasets with only numerical features.
+100101102
+Number of tuning iterations0.30.40.50.60.70.80.9Normalized test AUCCatBoost
+XGBoost
+LightGBM
+UnbiasedGBM-w/o-SE
+UnbiasedGBM-w/o-UB
+UnbiasedGBM (d) 10 medium-scale datasets with num. and cat. features.
+Figure 2: Comparison of UnbiasedGBM with other baseline methods on four types of datasets. Each value corresponds the normalized test
+AUC of the best model (on the validation set) after a speciﬁc number of tuning iterations, averaged on all the datasets. The shaded area
+presents the variance of the scores.
+XGBoost LightGBM CatBoost UnbiasedGBM
+Average Rank 3.00 2.85 2.43 1.72
+p-value ≤10−3≤10−30.013 -
+Table 1: The average rank (where lower is better) over 60 datasets
+and the p-value of Nemenyi test between UnbiasedGBM and the
+baseline methods.
+•CatBoost [Dorogush et al. , 2018 ].
+•UnbiasedGBM-w/o-SE . UnbiasedGBM without sepa-
+rating the determination of the best split of each feature
+and the feature to split. One of two validation sets is
+merged with the subtraining set.
+•UnbiasedGBM-w/o-UB . UnbiasedGBM without com-
+puting the unbiased gain /tildecomb.alt3Gain ubto measure the gener-
+alization performance of the best split. Two validation
+sets are merged into one to determine the best feature to
+split and perform early stopping.
+For each method, we perform hyperparameter optimization
+using the popular Optuna [Akiba et al. , 2019 ]Python pack-
+age. See more details in Appendix D.
+Results
+In order to better present the advantage of UnbiasedGBM on
+datasets with different properties, we classify 60 datasets intofour types of datasets, including small-scale (datasets with
+less than 4000 samples) or medium-scale datasets with only
+numerical features or both numerical and categorical features.
+We present the results in Figure 2. The x-axis is the num-
+ber of tuning iterations, visualizing the inﬂuence of the tun-
+ing budget on the model performance. We can see that Un-
+biasedGBM signiﬁcantly outperforms XGBoost, LightGBM,
+and CatBoost in both small and medium datasets. In addi-
+tion, UnbiasedGBM is effective even if there is only numer-
+ical features in the datasets. Categorical features are not the
+only source of performance improvement in UnbiasedGBM.
+We also visualize the comparison of each dataset in Figure 3
+that demonstrates the improvement of our method. We lever-
+age the Nemenyi test [Demsar, 2006 ]to perform statistical
+analyses using the rank of each method after hyper-parameter
+tuning of 100 iterations on 60 datasets. We present the results
+in Table 1, where the Nemenyi test p-values show that Un-
+biasedGBM signiﬁcantly outperforms the baselines. More-
+over, comparisons between UnbiasedGBM, UnbiasedGBM-
+w/o-SE, and UnbiasedGBM-w/o-UB demonstrate that sepa-
+rating the determination of the best split of each feature and
+the feature to split is the primary source of improvement in
+UnbiasedGBM. In most cases, computing the unbiased gain
+to evaluate generalization performance of the best split can
+also result in performance improvement.0.0 0.5 1.0
+LightGBM Normalized test AUC0.00.51.0UnbiasedGBM Normalized test AUCSmall-scale numerical
+Small-scale categorical
+Medium-scale numerical
+Medium-scale categorical(a) UnbiasedGBM vs. LightGBM
+0.0 0.5 1.0
+XGBoost Normalized test AUC0.00.51.0UnbiasedGBM Normalized test AUCSmall-scale numerical
+Small-scale categorical
+Medium-scale numerical
+Medium-scale categorical (b) UnbiasedGBM vs. XGBoost
+0.0 0.5 1.0
+CatBoost Normalized test AUC0.00.51.0UnbiasedGBM Normalized test AUCSmall-scale numerical
+Small-scale categorical
+Medium-scale numerical
+Medium-scale categorical (c) UnbiasedGBM vs. CatBoost
+Figure 3: Comparison of UnbiasedGBM with LightGBM, XGBoost and CatBoost. Each dot denotes a dataset. The normalized test AUC is
+higher the better. “numerical” means the dataset only contains numerical features. “categorical” means the dataset contains both numerical
+and categorical features.
+Figure 4: Comparison of different feature importance methods in
+feature selection. We report the AUC on the test set of the model
+using top k%selected features according to the feature importance.
+6.3 Q2. Unbiased Gain
+In this subsection, we demonstrate the performance of unbi-
+ased gain in feature selection.
+Baseline Methods
+We compare unbiased gain with different feature importance
+measurements:
+• Gain importance [Breiman et al. , 1984 ].
+• Permutation feature importance (PFI) [Breiman, 2001 ].
+• SHAP [Lundberg et al. , 2018 ].
+Evaluation
+We follow the standard approach [Forman and others, 2003 ]
+to evaluate different feature importance measurements in fea-
+ture selection. For a given dataset, we ﬁrst estimate the fea-
+ture importance on the training set. Then, we select top
+k%features according to the feature importance, where k∈
+{10;20;30}. Next, we build a GBDT model according to the
+selected feature subset. Finally, we calculate the AUC of the
+model on the test set. Higher AUC indicates that the feature
+importance performs better in feature selection.LightGBM UnbiasedGBM
+Full feature set 0:779±0:000 0:809±0:003
+Remove “nHM” with 11 categories 0:772±0:000 0:797±0:003
+Remove “PCD” with 224 categories 0:787±0:000 0:811±0:002
+Table 2: An example of the QSAR Bioconcentration dataset. Light-
+GBM overﬁts on the “PCD” feature with many categories, because
+removing the feature brings signiﬁcant improvement in the test
+AUC. UnbiasedGBM addresses the overﬁtting issue, because it has
+better test AUC than LightGBM when using the full feature set, and
+removing the “PCD” feature brings an insigniﬁcant difference.
+Results
+We evaluate these methods on 14 out of 60 datasets with more
+than 30 features. Datasets with too few features may not need
+feature selection. We consider selecting top k%features for
+k∈{10;20;30}. For each method, we report the mean and
+variance of the test AUC across these 14 datasets. The re-
+sults are presented in Figure 4. We can see that unbiased gain
+achieves better average performance than baseline methods
+in feature selection.
+6.4 Analyses of Features with Many Categories
+We present an analysis of the QSAR Bioconcentration dataset
+in Table 2 to show that UnbiasedGBM can address the over-
+ﬁtting issue of LightGBM on categorical features with many
+categories. The details are in the caption of Table 2.
+7 Conclusion
+In this paper, we investigate the bias in GBDT and the conse-
+quent interpretability and overﬁtting issues. We give a ﬁne-
+grained analysis of bias in GBDT. Based on the analysis, we
+propose the unbiased gain and UnbiasedGBM to address the
+interpretability and overﬁtting issues. Extensive experiments
+on 60 datasets show that UnbiasedGBM has better average
+performance than XGBoost, LightGBM, and Catboost and
+unbiased gain can outperform popular feature importance es-
+timation methods in feature selection.Acknowledgements
+The authors are supported in part by the National Natural Sci-
+ence Foundation of China Grant 62161146004, Turing AI In-
+stitute of Nanjing and Xi’an Institute for Interdisciplinary In-
+formation Core Technology.
+Contribution Statement
+This paper is the result of collaborative work between Zheyu
+Zhang and Tianping Zhang, who contributed equally to
+the conception, implementation, experimentation, and paper
+writing. Jian Li served as the corresponding author, contribut-
+ing to the overall idea of the project as well as providing com-
+puting resources.
+References
+[Akiba et al. , 2019 ]Takuya Akiba, Shotaro Sano, Toshihiko
+Yanase, Takeru Ohta, and Masanori Koyama. Optuna: A
+next-generation hyperparameter optimization framework.
+InProceedings of the 25th ACM SIGKDD international
+conference on knowledge discovery & data mining , pages
+2623–2631, 2019.
+[Boulesteix et al. , 2012 ]Anne-Laure Boulesteix, Andreas
+Bender, Justo Lorenzo Bermejo, and Carolin Strobl. Ran-
+dom forest gini importance favours snps with large minor
+allele frequency: impact, sources and recommendations.
+Brieﬁngs in Bioinformatics , 13(3):292–304, 2012.
+[Breiman et al. , 1984 ]Leo Breiman, J. H. Friedman, R. A.
+Olshen, and C. J. Stone. Classiﬁcation and Regression
+Trees . Wadsworth, 1984.
+[Breiman, 2001 ]Leo Breiman. Random forests. Machine
+learning , 45(1):5–32, 2001.
+[Chen and Guestrin, 2016 ]Tianqi Chen and Carlos Guestrin.
+Xgboost: A scalable tree boosting system. In Proceedings
+of the 22nd acm sigkdd international conference on knowl-
+edge discovery and data mining , pages 785–794, 2016.
+[Demsar, 2006 ]Janez Demsar. Statistical comparisons of
+classiﬁers over multiple data sets. J. Mach. Learn. Res. ,
+7:1–30, 2006.
+[Dorogush et al. , 2018 ]Anna Veronika Dorogush, Vasily Er-
+shov, and Andrey Gulin. Catboost: gradient boost-
+ing with categorical features support. arXiv preprint
+arXiv:1810.11363 , 2018.
+[Dua and Graff, 2017 ]Dheeru Dua and Casey Graff. UCI
+machine learning repository, 2017.
+[Feurer et al. , 2020 ]Matthias Feurer, Katharina
+Eggensperger, Stefan Falkner, Marius Lindauer, and
+Frank Hutter. Auto-sklearn 2.0: Hands-free automl via
+meta-learning. arXiv preprint arXiv:2007.04074 , 2020.
+[Forman and others, 2003 ]George Forman et al. An exten-
+sive empirical study of feature selection metrics for text
+classiﬁcation. J. Mach. Learn. Res. , 3(Mar):1289–1305,
+2003.
+[Friedman, 2001 ]Jerome H Friedman. Greedy function ap-
+proximation: a gradient boosting machine. Annals of
+statistics , pages 1189–1232, 2001.[Gorishniy et al. , 2021 ]Yury Gorishniy, Ivan Rubachev,
+Valentin Khrulkov, and Artem Babenko. Revisiting deep
+learning models for tabular data. Advances in Neural In-
+formation Processing Systems , 34:18932–18943, 2021.
+[Grinsztajn et al. , 2022 ]L´eo Grinsztajn, Edouard Oyallon,
+and Ga ¨el Varoquaux. Why do tree-based models still out-
+perform deep learning on tabular data? arXiv preprint
+arXiv:2207.08815 , 2022.
+[Hastie et al. , 2001 ]Trevor Hastie, Jerome H. Friedman, and
+Robert Tibshirani. The Elements of Statistical Learning:
+Data Mining, Inference, and Prediction . Springer Series
+in Statistics. Springer, 2001.
+[Keet al. , 2017 ]Guolin Ke, Qi Meng, Thomas Finley,
+Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and
+Tie-Yan Liu. Lightgbm: A highly efﬁcient gradient boost-
+ing decision tree. Advances in neural information process-
+ing systems , 30, 2017.
+[Kim and Loh, 2001 ]Hyunjoong Kim and Wei-Yin Loh.
+Classiﬁcation trees with unbiased multiway splits. Journal
+of the American Statistical Association , 96(454):589–604,
+2001.
+[Liet al. , 2019 ]Xiao Li, Yu Wang, Sumanta Basu, Karl
+Kumbier, and Bin Yu. A debiased mdi feature importance
+measure for random forests. Advances in Neural Informa-
+tion Processing Systems , 32, 2019.
+[Li, 2012 ]Ping Li. Robust logitboost and adaptive base class
+(abc) logitboost. arXiv preprint arXiv:1203.3491 , 2012.
+[Loh and Shih, 1997 ]Wei-Yin Loh and Yu-Shan Shih. Split
+selection methods for classiﬁcation trees. Statistica sinica ,
+pages 815–840, 1997.
+[Loh, 2009 ]Wei-Yin Loh. Improving the precision of clas-
+siﬁcation trees. The Annals of Applied Statistics , pages
+1710–1737, 2009.
+[Lundberg et al. , 2018 ]Scott M Lundberg, Gabriel G Erion,
+and Su-In Lee. Consistent individualized feature attribu-
+tion for tree ensembles. arXiv preprint arXiv:1802.03888 ,
+2018.
+[Nembrini et al. , 2018 ]Stefano Nembrini, Inke R K ¨onig,
+and Marvin N Wright. The revival of the gini importance?
+Bioinformatics , 34(21):3711–3718, 2018.
+[Nicodemus, 2011 ]Kristin K Nicodemus. On the stabil-
+ity and ranking of predictors from random forest vari-
+able importance measures. Brieﬁngs in bioinformatics ,
+12(4):369–373, 2011.
+[Quinlan, 1986 ]J. Ross Quinlan. Induction of decision trees.
+Mach. Learn. , 1(1):81–106, 1986.
+[Sandri and Zuccolotto, 2008 ]Marco Sandri and Paola Zuc-
+colotto. A bias correction algorithm for the gini vari-
+able importance measure in classiﬁcation trees. Journal of
+Computational and Graphical Statistics , 17(3):611–628,
+2008.
+[Shwartz-Ziv and Armon, 2022 ]Ravid Shwartz-Ziv and
+Amitai Armon. Tabular data: Deep learning is not all you
+need. Information Fusion , 81:84–90, 2022.[Strobl et al. , 2007 ]Carolin Strobl, Anne-Laure Boulesteix,
+Achim Zeileis, and Torsten Hothorn. Bias in random forest
+variable importance measures: Illustrations, sources and a
+solution. BMC bioinformatics , 8(1):1–21, 2007.
+[Vanschoren et al. , 2013 ]Joaquin Vanschoren, Jan N. van
+Rijn, Bernd Bischl, and Lu ´ıs Torgo. Openml: networked
+science in machine learning. SIGKDD Explor. , 15(2):49–
+60, 2013.
+[Wistuba et al. , 2015 ]Martin Wistuba, Nicolas Schilling,
+and Lars Schmidt-Thieme. Learning hyperparameter opti-
+mization initializations. In 2015 IEEE international con-
+ference on data science and advanced analytics (DSAA) ,
+pages 1–10. IEEE, 2015.
+[Zhou and Hooker, 2021 ]Zhengze Zhou and Giles Hooker.
+Unbiased measurement of feature importance in tree-
+based methods. ACM Transactions on Knowledge Discov-
+ery from Data (TKDD) , 15(2):1–21, 2021.A Proof and Discussion for Theorem 1
+Theorem 1 reveals that the split gain on node Iwith split
+=(j;s), written in
+/tildecomb.alt3Gain(I;)=̃L(I)−̃L(IL)−̃L(IR)
+is always non-negative, where
+̃L(I)=−1
+2/parenleft.alt21
+nI∑i∈Igi/parenright.alt22
+1
+nI∑i∈IhinI
+n=−1
+2nG2
+I
+HI:
+Theorem 1. For a dataset (X;Y)sampled from a distribution
+T, for any split of nodeIon a given feature Xj, we always
+have
+/tildecomb.alt3Gain(I;)≥0:
+Proof. First, rewrite ̃L(I)with the optimization setting:
+̃L(I)=−1
+2nG2
+I
+HI
+=1
+nmin
+w/parenleft.alt31
+2HIw2+GIw/parenright.alt3
+=1
+nmin
+w/summation.disp
+i∈I/parenleft.alt31
+2hiw2+giw/parenright.alt3:
+SinceI=IL∪IR, the total of the optimal loss of ILandIR
+is smaller than the optimal loss of I:
+/tildecomb.alt3Gain(I;)=̃L(I)−̃L(IL)−̃L(IR)
+=1
+n/parenleft.alt2min
+w/summation.disp
+i∈Ili(w)
+−min
+wL/summation.disp
+i∈ILli(wL)−min
+wR/summation.disp
+i∈IRli(wR)/parenright.alt2
+≥0;(6)
+whereli(w)=1
+2hiw2+giw.
+Discussion. Theorem 1 shows that /tildecomb.alt3Gain(I;)is always
+non-negative. From Eq 6, we know that /tildecomb.alt3Gain(I;)=0if
+and only ifw∗=w∗
+L=w∗
+R, which is equivalent to
+GL
+HL=GR
+HR:
+This is a sufﬁcient and necessary condition for /tildecomb.alt3Gain(I;)=
+0, which is a very rare case in the applications.
+B Proof and Explanation for Theorem 2
+Assume we have a training dataset D={(xi;yi)}and a vali-
+dation dataset D′={(x′
+i;y′
+i)}. For a given leaf node Iand a
+given splitI=IL∪IR, there arenI,nL,nRtraining examples
+andn′
+I,n′
+L,n′
+Rvalidation examples that fall into leaf nodes
+I,IL, andIR. First, we estimate g(I)using the training
+examples
+^g(I)=1
+nIGI=1
+nI/summation.disp
+q(xi)=Igi:Then, we randomly select kexamples from n′
+Ivalidation
+examples, where k=min(n′
+L;n′
+R). Next, we estimate g(I)
+andh(I)usingkrandomly selected validation examples
+^′
+g(I)=1
+kG′
+I=1
+k/summation.disp
+q(x′
+i)=Ig′
+i⋅(I;i);
+^′
+h(I)=1
+kH′
+I=1
+k/summation.disp
+q(x′
+i)=Ih′
+i⋅(I;i);
+where(I;i)is a binary indicator showing whether a valida-
+tion sample has been selected. Finally we can calculate the
+loss of leaf node Iby
+̃L(I)=1
+2^g(I)⋅^′
+g(I)
+^′
+h(I)⋅nI
+n=−1
+2nGI⋅G′
+I
+H′
+I:
+Here,GIis computed using the training set while G′
+IandH′
+I
+are computed using the validation set. We can also calculate
+̃L(IL)and̃L(IR)in a similar way (the number of selected
+validation example kis the same for I,IL, andIR). Finally,
+the unbiased gain is calculated as
+/tildecomb.alt3Gain ub(I;)=̃L(I)−̃L(IL)−̃L(IR): (7)
+Theorem 2. For a feature Xj, a leaf node I, and a split , if
+Xjis marginally independent of ywithin the region deﬁned
+by the leaf node I, then
+ED′/bracketleft.alt1/tildecomb.alt3Gain ub(I;)/bracketright.alt=0:
+Proof. Since ^′
+g(I),^′
+g(IL),^′
+g(IR)and^′
+h(I),^′
+h(IL),
+^′
+h(IR)are all estimated by the same number of ksamples,
+we have
+∀k;E/uni23A1/uni23A2/uni23A2/uni23A2/uni23A2/uni23A3^′
+g(I)
+^′
+h(I)/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvertk/uni23A4/uni23A5/uni23A5/uni23A5/uni23A5/uni23A6=E/uni23A1/uni23A2/uni23A2/uni23A2/uni23A2/uni23A3^′
+g(IL)
+^′
+h(IL)/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvertk/uni23A4/uni23A5/uni23A5/uni23A5/uni23A5/uni23A6=E/uni23A1/uni23A2/uni23A2/uni23A2/uni23A2/uni23A3^′
+g(IR)
+^′
+h(IR)/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvertk/uni23A4/uni23A5/uni23A5/uni23A5/uni23A5/uni23A6;(8)
+where Eis short for ED′. Hence
+E/bracketleft.alt1/tildecomb.alt3Gain ub/bracketright.alt=E/bracketleft.alt1̃Lub(I)/bracketright.alt−E/bracketleft.alt1̃Lub(IL)/bracketright.alt−E/bracketleft.alt1̃Lub(IR)/bracketright.alt
+=−GI
+2nE/bracketleft.alt4^′
+g(I)
+^′
+h(I)/bracketright.alt4
++GL
+2nE/bracketleft.alt4^′
+g(IL)
+^′
+h(IL)/bracketright.alt4+GR
+2nE/bracketleft.alt4^′
+g(IR)
+^′
+h(IR)/bracketright.alt4
+=GL+GR−GI
+2n/summation.disp
+kP(k)E/uni23A1/uni23A2/uni23A2/uni23A2/uni23A2/uni23A3^′
+g(I)
+^′
+h(I)/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvert/arrowvertk/uni23A4/uni23A5/uni23A5/uni23A5/uni23A5/uni23A6
+=0;
+B.1 The Motivation Behind the Unbiased Gain
+Why do we need an additional validation set? The intu-
+itive rationale behind this is that we should not ﬁnd the opti-
+mal split and evaluate the optimal split using the same set of
+data.Algorithm 1 Select 60 Datasets
+Input : A Reservoir of 654 Datasets
+Output : Selected 60 datasets.
+1:Result←/uni2205
+2:forDin sorted(Reservoir, ascent order by instance) do
+3: Type←(Scale(D);Categorical (D))
+4: ifdatasets of this Type is enough then
+5: Continue
+6: end if
+7: Model←Baseline( D)
+8: Pred←Model.predict( D′)
+9: Score←AUC(D′, Pred)
+10: ifScore>0:95orScore<0:55then
+11: Continue
+12: end if
+13: Result←Result∪{D}
+14:end for
+15:return Result
+Can we re-calculate the reduction in loss using the vali-
+dation set? An intuitive way of using the validation set is
+to ﬁx the tree structure and re-calculate the reduction in loss
+using the validation set. However, for a split on an uninforma-
+tive feature, the split gain evaluated using the validation set is
+expected to be negative (instead of zero) [Zhou and Hooker,
+2021 ].
+Why do we need to randomly select ksamples when cal-
+culating the unbiased gain? The Eq. 8 does not hold if
+^′
+g(I),^′
+g(IL),^′
+g(IR)and^′
+h(I),^′
+h(IL),^′
+h(IR)are es-
+timated by different number of samples, and thus we cannot
+derive the unbiased property of the gain estimation.
+C Datasets
+The 60 datasets are collected from a repository of 654
+datasets from Kaggle, UCI, and OpenML platforms. In order
+to collect datasets of different types (datasets with different
+scales and whether the dataset has categorical features), we
+select the datasets according to Algorithm 1. Table 3 4 5 6
+show the datasets we collected and used in our experiment.
+D Hyperparameter Optimization
+Table 7 shows the hyperparameter spaces for each method.
+Optuna tunes all methods over 100 epochs.
+E Implementation Details
+E.1 Split Finding Algorithm
+The idea of UnbiasedGBM can be incorporated in existing
+split ﬁnding algorithms. The current implementation of Un-
+biasedGBM is based on XGBoost. Algorithm 2 presents the
+details of UnbiasedGBM. From the algorithm, we can see that
+score 2determines the feature to split, and score 3is the unbi-
+ased gain that determines whether to perform leaf-wise early
+stopping.
+In fact, score 2is nearly unbiased when the number of
+features is small. As a result, for the sake of sample efﬁ-
+ciency, we can set D′
+1=D′
+2in the applications, and thusscore 2=score 3. We ﬁnd that such a design is beneﬁcial
+to the performance in our main experiments.We present the
+results in Figure 5.
+100101102
+Number of tuning epochs0.20.40.60.8Normalized test AUC UnbiasedGBM(1:1:1)
+UnbiasedGBM(4:1:1)
+UnbiasedGBM(1:1+1)
+(a) 10 medium-scale datasets with only numerical features.
+100101102
+Number of tuning epochs0.30.40.50.60.70.8Normalized test AUC UnbiasedGBM(1:1:1)
+UnbiasedGBM(4:1:1)
+UnbiasedGBM(1:1+1)
+(b) 10 medium-scale datasets with num. and cat. features.
+Figure 5: We investigate the inﬂuence of the proportion of splitting
+data. We ﬁnd that splitting the dataset evenly ( /divides.alt0D/divides.alt0∶/divides.alt0D′
+1/divides.alt0∶/divides.alt0D′
+2/divides.alt0=
+1 ∶1 ∶1) is more reasonable than unevenly ( 4 ∶1 ∶1). We can
+further improve the performance by setting D′
+1=D′
+2(1:1+1). Each
+value corresponds the normalized test AUC of the best model (on the
+validation set) after a speciﬁc number of tuning epochs, averaged on
+all the datasets. The shaded area presents the variance of the scores.
+E.2 Tree Construction
+When constructing a decision tree, we repeatedly split the leaf
+with maximal score. Algorithm 3 shows the details.
+E.3 Time Complexity
+Letnbe the number of samples, mbe the number of base
+features of dataset. Each sample appears exactly once of each
+depth, so with maximum depth d, our implementation runs in
+O(Tdnm logn)
+whereTis the number of trees. This complexity is exactly the
+same as XGBoost and similarly cost O(Tdnm+nmlogn)on
+the block structure. In fact, applying our method to existing
+GBDT implementations preserves their time complexity, be-
+cause it is never worse than calculating on 2more separated
+datasetD′
+1andD′
+2.source name sample num feat cat feat
+kaggle Churn Modelling 10000 8 3
+kaggle Online Shopper’s Intention 12330 14 3
+kaggle HR analysis 18359 3 10
+kaggle Donors-Prediction 19372 42 6
+kaggle aam avaliacao dataset 25697 12 10
+openml airlines 26969 4 3
+kaggle Income Predictions Dataset(2 class classiﬁcation) 30162 6 8
+kaggle Success of Bank Telemarketing Data 30477 1 6
+kaggle Term Deposit Prediction Data Set 31647 7 9
+UCI Adult 32561 6 8
+Table 3: Medium-scale categorical datasets.
+source name sample num feat cat feat
+kaggle Amsterdam - AirBnb 10498 16 0
+UCI Firm-Teacher Clave-Direction Classiﬁcation 10799 16 0
+openml jm1 10885 21 0
+openml eye movements 10936 26 0
+kaggle Kyivstar Big Data test 11583 45 0
+kaggle Flower Type Prediction Machine Hack 12666 6 0
+openml test dataset 15547 60 0
+openml elevators 16599 18 0
+openml MagicTelescope 19020 10 0
+kaggle Web Club Recruitment 2018 20000 23 0
+Table 4: Medium-scale numerical datasets.
+source name sample num feat cat feat
+UCI ILPD (Indian Liver Patient Dataset) 583 9 1
+kaggle Credit Card Approval 590 6 9
+kaggle Analytics Vidhya Loan Prediction 614 5 6
+kaggle Student Alcohol Consumption 649 13 17
+UCI QSAR Bioconcentration classes dataset 779 10 1
+kaggle The Estonia Disaster Passenger List 989 1 5
+UCI Statlog (German Credit Data) 999 7 13
+openml credit-g 1000 7 13
+kaggle Employee Attrition 1029 24 7
+kaggle Train Crowd Density 1284 7 9
+UCI Yeast 1484 8 1
+UCI Drug consumption (quantiﬁed) 1885 13 18
+kaggle RMS Lusitania Complete Passenger Manifest 1961 1 11
+kaggle Marketing Campaign 2240 23 3
+UCI seismic-bumps 2584 11 4
+kaggle Telecom Churn Dataset 2666 16 3
+kaggle Well log facies dataset 3232 8 2
+kaggle Client churn rate in Telecom sector 3333 16 3
+kaggle Cardiovascular Study Dataset 3390 13 2
+kaggle Campus France Rouen 2019 admission 3585 2 6
+Table 5: Small-scale categorical datasets.source name sample num feat cat feat
+openml fri c3 1000 10 1000 10 0
+kaggle Customer Classiﬁcation 1000 11 0
+openml autoUniv-au1-1000 1000 20 0
+openml fri c0 1000 50 1000 50 0
+openml fri c1 1000 50 1000 50 0
+openml rmftsa sleepdata 1024 2 0
+openml PizzaCutter3 1043 37 0
+UCI QSAR biodegradation 1055 41 0
+openml PieChart3 1077 37 0
+kaggle Credit Risk Classiﬁcation Dataset 1125 11 0
+UCI Diabetic Retinopathy Debrecen Data Set 1151 19 0
+kaggle Heart Disease Dataset (Comprehensive) 1190 11 0
+openml pc4 1458 37 0
+kaggle HR-attrition-EDA 1470 44 0
+UCI Contraceptive Method Choice 1473 9 0
+kaggle Bangla Music Dataset 1742 29 0
+kaggle Diabetes Data Set 2000 8 0
+openml kc1 2109 21 0
+openml Titanic 2201 3 0
+openml space ga 3107 6 0
+Table 6: Small-scale numerical datasets.
+method Hyperparameter range log
+XGBoost n estimators 200 ∼3000(small)/6000(medium) True
+learning rate 0.005 ∼0.05 True
+min child weight 2 ∼20 True
+gamma 0 ∼0.1 False
+LightGBM n estimators 200 ∼3000(small)/6000(medium) True
+learning rate 0.005 ∼0.05 True
+min child weight 2 ∼20 True
+min split gain 0 ∼0.1 False
+CatBoost n estimators 200 ∼3000(small)/6000(medium) True
+learning rate 0.005 ∼0.05 True
+min data inleaf 2 ∼20 True
+l2leafreg 0 ∼0.1 False
+UnbiasedGBM n estimators 200 ∼3000(small)/6000(medium) True
+learning rate 0.005 ∼0.05 True
+min data inleaf 2 ∼20 True
+min split gain -0.1 ∼0.1 False
+Table 7: Hyperparameters.Algorithm 2 Split Finding
+Input :SI, instance set of current node
+Output : The best split with its gain
+1:Randomly seperate SIintoS(1),S(2),S(3).
+2:Letbiindicate instance iinS(bi)
+3:G(k)←∑i∈Skgk,H(k)←∑i∈Skgk
+4:score(2)
+1;2;3;(2)←(−inf;−inf;−inf);None
+5:forfin feature space do
+6:GL
+1;2;3←0;0;0,HL
+1;2;3←0;0;0
+7: score(1)
+1;2;3;(1)←(−inf;−inf;−inf);None
+8: foriin sorted(S, ascent order by xif)do
+9:GL
+bi←GL
+bi+gi,HL
+bi←HL
+bi+hi
+10:GR
+bi←Gbi−GL
+bi,HR
+bi←Hbi−HL
+bi
+11: score 1←GL
+1GL
+1
+HL
+1+GR
+1GR
+1
+HR
+1−G1G1
+H1
+12: score 2←GL
+1GL
+2
+HL
+2+GR
+1GR
+2
+HR
+2−G1G2
+H2
+13: score 3←(GL
+1+GL
+2)GL
+3
+HL
+3+(GR
+1+GR
+2)GR
+3
+HR
+3−(G1+G2)G3
+H3
+14: ifscore 1>score(1)
+1then
+15: score(1);(1)←score;(f;xif)
+16: end if
+17: end for
+18: ifscore(1)
+2>score(2)
+2then
+19: score(2);(2)←score(1);(1)
+20: end if
+21:end for
+22:return score(2)
+3;(2)
+Algorithm 3 Tree Construction
+Output : Decision tree with feature importance gain
+1:T←a root only
+2:Imp←[0;0;0;:::]
+3:while/divides.alt0T/divides.alt0<num leafdo
+4: Pick the leaf Iwith maximal Splitscore
+5: Imp[Splitfeat]+=Splitscore
+6: ifSplitscore<minsplit gain then
+7: break
+8: end if
+9:T←T∪{I/uni21A6IL;IR}
+10:end while
+11:returnT,Imp
+Discussion: Complexity when applied on XGBoost. XG-
+Boost sorts all instances for each feature when determining
+the best split on a node. The bottleneck is to visit the sorted
+array of instance once and calculate its split gain. In this case,
+using our method incurs no additional costs because the total
+number of instances of D,D′
+1, andD′
+2equals to the original.
+Discussion: Complexity when applied on LightGBM.
+LightGBM divides instances into bins. When the number of
+bins is not small, the bottleneck is to visit each sorted bins
+and calculate its split gain. If we separate D,D′
+1andD′
+2over
+the bins, the total number of bins of the three dataset is the
+same as the original. Hence no additional costs again.SHAP Permutation Gain Importance Unbiased Gain
+Average Rank 3.14 2.71 2.71 1.43
+p-value 0:003 0:042 0 :042 -
+Table 8: The average rank over 14 datasets and the p-value of Ne-
+menyi test between unbiased gain and the baseline methods.
+F Additional Results
+F.1 Statistical Analyses
+We leverage the Nemenyi test [Demsar, 2006 ]to compare the
+unbiased gain and baseline methods in feature selection. For
+each dataset, we average the AUC on the test set when select-
+ing top 10%,20%, and 30% features. We present the rank of
+each method and the Nemenyi test p-values in Table 1.
+100101102
+Number of tuning iterations0.30.40.50.60.70.80.9Normalized test AUCCatBoost
+XGBoost
+LightGBM
+UnbiasedGBM-w/o-UB
+UnbiasedGBM
+(a) 14 high-dimensional datasets
+100101102
+Number of tuning iterations0.50.60.70.80.91.0Normalized test AUCCatBoost
+XGBoost
+LightGBM
+UnbiasedGBM-w/o-UB
+UnbiasedGBM (b) 20 easy datasets
+Figure 6: Additional experiments of high dimensional and easy
+datasets.
+F.2 Additional Experiments
+We present additional experiments on high dimensional and
+easy datasets in Figure 6.

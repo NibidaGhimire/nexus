@@ -1,0 +1,642 @@
+UniCal: a Single-Branch Transformer-Based Model for
+Camera-to-LiDAR Calibration and Validation
+Mathieu Cocheteux1y, Aaron Low2y, Marius Br ¨uhlmeier1
+Abstract — We introduce a novel architecture, UniCal, for
+Camera-to-LiDAR (C2L) extrinsic calibration which leverages
+self-attention mechanisms through a Transformer-based back-
+bone network to infer the 6-degree of freedom (DoF) relative
+transformation between the sensors. Unlike previous methods,
+UniCal performs an early fusion of the input camera and
+LiDAR data by aggregating camera image channels and LiDAR
+mappings into a multi-channel uniﬁed representation before
+extracting their features jointly with a single-branch architec-
+ture. This single-branch architecture makes UniCal lightweight,
+which is desirable in applications with restrained resources such
+as autonomous driving. Through experiments, we show that
+UniCal achieves state-of-the-art results compared to existing
+methods. We also show that through transfer learning, weights
+learned on the calibration task can be applied to a calibration
+validation task without re-training the backbone.
+I. I NTRODUCTION
+Autonomous vehicles, as well as other robotic systems,
+rely on sensors to perceive their environment. Most systems
+use a variety of sensors, including cameras, LiDARs, as
+well as radars. Fusing data from multiple sensors is a
+common practice to leverage the advantages of each sensor.
+This requires having the precise value of their extrinsic
+calibration, which is a transformation in the Lie group SE(3)
+represented by a 6-degree of freedom (DoF) transformation
+consisting of the relative translation and rotation between the
+two sensor poses. Camera-to-LiDAR (C2L) calibration is one
+of the most common sensor fusion strategies as it is valuable
+to combine the visual information obtained by cameras with
+the spatial and occupancy information obtained by LiDARs.
+With this information, downstream tasks such as mapping,
+localization, and planning can be carried out.
+Traditionally, C2L calibration is performed with ofﬂine
+methods [1][2][3]. This usually involves pre-collecting a
+series of frame in a controlled environment to carry out
+iterative optimization. However, this does not consider the
+scenario where sensor position changes during the normal
+operation of a robot, by weather conditions, mechanical
+vibrations, or collision. This implies the need for online
+methods that can perform calibration in real-time. Existing
+solutions have already been introduced to tackle this prob-
+lem [4]. These solutions tend to rely on geometric feature
+detection and optimization as in [5]. Deep learning methods
+were ﬁrst introduced with RegNet [6] which proposed a dual-
+branch architecture that processed the camera and LiDAR
+1Mathieu Cocheteux mathieu@cocheteux.eu and Marius
+Br¨uhlmeier were with Motional at the time of this work.
+2Aaron Low aaron.low@motional.com is with Motional
+yContributed to the work equally
+Fig. 1. Projection of LiDAR points with color-mapped depth onto the
+corresponding camera image. Frame from the Kitti [11] raw dataset. ( Top)
+De-calibrated on rotation and translation parameters. ( Bottom ) Re-calibrated
+with UniCal.
+features separately before passing the features through a
+matching layer before regressing the output transformation.
+Following [6] various methods build upon a dual-branch
+architecture and manage to improve upon the results [7][8].
+For the deep learning methods, experiments focus on scenes
+collected by a single camera located at the front of the
+vehicle.
+Our work, UniCal, differs by its novel architecture that
+can be used as a baseline for future works. Unlike the dual-
+branch architecture used in other works [1][2][3], it merges
+the raw inputs directly and relies on a single backbone to
+perform the task. Its single-branch architecture enables our
+network to be more lightweight. It is also extensible as it is
+not required to build a new feature encoder should we want
+to modify the input. This architecture is also the ﬁrst to use
+a Transformer-based backbone, MobileViT [9] to leverage
+self-attention mechanisms and identify areas with the most
+signiﬁcant features. Similar to previous works [6][7][8][10],
+we evaluate on the Kitti [11] dataset. We also evaluate Uni-
+Cal on our own dataset collected from multiple autonomous
+vehicle logs which we refer to as Motional drivelog data
+which we elaborate further in Section IV-B.2. Unlike Kitti,
+this dataset consists of varying vehicles and features a suite
+of cameras surrounding the vehicle which provides various
+points of view. From our experiments, we achieved on par
+or better compared to the current state-of-the-art for both
+datasets.
+Furthermore, we extend UniCal to perform the task of C2L
+calibration validation. The task is to determine the validity
+of a given set of calibration parameters for a pair of sensors.
+This is relevant for autonomous vehicle use cases as it canarXiv:2304.09715v1  [cs.CV]  19 Apr 2023be used to determine instantly if a vehicle is well-calibrated
+before allowing it to operate. This problem can be reduced to
+a binary classiﬁcation task (calibrated/de-calibrated), where
+the calibrated class is deﬁned as having a de-calibration
+smaller than a chosen sensitivity margin. We determined by
+experimentation that training UniCal for a calibration task
+and then using transfer learning with a classiﬁcation head to
+solve this issue delivered better results than directly learning
+this task with UniCal architecture and outperforming existing
+calibration architectures.
+To summarize, our main contributions are:
+A lightweight single-branch architecture which has up
+to 3 to 10 times less parameters than the state-of-the-art
+architectures;
+Our model achieves up to 7 times lower mean average
+error compared to RegNet [6];
+An early fusion of all inputs in a uniﬁed representation;
+Leveraging Transformers and self-attention to learn
+meaningful features from unstructured environments;
+A transfer learning technique that improves camera-to-
+LiDAR calibration validation by training a classiﬁcation
+head on top of frozen calibration network weights,
+achieving 98% accuracy.
+II. R ELATED WORKS
+Sensor calibration is a well-deﬁned and broad research
+topic including diverse tasks. We decided to focus our
+work on camera-to-LiDAR (C2L) extrinsic calibration. This
+section will give a brief overview of the ﬁeld.
+1) Target-based methods: This task has most often been
+solved with ofﬂine, target-based methods. [1] proposes to use
+a common checkerboard target, which can be seen both as
+a 3D object by the LiDAR and as a pattern by the camera.
+Other works explore different target shapes. For example, [2]
+proposes a target with a circle and a hole to improve visibility
+by sensors in outdoor scenes. Finally, [3] introduces an au-
+tomated calibration process that uses multiple checkerboard
+targets in an indoor setting to converge toward a solution
+with one shot in under one minute. Traditional target-based
+methods are accurate but require speciﬁc equipment and
+environment. Moreover, they require users to gain experience
+for optimal target positioning. These methods require tuning
+a lot of parameters, which introduces heuristics and requires
+iterative optimization which takes time to converge. These
+methods can thus be slow and costly to use regularly on a
+vehicle.
+2) Targetless methods: More recent works have achieved
+automated, targetless methods. [4] proposes to use structure
+from motion and semantic information to treat the task as
+a point cloud registration problem. [5] explores detecting
+natural edge features in both modalities to align them. These
+methods are automated, targetless, and can be computed
+online. However, they still rely on computation-heavy op-
+timization and require a feature rich environment to provide
+a correct distribution of the selected features.3) Machine Learning methods: Considering the recent
+success of neural networks in performing computer vision
+tasks, some works explored their use to perform camera-to-
+LiDAR calibration. This was ﬁrst introduced by RegNet [6],
+a seminal work that proposed numerous ideas that have since
+then been commonly reused in other works:
+A training method that consists in generating artiﬁcially
+de-calibrated samples from the ground truth;
+A dual-branch architecture, using one branch for camera
+feature extraction from RGB image and a separate
+branch for LiDAR feature extraction from projected
+depth. Features are then merged at a later stage before
+being matched by a third backbone and ﬁnally regressed
+by the head;
+Multi-scale reﬁnement. By training several networks on
+different de-calibration ranges, then passing the input
+successively through these different networks at the time
+of inference to reﬁne the output from a gross estimation
+to a more accurate value;
+A well-thought split of Kitti [11], with a challenging
+testing set.
+Another signiﬁcant contribution to the ﬁeld, CalibNet [8]
+introduced the use of new losses comparing the ground truth
+point cloud with the re-calibrated point cloud to take spatial
+information into account. NetCalib [10][12] introduces the
+idea of computing a depth map from stereo cameras to match
+with the LiDAR-based depth map. Using the same modalities
+achieves more accurate results. Finally, one of the most
+recent publications, LCCNet [7], achieves the best results
+yet. It uses the common architecture previously introduced,
+as well as scale reﬁnement and iterative reﬁnement, and relies
+on a cost-volume [13] as its backbone. To our knowledge, no
+prior work to UniCal has yet used Transformers-based net-
+works for the task of camera-to-LiDAR calibration. However,
+some works have used Transformer-based vision backbones
+for tasks relying on data from LiDAR and camera, such
+as [14], which relies on a pre-calibrated system to perform
+fusion-based object detection.
+These previous works achieve accurate calibration but
+leave room for improvement in accuracy, performance, and
+reliability in unstructured environments. The networks used
+are typically large as they follow a dual-branch architecture
+which requires two separate feature encoders for the camera
+branch and the LiDAR branch. As previous publications
+evaluate their results on different splits of the Kitti dataset,
+we show in our experiments (see Table I and Table II) that the
+results can vary signiﬁcantly depending on the dataset split
+chosen. We thus also evaluate UniCal on the different splits
+used in previous references to compare the results faithfully.
+III. M ETHOD
+A. Data Representation
+To perform the calibration task, we focus on the space
+of autonomous vehicles consisting of driving scenes. Each
+scene sample is a synchronized capture of a camera image
+and a LiDAR point cloud. For training, we need the corre-
+sponding sensor input pair and the “ground truth” extrinsicFig. 2. UniCal macro-architecture. The network receives data from the camera and LiDAR, merges them in a unique branch, and processes them through
+its backbone. In our case, we chose MobileViT [9], but another model could work as well.
+calibration between them. Note that it is impossible to obtain
+the perfect extrinsic calibration outside of simulation. We
+assume that the intrinsic parameters are already calibrated.
+1) Sample generation: Our dataset consists of calibrated
+scenes, we generate de-calibrated samples to feed as input
+to the network by following the method introduced by
+RegNet [6]. In short, we generate a random de-calibration on
+all 6 DoF transformation parameters according to a uniform
+distribution on a chosen de-calibration range. We choose the
+range10cmfor translation and 1for rotation which is
+an estimate of the levels of perturbation experienced by the
+sensors during vehicle operation. We note Ta transformation
+with three rotation parameters and three translation parame-
+ters. This de-calibration Tdecal is then applied to the ground
+truthTgtto get the de-calibrated initial transformation Tinit,
+as explained in Eq. 1. We then project the LiDAR points into
+the camera frame using these de-calibrated parameters. Using
+Tinitas the initial calibration value, UniCal estimates the
+transformation Tdecal asTpred, such that applying T 1
+predto
+Tinitshould result in the ground truth value Tgtas described
+in Eq. 2.
+Tinit=TdecalTgt (1)
+TgtT 1
+predTinit (2)
+2) Uniﬁed representation: Unlike previous works in this
+ﬁeld [6][8][10][15], UniCal uses a uniﬁed representation
+of all data sources as the input of the network. We then
+extract features directly from this representation. This uniﬁed
+representation is an N-channel pseudo-image. Each channel
+corresponds to a different input source from a sensor (at least
+one channel per sensor). An advantage of this representation
+is that it requires fewer parameters than a dual-branch
+architecture, hence UniCal would require less computational
+resources. Moreover, it also makes UniCal more modular and
+extensible. The model can easily be extended to experiment
+with new input sources, whether they are from a differentsensor (to try to solve a different calibration task) or a
+processed input from the same sensor (for example adding
+edge extractions on the camera image). In this work, we
+use grayscale from the camera, and depth and intensity from
+the LiDAR: we feed to the network a pseudo-image with 3
+channels.
+B. Network Architecture
+We introduce a novel architecture, illustrated in Fig. 2.
+It is created to be a lightweight, modular, and efﬁcient
+baseline that can easily be extended. Our early uniﬁed
+data representation allows us to replace the dual-branch
+architecture used in other works with a novel single-branch
+architecture. UniCal directly learns to match the different
+modalities with a single backbone network as opposed to
+the dual-branch architecture found in [6] [7] [8] [10] which
+requires three separate backbones for feature extraction and
+feature matching. This makes UniCal lighter in comparison.
+Moreover, the architecture of UniCal and its backbone is
+not customized for the input type. The use of our uniﬁed
+input representation means that changing the inputs does
+not require other changes in the backbone than its channel
+number.
+1) Backbone: Recently, Transformer-based architectures
+have been successful in bringing the beneﬁts of self-attention
+mechanisms to vision tasks. However, to learn jointly on
+all modalities, convolutional operations are still required.
+We use MobileViT [9] as the backbone. It implements
+a convolutional operation in which the local matrix mul-
+tiplication is replaced by a global operation through a
+stack of Transformer [16] layers. It combines advantages
+from both convolutional networks (such as spatial bias)
+and Transformers (self-attention). Moreover, it was designed
+to be lightweight and to run on embedded systems with
+constrained resources. As a result, UniCal counts only 5.7
+million trainable parameters. In comparison, a ResNet18 [17]
+backbone has around 11 million trainable parameters. Anetwork using a ResNet18-based backbone in a 2-branch
+architecture, such as CalibNet [8], we estimate could have
+up to 33 million parameters for its backbone alone. For
+our experiments, we use the MobileViT [9] implementation
+proposed by Hugging Face [18].
+2) Head: We use a simple regression head represented by
+fully connected layers to regress the calibration parameters
+which are 3 translation parameters (x, y, z) and 3 rotation
+parameters (roll, pitch, yaw). Our regression head consists of
+a common ﬁrst layer which then splits into two branches to
+separately regress the translation and rotation components.
+This head is similar to the one used in [7].
+C. Loss Functions
+1) Regression loss: UniCal is trained using supervised
+learning. We use Mean Square Error regression losses for
+rotation as in Eq. 3 and translation as in Eq. 4 to compare
+the prediction and the ground truth de-calibration. In Eq. 3
+and Eq. 4,randtare respectively the rotation and translation
+parameters of the transformation. Both losses in Eq. 3 and
+Eq. 4 must then be averaged for the batch.
+Lr= (rgt rpred)2(3)
+Lt= (tgt tpred)2(4)
+2) Spatial losses.: Similarly to [8][12], we use spatially-
+aware losses to improve convergence during training. We use
+two such losses to compare the correct point cloud and the
+point cloud after re-calibration:
+Center loss : the distance between the center of those
+two point clouds as in Eq. 5 where Cpclis the center
+of the point cloud. This loss must then be averaged for
+the batch;
+LC=
+TgtCpcl T 1
+predTinitCpcl2
+(5)
+Point cloud loss : the distance between the correspond-
+ing points in those two point clouds (there is no need
+for matching as the data remains ordered) as in Eq. 6
+wherepkis a point from the point cloud with index k,
+andKthe number of points in the point cloud. This
+loss must then be averaged for the batch.
+Lpcl=1
+KKX
+1
+Tgtpk T 1
+predTinitpk2
+(6)
+D. Self-Attention
+As detailed in III-B, we selected MobileViT [9] as our
+backbone because it is adapted to embedded applications and
+brings beneﬁts of both convolutional networks and Trans-
+formers. Self-attention mechanisms used in Transformers
+allow UniCal to give more weight to features deemed more
+relevant by the network. Attention also brings some form of
+explainability as it can be displayed as a heatmap for us to
+see the areas the network found most relevant to solve the
+calibration task. The heatmaps generated by UniCal during
+testing are illustrated in Fig. 3.
+(a) Kitti image
+ (b) Motional image
+Fig. 3. Attention heatmaps overlayed on images from our datasets. Images
+are converted to grayscale and resized.
+We observed that UniCal weights its attention in different
+zones depending on the dataset on which it was trained. On
+Kitti, it tends to give more attention weight to roads and
+cars. On Motional drivelog data, it tends to highlight various
+salient objects in the image, especially objects that offer
+clear lines visible with both sensors. Those zones with high
+attention closely resemble those that humans experimented
+with calibrating would look at to spot de-calibration. We
+suppose that the network can often rely on elements found
+on the road with Kitti data as it is less challenging than the
+Motional data and only uses the front camera where the road
+is always visible.
+IV. E XPERIMENTS
+A. Dataset
+1) Kitti: We decided to work mostly with Kitti [11], a
+reference dataset on the autonomous driving scene. Kitti has
+been used in all relevant works on this topic. It provides
+enough samples and an accurate calibration ground truth.
+Using the same dataset as previous works will help us
+compare our results. However, those previous publications
+used different splits of the Kitti dataset. We present those
+splits in Table I and will refer to them as ,,, and.
+From the splits presented in Table I, we choose as
+our reference. Proposed by RegNet [6], it is the ﬁrst Kitti
+split introduced for this task, and as shown by our results
+in Table II it remains the most challenging. This is because
+it uses samples from separate days for training/validation
+and testing, with different camera intrinsics. In comparison,
+splits,, andused in other publications include in their
+testing sets samples recorded the same day and with the
+same camera intrinsics as their training sets. even uses
+spatially redundant samples (some scenes are captured in the
+same location in training and testing sets) as acknowledged
+in [7]. The split and dataset choice are not trivial as results
+in Table II show that the same network (here UniCal)
+trained and tested on different splits will perform differently.
+The splits with more similarities between the training and
+testing sets will get seemingly better results, whether those
+similarities are mostly in the camera intrinsics as in , or
+even in the location where the samples were collected, as in
+.TABLE I
+KITTI [11] SPLITS USED IN STATE -OF-THE-ART WORKS
+Split Publication Dataset Training Validation Testing
+ RegNet [6] Raw 26 09: all logs not used in other sets 26 09: 5, 70 30 09: 28
+ NetCalib [12] Raw 26 09: all logs not used in other sets 26 09: 13, 20, 79 26 09: 5, 70
+ CalibNet [8] Raw 2609: unspeciﬁed logs 26 09: unspeciﬁed logs 2609, 30 09: unspeciﬁed logs
+ LCCNet [7] Odometry logs 1 – 20: unspeciﬁed distribution logs 1 – 20: unspeciﬁed distribution log 0
+N.B.: In each split, sets are mutually exclusive. While logs from a same day can be used in different sets, each log can only belong to one set. Here ”26 09:
+5” identiﬁes log 5 of day 26/09.
+2) Motional drive log data: To further assess our method,
+we also generated our own dataset collected from 89 au-
+tonomous vehicle driving logs across 4 cities (Las Vegas,
+Santa Monica, Pittsburgh, Boston) consisting of 28 unique
+vehicles. We use data from one main LiDAR and 8 different
+cameras surrounding the vehicle. We split our dataset into
+21995 training data, 3299 validation data, and 2173 testing
+data. Our training and validation data consists of logs taken
+from only Las Vegas and Santa Monica whereas our testing
+data has logs from all 4 locations. We also made sure our
+testing data has no overlapping vehicles with the training set.
+3) Data augmentation: Our best results are obtained with
+soft augmentation parameters to ﬁt real-life situations as
+much as possible. We can expect that the vehicle will always
+lie ﬂat on the road and the ground will be approximately
+horizontal or rotated with a limited angle. We thus augmented
+with random rotations of up to 2, translation of 0.01 %of
+the image dimensions.
+B. Results
+1) Kitti: We compare in Table II the results obtained
+on the different splits presented in Table I. The models
+compared have been trained to solve the task on different
+de-calibration ranges. However, they rely on multi-scale
+reﬁnement to bring the ﬁnal task to the same de-calibration
+range: a cascade of networks are trained on different ranges
+of de-calibration with each step reﬁning the parameters to
+a range suitable for the next network. The ﬁnal network,
+trained on the smallest de-calibration range, receives param-
+eters that are already in its range. This last network can
+thus be considered independently as operations happening
+beforehand are transparent to it. It is then possible to compare
+results from this ﬁnal network with results from a network
+trained on the same de-calibration range.
+TABLE II
+RESULTS AND COMPARISON WITH OTHER WORKS ON KITTI
+Model SplitRotation () Translation (cm)
+MAE1STD2MAE STD
+UniCal (ours)0.04 0.03 0.89 0.85
+RegNet [6] 0.28 - 6 -
+UniCal (ours)0.03 0.03 0.33 0.30
+NetCalib [12] 0.11 0.11 1.13 0.97
+CalibNet [8]  0.41 - 4.34 -
+UniCal (ours)0.04 0.03 0.80 0.80
+LCCNet [7] 0.017 - 0.30 -On Kitti, we observe that UniCal outperforms most net-
+works from the state of the art, notably RegNet [6], Calib-
+Net [8], and NetCalib [12]. However, as expected it comes
+short of LCCNet [7], which relies on multiple scenes for
+each prediction to reﬁne its results. By contrast, we chose to
+estimate the calibration parameters with a single shot.
+2) Motional proprietary data: We experimented on the
+proprietary data described in IV-A.2. This dataset is chal-
+lenging for a calibration network: the data is from multiple
+vehicles, captured in different conditions and locations, and
+intrinsic calibration, as well as extrinsic ground truth, can be
+imperfect. Most importantly, we made the task more difﬁcult
+by using data from all available cameras on the vehicle
+compared to only one camera in our Kitti experiments and
+state-of-the-art works. UniCal is to our knowledge the ﬁrst
+model that has been shown able to calibrate a lidar with
+multiple cameras. Those cameras have wildly different points
+of view and positions on the vehicle (front, back, sides, etc.).
+We achieved a mean average error of 0:13on rotation and
+1:9cmon translation. To better understand those results, this
+is still at least twice more accurate than the 0:28and 6cm
+achieved by RegNet [6] on Kitti for a single camera, despite
+our task and dataset being more challenging.
+C. Execution time
+By proﬁling UniCal on an NVIDIA GeForce RTX 2070
+SUPER, we get an inference time of around 11:67msfor a
+batch size of 1. This means UniCal can perform calibration
+about 85 times per second, which is enough for real-time
+applications. The calibration can thus be performed in mil-
+liseconds while the vehicle is operating. A traditional vision
+method such as [5] is much slower, with data acquisition
+taking about 20s[5] during which the vehicle must not move,
+and the processing pipeline takes another 60s[5]. Com-
+pared to other deep learning-based methods, it is difﬁcult
+to establish any signiﬁcant inference time difference. [10]
+reports an inference time of 16ms, while [12] reports 4:7ms
+for a similar network. Moreover, measurement methods and
+equipment can vary, making it difﬁcult to compare results.
+We can thus infer that deep learning methods should all have
+a relatively low inference time, measured in milliseconds
+compared to traditional vision methods for which execution
+time is most often in the scale of seconds such as [5].
+1MAE: Mean Average Error
+2STD: Standard DeviationTABLE III
+ABLATION STUDY RESULTS ON KITTI [11]
+Experiment Rotation (°) Translation (cm)
+Augmentation Intensity Attention Grayscale MAE1STD2MAE STD
+X X X 0.04 0.04 1.06 1.16
+X X X X 0.04 0.03 0.89 0.85
+X X 0.04 0.04 0.96 0.96
+X X 0.05 0.06 1.37 1.24
+X X 0.05 0.05 1.26 1.13
+D. Ablation study
+We ran additional experiments to study the inﬂuence of
+different choices on our model. The results are reported in
+Table III. Those experiments were conducted on Kitti, using
+the splitpresented in Table I.
+1) Augmentation: Results in Table III show that applying
+a soft data augmentation improves results in rotation and
+translation. We can infer that data augmentation helps the
+network to learn more features and generalize better.
+2) LiDAR intensity: Intuitively, adding more information
+should help the network learn new features. Some datasets,
+like Kitti, provide intensity information from the LiDAR
+sensor. As shown in Fig. 4, intensity can be helpful in
+perceiving two-dimensional visual features and patterns that
+are not perceived in the depth map. This is the case in
+Fig. 4 where road surface markings, which are visible in
+the intensity map, are not visible in the depth map since
+they are two-dimensional. However, our experiments in III
+showed that this information is not always helpful for our
+task. This is probably because it makes visible to the network
+some elements that are noisy or not meaningful for our task.
+Fig. 4. Crop from a Kitti image. The lines from the road marking can be
+seen on the grayscale image ( A) and the intensity projection ( C), but not
+on the depth projection ( B).
+3) Self-attention: To try and determine the contribution
+of attention mechanisms in UniCal, we ran an experiment
+in which we replaced the MobileViT [9] backbone with a
+ResNet [17] backbone. ResNet is a popular CNN architecture
+for vision tasks that does not use attention mechanisms. As
+expected, the results in Table III show about 25% higher
+Mean Average Error (MAE) and Standard Deviation (STD)
+on rotation and translation parameters compared to our
+reference. This shows that the selected MobileViT backbone
+outperforms traditional architectures in UniCal. Considering
+that relevant features are correctly found by attention mech-
+anisms in our heatmap visualizations in 3, this is additional
+evidence of the relevance of attention for this task. However,
+results obtained with ResNet are still satisfactory and close
+to the state-of-the-art, showing that the uniﬁed representation
+will work with different network backbones.TABLE IV
+CALIBRATION VALIDATION RESULTS ON MOTIONAL DATA
+Model TL1Accuracy F1 Precision Recall
+RegNet-based 0.52 0 0 0
+UniVal 0.97 0.97 0.98 0.95
+UniVal X 0.98 0.98 0.99 0.97
+E. Calibration Validation
+Besides calibration, we also looked into the task of cal-
+ibration validation. Given a corresponding pair of camera
+image and LiDAR point cloud, the task is to detect if the
+calibration is correct (within an acceptable tolerance range).
+We pose this problem as a binary classiﬁcation task. A
+positive classiﬁcation would be a correct calibration within
+the tolerance range, and a negative classiﬁcation indicates
+a de-calibration. We perturb the calibration by up to 1on
+each rotation axis and up to 10cmon each translation axis.
+Initially, we switch out our network heads for classiﬁca-
+tion heads and trained on Kitti. We aptly named this new
+network UniVal. From our results in Table IV, we found
+that the RegNet model severely overﬁts during training while
+our UniVal model fairs signiﬁcantly better. We then tried
+a transfer learning method that involves pre-training the
+network weights on the calibration task, freezing the network
+layers, and ﬁne-tuning with a validation (classiﬁcation) head.
+The motivation is that the backbone weights trained on
+calibration should be expressive enough to be used in the
+validation task. Our results show that the performance using
+this method improves from simply training UniVal without
+transfer learning.
+V. C ONCLUSION
+In this work, we showed that self-attention-based vision
+can be leveraged to improve learning on driving scenes and
+proposed a single-branch architecture that outperforms the
+standard dual-branch architecture introduced by RegNet [6].
+Besides that, we also show that we are able to use transfer
+learning from the calibration task to outperform regular
+training on the calibration validation task without retraining
+the calibration network weights. For future work, we
+propose the following:
+1) Reﬁnement and re-calibration ranges.: We focused on
+single-shot calibration for the small ranges of de-calibration
+most often occurring while operating an autonomous
+vehicle. Moreover, we aimed to develop a new architecture
+that could be used as a baseline and extended in future
+works. However, one could further improve results by
+adding some form of reﬁnements such as the multi-frame
+iteration introduced in RegNet [6] as temporal ﬁltering or
+the LSTM-based reﬁnement introduced by CalibRCNN [15].
+Similarly, we could handle large de-calibration by using
+scale-iterative reﬁnement as in RegNet [6] and others.
+1TL: Transfer Learning2) Extension to other modalities.: As a future work,
+we believe that our model can be extended to other tasks
+by simply modifying the modality of input used in the
+uniﬁed representation. This would enable calibration of other
+modalities such as Camera-to-Camera calibration or LiDAR-
+to-LiDAR calibration. We could also try to regress camera
+intrinsic parameters (focal length, principal point, distortion
+coefﬁcients) to perform intrinsic calibration as well.
+ACKNOWLEDGMENT
+We would like to thank our colleagues Huy Nguyen,
+Venice Erin Liong, Billy Saputra for their insightful advice
+and help in reviewing this work.
+REFERENCES
+[1] Q. Zhang and R. Pless, “Extrinsic calibration of a camera and
+laser range ﬁnder (improves camera calibration),” in 2004 IEEE/RSJ
+International Conference on Intelligent Robots and Systems (IROS)
+(IEEE Cat. No.04CH37566) , vol. 3, Sept. 2004, pp. 2301–2306 vol.3.
+[2] S. A. Rodriguez F., V . Fremont, and P. Bonnifait, “Extrinsic calibration
+between a multi-layer lidar and a camera,” in 2008 IEEE International
+Conference on Multisensor Fusion and Integration for Intelligent
+Systems . Seoul, Korea (South): IEEE, Aug. 2008, pp. 214–219.
+[3] A. Geiger, F. Moosmann, O. Car, and B. Schuster, “Automatic camera
+and range sensor calibration using a single shot,” in 2012 IEEE
+International Conference on Robotics and Automation , May 2012, pp.
+3936–3943.
+[4] B. Nagy, L. Kov ´acs, and C. Benedek, “SFM And Semantic Information
+Based Online Targetless Camera-LIDAR Self-Calibration,” in 2019
+IEEE International Conference on Image Processing (ICIP) , Sept.
+2019, pp. 1317–1321.
+[5] C. Yuan, X. Liu, X. Hong, and F. Zhang, “Pixel-level extrinsic
+self calibration of high resolution lidar and camera in targetless
+environments,” IEEE Robotics and Automation Letters , vol. 6, no. 4,
+pp. 7517–7524, 2021.
+[6] N. Schneider, F. Piewak, C. Stiller, and U. Franke, “Regnet: Multi-
+modal sensor registration using deep neural networks,” in 2017 IEEE
+Intelligent Vehicles Symposium (IV) , 2017, pp. 1803–1810.
+[7] X. Lv, B. Wang, Z. Dou, D. Ye, and S. Wang, “Lccnet: Lidar
+and camera self-calibration using cost volume network,” in 2021
+IEEE/CVF Conference on Computer Vision and Pattern Recognition
+Workshops (CVPRW) , 2021, pp. 2888–2895.[8] G. Iyer, R. K. Ram., J. K. Murthy, and K. M. Krishna, “Calib-
+Net: Geometrically Supervised Extrinsic Calibration using 3D Spatial
+Transformer Networks,” 2018 IEEE/RSJ International Conference on
+Intelligent Robots and Systems (IROS) , pp. 1110–1117, Oct. 2018.
+[9] S. Mehta and M. Rastegari, “MobileViT: Light-weight, General-
+purpose, and Mobile-friendly Vision Transformer,” Mar. 2022.
+[10] S. Wu, A. Hadachi, D. Vivet, and Y . Prabhakar, “NetCalib: A Novel
+Approach for LiDAR-Camera Auto-calibration Based on Deep Learn-
+ing,” in 2020 25th International Conference on Pattern Recognition
+(ICPR) , Jan. 2021, pp. 6648–6655.
+[11] A. Geiger, P. Lenz, C. Stiller, and R. Urtasun, “Vision meets robotics:
+The KITTI dataset,” The International Journal of Robotics Research ,
+vol. 32, no. 11, pp. 1231–1237, Sept. 2013.
+[12] S. Wu, A. Hadachi, D. Vivet, and Y . Prabhakar, “This is The Way:
+Sensors Auto-calibration Approach Based on Deep Learning for Self-
+driving Cars,” IEEE Sensors Journal , pp. 1–1, 2021.
+[13] D. Sun, X. Yang, M.-Y . Liu, and J. Kautz, “Pwc-net: Cnns for optical
+ﬂow using pyramid, warping, and cost volume,” in 2018 IEEE/CVF
+Conference on Computer Vision and Pattern Recognition , 2018, pp.
+8934–8943.
+[14] X. Bai, Z. Hu, X. Zhu, Q. Huang, Y . Chen, H. Fu, and C.-L. Tai,
+“Transfusion: Robust lidar-camera fusion for 3d object detection with
+transformers,” in 2022 IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR) , 2022, pp. 1080–1089.
+[15] J. Shi, Z. Zhu, J. Zhang, R. Liu, Z. Wang, S. Chen, and H. Liu,
+“CalibRCNN: Calibrating Camera and LiDAR by Recurrent Convo-
+lutional Neural Network and Geometric Constraints,” 2020 IEEE/RSJ
+International Conference on Intelligent Robots and Systems (IROS) ,
+2020.
+[16] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N.
+Gomez, L. u. Kaiser, and I. Polosukhin, “Attention is all you need,”
+inAdvances in Neural Information Processing Systems , 2017.
+[17] K. He, X. Zhang, S. Ren, and J. Sun, “Deep Residual Learning for
+Image Recognition,” Dec. 2015.
+[18] T. Wolf, L. Debut, V . Sanh, J. Chaumond, C. Delangue, A. Moi,
+P. Cistac, T. Rault, R. Louf, M. Funtowicz, J. Davison, S. Shleifer,
+P. von Platen, C. Ma, Y . Jernite, J. Plu, C. Xu, T. Le Scao, S. Gugger,
+M. Drame, Q. Lhoest, and A. Rush, “Transformers: State-of-the-Art
+Natural Language Processing,” in Proceedings of the 2020 Confer-
+ence on Empirical Methods in Natural Language Processing: System
+Demonstrations . Online: Association for Computational Linguistics,
+Oct. 2020, pp. 38–45.

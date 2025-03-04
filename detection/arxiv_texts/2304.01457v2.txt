@@ -1,0 +1,1194 @@
+Exploring Vision-Language Models for Imbalanced Learning
+Yidong Wang1, Zhuohao Yu1, Jindong Wang2, Qiang Heng3, Hao Chen4,
+Wei Ye1, Rui Xie1, Xing Xie2, Shikun Zhang1
+1National Engineering Research Center for Software Engineering, Peking University.
+2Mircosoft Research Asia.
+3North Carolina State University.
+4Carnegie Mellon University.
+Corresponding authors: jindong.wang@microsoft.com; wye@pku.edu.cn;
+zhangsk@pku.edu.cn;
+Abstract
+Vision-Language models (VLMs) that use contrastive language-image pre-training have shown promis-
+ing zero-shot classification performance. However, their performance on imbalanced dataset is
+relatively poor, where the distribution of classes in the training dataset is skewed, leading to poor
+performance in predicting minority classes. For instance, CLIP achieved only 5% accuracy on the
+iNaturalist18 dataset. We propose to add a lightweight decoder to VLMs to avoid OOM (out of mem-
+ory) problem caused by large number of classes and capture nuanced features for tail classes. Then, we
+explore improvements of VLMs using prompt tuning, fine-tuning, and incorporating imbalanced algo-
+rithms such as Focal Loss, Balanced SoftMax and Distribution Alignment. Experiments demonstrate
+that the performance of VLMs can be further boosted when used with decoder and imbalanced meth-
+ods. Specifically, our improved VLMs significantly outperforms zero-shot classification by an average
+accuracy of 6.58%,69.82 %, and 6.17%, on ImageNet-LT, iNaturalist18, and Places-LT, respectively.
+We further analyze the influence of pre-training data size, backbones, and training cost. Our study
+highlights the significance of imbalanced learning algorithms in face of VLMs pre-trained by huge
+data. We release our code at https://github.com/Imbalance-VLM/Imbalance-VLM.
+Keywords: vision-language models, imbalanced classification, long-tailed recognition
+1 Introduction
+Vision-Language Models (VLMs) using joint
+language-image pre-training have quickly gained
+popularity due to their impressive performance in
+a wide range of computer vision tasks (Radford
+et al, 2021; Schuhmann et al, 2022; Yu et al, 2022;
+L¨ uddecke and Ecker, 2022). One notable applica-
+tion of these models is the zero-shot classification
+where the model recognizes objects or scenes from
+a set of classes it has never seen before. VLMsachieve this by associating textual descriptions
+with images during prediction, allowing them to
+perform well on unseen data without the need for
+additional training on the target classes.
+However, despite their promising performance
+on zero-shot classification, we have empirically
+observed that these models cannot perform
+perfectly on imbalanced datasets where high-
+frequency classes, i.e., the head or common classes,
+contain most of the instances, and low-frequency
+classes, i.e., tail or rare classes, have very few
+1arXiv:2304.01457v2  [cs.AI]  21 Jun 20230 500 1000
+Class0.0000.0050.010#Sample (log)ImageNet-LT
+0 200
+Class0.0000.0250.0500.075Places-LT
+0 5000
+Class0.0000.0010.002iNaturalist(a) Class distribution
+iNaturalist ImageNet-LT Places-LT
+Dataset10305070Accuracy (%)CLIP (zero-shot)
+CLIP (linear probe)
+CLIP (full ﬁnetuning)
+CLIP (imbalanced) (b) Overall accuracy
+Fig. 1 (a) Class distribution of ImageNet-LT, Places-LT and iNaturalist18. Number of samples of each class is transformed
+using logarithm. (b) Overall accuracy of zero-shot, fine-tuned, and imbalanced methods with CLIP (Radford et al, 2021).
+instances. Note that the test set is often balanced
+to ensure fairness for each class during evalua-
+tion. The zero-shot classification performance of
+VLMs on imbalanced datasets is limited due to
+several factors, including the inherent bias in the
+pre-training data, the lack of exposure to the
+tail classes during pre-training, and the lack of
+techniques to mitigate the effects of class imbal-
+ance (Schuhmann et al, 2022). As a result, VLMs
+often perform poorly on tail classes, which can
+be critical for many applications related to safety
+or health, such as autonomous driving and med-
+ical diagnosis (Yang and Xu, 2020). Hence, it
+is intuitive to ask: is this long-tailed pre-training
+style actually transfer or influence downstream
+long-tailed classes?
+As shown in Fig. 1(b), on the iNaturalist18
+dataset (Van Horn et al, 2018), the zero-shot
+performance of CLIP (Radford et al, 2021), one
+of the most popular VLMs, is notably poor.
+Is it possible to improve their performance for
+imbalanced tasks? We show that when VLMs
+are combined with supervised fine-tuning using
+imbalanced methods, they show a considerable
+improvement in accuracy. On other datasets such
+as ImageNet-LT and Places-LT, zero-shot VLMs
+perform relatively well, but the accuracy can
+further be boosted when combined with super-
+vised training, showing the potential of fine-tuning
+VLMs in imbalanced settings.
+In this paper, we explore the use of super-
+vised imbalanced methods in conjunction with
+VLMs to improve the performance of VLMs on
+tail classes, which could fully unleash the power ofVLMs.1Specifically, we propose to incorporate a
+lightweight decoder after the Vision Transformer
+(ViT) of VLMs to save memory and capture
+subtle features for tail classes. Based on the
+modification, we investigate several class-balanced
+loss function engineering methods and two-stage
+methods to improve the performance of VLMs
+on imbalanced datasets. Some class-balanced loss
+functions adjust the logits instead of weighting
+the losses (Menon et al, 2020; Cao et al, 2019a;
+Ren et al, 2020) to achieve more balanced gra-
+dients between classes. Recently, two-stage meth-
+ods that re-adjust the classifier with the fixed
+representation backbone trained using standard
+Cross-Entropy Loss with instance-balanced sam-
+pling show strong performance compared with
+previous loss function methods (Kang et al, 2019;
+Zhang et al, 2021; Wang et al, 2022). Our experi-
+mental results demonstrate that the performance
+of VLMs can be further improved when used with
+decoder and imbalanced methods. Our findings
+suggest that the combination of VLMs and imbal-
+anced methods can be effective in addressing the
+challenge of class imbalance.
+The contributions of this paper are as follows:
+1. To our best knowledge, we are the first to
+provide a thorough exploration of combining
+vision-language models with imbalanced classi-
+fication methods, providing rich experience for
+research on this topic.
+2. Our insightful analysis shows that VLMs could
+show poor performance on some imbalanced
+1We mainly deal with a supervised imbalanced setting, i.e.,
+the training data is fully labeled. There are other new emerging
+areas such as semi-supervised imbalanced learning (Chen et al,
+2022) and they are out of the scope of this paper.
+2datasets, indicating that there is still large
+room for improvement.
+3. We propose simple modifications of VLMs
+to improve their performance using existing
+imbalanced learning methods, showing the pos-
+sibility to further enhance VLMs for imbal-
+anced learning. Experiments show that our
+modification with imbalanced algorithms sig-
+nificantly outperforms the zero-shot perfor-
+mance by 6.58%,69.82 %, and 6.17% on
+ImageNet-LT, iNaturalist18, and Places-LT
+datasets, respectively.
+4. Our training code, details, and benchmarks
+are open-sourced at https://github.com/
+Imbalance-LVM/Imbalance-LVM, which can
+facilitate future research on this topic on using
+VLMs for imbalanced learning.
+2 Related work
+2.1 Vision Foundation Models
+The trend towards increasingly larger vision mod-
+els has been observed in recent years, resulting
+in state-of-the-art performance on a variety of
+computer vision tasks (Dehghani et al, 2023; Liu
+et al, 2022). In this work, we focus on Large
+Joint Vision-Language Pre-training Vision Mod-
+els which enables natural language supervision for
+vision models. Instead of training in a fixed set
+of predetermined object categories, CLIP (Rad-
+ford et al, 2021) directly learning from raw text
+about images and broaden the source of supervi-
+sion. By adopting natural language to reference
+learned visual concepts or describe new ones, clip
+enables zero-shot classification on unseen tasks
+and is competitive with a fully supervised base-
+line on many tasks, without any dataset-specific
+training. BLIP (Li et al, 2022) then adopt cap-
+tion bootstrapping to leverage noisy web data in
+an efficient and effective manner. By generating
+synthetic captions using a captioner and filter-
+ing the noisy ones from a large noisy image-text
+pairs dataset collected from the web, BLIP can
+achieved great improvement on zero shot classi-
+fication tasks. The success of CLIP and BLIP
+is inseparable from large amounts of high-quality
+datasets. To facilitate the research for LVMs,
+LAION-5B (Schuhmann et al, 2022) is made
+public, which is a dataset consisting of 5.85 bil-
+lion CLIP-filtered image-text pairs, of which 2.32billion contain English language. Recently, sev-
+eral work also investigate imbalanced recognition
+using CLIP (Ma et al, 2021) and introduce text
+modality for long-tailed recognition tasks (Tian
+et al, 2022). Other work seek to enhance the
+performance of Vision Transformers (ViT) on
+imbalanced datasets by integrating unsupervised
+learning (Xu et al, 2023). However, their training
+objectives typically follow the contrastive learning
+objective of CLIP or the mask image modeling of
+MAE (He et al, 2022), while our focus is combining
+VLMs with imbalanced learning methods.
+2.2 Imbalanced Learning
+Imbalanced classification has attracted significant
+interest recently as it is a common issue in the real
+world (Yang et al, 2022; Tang et al, 2020; Tan et al,
+2020; Wang et al, 2021b; Wei et al, 2022). Recent
+approaches can be classified into four categories.
+Loss function engineering. Loss func-
+tion engineering aims to obtain balanced gra-
+dients during training. This technique includes
+loss re-weighting and logits adjustment. Loss re-
+weighting adjusts the weights of losses for different
+classes or instances to achieve a more balanced
+distribution (Byrd and Lipton, 2019; Khan et al,
+2017; Wang et al, 2017). Instances from tail
+classes are assigned larger weights than those from
+head classes. On the other hand, logits adjust-
+ment methods adjust the logits to obtain balanced
+gradients during training without re-weighting
+losses (Menon et al, 2020; Cao et al, 2019a; Ren
+et al, 2020; Yang et al, 2009).
+Two-stage Decision boundary adjust-
+ment. The data re-sampling and loss function
+engineering methods can have a side impact
+on data representations when training data is
+imbalanced (Ren et al, 2020; Zhang et al, 2021;
+Wang et al, 2022). In order to mitigate this
+impact, decision boundary adjustment techniques
+are employed to re-adjust the classifier head in a
+learnable manner (Platt et al, 1999; Kang et al,
+2019; Zhang et al, 2021; Wang et al, 2022) after
+standard training.
+Other methods. Other paradigms include
+task-specific architecture design (Wang et al,
+2021c; Zhou et al, 2020; Wang et al, 2021a), trans-
+fer learning (Liu et al, 2019; Yin et al, 2019),
+3domain adaptation (Jamal et al, 2020), semi-
+supervised learning, and self-supervised learn-
+ing (Yang and Xu, 2020) which demand non-
+trivial architecture design or external data.
+3 Are Vision-Language
+Models All We Need for
+Imbalanced Learning?
+The huge success of vision-language models on
+different standard tasks (Radford et al, 2021;
+Yu et al, 2022) naturally motivates a question:
+Are vision-language models all we need for imbal-
+anced learning? We try to answer this question by
+exploring the supervised fine-tuning of VLMs.
+3.1 Imbalanced Learning
+We use imbalanced classification as the main task,
+where the training data distribution is imbalanced
+and the test data distribution is balanced. For-
+mally, Let D={(xi, yi)}n
+i=1be a collection of
+training data with length n, where yidenotes the
+label of sample xi. The number of samples in each
+class jcan be denoted by njand the number of
+classes is K. Without loss of generality, we assume
+n1> n 2>···> n Kin the imbalanced setting.
+In supervised learning, the prediction function of
+a neural model consists of a feature learning func-
+tionf:x7→zand a linear classifier g:z7→y,
+where z∈Rpis the p-dimensional representation.
+The logit of class jis computed as:
+ηj=g(z) :=Wjz+bj, (1)
+where Wjandbjare the weight matrix and
+bias in the linear classifier, respectively. Then, the
+classification probability of xiis computed as:
+p(y=yi|xi;θr, θc) =exp(ηyi)PK
+j=1exp(ηj),(2)
+where θrandθcrepresent the trainable parameters
+of feature representation learning function fand
+the linear classifier g. The training loss is typically
+computed as the cross-entropy loss:
+ℓ(xi, yi;θr, θc) =−logp(y=yi|xi;θr, θc).(3)3.2 Zero-shot Classification by
+VLMs
+In this paper, we focus on the vision-language
+models trained using huge image-text pairs due
+to their superior performance. During training,
+the contrastive language-image pre-training based
+methods (Radford et al, 2021; Li et al, 2022) train
+a neural network to understand the relationship
+between natural language and visual information.
+The network is trained on a large-scale dataset
+of image-text pairs using a contrastive learning
+objective. The objective is to maximize the simi-
+larity between the representations of a given image
+Iand its associated text Twhile minimizing
+the similarity between the representations of the
+image and all other text T′.
+The pre-trained VLMs can be used for zero-
+shot prediction on unseen downstream tasks. The
+left part of Fig. 2 is the standard process of
+zero-shot prediction. To make a prediction, CLIP
+computes the similarity between the image repre-
+sentations and given text queries representations
+using the dot product. For instance, the text
+queries are typically natural language descriptions
+of the desired image classes, such as “ This is a
+photo of [Class] ”, where “ [Class] ” can be any
+category in the dataset such as “ cat” and “ dog”.
+Then, VLMs return a ranking of the most likely
+image classes based on their similarity scores. For-
+mally speaking, the prediction for an input xis
+obtained as:
+p(y=i|x) =exp(cos( Ti,I))PK
+j=1exp(cos( Tj,I)),(4)
+where Tjdenotes the embedding of class jand
+cos(·,·) refers to cosine similarity.
+Fig. 1(b) shows the summarized results of zero-
+shot classification. We see that VLMs can perform
+well on some datasets, but they may not generalize
+well to all datasets, especially those with different
+characteristics than the pre-training data.
+4 Improving VLMs for
+Imbalanced Learning
+Our analysis in last section demonstrates that the
+performance of VLMs on imbalanced tasks is not
+4Decoder Output Tuned Frozen 
+𝛈
+Fine-tune with imbalanced methods Learnable 
+Prompt 
+T
+Zero-shot/prompt tuning A picture of 
+a dog A picture of 
+a dog 
+IText
+encoder Image 
+encoder Text
+encoder Image 
+encoder 
+Cosine 
+Similarity 
+DogNot used 
+Imbalanced 
+methods 
+Dog(Or)
+Classifier Fig. 2 Left: Zero-shot and prompt tuning of VLMs for imbalanced classification. Right: Fine-tuning and incorporating
+imbalanced learning algorithms for VLMs. Note that: 1) We do notuse the text encoder of VLMs since adding this
+module makes it hard for linear probing and integrating with imbalanced methods. 2) We add a decoder after VLMs and
+incorporate it with different imbalanced methods to capture nuanced features of the minority classes.
+guaranteed, which motivates our further explo-
+ration: How to improve the performance of VLMs
+for imbalanced learning?
+4.1 Prompt Tuning
+Prompt tuning such as CoOp (Zhou et al, 2022b)
+and CoCoOp (Zhou et al, 2022a) improves the
+generalization of VLMs by learning its textual
+prompts rather than manually input as shown in
+the left part of Fig. 2. During training, they model
+prompts’ context words with learnable vectors
+while keeping the entire pre-trained parameters
+fixed. The training objective is similar to that of
+CLIP (Eq. 4):
+ℓ(Ds;˜θe,˜θt, θp) =
+−1
+ssX
+i=1KX
+j=1log 
+exp(zij/τ)
+PK
+m=1exp(zim/τ)!
+,(5)
+where Dsdenotes an s-sized batch of text-image
+samples, ˜θerefers to the frozen image encoder, ˜θt
+refers to the frozen text encoder, θpis the learnable
+prompt, and τis temperature.
+However, prompt tuning is not designed specif-
+ically for imbalanced learning tasks since its
+training objective aims to calculate similarity
+between every image and continuous vector for
+all class labels. More importantly, this method
+may become computationally infeasible as thenumber of classes scale up since the overall num-
+ber of tokens to be encoded during training is
+Θ(|D|KN), where Nrefers to the max input
+length of the text encoder.2
+4.2 Fine-tuning
+Other than prompt tuning, one can perform fine-
+tuning (linear probing or full finetuning) on train-
+ing data. To conduct standard ERM (Vapnik,
+1991) with limited resources, we use only frozen
+image encoder as the representation model in lin-
+ear probing as a baseline3. Specifically, we can
+replace the visual projection layer of VLMs which
+was used to compute the similarities between text
+and vision encoder with a simple fully-connected
+layer (classifier) for supervised training. Note that
+in linear probing, only the added classifier is
+trained while other parameters are all frozen. The
+training objective can be written as:
+ℓ(Ds;˜θe, θc) =−1
+ssX
+i=1log 
+exp(ηyi)
+PK
+j=1exp(ηj)!
+,(6)
+where Dsdenotes an s-sized batch of samples
+from the original training set D,˜θerefers to the
+2In fact, even with powerful hardware such as NVIDIA A100
+(80G), it may not be feasible to run CoOp on large datasets
+with a huge number of classes as 8142.
+3We also provide the results of full finetuning CLIP-ViTL14.
+Linear probing needs single 4090 with a batch size of 256 while
+full finetuning requires 2 A100-80G with a batch size of 128.
+5frozen image encoder and θcis the tuned clas-
+sifier. However, fine-tuning the model on only
+the added classifier may not be sufficient to cap-
+ture the nuanced features of the minority class as
+the VLMs themselves may lack exposure to the
+tail classes during pre-training. To better model
+the representation of tail classes, additional rep-
+resentation model between CLIP and classifier is
+necessarily needed.
+4.3 Incorporating Imbalanced
+Learning into VLMs
+To better model the features of tail classes and
+reduce the excessive memory demand, motivated
+by (L¨ uddecke and Ecker, 2022), we freeze the
+VLMs that capture the general image representa-
+tion, then we propose to train a light decoder to
+extract comprehensive image representations.
+Specifically, to better adapt VLMs on imbal-
+anced downstream tasks, we further incorpo-
+rate existing imbalanced learning algorithms into
+VLMs as shown in the right part of Fig. 2.
+Unlike zero-shot and prompt tuning, we do not use
+text encoder since it is difficult to combine text
+encoder with other imbalanced methods. Instead,
+we add a lightweight decoder after the frozen
+image encoder. The output of the decoder, which
+is the representation of the given image will then
+be fed into a classifier for classification. The clas-
+sification scores (logits) ηcan be easily adopted
+by imbalanced classification methods. This allows
+us to leverage the rich knowledge in VLMs while
+still adapting them to specific tasks or datasets.
+After the incorporation of CLIP and decoder,
+we provide unified formulation to existing imbal-
+anced learning algorithms for further improve-
+ment. Specifically, recent approaches can be
+broadly categorized into three types: standard
+training, loss function engineering, and two-stage
+training methods.
+Training by instance-based sampling and
+cross-entropy loss. The first stage using cross-
+entropy loss denotes the standard training using
+the instance-balanced sampling and the cross
+entropy loss. The training objective is:
+ℓ(Ds;˜θe, θd, θc) =−1
+ssX
+i=1log 
+exp(ηyi)
+PK
+j=1exp(ηj)!
+,(7)
+where Dsdenotes an s-sized batch of samples
+from the original training set D. This is also called
+Empirical risk minimization (Vapnik, 1991). Notethat the representation function is composed of
+encoder ˜θeand decoder θdand parameters with ˜·
+are fixed during training.
+Training by class-specific loss. The first
+stage using adjusted cross-entropy loss denotes the
+class balanced loss which adds class-specific loss
+weights or class-specific logit biases to obtain class
+balanced gradients during training (Ren et al,
+2020; Hong et al, 2021; Lin et al, 2017; Cao et al,
+2019b). The training objective is formulated as:
+ℓ(Ds;˜θe, θd, θc) =−1
+ssX
+i=1wyilog 
+exp(ηyi+δyi)
+PK
+j=1exp(ηj+δj)!
+,
+(8)
+where wyidenotes the learnable weight for class
+i, and δjdenotes the class-specific bias for logits
+to obtain balanced gradients during training.
+Training by two-stage algorithms.
+Recently, two-stage algorithms (Kang et al, 2019;
+Zhang et al, 2021; Wang et al, 2022) have been
+proposed to overcome the issue of biased classifier
+in imbalanced learning. Specifically, it retrains
+learnable additional adjusters to calibrate the log-
+its with fixed backbone after standard training,
+following the observation that standard training
+can obtain good representation but bad classifier.
+The training objective can be summarized as:
+ℓ(Ds;˜θe,˜θd,˜θc, θa) =−1
+ssX
+i=1wyilog 
+exp(ηyi+δyi)
+PK
+j=1exp(ηj+δj)!
+,
+(9)
+where θadenote additional trainable parameters
+to adjust the original biased logits for balanced
+predictions over classes.
+The training procedure is in Algorithm 2.
+5 Experiments
+We conduct extensive experiments on popular
+imbalanced benchmarks for exploration. Over-
+all, our analysis indicate that combining vision-
+language models with imbalanced learning is a
+promising approach to improve its performance.
+5.1 Setup
+5.1.1 Datasets
+We adopt the standard evaluation protocol (Liu
+et al, 2019) on three commonly used imbal-
+anced benchmarks: ImageNet-LT (Liu et al, 2019),
+Places-LT (Zhou et al, 2017), and iNatural-
+ist2018 (Van Horn et al, 2018). The training data
+class distributions of these datasets are shown in
+Fig. 1(a). Note that the test sets are balanced to
+ensure the fairness on all classes during evaluation.
+The detailed dataset statistics are in Appendix B.
+6Table 1 Results on ImageNet-LT dataset. Note that the average overall accuracy of CLIP with decoder and imbalanced
+algorithms is 77.12%, representing an average improvement of 6.58% over the zero-shot accuracy of 70.54%.
+MethodAccuracy P-R-F1 score
+Overall Many-shot Medium-shot Few-shot Precision Recall F1
+Zero-shot CLIP (Radford et al, 2021) 70.54 81.96 70.42 69.64 72.13 70.54 69.50
+CLIP+Linear probing 67.38 87.32 65.09 18.97 69.76 67.38 63.88
+CLIP+Full finetuning 68.54 83.03 65.03 39.87 74.43 68.54 67.19
+CoOp (Zhou et al, 2022b) 60.30 - - - - - 59.00
+CLIP + imbalanced learning algorithms
+Softmax 75.05 87.18 72.67 49.10 78.56 75.05 73.96
+CBW 77.37 85.44 76.19 58.64 79.03 77.37 76.59
+Focal Loss (Lin et al, 2017) 74.27 86.66 71.87 47.63 78.25 74.27 73.26
+LDAM Loss (Cao et al, 2019b) 75.29 87.10 72.98 50.01 78.73 75.29 74.26
+Balanced Softmax (Ren et al, 2020) 79.03 83.61 77.82 70.37 79.70 79.03 78.69
+LADE Loss (Hong et al, 2021) 79.44 83.60 78.14 72.22 80.06 79.44 79.13
+CRT (Kang et al, 2019) 75.22 87.55 72.78 48.95 78.33 75.22 74.05
+LWS (Kang et al, 2019) 76.98 87.08 75.45 53.78 79.22 76.98 76.09
+Disalign (Zhang et al, 2021) 79.26 83.56 78.38 70.18 79.82 79.26 78.94
+MARC (Wang et al, 2022) 79.32 83.91 78.28 70.02 79.92 79.32 79.01
+Table 2 Results on iNaturalist dataset. Note that the average overall accuracy of CLIP with decoder and imbalanced
+algorithms is 69.82%, representing an average improvement of 64.37 % over the zero-shot accuracy of 5.45%.
+MethodAccuracy P-R-F1 score
+Overall Many-shot Medium-shot Few-shot Precision Recall F1
+Zero-shot CLIP (Radford et al, 2021) 5.45 9.87 5.28 4.59 3.85 5.45 3.70
+CLIP+Linear probing 10.03 62.35 7.10 0.07 4.54 10.03 4.78
+CLIP+Full finetuning 65.43 79.41 67.58 59.07 70.82 65.43 63.80
+CoOp (Zhou et al, 2022b) - - - - - - -
+CLIP + imbalanced learning algorithms
+Softmax 65.57 76.54 68.31 59.25 70.76 65.57 64.15
+CBW 70.33 65.56 71.59 69.99 73.83 70.33 68.98
+Focal Loss (Lin et al, 2017) 64.81 75.81 67.65 58.36 70.44 64.81 63.47
+LDAM Loss (Cao et al, 2019b) 66.02 76.68 68.53 60.06 71.13 66.02 64.61
+Balanced Softmax (Ren et al, 2020) 70.59 68.43 71.30 70.25 73.87 70.59 69.20
+LADE Loss (Hong et al, 2021) 70.90 67.96 71.52 70.89 74.16 70.90 69.54
+CRT (Kang et al, 2019) 73.24 72.18 74.36 72.10 76.87 73.24 72.22
+LWS (Kang et al, 2019) 72.63 70.37 73.82 71.73 75.52 72.63 71.54
+Disalign (Zhang et al, 2021) 72.33 65.46 73.20 73.02 75.14 72.33 71.14
+MARC (Wang et al, 2022) 71.82 64.87 72.64 72.59 74.89 71.82 70.56
+For rigorous evaluation, we split the classes
+in each benchmark into three groups based on
+the number of images available for each class.
+These groups are known as Many-shot (with more
+than 100 images), Medium-shot (with 20 to 100
+images), and Few-shot (with less than 20 images).
+We then evaluate the performance of the selected
+models across a range of difficulty levels, from
+classes with abundant training data to those with
+very few examples.5.1.2 Models, baselines, and metrics
+We adopt CLIP (Radford et al, 2021) as the
+main VLM for experiments. Specifically, we use
+the ViT-L (Dosovitskiy et al, 2020) backbone
+for CLIP and more ablations on backbones are
+in Sec. 5.3. We select three baselines: 1) zero-
+shot prediction by VLMs as introduced in Sec. 3;
+2) fine-tuning (full finetuning & linear probing)
+VLMs; and 3) prompt tuning (CoOp (Zhou et al,
+2022b)). These baselines are compared with the
+further incorporation of existing imbalanced learn-
+ing approaches to VLMs. Appendix C introduces
+the used imbalanced learning algorithms.
+7Table 3 Results on Places-LT dataset. Note that the average overall accuracy of CLIP with decoder and imbalanced
+algorithms is 43.86%, representing an average improvement of 6.17% over the zero-shot accuracy of 37.69%.
+MethodAccuracy P-R-F1 score
+Overall Many-shot Medium-shot Few-shot Precision Recall F1
+Zero-shot CLIP (Radford et al, 2021) 37.69 40.94 35.70 44.64 39.25 37.69 36.52
+CLIP+Linear probing 38.18 55.69 34.47 14.41 48.53 38.18 36.10
+CLIP+Full finetuning 38.24 52.82 34.55 19.82 48.94 38.24 37.00
+CoOp (Zhou et al, 2022b) 26.10 - - - - - 24.00
+CLIP + imbalanced learning algorithms
+Softmax 40.15 53.75 36.48 23.47 49.93 40.15 38.60
+CBW 44.94 49.55 45.61 34.88 47.37 44.94 43.81
+Focal Loss (Lin et al, 2017) 39.83 52.87 36.26 23.94 49.93 39.83 38.61
+LDAM Loss (Cao et al, 2019b) 40.34 54.60 36.57 22.7 50.17 40.34 38.76
+Balanced Softmax (Ren et al, 2020) 47.36 50.18 47.10 42.76 49.52 47.36 46.42
+LADE Loss (Hong et al, 2021) 47.29 50.03 46.84 43.26 49.19 47.29 46.32
+CRT (Kang et al, 2019) 41.91 53.31 38.16 29.48 50.75 41.91 40.67
+LWS (Kang et al, 2019) 39.72 51.47 35.30 28.21 51.14 39.72 39.33
+Disalign (Zhang et al, 2021) 48.43 47.69 49.92 46.37 48.54 48.43 47.94
+MARC (Wang et al, 2022) 48.66 47.43 50.02 47.81 48.72 48.66 48.15
+We use two metrics for thorough evaluation: 1)
+accuracy, including overall, many-shot, medium-
+shot, and few-shot accuracy; 2) P-R-F1 score,
+including precision, recall, and F1 score.
+5.1.3 Training details
+The decoder in Fig. 2 comprises three transformer
+blocks, where each block constitutes a multi-head
+attention mechanism and a feed-forward neural
+network. The former, with four attention heads,
+facilitates an enriched modeling of extensive range
+dependencies inherent in the input sequence.
+Meanwhile, the latter comprises a multi-layer per-
+ceptron (MLP) with a dropout ratio set at 0.5.
+As Algorithm 1 shows, each Transformer block
+can be adopted from the PyTorch Image Mod-
+els (TIMM) library’s vision transformer module,
+with specified parameters relating to the hidden
+size, number of attention heads, and the MLP
+ratio. This construction ensures a robust and effi-
+cient transformation of the encoded inputs into
+the desired outputs. The training process involves
+8192 iterations with a batch size of 256, using the
+SGD optimizer with momentum 0.9 and weight
+decay of 5 e−4 for all datasets. The learning rate
+schedule follows a cosine function with an ini-
+tial value of 0.03, which gradually decays to 0.
+In addition, a warm-up strategy is employed for
+the learning rate scheduler, with warm-up itera-
+tions of 512. Note that for Full finetuning, to get
+better results and avoid OOM, we use a batch
+size of 128, the AdamW optimizer with a learningrate of 0.00003. More detailed information on the
+hyperparameters and training logs are at https:
+//github.com/Imbalance-LVM/Imbalance-LVM.
+5.2 Main Results
+Table 1, 2 and 3 present the results on ImageNet-
+LT, iNaturalist18, and Places-LT datasets, respec-
+tively. It should be noted that we were unable
+to provide the results of CoOp on the iNatural-
+ist18 dataset due to the large number of classes
+(8142), which rendered it computationally infea-
+sible to run CoOp, even with NVIDIA A100 80G
+hardware resources. Other than ViT of CLIP, in
+Table 5, we further provide some results using
+ViT of Laion-CLIP to show the generalizability
+of our decoder approach combining VLMs and
+imbalanced learning methods. Our findings are:
+1) VLMs exhibit strong zero-shot pre-
+diction abilities on ImageNet-LT, but
+domain-specific algorithms are necessary
+for achieving high performance on more
+diverse and fine-grained datasets such as
+iNaturalist18. Specifically, on iNaturalist18, the
+CLIP and Laion-CLIP methods exhibit overall
+accuracies of 5.45% and 3.82%, respectively, which
+are significantly lower than those achieved by
+VLMs in conjunction with supervised methods.
+The reason can be that iNaturalist18 consists of a
+broad array of classes(more than 8000), each con-
+taining images of numerous species of plants and
+animals, some of which can be extremely similar
+visually. The similarity pattern presents a unique
+8Algorithm 1 The torch-like code for creating the decoder.
+1:from torch import nn
+2:from timm.models.vision transformer import Block
+3:decoder blocks = nn.Sequential(*[Block(hidden size, decoder num heads, mlp ratio, qkv bias=True)
+for i in range(decoder depth)])
+Table 4 Comparisons between ViT-B16 and ViT-L14 variants of CLIP backbone on all datasets.
+Method Backbone ImageNet-LT Places-LT iNaturalist
+One-stageViT-B16 68.14 37.4 51.35
+ViT-L14 75.05 40.15 65.57
+Two-stageViT-B16 73.23 46.78 59.22
+ViT-L14 79.26 48.43 72.33
+Table 5 Comparisons between ViT of CLIP (400M) and Laion-CLIP (2B) on iNaturalist18 and Places-LT.
+Method Dataset AblationAccuracy P-R-F1 score
+Overall Many-shot Medium-shot Few-shot Precision Recall F1
+Zero-shotiNaturalist18Laion-CLIP 3.82 6.34 3.57 3.38 2.18 3.81 2.26
+CLIP 5.45 9.87 5.28 4.59 3.85 5.45 3.70
+Places-LTLaion-CLIP 40.64 49.31 39.43 43.41 42.57 40.63 39.71
+CLIP 37.69 40.94 35.70 44.64 39.25 37.69 36.52
+Balanced SoftMaxiNaturalist18Laion-CLIP 60.94 57.84 60.88 61.82 64.04 60.94 59.20
+CLIP 70.59 68.43 71.30 70.25 73.87 70.59 69.20
+Places-LTLaion-CLIP 47.45 48.70 48.06 43.77 49.64 47.45 46.58
+CLIP 47.36 50.18 47.10 42.76 49.52 47.36 46.42
+DisAligniNaturalist18Laion-CLIP 62.61 53.64 62.99 64.46 65.50 62.61 61.20
+CLIP 72.33 65.46 73.20 73.02 75.14 72.33 71.14
+Places-LTLaion-CLIP 45.35 46.26 46.09 41.99 46.80 45.35 44.89
+CLIP 48.43 47.69 49.92 46.37 48.54 48.43 47.94
+MARCiNaturalist18Laion-CLIP 61.77 51.35 62.16 63.99 64.88 61.77 60.16
+CLIP 71.82 64.87 72.64 72.59 74.89 71.82 70.56
+Places-LTLaion-CLIP 45.57 46.74 46.09 42.24 47.21 45.57 45.26
+CLIP 48.66 47.43 50.02 47.81 48.72 48.66 48.15
+challenge for models like CLIP. The images on
+the Places-LT and ImageNet-LT datasets do not
+have such a high degree of inter-class visual simi-
+larity. By incorporating a lightweight decoder and
+imbalanced algorithms, CLIP achieved significant
+improvements in average overall accuracy com-
+pared to the zero-shot accuracy on three diverse
+datasets, namely ImageNet-Lt, iNaturalist18, and
+Places-LT, with performance gains ranging from
+6.17% to 69.82%.
+2) The lightweight decoder is necessary
+for extracting relevant features and produc-
+ing compact representations for tail classes,
+and it is essential for achieving high perfor-
+mance in the imbalanced setting. The results
+demonstrate that linear probing, which uses only
+the pre-trained encoder and a linear classifier, pro-
+duces results that are only slightly better thanzero-shot learning. The improvements achieved
+on iNaturalist18 and Places-LT are only 5.08%
+and 0.49%, respectively, which are significantly
+lower than the 69.82% and 6.17% improvements
+brought by the decoder. It is worth noting that on
+ImageNet-LT, linear probing even performs 3.16%
+worse than zero-shot learning. Note that the full
+finetuning even perform similarly with linear prob-
+ing on ImageNet-LT and Places-LT. Though full
+finetuning is much better than linear probing on
+iNaturalist, the performance of full finetuning is
+still much worse that that of imbalanced learning
+with a lightweight decoder.
+3) The decoder with SoftMax outper-
+forms prompt tuning. Specifically, our decoder
+method with SoftMax achieves an overall accuracy
+of 75.05% and an F1 score of 73.96% on ImageNet-
+LT, outperforming CoOp by 14.75% and 14.96%,
+9Table 6 Results using CLIP-ResNet101 on ImageNet-LT, iNaturalist and Places-LT datasets.
+Dataset MethodAccuracy P-R-F1 score
+Overall Many-shot Medium-shot Few-shot Precision Recall F1
+ImageNet-LTZero-shot 53.62 59.57 53.57 52.81 56.22 53.62 52.50
+Linear probing 9.33 24.23 0.00 0.00 7.66 9.33 4.97
+Full finetuning 57.61 74.49 52.82 26.66 62.89 57.61 55.86
+Decoder+SoftMax 48.01 66.93 42.09 15.32 56.75 48.01 45.21
+Decoder+Balanced SoftMax 53.83 60.60 52.17 40.53 56.01 53.83 52.57
+Decoder+MARC 55.04 58.29 54.73 46.91 56.48 55.04 54.35
+Decoder+CRT 53.89 66.89 51.98 23.82 57.34 53.89 51.77
+Full finetuning+Balanced SoftMax 60.47 69.18 58.25 43.63 62.05 60.47 59.79
+Full finetuning+MARC 60.97 73.73 58.69 32.91 63.00 60.97 59.61
+Full finetuning+CRT 59.90 75.69 56.43 27.47 63.78 59.90 58.21
+iNaturalistZero-shot 2.03 2.76 2.00 1.72 11.55 20.27 11.70
+Linear probing 0.24 2.34 0.00 0.00 0.01 0.24 0.02
+Full finetuning 46.84 68.17 49.48 37.92 50.80 46.84 44.28
+Decoder+SoftMax 14.95 28.42 15.80 10.36 16.55 14.95 13.04
+Decoder+Balanced SoftMax 21.53 20.47 21.79 21.47 21.44 21.53 18.55
+Decoder+MARC 25.14 12.83 25.96 27.31 24.27 25.14 22.08
+Decoder+CRT 12.77 33.14 14.70 5.01 14.29 12.77 10.78
+Full finetuning+Balanced SoftMax 49.36 56.18 50.32 46.37 52.59 49.36 47.19
+Full finetuning+MARC 52.38 66.86 55.36 44.83 54.99 52.38 50.03
+Full finetuning+CRT 56.36 66.71 57.96 51.63 60.21 56.36 54.73
+Places-LTZero-shot 32.17 36.23 30.43 37.89 34.38 32.17 30.85
+Linear probing 8.52 23.50 0.20 0.00 7.03 8.52 4.81
+Full finetuning 32.08 47.32 28.66 11.80 41.55 32.08 30.40
+Decoder+SoftMax 26.77 43.73 20.72 9.38 39.68 26.77 24.84
+Decoder+Balanced SoftMax 35.19 38.31 34.84 30.24 37.25 35.19 34.20
+Decoder+MARC 35.33 34.69 36.24 34.42 36.83 35.33 34.53
+Decoder+CRT 34.23 41.86 36.17 15.69 39.58 34.23 32.63
+Full finetuning+Balanced SoftMax 37.81 42.42 38.41 27.93 39.75 37.81 37.21
+Full finetuning+MARC 37.13 46.57 38.09 17.51 41.17 37.13 35.95
+Full finetuning+CRT 33.51 47.81 30.77 13.39 45.35 33.51 33.04
+respectively. On Places-LT, our method achieves
+an overall accuracy of 40.15% and an F1 score
+of 38.60%, outperforming CoOp by 14.05% and
+14.60%, respectively. One possible reason is that
+the training objective of our decoder with super-
+vised learning method is more focused and aligned
+with the ultimate goal of the classification task.
+Moreover, CoOp requires heavy computational
+resources, which can make it infeasible to use
+when the number of classes is large, as is the case
+with the iNaturalist18 dataset. This may limit
+the applicability of prompt tuning approaches for
+large number of classes.
+5.3 Analysis of Backbones
+Will larger backbones improve the performance?
+In Table 4, we explore two variations of the
+CLIP backbone and report overall accuracy on all
+datasets with different imbalanced methods. The
+ViT-L14 model has 443M parameters and ViT-
+B16 variant has 85M parameters. As the number
+of parameters scale up, the overall accuracies onall datasets get improved significantly with both
+one-stage and two-stage imbalanced methods.
+Besides, we conduct experiments on CLIP-
+ResNet101. The training hyperparameters are the
+same with the main experiments except that we
+use a batch size of 128 for all ResNet experi-
+ments. As illustrated in Fig. 6, the performances of
+imbalanced methods are much better than Zero-
+shot, Linear-probing and full finetuning. Note the
+Transformer-like architecture of the decoder might
+not be feasible when applied to a ResNet He et al
+(2016) and their performances are worse than full
+finetuning with imbalanced methods. The reason
+might be that the blocks in our decoder closely
+resemble those in ViT, making their integration
+more straightforward. Furthermore, the features
+extracted by ResNet may not be suitable for
+a Transformer-based Decoder in imbalanced set-
+tings. Future research may focus on developing or
+modifying methods to suit different architectures
+and tasks for improved performance.
+10Table 7 GPU memory usage during training on ImageNet-LT dataset, all tested with batch size set to 32.
+Method Backbone GPU Memory (MiB)
+CLIP with Linear ProbingViT-B16 3,796
+ViT-L14 8,206
+CLIP with DecoderViT-B16 4,456
+ViT-L14 9,330
+CoOp(M=16, 1-shot, end)ViT-B16 20,974
+ViT-L14 30,557
+Table 8 Training cost and carbon footprint of different methods and backbones on a single dedicated GPU server. We
+conducted tests on ImageNet-LT and measured average power consumption with ipmitool to calculate carbon footprint.
+Method BackboneTraining Speed
+(sec./iter.)GPU Hour
+(h)Average Power
+(W)Total Power
+(KWh )Carbon Emitted
+(kgCO 2eq)
+One-Stage
+AlgorithmsViT-B16 0.30 0.68 744.00 0.51 0.28
+ViT-L14 0.99 2.25 793.25 1.78 0.97
+Two-Stage
+AlgorithmsViT-B16 0.27 0.61 734.15 0.45 0.24
+ViT-L14 0.89 2.05 789.70 1.62 0.88
+Linear ProbingViT-B16 0.23 0.52 690.55 0.36 0.20
+ViT-L14 0.84 1.91 783.45 1.50 0.81
+CoOp(1-shot, M=16) ViT-B16 0.36 0.43 680.95 0.29 0.16
+5.4 Analysis of Pre-training Data
+Will more pre-trained data lead to better per-
+formance? Table 5 presents a comparison of the
+performances of CLIP (400M pre-trained data)
+and Laion-CLIP (2B pre-training data) (Schuh-
+mann et al, 2022) on iNaturalist18 and Places-LT
+datasets. Both models were evaluated using zero-
+shot learning and different imbalanced learning
+methods including Balanced SoftMax, DisAlign,
+and MARC. First, it is surprising to find that
+Laion-CLIP achieves similar performance on iNat-
+uralist, where CLIP performs extremely poor.
+Second, it is shown that tuned CLIP is gener-
+ally better than Laion-CLIP when combined with
+imbalanced methods, indicating that downstream
+tuning may be better than just increasing pre-
+training data. Specifically, on iNaturalist18, the
+overall accuracy of tuned CLIP is usually 10%
+higher than that of tuned Laion-CLIP. One pos-
+sible reason is that as the dataset size increases,
+the model becomes increasingly dominated by the
+most common classes, and CLIP’s pre-training
+on a smaller dataset may better capture the
+representation of the tail classes.
+5.5 Analysis on Training Cost
+We analyze training costs from hardware require-
+ment and power consumption.On a NVIDIA A100 80G GPU, we exper-
+imented with various methods for training on
+ImageNet-LT. Results from Table 7 demonstrate
+that imbalanced learning techniques that employ
+a decoder only lead to a 13% to 17% increase in
+VRAM usage during training compared to linear
+probing. We ensured a VRAM usage of less than
+10GB, enabling us to train and evaluate these
+methods on any consumer GPU. However, running
+CoOp on ViT-L14 requires a datacenter GPU, and
+at least an NVIDIA RTX 3090 or 4090 is neces-
+sary to execute the ViT-B16 variant of CLIP. We
+were unable to conduct experiments with CoOp on
+the iNaturalist dataset due to an Out-Of-Memory
+issue with ViT-B16 on a 1-shot setting.
+The cost of training can include significant
+components such as power consumption and car-
+bon footprint. We tested on a dedicated server
+with an RTX 4090 GPU and measured average
+power consumption using ipmitool during the
+process. We estimated carbon emission using the
+average carbon intensity (0.544 kgCO 2/KWh )
+in China. Table 8 demonstrates that imbalanced
+algorithms are more power-efficient than linear
+probing, particularly two-stage algorithms. How-
+ever, CoOp, benefiting from its few-shot setting,
+consumed the least power and only emitted 67%
+of the carbon compared to imbalanced methods.
+116 Limitation
+This work has several limitations. First, we only
+use a limited number of VLMs such as CLIP
+and Laion-CLIP. Other VLMs (Yu et al, 2022;
+Dehghani et al, 2023) may perform differently on
+long-tailed data and yield different results. Sec-
+ond, this study only evaluates the performance on
+three popular long-tailed datasets, but there are
+still many other datasets with different character-
+istics that have not been explored. Third, we do
+not use the text encoder for VLMs in the cor-
+poration with imbalanced algorithms and future
+exploration of adopting text encoder should be
+explored as well.
+7 Conclusion
+Our study highlights the significance of imbal-
+anced learning in face of vision-language large
+models. We show that current VLMs are not per-
+fect in imbalanced tasks, e.g., CLIP only achieves
+5% on iNaturalist dataset. For improvement,
+we introduced the decoder modification and the
+incorporation of imbalanced learning algorithms.
+For instance, by adopting imbalanced learning,
+CLIP can improve from 5% to 69% on iNaturalist
+dataset. We further show that pre-training data is
+weakly correlated with the performance, while the
+backbone size influences the results. Finally, the
+incorporation with imbalanced algorithms do not
+significantly introduce computation burden.
+In the future, we plan to explore the use of
+VLMs and imbalanced methods on more challeng-
+ing datasets. Besides, we will try to explore VLMs
+in other settings with fewer labels or in unsuper-
+vised scenarios. We hope that our work will inspire
+further research in this direction and contribute
+to the development of more powerful and effective
+computer vision.
+References
+Byrd J, Lipton Z (2019) What is the effect
+of importance weighting in deep learning? In:
+ICML, PMLR, pp 872–881
+Cao K, Wei C, Gaidon A, et al (2019a) Learn-
+ing imbalanced datasets with label-distribution-
+aware margin loss. In: NeurIPSCao K, Wei C, Gaidon A, et al (2019b)
+Learning imbalanced datasets with label-
+distribution-aware margin loss. arXiv preprint
+arXiv:190607413
+Chen H, Fan Y, Wang Y, et al (2022)
+An embarrassingly simple baseline for imbal-
+anced semi-supervised learning. arXiv preprint
+arXiv:221111086
+Dehghani M, Djolonga J, Mustafa B, et al (2023)
+Scaling vision transformers to 22 billion param-
+eters. arXiv preprint arXiv:230205442
+Dosovitskiy A, Beyer L, Kolesnikov A, et al (2020)
+An image is worth 16x16 words: Transformers
+for image recognition at scale. In: International
+Conference on Learning Representations
+He K, Zhang X, Ren S, et al (2016) Deep residual
+learning for image recognition. In: CVPR, pp
+770–778
+He K, Chen X, Xie S, et al (2022) Masked
+autoencoders are scalable vision learners. In:
+Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pp
+16000–16009
+Hong Y, Han S, Choi K, et al (2021) Disentan-
+gling label distribution for long-tailed visual
+recognition. In: CVPR, pp 6626–6636
+Jamal MA, Brown M, Yang MH, et al (2020)
+Rethinking class-balanced methods for long-
+tailed visual recognition from a domain adapta-
+tion perspective. In: CVPR, pp 7610–7619
+Kang B, Xie S, Rohrbach M, et al (2019) Decou-
+pling representation and classifier for long-tailed
+recognition. In: ICML
+Khan SH, Hayat M, Bennamoun M, et al (2017)
+Cost-sensitive learning of deep feature represen-
+tations from imbalanced data. IEEE TNNLS
+29(8):3573–3587
+Li J, Li D, Xiong C, et al (2022) Blip: Bootstrap-
+ping language-image pre-training for unified
+vision-language understanding and generation.
+In: International Conference on Machine Learn-
+ing, PMLR, pp 12888–12900
+12Lin TY, Goyal P, Girshick R, et al (2017) Focal
+loss for dense object detection. In: ICCV, pp
+2980–2988
+Liu Z, Miao Z, Zhan X, et al (2019) Large-scale
+long-tailed recognition in an open world. In:
+CVPR, pp 2537–2546
+Liu Z, Hu H, Lin Y, et al (2022) Swin trans-
+former v2: Scaling up capacity and resolution.
+In: Proceedings of the IEEE/CVF conference
+on computer vision and pattern recognition, pp
+12009–12019
+L¨ uddecke T, Ecker A (2022) Image segmentation
+using text and image prompts. In: Proceed-
+ings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, pp 7086–7096
+Ma T, Geng S, Wang M, et al (2021)
+A simple long-tailed recognition baseline
+via vision-language model. arXiv preprint
+arXiv:211114745
+Menon AK, Jayasumana S, Rawat AS, et al
+(2020) Long-tail learning via logit adjustment.
+In: ICLR
+Platt J, Cristianini N, Shawe-Taylor J (1999)
+Large margin dags for multiclass classification.
+NIPS 12
+Radford A, Kim JW, Hallacy C, et al (2021)
+Learning transferable visual models from natu-
+ral language supervision. In: International con-
+ference on machine learning, PMLR, pp 8748–
+8763
+Ren J, Yu C, Sheng S, et al (2020) Balanced meta-
+softmax for long-tailed visual recognition. arXiv
+preprint arXiv:200710740
+Schuhmann C, Beaumont R, Vencu R, et al
+(2022) Laion-5b: An open large-scale dataset for
+training next generation image-text models. In:
+Thirty-sixth Conference on Neural Information
+Processing Systems Datasets and Benchmarks
+Track
+Tan J, Wang C, Li B, et al (2020) Equalization loss
+for long-tailed object recognition. In: CVPR, pp
+11662–11671Tang K, Huang J, Zhang H (2020) Long-tailed
+classification by keeping the good and removing
+the bad momentum causal effect. NeurIPS 33
+Tian C, Wang W, Zhu X, et al (2022) Vl-ltr:
+Learning class-wise visual-linguistic representa-
+tion for long-tailed visual recognition. In: Com-
+puter Vision–ECCV 2022: 17th European Con-
+ference, Tel Aviv, Israel, October 23–27, 2022,
+Proceedings, Part XXV, Springer, pp 73–91
+Van Horn G, Mac Aodha O, Song Y, et al
+(2018) The inaturalist species classification and
+detection dataset. In: CVPR, pp 8769–8778
+Vapnik V (1991) Principles of risk minimiza-
+tion for learning theory. Advances in neural
+information processing systems 4
+Wang J, Lukasiewicz T, Hu X, et al (2021a)
+Rsg: A simple but effective module for learning
+imbalanced datasets. In: CVPR, pp 3784–3793
+Wang J, Zhang W, Zang Y, et al (2021b) Seesaw
+loss for long-tailed instance segmentation. In:
+CVPR, pp 9695–9704
+Wang P, Han K, Wei XS, et al (2021c) Contrastive
+learning based hybrid networks for long-tailed
+image classification. In: CVPR, pp 943–952
+Wang Y, Zhang B, Hou W, et al (2022) Mar-
+gin calibration for long-tailed visual recogni-
+tion. In: Asian Conference on Machine Learning
+(ACML)
+Wang YX, Ramanan D, Hebert M (2017) Learning
+to model the tail. In: NeurIPS, pp 7032–7042
+Wei H, Tao L, Xie R, et al (2022) Open-
+sampling: Exploring out-of-distribution data for
+re-balancing long-tailed datasets. In: Interna-
+tional Conference on Machine Learning, PMLR,
+pp 23615–23630
+Xu Z, Yang S, Wang X, et al (2023) Rethink long-
+tailed recognition with vision transforms. In:
+ICASSP 2023-2023 IEEE International Confer-
+ence on Acoustics, Speech and Signal Processing
+(ICASSP), IEEE, pp 1–5
+13Yang CY, Yang JS, Wang JJ (2009) Margin
+calibration in svm class-imbalanced learning.
+Neurocomputing 73(1-3):397–411
+Yang L, Jiang H, Song Q, et al (2022) A survey
+on long-tailed visual recognition. IJCV pp 1–36
+Yang Y, Xu Z (2020) Rethinking the value of
+labels for improving class-imbalanced learning.
+In: NeurIPS
+Yin X, Yu X, Sohn K, et al (2019) Feature trans-
+fer learning for face recognition with under-
+represented data. In: CVPR
+Yu J, Wang Z, Vasudevan V, et al (2022) Coca:
+Contrastive captioners are image-text founda-
+tion models. arXiv preprint arXiv:220501917
+Zhang S, Li Z, Yan S, et al (2021) Distribution
+alignment: A unified framework for long-tail
+visual recognition. In: CVPR
+Zhou B, Lapedriza A, Khosla A, et al (2017)
+Places: A 10 million image database for scene
+recognition. IEEE TPAMI 40(6):1452–1464
+Zhou B, Cui Q, Wei XS, et al (2020)
+Bbn: Bilateral-branch network with cumulative
+learning for long-tailed visual recognition. In:
+CVPR
+Zhou K, Yang J, Loy CC, et al (2022a) Con-
+ditional prompt learning for vision-language
+models. In: Proceedings of the IEEE/CVF Con-
+ference on Computer Vision and Pattern Recog-
+nition, pp 16816–16825
+Zhou K, Yang J, Loy CC, et al (2022b) Learning
+to prompt for vision-language models. Interna-
+tional Journal of Computer Vision 130(9):2337–
+2348Appendix A Algorithm Flow
+The algorithm of incorporating imbalanced learn-
+ing algorithms in shown in Algo. 2.
+Appendix B Dataset
+The detailed statistics of datasets are shown in
+Table B1.
+Appendix C Imbalanced
+Algorithms
+In this section, we give a brief introduction to the
+used imbalanced methods.
+Class Balanced Re-Weighting Class Bal-
+anced Re-Weighting (CBW) assigns loss weights
+to each instance in the dataset based on the class
+distribution, such that each class has an equal
+contribution to the overall loss function during
+training, which allows the model to give more
+importance to the minority class.
+LDAM Loss Label-Distribution-Aware Mar-
+gin (LDAM) Loss (Cao et al, 2019b) aims to
+improve the performance of the model on imbal-
+anced datasets by considering the distribution of
+labels in the data. This loss function adds a margin
+term to the traditional cross-entropy loss, which
+prevents the model from being biased towards the
+majority class. The margin term calculated based
+on the class distribution in the dataset.
+Focal Loss Focal Loss (Lin et al, 2017) assigns
+higher weights to hard-to-classify samples which
+has low confidence in prediction, making them
+more important in the training process, while
+reducing the contribution of easy-to-classify sam-
+ples with high confidence.
+Balanced Softmax Loss Balanced Softmax
+Loss (Ren et al, 2020) propose an unbiased exten-
+sion of Softmax called Balanced Softmax, which
+accommodates the label distribution shift between
+training and testing. It can minimize the general-
+ization bound in the imbalanced settings.
+LADE Loss LAbel distribution DisEntan-
+gling (LADE) Loss (Hong et al, 2021) formulates
+imbalanced classification as a label shift problem
+where the target and source label distributions are
+different, and identifies the entanglement between
+the source label distribution and the model pre-
+diction as a significant hurdle. LADE loss is based
+14Table B1 The detailed statistics of datasets.
+Dataet #Class Training size Test size
+ImageNet-LT 1,000 115,846 50,000
+Places-LT 365 62,500 7,300
+iNaturalist18 8,142 437,513 24,426
+Algorithm 2 The training procedure of incorporating LVMs for different imbalanced learning algorithms.
+1:Input: A batch of the training dataset Ds={(xi, yi)}s
+i=1, encoder ˜θe, decoder θd, classifier θc,
+number of classes K, class-specific loss weight w, class-specific logit bias δand additional trainable
+parameters to adjust the original logits θa. Note that the representation function is composed of ˜θe
+andθdand parameters with ˜·are fixed during training.
+2:First-stage method: using instance-balanced sampling and the cross entropy loss.
+3:while not reach the maximum iteration do
+4: Compute the loss and update the model parameters.
+5: ifUsing Cross-Entropy Loss then
+6: ℓ(Ds;˜θe, θd, θc) =−1
+sPs
+i=1log
+exp(ηyi)PK
+j=1exp(ηj)
+,where ηjis classification score of class j.
+7: else Using Class-Balanced Loss
+8: ℓ(Ds;˜θe, θd, θc) =−1
+sPs
+i=1wyilog
+exp(ηyi+δyi)PK
+j=1exp(ηj+δj)
+,where ηjis classification score of class j.
+9: end if
+10:end while
+11:Second stage : calibrate the model trained in the first stage.
+12:while not reach the maximum iteration do
+13: Use instance-balanced sampling (Zhang et al, 2021; Wang et al, 2022) or class-balanced sam-
+pling (Kang et al, 2019) methods.
+14: Compute the loss and update the model parameters.
+15: ifUsing Cross-Entropy Loss then
+16: ℓ(Ds;˜θe,˜θd, θc, θa) =−1
+sPs
+i=1log
+exp(ηyi)PK
+j=1exp(ηj)
+,where ηjis classification score of class j.
+17: elseUsing Class-Balanced Loss
+18: ℓ(Ds;˜θe,˜θd, θc, θa) =−1
+sPs
+i=1wyilog
+exp(ηyi+δyi)PK
+j=1exp(ηj+δj)
+,where ηjis the logit of class j.
+19: end if
+20:end while
+21:Return: Model parameters θr, θc,θa.
+on the optimal bound of Donsker-Varadhan repre-
+sentation to directly disentangle the source label
+distribution from the model prediction in the
+training phase.
+CRT and LWS (Kang et al, 2019) focuses
+on exploring the impact of representation strate-
+gies and classifier strategies and finds that data
+imbalance may not be a major issue in learning
+high-quality representations. They demonstrate
+that it is possible to achieve strong imbalancedclassification ability by adjusting only the clas-
+sifier, even when the representations are learned
+using the simplest instance-balanced (natural)
+sampling. (Kang et al, 2019) proposes a straight-
+forward approach called Classifier Re-Training
+(CRT) which re-trains the re-initialized classifier
+with class-balanced sampling and fixed represen-
+tations. Besides Learnable weight scaling (LWS)
+can also improve the performance of imbalanced
+classification by re-scaling of the magnitude for
+the weight matrices for each class in the classifier.
+15Disalign Disalign (Zhang et al, 2021) is also
+a two stage algorithms like CRT and LWS. It
+keeps both the representation and the classifier
+fixed and develops an adaptive calibration func-
+tion to adjust the classification scores by adding
+class specific extra classifier and instance specific
+confidence layer.
+MARC In (Wang et al, 2022), the relation-
+ship between the margins and logits is examined,
+and a positive correlation is observed between the
+biased margins and biased logits. To address this
+issue, MARgin Calibration function (MARC) with
+only 2 Ktrainable parameters ( kis the number of
+classes) is proposed to dynamically calibrates the
+biased margins to obtain unbiased logits with both
+the representation and the classifier fixed.
+16

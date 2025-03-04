@@ -1,0 +1,817 @@
+Denoise Pretraining on Nonequilibrium Molecules
+for Accurate and Transferable Neural Potentials
+Yuyang Wang,†,‡Changwen Xu,†Zijie Li,†and Amir Barati Farimani∗,†,‡,¶,§
+†Department of Mechanical Engineering, Carnegie Mellon University, Pittsburgh, PA 15213,
+USA
+‡Machine Learning Department, Carnegie Mellon University, Pittsburgh, PA 15213, USA
+¶Department of Materials Science and Engineering, Carnegie Mellon University, Pittsburgh,
+PA 15213, USA
+§Department of Chemical Engineering, Carnegie Mellon University, Pittsburgh, PA 15213,
+USA
+E-mail: barati@cmu.edu
+Abstract
+Recent advances in equivariant graph neural networks (GNNs) have made deep
+learning amenable to developing fast surrogate models to expensive ab initio quantum
+mechanics (QM) approaches for molecular potential predictions. However, building
+accurate and transferable potential models using GNNs remains challenging, as the
+data is greatly limited by the expensive computational costs and level of theory of
+QM methods, especially for large and complex molecular systems. In this work, we
+propose denoise pretraining on nonequilibrium molecular conformations to achieve more
+accurate and transferable GNN potential predictions. Specifically, atomic coordinates of
+sampled nonequilibrium conformations are perturbed by random noises and GNNs are
+pretrained to denoise the perturbed molecular conformations which recovers the original
+coordinates. Rigorous experiments on multiple benchmarks reveal that pretraining
+1arXiv:2303.02216v2  [cs.LG]  6 Jul 2023significantly improves the accuracy of neural potentials. Furthermore, we show that
+the proposed pretraining approach is model-agnostic, as it improves the performance
+of different invariant and equivariant GNNs. Notably, our models pretrained on small
+molecules demonstrate remarkable transferability, improving performance when fine-
+tuned on diverse molecular systems, including different elements, charged molecules,
+biomolecules, and larger systems. These results highlight the potential for leveraging
+denoise pretraining approaches to build more generalizable neural potentials for complex
+molecular systems.
+1 Introduction
+The development of efficient and transferable molecular potentials plays a key role in per-
+forming accurate simulations of molecular systems. However, accurate and transferable
+ab initio quantum mechanical (QM) methods, like Hartree-Fock methods1–3and density
+functional theory (DFT),4,5are computationally expensive which limits simulations for large
+and complex systems. On the other hand, prevalent force fields, built on fitting data from
+QM calculations or experiments, are computationally efficient while usually suitable for only
+specific systems. Efforts have been made to develop empirical force fields that work for
+certain applications,6including small organic molecules,7biomolecules,8,9and materials.10
+Nevertheless, these curated methods may fail to model complex systems involving significant
+polarization and many-body interactions. Also, they can be difficult to transfer to different
+systems, as empirical force fields are tailored to match the data from QM or experiments of
+different systems.11–13How to design accurate and transferable approximations of ab initio
+QM methods has been one of the major challenges in modern computational chemistry.
+Machine learning (ML) has emerged as a powerful tool to learn interatomic potentials
+or force fields by fitting the data in computational chemistry, promising near-QM accuracy
+with faster computations.14,15Physical constraints, including energy conservation and roto-
+translational invariance, are required for ML potentials,16–18and various approaches have been
+2developed to meet these constraints. For example, Gradient domain ML (GDML) predicts
+force fields directly and applies a kernel-based method to guarantee conservative energies.19
+Symmetric GDML (sGDML) extends GDML to incorporate space group symmetries and
+dynamic nonrigid symmetries.20Gaussian approximation potentials (GAPs) learn an energy
+decomposition as a summation of each atomic-centered environment,21,22and different kernels
+or descriptors for local atomic contributions are also investigated.23,24
+Neural potentials use deep neural networks (DNNs) to model the relationship between
+molecular geometries and potential energy surface (PES).25DNNs are built on top of geometric
+descriptors of molecular systems to model potentials. Initially, interatomic distances and
+angles were used, but such descriptors fail to express the permutational invariance of atomic
+order in the input.26,27High-dimensional neural network potential (HDNNP)28was introduced,
+which breaks down the molecular system into local atomic environments. These atomic
+environments are encoded using atom-centered symmetry functions (ACSFs)29consisting of
+two- and three-body terms. The HDNNP has been extended by ANI30–32and TensorMol.33
+However, such models are limited in transferability, namely, reparameterization for new
+chemical elements requires retraining the whole model. It is notable that the size of the
+descriptor grows quadratically with the number of elements.
+End-to-end neural potentials, on the other hand, are constructed directly on Cartesian
+coordinates and element types, rather than on handcrafted descriptors. Graph neural
+networks (GNNs) based on message-passing34are utilized to learn representations from
+molecular structures, with nodes representing atoms and edges representing interatomic
+interactions. MLPs are implemented on top of the representations learned by GNNs to
+model the potentials. GNNs learn chemical and physical interactions through aggregating
+neighboring atomic information and updating the nodes. SchNet implements continuous
+convolution filters to model interatomic distances35and DimeNet incorporates angles to model
+three-body interactions in message-passing.36Other works attempt to include chemical domain
+knowledge to develop better neural potentials.37–39However, the message-passing operations
+3in these models fail to encode directional information. In neural potentials, we are interested in
+the equivariance with respect to three-dimensional (3D) rigid-body transformation, such that
+the neural network commutes with any 3D rotations, translations, and/or reflections. The first
+category of equivariant GNNs is based on irreducible representations in group theory including
+Tensor field network (TFN),40Cormorant,41SE(3)-Transformer,42SEGNN,43etc. These
+models build equivariant via Clebsch Gordon coefficients and spherical harmonic basis as well
+as learnable radial neural networks. The second category of equivariant GNNs relies on linear
+operations (i.e., scaling, linear combination, dot product, and vector product) on vectorial
+features instead.44–47PaiNN48and TorchMD-Net49are two examples of such equivariant
+GNNs. PaiNN proposes to keep track of scale features and vector features separately and
+develops linear operations to pass information in between to keep the equivariance. TorchMD-
+Net extends such an architecture with the multi-head self-attention mechanism.50In our
+work, we focus on equivariant GNNs due to their superior performance in neural potential
+benchmarks.49
+To improve the performance of GNNs on molecular property predictions, self-supervised
+learning (SSL) approaches51,52have been investigated. GNNs are first pretrained via SSL
+to learn expressive molecular representations and then fine-tuned on downstream prediction
+tasks. Predictive SSL methods rely on recovering the original instance from partially observed
+or perturbed samples, including masked attribute prediction,53context prediction,54motif
+tree generation.55Also, GEM56proposes to pretrain GNNs via predicting 3D positional
+information, including interatomic distances, bond lengths, and bond angles. On the other
+hand, contrastive learning, which aims at learning representations via contrasting positive
+instances against negative instances, has been widely implemented in GNNs for chemical
+sciences.57–60MolCLR61applies random masking of atom and edge attributes to generate
+contrastive instances of molecular graphs. Recent works have also investigated multi-level
+subgraphs in contrastive training.62,63GraphMVP64and 3D infomax65incorporate 3D
+information into 2D graphs via contrasting molecules represented as 2D topological graphs
+4DFT 
+potential
+Transfer 
+PES
+Perturb 
+Equivariant 
+GNNPerturb Equivariant 
+GNNa b c
+Invariant or
+equivariant 
+GNNNoise 
+Figure 1: Framework of pretraining invariant and equivariant GNNs on nonequilibrium
+molecules for potential predictions. (a) Different molecular conformations are sampled and
+random noises are added to perturb the conformations. GNN is trained to recover the original
+conformations from perturbed ones. (b) During pretraining, perturbed conformations are fed
+into the GNN to predict the additional noise. (3) The pretrained GNN is transferred and
+fine-tuned with an MLP head to predict potential energies calculated by DFT.
+and 3D geometric structures. It is noted that most SSL works neglect 3D information. Even
+though a few SSL approaches incorporate 3D information, they are not built upon equivariant
+GNNs, which greatly limits the applications to accurate neural potential predictions. Recently,
+a few works propose denoising as an SSL approach to pretrain GNNs.66–68By predicting the
+noise added to atomic coordinates at the equilibrium states, GNNs are trained to learn a
+particular pseudo-force field. Such a method has demonstrated effectiveness on QM property
+prediction benchmarks like QM9.69Nevertheless, it only leverages molecules at equilibrium
+states which is far from sufficient for accurate neural potentials, since potential predictions
+require evaluation of nonequilibrium molecular structures in simulations. Overall, SSL has
+not been well studied for neural potential predictions.
+Although neural potentials have been extensively investigated, their accuracy and trans-
+5ferability are still limited due to the reliance on expensive QM calculations to obtain training
+data. In particular, for large and complex molecular systems, collecting accurate and suffi-
+cient QM data can be extremely challenging or even infeasible. This raises two questions:
+1) can we use SSL to improve the accuracy of neural potentials with currently available
+data; and 2) can we use SSL to develop more transferable neural potentials that leverage
+relatively rich molecular potential data (e.g., small molecules) and apply pretrained models
+to large and complex molecular systems with limited data? To address these challenges, we
+propose an SSL pretraining strategy on nonequilibrium molecules to improve the accuracy
+and transferability of neural potentials (Figure 1(a)). This involves adding random noises to
+the atomic coordinates of molecular systems at nonequilibrium states, and training GNNs to
+predict the artificial noises in an SSL manner (Figure 1(b)). We then fine-tune the pretrained
+models on multiple challenging molecular potential prediction benchmarks (Figure 1(c)). Our
+rigorous experiments demonstrate that our proposed pretraining method, which leverages
+nonequilibrium molecules, significantly improves the accuracy of neural potentials and is
+model-agnostic to various invariant or equivariant GNN architectures, including SchNet,
+SE(3)-Transformer, EGNN, and TorchMD-Net. Notably, GNNs pretrained on small molecules
+demonstrate significant improvement in potential predictions when fine-tuned on diverse
+molecular systems, including those with different elements, charged molecules, biomolecules,
+and larger systems. Such a denoise pretraining approach has the potential to facilitate the
+development of accurate and transferable surrogate models for expensive QM methods, and
+enable the application of neural potentials to complex systems.
+2 Method
+2.1 Graph Neural Networks
+A molecular system can be modeled as a graph G= (V,A), where V denotes the Natoms
+in the system and Adenotes the interactions between atoms (e.g., bonds). To learn the
+6representation of the molecular graph, modern GNNs utilize message-passing strategies.34
+Leth(t)
+i∈RFbe the F-dimensional feature of atom iat the t-th layer of GNN and aij
+represent the interaction between atoms iandj. For atom i, the message m(t)
+ijpassed from its
+neighboring atoms j∈ N iis aggregated via the function f(t)
+m(Eq. 1). All the mijare summed
+as the message passed to node i, followed by an update function f(t)
+uthat updates the atomic
+feature with the aggregated message from neighbors and its original feature (Eq. 2).
+m(t)
+ij=f(t)
+m(h(t)
+i, h(t)
+j, aij), (1)
+h(t+1)
+i=f(t)
+u(h(t)
+i,X
+j∈N im(t)
+ij). (2)
+2.2 Equivariant Graph Neural Networks
+In this work, we investigate GNNs for molecular potential predictions, which require 3D
+positional information of atoms. To this end, equivariant GNNs are introduced which extend
+the message-passing functions to keep the physical symmetry of the molecular systems. Let
+Tg:X → X define a set of transformations of the abstract group g∈Gin input space X
+andϕ:X → Y is a function that maps the input to the output space Y. A function ϕis
+equivariant to gif there exists a transformation Sg:Y → Y such that ϕ(Tg(x)) =Sg(ϕ(x)),
+∀g∈Gandx∈ X. E(n)-equivariance denotes equivariance with Euclidean group E(n) which
+comprises all translations, rotations, and reflections in n-dimensional Euclidean space, while
+SE(n)-equivariance only satisfies translation and rotation equivariance.70Equivariant GNNs
+introduce the equivariance as an inductive bias to molecular modeling and demonstrate
+superior performance in many energy-related property predictions.
+One strategy of designing equivariant message-passing operations is based on irreducible
+representations in group theory.41,42TFN40introduces the Clebsch-Gordon coefficient, radial
+neural network, and spherical harmonics as building blocks for SE(3)-equivariant message
+7passing as given in Eq. 3 and 4 (we ignore the superscript of the layer to simplify the notation).
+mij=X
+k≥0Wℓk(rji)hk
+j, (3)
+Wℓk(x) =k+ℓX
+J=|k−ℓ|φℓk
+J(∥x∥)JX
+m=−JYJm(x/∥x∥)Qℓk
+Jm, (4)
+where rij=xi−xjis the directional vector between the Cartesian coordinates xiandxj
+of two atoms iandj,hk
+jis a type- kfeature of node j, and Wℓk:R3→R(2ℓ+1)×(2k+1)
+is the weight kernel that maps type- kfeatures to type- ℓfeatures. Wℓkis decomposed
+as the linear combination of non-learnable Clebsch-Gordan matrices Qℓk
+Jmand sphereical
+harmonics YJ:R3→R2J+1with a learnable radial network φas given in Eq.4. Due to
+the implementation of the Clebsch-Gordon tensor product and spherical harmonics, such
+SE(3)-equivariant GNNs are usually computationally expensive and have a limited number
+of learnable parameters.18
+Another method to build the equivariance is to apply only linear operations (i.e., scaling,
+linear combination, dot product, and vector product) to vectorial features in message-
+passing.45,48Following the insight, a straightforward way to build E(3)-equivariant operations
+is to keep track of a vectorial feature vi∈R3×Fbesides the scalar feature hifor each node.
+Thus, the message passing function and update function for vectorial features are shown in
+Eq. 5 and 6, respectively.
+m(t)
+ij=f(t)
+m(h(t)
+i, h(t)
+j, v(t)
+i, v(t)
+j,∥rij∥, aij), (5)
+v(t+1)
+i =v(t)
+i+X
+j∈N irijf(t)
+v(m(t)
+ij), (6)
+where fvmaps the message mijto a scalar and the vectorial feature of each atom is updated
+as a linear combination of directional vectors rijin each layer t. It should be noted that only
+linear operations can be applied to vectorial features in the message function fmto keep the
+8equivariance. Usually, atoms within a cutoff distance dcutfrom atom iare included in the
+neighboring list Ni. Such a strategy paves a more flexible way to equivariant GNNs compared
+with irreducible representations.
+After Tequivariant message-passing layers, global pooling over all node features can be
+applied to obtain the representation of the whole molecule. In our work, we apply summation
+over all the node features as the pooling.71The pooled representation is then fed into an
+MLP to predict the molecular potential as ˆE=MLP(P
+ih(T)
+i).
+Besides, invariance indicates that the transformations (e.g., rotations and translations)
+of the input will not change the output, such that ϕ(Tg(x)) = ϕ(x),∀g∈Gandx∈ X.
+Invariance is a special equivariance where Sgis the identity mapping for ∀g∈G. Building an
+invariant GNN is more straightforward than an equivariant one. By simply replacing Eq. 1
+with Eq. 5, one can obtain an E(3)-invariant GNN, since the geometric information is only
+embedded as the distances between atoms in message passing.
+In this study, we implement one invariant GNN (i.e., SchNet35) and three equivariant
+GNN models (i.e., SE(3)-Transformer,42EGNN,70and TorchMD-Net49) to validate the
+generalizability of the proposed pretraining method. SchNet adapts a continuous-filter
+convolution that contains element-wise multiplication between node features and a weight
+matrix that depends only on interatomic distances. SE(3)-Transformer falls into the first
+category of equivariant GNNs which extends TFN by introducing a scalar self-attention50
+term αijto Eq. 3. The input feature is mapped to key and query following the learnable
+weight kernel in Eq. 4 to retain the SE(3)-equivariance, and αijis calculated as the normalized
+dot product of key and query. EGNN and TorchMD-Net, on the other hand, follow the
+second strategy of equivariant GNNs that apply linear operations to vectorial features. EGNN
+directly manipulates the coordinates of atoms as vectorial features. It implements fmin Eq. 5
+as the concatenation of node features, edge features, and distances followed by an MLP to
+compute the message. The atomic coordinates are then updated by the linear combination
+of interatomic directional vectors weighted by the messages in each layer. TorchMD-Net
+9explicitly models vectorial features asides from node features and develops self-attention
+of scalar features and interatomic distances in fm. The self-attention term is utilized as
+a scalar term for directorial vectors between atoms to update vector features and scalar
+features are updated with the dot product of vectorial features. These models represent a
+wide variety of invariant/equivariant GNNs and have achieved competitive performance on
+multiple molecular benchmarks related to force fields or energies.48,49
+2.3 Denoising on Nonequilibrium Molecules
+The pretraining strategy is based on predicting the artificial noise added to sampled con-
+formations of molecules. A conformation of a molecule is denoted as VandX, where V
+encodes the atomic information and X∈RN×3containing Cartesian coordinates of all N
+atoms in the molecule. The interatomic interactions Acan be directly derived from Xfor
+GNN models. Random noises E ∈RN×3sampled from Gaussian N(0, σI) are added to the
+position of all atoms to perturb the molecular conformation. The perturbed conformation is
+denoted as ˆX=X+E. During pretraining, a GNN model is trained to predict the additional
+noise, and the objective function is shown in Eq. 7.
+Ep(ˆX;V)h
+∥ϕθ(V,ˆX)− E∥2
+2i
+, (7)
+where ϕθdenotes an invariant/equivariant GNN parameterized by θandp(ˆX;V) measures
+the probability distribution of perturbed molecular conformations given the atoms.
+Such a denoising strategy in a self-supervised manner is related to learning a pseudo-
+force field at the perturbed states.66,72,73In this work, we extend such a concept from
+equilibrium molecular conformations to nonequilibrium ones, which is pivotal in molecular
+simulations. For a given molecule with Natoms encoded as V, the probability of a molecular
+conformation Xisp(X;V)∼exp (−E(X;V))following the Boltzmann distribution, where
+E(X;V) is the potential energy. The force field of each atom in the conformation is
+10−∇ XE(X;V) =−∇ Xlogp(X;V). The molecular conformation Xcan be sampled via
+molecular dynamic simulation, normal mode sampling, torsional sampling, etc. These methods
+provide diverse physically and chemically feasible nonequilibrium conformations around the
+equilibrium states which help understand the energetics of molecular systems.30It should be
+noted that in our case, we refer to nonequilibrium states as molecular conformations that are
+not at energy minima, which is different from the terminology in statistical mechanics. By
+adding random noise to each atomic coordinate, unrealistic conformation ˆXcan be obtained
+which has higher energy than the sampled conformation X. Driven by this, we assume
+p(ˆX;V) is approximated by a Gaussian distribution q(ˆX;X, V) =N(X, σI 3N) centered at
+X. Following the assumption, the force field is proportional to the perturbation noise for a
+given variance σas shown in Eq. 8.
+∇ˆXlogp(ˆX;V)≈ ∇ ˆXlogq(ˆX;X, V )∝ˆX−X
+σ2∝ E. (8)
+Therefore, training a GNN to match the perturbation noise is equivalent to learning a pseudo-
+force field when assuming the probability of atomic positions around a sampled conformation
+follows a Gaussian distribution. In our case, the temperature T in Boltzmann distribution is
+considered as a fictitious term when approximated with Gaussian, meaning Tis not explicitly
+included in the denoising pretraining. Such a simplification helps make use of data sampled
+from normal mode or torsional sampling that does not include temperature. Also, it is worth
+noting that temperature term Tin the Boltzmann distribution of a molecular system can be
+related to the selection of the optimal standard deviation σof the Gaussian distribution of
+random noise in pretraining. Investigation of data and pretraining strategies that connect σ
+with Tis out of the scope of this work but could be an interesting direction to explore.
+It should be noted that though Gaussian distribution can be a good approximation of the
+distribution of states around a local minimum, it may fail for states with high energies. Such
+an assumption is related to the pretraining dataset and the selection of the standard deviation
+11σof the Gaussian noise added to atomic positions. The pretraining molecular conformations
+should be physically reasonable and not overly distorted. Consequently, adding noise to these
+conformations leads to higher energy states, ensuring that the denoise pretraining process
+enables GNNs to learn a score function that leads to lower energy conformations. Details
+regarding the pretraining dataset can be found in section 3.1. Moreover, the selection of the
+standard deviation ( σ) for the Gaussian noise affects the pretraining. When excessive noise
+is added, it distorts the conformation to such an extent that the denoise component struggles
+to accurately recover the original conformation with lower energy. On the other hand, if the
+perturbation is too small, the change of molecular energies can be trivial and it is hard for
+GNNs to learn meaning representations in pretraining. A detailed investigation of how σ
+affects the performance of neural potential can be found in section 3.6.
+2.4 Prediction of Noise
+To predict the noise given the perturbed molecular conformation, the GNN models are
+expected to output vectors instead of a single scalar. For SchNet and SE(3)-Transformer that
+lack the explicit modeling of vectorial features, models first output the predicted energy ˆE(a
+scalar). The negative gradient with respect to the perturbed atomic coordinates ˆXis calculated
+to evaluate the artificial noise, such that ˆE=−∇ ˆXˆE. On the other hand, EGNN and
+TorchMD-Net directly track the vectorial features which can be leveraged for noise prediction.
+In EGNN, the noise is evaluated as ˆE=X(T)−ˆX, where X(T)is the updated coordinates
+after Tmessage-passing layers. In TorchMD-Net, we adapt the gated equivariant block48that
+maps the updated vectorial features v(T)∈RN×3×Fand node features h(T)∈RN×Fafter T
+layers to the noise ˆE ∈RN×3such that ˆE=GatedEquivariant (v(T), h(T)), which still keeps
+the equivariance.
+12Table 1: Summary of datasets, including the number of molecules, number of conformations,
+number of elements, number of atoms per molecule, molecule types, and whether each dataset
+is used for pretraining (PT) and fine-tuning (FT).
+Dataset # Mol. # Conf. # Ele. # Atoms Molecule types Usage
+ANI-13057,462 24,687,809 4 2 ∼26 Small molecules PT & FT
+ANI-1x7463,865 5,496,771 4 2 ∼63 Small molecules PT & FT
+ISO1775129 645,000 3 19 Isomers of C 7O2H10 FT
+SPICE7619,238 1,132,808 15 3 ∼50 Small molecules, dimers, FT
+dipeptides, solvated amino acids
+MD22777 223,422 4 42 ∼370 Proteins, lipids, carbohydrates, FT
+nucleic acids, supramolecules
+3 Results and Discussion
+3.1 Datasets
+To evaluate the performance of denoise pretraining strategies on molecular potential pre-
+dictions, five datasets containing various nonequilibrium molecular conformations with
+DFT-calculated energies are investigated as listed in Table 1. ANI-130selects a subset of
+GDB-17,69samples more than 24 million conformations via normal mode sampling, and
+calculates DFT total energy. ANI-1x74extends ANI-1 by obtaining over 5 million new
+conformations through an active learning algorithm.31
+Besides ANI-1 and ANI-1x, other datasets concerning molecular energetic predictions
+are studied. ISO1775selects ab initio molecular dynamics (AIMD) trajectories of molecular
+isomers with a fixed composition of atoms (i.e., C 7O2H10), where each molecule contains
+5,000 conformations with DFT-calculated energy and in total 129 molecules are included.
+Unlike the previous datasets which only investigate small organic molecules, MD2277and
+SPICE76cover a wider variety of molecule types. In particular, MD22 includes the AIMD
+trajectories of proteins, carbohydrates, nucleic acids, and supramolecules (i.e., buckyball
+catcher and nanotube). Most molecular systems in MD22 contain more atoms than ANI-1
+and ANI-1x and more details of MD22 can be found in Supplementary Information S1. SPICE
+covers more than 1.1 million conformations and is constituted by different molecular systems
+13including small molecules, dimers, dipeptides, and amino acids. While other datasets contain
+only H, C, N, and O, SPICE involves molecules with halogens and metals, adding up to 15
+different elements. It also includes charged and polar molecules, which further broaden the
+chemical space it covers.
+In this study, we combine ANI-1 and ANI-1x as the pretraining dataset since they include
+various small organic molecules with different conformations. In pretraining, all conformations
+of each molecule are split into the train and validation sets by a ratio of 95%/5%. All datasets
+including ANI-1 and ANI-1x are benchmarked in fine-tuning for potential predictions. By this
+means, we investigate whether invariant or equivariant GNNs pretrained on small molecules
+generalize to other various molecular systems. During fine-tuning, we split the dataset based
+on the conformations of each molecule by a ratio of 80%/10%/10% into the train, validation,
+and test sets for ANI-1, ANI-1x, MD22, and SPICE. Besides, we follow the splitting strategy
+reported in the original literature75for ISO17.
+3.2 Experimental Settings
+During pretraining, each invariant or equivariant GNN is trained for 5 epochs with a maximal
+learning rate 2 ×10−4and zero weight decay. All models are pretrained on the combination of
+ANI-1 and ANI-1x and fine-tuned on each dataset separately. In pretraining, we employ the
+AdamW optimizer78with the batch size 256, and a linear learning rate warmup with cosine
+decay79is applied. During fine-tuning, the models are trained for 10 epochs on ANI-1 and
+ANI-1x while trained for 50 epochs on SPICE and ISO17. We apply different experimental
+settings for each molecule in MD22 since molecules greatly vary in the number of atoms. In
+comparison to pretrained models, we also train GNNs from scratch on each dataset following
+the same setting as their denoise pretrained counterparts. Detailed fine-tuning settings can
+be found in Supplementary Information S2. In fine-tuning, the parameters of pretrained
+message-passing layers are transferred. Atomic features hKfrom message-passing layers are
+first summed up and fed into a randomly initialized MLP to predict the energy of each
+14Table 2: Performance of different invariant and equivariant GNNs on ANI-1 and ANI-1x with
+and without denoise pretraining.
+ANI-1 ANI-1x
+Model Pretrain RMSE MAE RMSE MAE
+(kcal/mol) (kcal/mol) (kcal/mol) (kcal/mol)
+SchNet 2.03 1.33 9.29 5.95
+SchNet ✓ 1.50 1.00 5.53 3.80
+SE(3)-Transformer 5.82 4.14 17.67 11.89
+SE(3)-Transformer ✓ 5.12 3.64 13.76 9.50
+EGNN 2.35 1.63 7.35 5.30
+EGNN ✓ 1.66 1.14 4.94 3.49
+TorchMD-Net 0.60 0.39 2.27 1.50
+TorchMD-Net ✓ 0.49 0.32 1.54 1.01
+Avg. improve -21.5% -21.2% -31.9% -30.9%
+molecular conformation. Both the pretrained layers and the MLP head are fine-tuned for
+potential predictions. Hyperparameters for each GNN are based on the recommendations
+from the original literature. More details of GNNs implemented in this work can be found in
+Supplementary Information S3. To evaluate the performance of the neural potentials, we
+report both the rooted mean square error (RMSE) and mean absolute error (MAE) with the
+DFT potentials.
+3.3 Neural Potential Predictions
+To investigate the performance of denoise pretraining, we pretrain the invariant and equivariant
+GNN models on the combination of ANI-1 and ANI-1x and fine-tune the models on each
+dataset separately. Table 2 compares the molecular potential prediction results of pretraining
+and no pretraining on ANI-1 and ANI-1x.
+Our experiments demonstrate that the proposed denoise pretraining approach significantly
+improves the accuracy of GNNs for molecular potential predictions. Compared to their
+non-pretrained counterparts, the pretrained models achieve an average decrease of 21.5%
+and 21.2% in RMSE and MAE on ANI-1, and an average decrease of 31.9% and 30.9% in
+RMSE and MAE on ANI-1x. Furthermore, results also validate that the denoise pretraining
+15method is model-agnostic, as it significantly improves the performance of four different GNNs,
+including SchNet, SE(3)-Transformer, EGNN, and TorchMD-Net, on both neural potential
+datasets. For instance, the invariant SchNet, as well as equivariant EGNN and TorchMD-Net
+gain more than 32% improvement in both RMSE and MAE on ANI-1x. Especially, denoise
+pretraining boosts the performance of less computationally expensive GNN models like
+SchNet and EGNN. EGNN benefits the most from pretraining when benchmarked on both
+ANI-1 and ANI-1x. This elucidates that denoise pretraining can improve the performance of
+simple and cheap GNN models, which may mitigate the efforts of designing sophisticated
+equivariant architectures. This can be essential in applying neural potentials to real-world
+simulations since the efficiency of potential calculations is substantially important. Details of
+computational efficiency for each GNN model can be found in Supplementary Information
+S4. Also, the investigation of fine-tuning for more epochs can be found in Supplementary
+Information S5. These results demonstrate that denoising pretraining of invariant and
+equivariant GNNs on the molecular potential datasets can directly boost prediction accuracy.
+3.4 Transferability
+The results presented in the previous section demonstrate that denoise pretraining is highly
+effective for improving the accuracy of neural potentials when the downstream tasks and
+pretraining data cover similar chemical space (i.e., small molecules). However, real-world
+simulations often involve much larger and more complex molecular systems, making it
+challenging to obtain the energies of such systems using expensive ab initio methods. Therefore,
+the ability to transfer GNN models pretrained on small molecules (with sufficient training
+data) to larger and more complex molecular systems (with limited training data) would be
+highly beneficial. To this end, we fine-tune the pretrained four GNNs, either invariant or
+equivariant, on three other molecular potential benchmarks (i.e., ISO17,75SPICE,76and
+MD2277), which cover different molecular systems from the pretraining datasets.
+Figure 2a and 2b compare the performance of GNN models with and without denoise
+160.1670.419
+0.248
+0.1760.1480.21
+0.151 0.145
+00.10.20.30.40.5
+SchNet SE(3)-Transformer EGNN TorchMD-NetRMSE on ISO17 (kcal/mol)
+no pretrain
+pretrain
+0.1140.292
+0.167
+0.113 0.1050.136
+0.086 0.092
+00.050.10.150.20.250.30.35
+SchNet SE(3)-Transformer EGNN TorchMD-NetMAE on ISO17 (kcal/mol)
+no pretrain
+pretrain
+62.1162.3
+42.1
+17.750.3144.1
+33.0
+16.0
+0.050.0100.0150.0
+SchNet SE(3)-Transformer EGNN TorchMD-NetRMSE on SPICE (kJ/mol)
+no pretrain
+pretrain
+36.1115.4
+29.0
+9.828.7102.2
+22.8
+9.0
+0.020.040.060.080.0100.0120.0
+SchNet SE(3)-Transformer EGNN TorchMD-NetMAE on SPICE (kJ/mol)
+no pretrain
+pretraina
+cb
+dFigure 2: (a) Test RMSE of different GNN models on ISO17, (b) test MAE of different GNN
+models on ISO17, (c) test RMSE of different GNN models on SPICE, and (d) test MAE of
+different GNN models on SPICE.
+pretraining on ISO17 containing isomers of C 7O2H10. It is demonstrated that pretrained
+GNN models achieve better prediction accuracy when evaluated by both RMSE and MAE.
+Especially, pretraining significantly improves the performance of SE(3)-Transformer by
+approximately 50%. Pretrained models are shown to be transferable to a specific molecular
+system containing fixed atoms.
+Figure 2c and 2d show the performance of pretrained and non-pretrained GNNs on SPICE.
+SPICE includes halogen and metal elements, as well as charged and polar molecules that
+are absent from the pretraining dataset, making it a challenging benchmark. Nevertheless,
+pretrained GNNs still demonstrate superior performance than those trained from scratch. On
+average, pretrained GNNs show 15.3% lower RMSE and MAE on SPICE. This elucidates that
+denoising pretraining benefits the transferability of GNN models even for different elements
+and electrostatic interactions.
+Lastly, we fine-tune the pretrained models on MD22 which consists of larger molecular
+systems with numbers of atoms up to 370. This provides an appropriate benchmark to
+validate the transferability of GNN models pretrained on small molecules. Test MAE of the
+17a
+cb
+dFigure 3: Test MAE per atom (kcal/mol) of (a) SchNet (b) SE(3)-Transformer (c) EGNN (d)
+TorchMD-Net on MD22 with and without denoise pretraining.
+four GNN models on each molecule data is shown in Figure 3. On all the different molecules
+in MD22, pretraining boosts the performance of neural potential predictions. It should
+be noted that MD22 contains a limited number of data compared with other benchmarks,
+especially for large molecules like the buckyball catcher (6,102 data) and double-walled
+nanotube (5,032 data). Pretrained SchNet, SE(3)-Transformer, EGNN, and TorchMD-Net
+fine-tuned on buckyball catcher and double-walled nanotube show average improvements
+of 39.3% and 47.3%, respectively. Also, among all the four GNNs, EGNN reaches the
+most significant improvement. Compared with SchNet and TorchMD-Net, EGNN does not
+include sophisticated architectural designs like interaction and update layers. The pretraining
+technique greatly improves the potential of expressiveness of simple equivariant GNN models
+and achieves competitive performance. These results further validate the effectiveness of
+denoise pretraining such that GNNs pretrained on small molecules can be transferred to large
+and complex systems for molecular potential predictions. Further investigation about the
+uncertainty of neural potential predictions in fine-tuning can be found in Supplementary
+Information S6.
+18Overall, our experiments suggest that the proposed pretraining method can improve the
+accuracy and transferability of GNN models across diverse molecular systems, making it
+a promising method for predicting the energies of complex molecular systems with limited
+training data.
+3.5 Data Efficiency
+To further evaluate the benefits of denoise pretraining for molecular potential predictions, we
+train GNNs with different dataset sizes. As shown in Figure 4, we compare the performance
+of pretrained and non-pretrained EGNN on ANI-1x as well as AT-AT, Ac-Ala3-NHMe, and
+buckyball catcher in MD22 with different numbers of data. Specifically, after splitting each
+dataset into the training, validation, and test sets, subsets that compose {5%,20%,50%,100%}
+data of the training set are sampled. It is exhibited that pretrained GNNs perform better
+than non-pretrained GNNs with the same number of training data. For instance, with only
+5% of the total training set, pretrained EGNN achieves an MAE of 10.04, which is much
+lower than the non-pretrained counterpart with an MAE of 39.37. Such performance is
+even better than non-pretrained EGNN trained on 10 times more training data. Besides, as
+shown in Figure 4d, both EGNNs with and without pretraining perform poorly on 5% of
+buckyball catcher training data, which is less than 250. However, the accuracy of EGNN
+without pretraining barely improves even when trained on more buckyball catcher data,
+since the total training data is still limited to less than 5,000. The collection of molecular
+potentials via QM methods can be very expensive for such large and complex systems. On
+the other hand, when increasing numbers of data are fed, pretrained EGNN demonstrates
+improving performance. When using all training data, pretrained EGNN achieves a more
+than 68% lower MAE compared with no pretraining. It is concluded that pretrained GNN
+models are more data efficient than models trained from scratch in achieving rival potential
+prediction performance. This is especially valuable when applying neural potentials for large
+and complex molecular systems with limited training data.
+19a
+cb
+dFigure 4: Test MAE of EGNN on (a) ANI-1x (b) MD22 AT-AT (c) MD22 Ac-Ala3-NHMe,
+and (d) MD22 buckyball catcher with different training data sizes.
+3.6 Selection of Noise
+The standard deviation σin the Gaussian distribution of the noise to perturb molecular
+conformations affects the performance of pretrained equivariant GNNs. Small perturbation
+noise can be too trivial for the model to predict, while large noise may break the molecular
+conformations and fail to learn useful information for molecular simulations. To select
+the suitable σ, we enumerate different σvalues {0.01,0.02,0.05,0.1,0.2,0.5,1.0}˚A. Fig. 5
+illustrates the performance of pretrained TorchMD-Net on ANI-1x with different noise scales.
+TorchMD-Net without pretraining is included as σ= 0.0˚Afor comparison. As shown,
+pretrained models achieve the best performance with noise σ= 0.2˚Aon both RMSE and
+200.0 0.2 0.4 0.6 0.8 1.0
+Noise  (Å)
+1.001.251.501.752.002.25RMSE (kcal/mol)
+1.001.251.501.752.002.25
+MAE (kcal/mol)
+Figure 5: Influence of the standard deviation σof pretraining noise on the performance of
+neural potentials. Both test RMSE and MAE of TorchMD-Net on ANI-1x are shown.
+MAE of the predicted energies. Also, pretraining with other noise scales from 0.01 to 0.5
+effectively boost neural potential predictions. However, when large noise is applied (e.g.,
+σ= 1.0˚A), pretraining harms the potential prediction since the perturbed conformations
+are far away from the local minimum of the sampled conformations. This could be due to
+that large noise sabotages the original conformations which breaks the assumption in Section
+2.3 and GNNs fail to learn meaning representations concerning potentials. Based on the
+experimental results, we select σ= 0.2 in other experiments.
+4 Conclusions
+To summarize, our proposed denoise pretraining method for invariant and equivariant graph
+neural networks (GNNs) on nonequilibrium molecular conformations enables more accurate
+and transferable neural potential predictions. Our rigorous experiments across multiple
+benchmarks demonstrate that pretraining significantly improves the accuracy of neural
+potentials. Furthermore, GNNs pretrained on small molecules through denoising exhibit
+superior transferability and data efficiency for diverse molecular systems, including different
+elements, polar molecules, biomolecules, and larger systems. This transferability is particularly
+valuable for building neural potential models on larger and more complex systems where
+21sufficient data is often challenging to obtain. Notably, the model-agnostic nature of our
+pretraining method is confirmed by the performance improvements observed across different
+invariant and equivariant GNN models, including SchNet, SE(3)-Transformer, EGNN, and
+TorchMD-Net. Our proposed denoise pretraining method thus paves the way for improving
+neural potential predictions and holds great potential for broader applications in molecular
+simulations.
+Acknowledgement
+The author thanks the Department of Mechanical Engineering Department at Carnegie
+Mellon University for the start-up fund to support the work.
+Data and Code Availability
+The code as well as the data used in this work can be found on the GitHub repository:
+https://github.com/yuyangw/Denoise-Pretrain-ML-Potential .
+Supporting Information Available
+Summary of MD22, detailed implementations of GNNs, details of fine-tuning settings,
+computational efficiency for each GNN, investigation of fine-tuning epochs, and uncertainty
+in fine-tuning are included in the Supplementary Information. https://pubs.acs.org/doi/
+suppl/10.1021/acs.jctc.3c00289/suppl_file/ct3c00289_si_001.pdf
+References
+(1)Monkhorst, H. J. Calculation of properties with the coupled-cluster method. Interna-
+tional Journal of Quantum Chemistry 1977 ,12, 421–432.
+22(2)Hirata, S.; Podeszwa, R.; Tobita, M.; Bartlett, R. J. Coupled-cluster singles and doubles
+for extended systems. The Journal of chemical physics 2004 ,120, 2581–2592.
+(3)Cremer, D. Møller–Plesset perturbation theory: from small molecule methods to methods
+for thousands of atoms. Wiley Interdisciplinary Reviews: Computational Molecular
+Science 2011 ,1, 509–530.
+(4)Levy, M. Universal variational functionals of electron densities, first-order density
+matrices, and natural spin-orbitals and solution of the v-representability problem.
+Proceedings of the National Academy of Sciences 1979 ,76, 6062–6065.
+(5)Thanthiriwatte, K. S.; Hohenstein, E. G.; Burns, L. A.; Sherrill, C. D. Assessment of
+the performance of DFT and DFT-D methods for describing distance dependence of
+hydrogen-bonded interactions. Journal of Chemical Theory and Computation 2011 ,7,
+88–96.
+(6)Mark, P.; Nilsson, L. Structure and dynamics of the TIP3P, SPC, and SPC/E water
+models at 298 K. The Journal of Physical Chemistry A 2001 ,105, 9954–9960.
+(7)Halgren, T. A. Merck molecular force field. I. Basis, form, scope, parameterization, and
+performance of MMFF94. Journal of computational chemistry 1996 ,17, 490–519.
+(8)Salomon-Ferrer, R.; Case, D. A.; Walker, R. C. An overview of the Amber biomolecular
+simulation package. Wiley Interdisciplinary Reviews: Computational Molecular Science
+2013 ,3, 198–210.
+(9)Huang, J.; MacKerell Jr, A. D. CHARMM36 all-atom additive protein force field:
+Validation based on comparison to NMR data. Journal of computational chemistry
+2013 ,34, 2135–2145.
+(10) Sun, H. COMPASS: an ab initio force-field optimized for condensed-phase applications
+23overview with details on alkane and benzene compounds. The Journal of Physical
+Chemistry B 1998 ,102, 7338–7364.
+(11) Vitalini, F.; Mey, A. S.; No´ e, F.; Keller, B. G. Dynamic properties of force fields. The
+Journal of Chemical Physics 2015 ,142, 02B611 1.
+(12) Harrison, J. A.; Schall, J. D.; Maskey, S.; Mikulski, P. T.; Knippenberg, M. T.; Mor-
+row, B. H. Review of force fields and intermolecular potentials used in atomistic compu-
+tational materials research. Applied Physics Reviews 2018 ,5, 031104.
+(13) Unke, O. T.; Koner, D.; Patra, S.; K¨ aser, S.; Meuwly, M. High-dimensional potential
+energy surfaces for molecular simulations: from empiricism to machine learning. Machine
+Learning: Science and Technology 2020 ,1, 013001.
+(14) Butler, K. T.; Davies, D. W.; Cartwright, H.; Isayev, O.; Walsh, A. Machine learning
+for molecular and materials science. Nature 2018 ,559, 547–555.
+(15) Unke, O. T.; Chmiela, S.; Sauceda, H. E.; Gastegger, M.; Poltavsky, I.; Sch¨ utt, K. T.;
+Tkatchenko, A.; M¨ uller, K.-R. Machine learning force fields. Chemical Reviews 2021 ,
+121, 10142–10186.
+(16) Li, Z.; Meidani, K.; Yadav, P.; Barati Farimani, A. Graph neural networks accelerated
+molecular dynamics. The Journal of Chemical Physics 2022 ,156, 144103.
+(17) Fu, X.; Wu, Z.; Wang, W.; Xie, T.; Keten, S.; Gomez-Bombarelli, R.; Jaakkola, T.
+Forces are not enough: Benchmark and critical evaluation for machine learning force
+fields with molecular simulations. arXiv preprint arXiv:2210.07237 2022 ,
+(18) Atz, K.; Grisoni, F.; Schneider, G. Geometric deep learning on molecular representations.
+Nature Machine Intelligence 2021 ,3, 1023–1032.
+(19) Chmiela, S.; Tkatchenko, A.; Sauceda, H. E.; Poltavsky, I.; Sch¨ utt, K. T.; M¨ uller, K.-R.
+24Machine learning of accurate energy-conserving molecular force fields. Science advances
+2017 ,3, e1603015.
+(20) Chmiela, S.; Sauceda, H. E.; M¨ uller, K.-R.; Tkatchenko, A. Towards exact molecular
+dynamics simulations with machine-learned force fields. Nature communications 2018 ,
+9, 1–10.
+(21) Bart´ ok, A. P.; Payne, M. C.; Kondor, R.; Cs´ anyi, G. Gaussian approximation potentials:
+The accuracy of quantum mechanics, without the electrons. Physical review letters 2010 ,
+104, 136403.
+(22) Bart´ ok, A. P.; De, S.; Poelking, C.; Bernstein, N.; Kermode, J. R.; Cs´ anyi, G.; Ceriotti, M.
+Machine learning unifies the modeling of materials and molecules. Science advances
+2017 ,3, e1701816.
+(23) Bart´ ok, A. P.; Kondor, R.; Cs´ anyi, G. On representing chemical environments. Physical
+Review B 2013 ,87, 184115.
+(24) Grisafi, A.; Wilkins, D. M.; Cs´ anyi, G.; Ceriotti, M. Symmetry-adapted machine learning
+for tensorial properties of atomistic systems. Physical review letters 2018 ,120, 036002.
+(25) Fedik, N.; Zubatyuk, R.; Kulichenko, M.; Lubbers, N.; Smith, J. S.; Nebgen, B.;
+Messerly, R.; Li, Y. W.; Boldyrev, A. I.; Barros, K., et al. Extending machine learning
+beyond interatomic potentials for predicting molecular properties. Nature Reviews
+Chemistry 2022 ,6, 653–672.
+(26) Blank, T. B.; Brown, S. D.; Calhoun, A. W.; Doren, D. J. Neural network models of
+potential energy surfaces. The Journal of chemical physics 1995 ,103, 4129–4137.
+(27) Brown, D. F.; Gibbs, M. N.; Clary, D. C. Combining ab initio computations, neural
+networks, and diffusion Monte Carlo: An efficient method to treat weakly bound
+molecules. The Journal of chemical physics 1996 ,105, 7597–7604.
+25(28) Behler, J.; Parrinello, M. Generalized neural-network representation of high-dimensional
+potential-energy surfaces. Physical review letters 2007 ,98, 146401.
+(29) Behler, J. Atom-centered symmetry functions for constructing high-dimensional neural
+network potentials. The Journal of chemical physics 2011 ,134, 074106.
+(30) Smith, J. S.; Isayev, O.; Roitberg, A. E. ANI-1: an extensible neural network potential
+with DFT accuracy at force field computational cost. Chemical science 2017 ,8, 3192–
+3203.
+(31) Smith, J. S.; Nebgen, B.; Lubbers, N.; Isayev, O.; Roitberg, A. E. Less is more: Sampling
+chemical space with active learning. The Journal of chemical physics 2018 ,148, 241733.
+(32) Devereux, C.; Smith, J. S.; Huddleston, K. K.; Barros, K.; Zubatyuk, R.; Isayev, O.;
+Roitberg, A. E. Extending the applicability of the ANI deep learning molecular potential
+to sulfur and halogens. Journal of Chemical Theory and Computation 2020 ,16, 4192–
+4202.
+(33) Yao, K.; Herr, J. E.; Toth, D. W.; Mckintyre, R.; Parkhill, J. The TensorMol-0.1 model
+chemistry: a neural network augmented with long-range physics. Chemical science 2018 ,
+9, 2261–2269.
+(34) Gilmer, J.; Schoenholz, S. S.; Riley, P. F.; Vinyals, O.; Dahl, G. E. Neural message
+passing for quantum chemistry. International conference on machine learning. 2017; pp
+1263–1272.
+(35) Sch¨ utt, K. T.; Sauceda, H. E.; Kindermans, P.-J.; Tkatchenko, A.; M¨ uller, K.-R. Schnet–
+a deep learning architecture for molecules and materials. The Journal of Chemical
+Physics 2018 ,148, 241722.
+(36) Gasteiger, J.; Groß, J.; G¨ unnemann, S. Directional Message Passing for Molecular
+Graphs. International Conference on Learning Representations. 2020.
+26(37) Unke, O. T.; Meuwly, M. PhysNet: A neural network for predicting energies, forces,
+dipole moments, and partial charges. Journal of chemical theory and computation 2019 ,
+15, 3678–3693.
+(38) Lubbers, N.; Smith, J. S.; Barros, K. Hierarchical modeling of molecular energies using
+a deep neural network. The Journal of chemical physics 2018 ,148, 241715.
+(39) Zubatyuk, R.; Smith, J. S.; Leszczynski, J.; Isayev, O. Accurate and transferable
+multitask prediction of chemical properties with an atoms-in-molecules neural network.
+Science advances 2019 ,5, eaav6490.
+(40) Thomas, N.; Smidt, T.; Kearnes, S.; Yang, L.; Li, L.; Kohlhoff, K.; Riley, P. Tensor field
+networks: Rotation-and translation-equivariant neural networks for 3d point clouds.
+arXiv preprint arXiv:1802.08219 2018 ,
+(41) Anderson, B.; Hy, T. S.; Kondor, R. Cormorant: Covariant molecular neural networks.
+Advances in neural information processing systems 2019 ,32.
+(42) Fuchs, F.; Worrall, D.; Fischer, V.; Welling, M. Se (3)-transformers: 3d roto-translation
+equivariant attention networks. Advances in Neural Information Processing Systems
+2020 ,33, 1970–1981.
+(43) Brandstetter, J.; Hesselink, R.; van der Pol, E.; Bekkers, E. J.; Welling, M. Geometric and
+Physical Quantities improve E(3) Equivariant Message Passing. International Conference
+on Learning Representations. 2022.
+(44) Jing, B.; Eismann, S.; Suriana, P.; Townshend, R. J. L.; Dror, R. Learning from Protein
+Structure with Geometric Vector Perceptrons. International Conference on Learning
+Representations. 2021.
+(45) Villar, S.; Hogg, D. W.; Storey-Fisher, K.; Yao, W.; Blum-Smith, B. Scalars are
+27universal: Equivariant machine learning, structured like classical physics. Advances in
+Neural Information Processing Systems. 2021.
+(46) Gasteiger, J.; Becker, F.; G¨ unnemann, S. Gemnet: Universal directional graph neural
+networks for molecules. Advances in Neural Information Processing Systems 2021 ,34,
+6790–6802.
+(47) Batzner, S.; Musaelian, A.; Sun, L.; Geiger, M.; Mailoa, J. P.; Kornbluth, M.; Moli-
+nari, N.; Smidt, T. E.; Kozinsky, B. E (3)-equivariant graph neural networks for
+data-efficient and accurate interatomic potentials. Nature communications 2022 ,13,
+1–11.
+(48) Sch¨ utt, K.; Unke, O.; Gastegger, M. Equivariant message passing for the prediction
+of tensorial properties and molecular spectra. International Conference on Machine
+Learning. 2021; pp 9377–9388.
+(49) Th¨ olke, P.; De Fabritiis, G. TorchMD-NET: Equivariant Transformers for Neural Network
+based Molecular Potentials. arXiv preprint arXiv:2202.02541 2022 ,
+(50) Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; Jones, L.; Gomez, A. N.; Kaiser,  L.;
+Polosukhin, I. Attention is all you need. Advances in neural information processing
+systems 2017 ,30.
+(51) Hadsell, R.; Chopra, S.; LeCun, Y. Dimensionality reduction by learning an invariant
+mapping. 2006 IEEE Computer Society Conference on Computer Vision and Pattern
+Recognition (CVPR’06). 2006; pp 1735–1742.
+(52) Chen, T.; Kornblith, S.; Norouzi, M.; Hinton, G. A simple framework for contrastive
+learning of visual representations. International conference on machine learning. 2020;
+pp 1597–1607.
+28(53) Hu*, W.; Liu*, B.; Gomes, J.; Zitnik, M.; Liang, P.; Pande, V.; Leskovec, J. Strate-
+gies for Pre-training Graph Neural Networks. International Conference on Learning
+Representations. 2020.
+(54) Rong, Y.; Bian, Y.; Xu, T.; Xie, W.; Wei, Y.; Huang, W.; Huang, J. Self-supervised graph
+transformer on large-scale molecular data. Advances in Neural Information Processing
+Systems 2020 ,33, 12559–12571.
+(55) Zhang, Z.; Liu, Q.; Wang, H.; Lu, C.; Lee, C.-K. Motif-based graph self-supervised
+learning for molecular property prediction. Advances in Neural Information Processing
+Systems 2021 ,34, 15870–15882.
+(56) Fang, X.; Liu, L.; Lei, J.; He, D.; Zhang, S.; Zhou, J.; Wang, F.; Wu, H.; Wang, H.
+Geometry-enhanced molecular representation learning for property prediction. Nature
+Machine Intelligence 2022 ,4, 127–134.
+(57) Liu, Y.; Jin, M.; Pan, S.; Zhou, C.; Zheng, Y.; Xia, F.; Yu, P. Graph self-supervised
+learning: A survey. IEEE Transactions on Knowledge and Data Engineering 2022 ,
+(58) Krishnan, R.; Rajpurkar, P.; Topol, E. J. Self-supervised learning in medicine and
+healthcare. Nature Biomedical Engineering 2022 , 1–7.
+(59) Magar, R.; Wang, Y.; Barati Farimani, A. Crystal twins: self-supervised learning for
+crystalline material property prediction. npj Computational Materials 2022 ,8, 1–8.
+(60) Cao, Z.; Magar, R.; Wang, Y.; Farimani, A. B. MOFormer: Self-Supervised Trans-
+former model for Metal-Organic Framework Property Prediction. arXiv preprint
+arXiv:2210.14188 2022 ,
+(61) Wang, Y.; Wang, J.; Cao, Z.; Barati Farimani, A. Molecular contrastive learning
+of representations via graph neural networks. Nature Machine Intelligence 2022 ,4,
+279–287.
+29(62) Zhang, S.; Hu, Z.; Subramonian, A.; Sun, Y. Motif-driven contrastive learning of graph
+representations. arXiv preprint arXiv:2012.12533 2020 ,
+(63) Wang, Y.; Magar, R.; Liang, C.; Barati Farimani, A. Improving Molecular Contrastive
+Learning via Faulty Negative Mitigation and Decomposed Fragment Contrast. Journal
+of Chemical Information and Modeling 2022 ,
+(64) Liu, S.; Wang, H.; Liu, W.; Lasenby, J.; Guo, H.; Tang, J. Pre-training Molecular Graph
+Representation with 3D Geometry. International Conference on Learning Representa-
+tions. 2022.
+(65) St¨ ark, H.; Beaini, D.; Corso, G.; Tossou, P.; Dallago, C.; G¨ unnemann, S.; Li` o, P. 3d
+infomax improves gnns for molecular property prediction. International Conference on
+Machine Learning. 2022; pp 20479–20502.
+(66) Zaidi, S.; Schaarschmidt, M.; Martens, J.; Kim, H.; Teh, Y. W.; Sanchez-Gonzalez, A.;
+Battaglia, P.; Pascanu, R.; Godwin, J. Pre-training via Denoising for Molecular Property
+Prediction. arXiv preprint arXiv:2206.00133 2022 ,
+(67) Liu, S.; Guo, H.; Tang, J. Molecular geometry pretraining with se (3)-invariant denoising
+distance matching. arXiv preprint arXiv:2206.13602 2022 ,
+(68) Zhou, G.; Gao, Z.; Ding, Q.; Zheng, H.; Xu, H.; Wei, Z.; Zhang, L.; Ke, G. Uni-Mol: A
+Universal 3D Molecular Representation Learning Framework. The Eleventh International
+Conference on Learning Representations. 2023.
+(69) Ruddigkeit, L.; Van Deursen, R.; Blum, L. C.; Reymond, J.-L. Enumeration of 166
+billion organic small molecules in the chemical universe database GDB-17. Journal of
+chemical information and modeling 2012 ,52, 2864–2875.
+(70) Satorras, V. G.; Hoogeboom, E.; Welling, M. E (n) equivariant graph neural networks.
+International conference on machine learning. 2021; pp 9323–9332.
+30(71) Xu, K.; Hu, W.; Leskovec, J.; Jegelka, S. How Powerful are Graph Neural Networks?
+International Conference on Learning Representations. 2019.
+(72) Xie, T.; Fu, X.; Ganea, O.-E.; Barzilay, R.; Jaakkola, T. S. Crystal Diffusion Variational
+Autoencoder for Periodic Material Generation. International Conference on Learning
+Representations. 2022.
+(73) Arts, M.; Satorras, V. G.; Huang, C.-W.; Zuegner, D.; Federici, M.; Clementi, C.;
+No´ e, F.; Pinsler, R.; Berg, R. v. d. Two for One: Diffusion Models and Force Fields for
+Coarse-Grained Molecular Dynamics. arXiv preprint arXiv:2302.00600 2023 ,
+(74) Smith, J. S.; Zubatyuk, R.; Nebgen, B.; Lubbers, N.; Barros, K.; Roitberg, A. E.;
+Isayev, O.; Tretiak, S. The ANI-1ccx and ANI-1x data sets, coupled-cluster and density
+functional theory properties for molecules. Scientific data 2020 ,7, 1–10.
+(75) Sch¨ utt, K.; Kindermans, P.-J.; Sauceda Felix, H. E.; Chmiela, S.; Tkatchenko, A.;
+M¨ uller, K.-R. Schnet: A continuous-filter convolutional neural network for modeling
+quantum interactions. Advances in neural information processing systems 2017 ,30.
+(76) Eastman, P.; Behara, P. K.; Dotson, D. L.; Galvelis, R.; Herr, J. E.; Horton, J. T.;
+Mao, Y.; Chodera, J. D.; Pritchard, B. P.; Wang, Y., et al. SPICE, A Dataset of
+Drug-like Molecules and Peptides for Training Machine Learning Potentials. Scientific
+Data 2023 ,10, 1–11.
+(77) Chmiela, S.; Vassilev-Galindo, V.; Unke, O. T.; Kabylda, A.; Sauceda, H. E.;
+Tkatchenko, A.; M¨ uller, K.-R. Accurate global machine learning force fields for molecules
+with hundreds of atoms. Science Advances 2023 ,9, eadf0873.
+(78) Loshchilov, I.; Hutter, F. Decoupled weight decay regularization. arXiv preprint
+arXiv:1711.05101 2017 ,
+31(79) Loshchilov, I.; Hutter, F. SGDR: Stochastic Gradient Descent with Warm Restarts.
+International Conference on Learning Representations. 2017.
+32

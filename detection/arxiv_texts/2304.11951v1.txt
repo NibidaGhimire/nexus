@@ -1,0 +1,1565 @@
+A cell-centred Eulerian volume-of-ﬂuid method for compressible multi-material
+ﬂows
+Timothy R. Lawa, Philip T. Bartona
+aAWE Aldermaston, Reading, RG7 4PR, United Kingdon
+Abstract
+We present a practical cell-centred volume-of-ﬂuid method developed within a pure Eulerian setting for the simula-
+tion of compressible solid-ﬂuid problems. The method builds on a previously published di use-interface Godunov-
+type scheme through the addition of a specialised mixed-cell update that is capable of maintaining sharp interfaces
+indeﬁnitely. The mixed-cell update is local and may be viewed as an interface-sharpening extension to the underly-
+ing di use-interface scheme along the lines of other techniques such as Tangent of Hyperbola INterface Capturing
+(THINC), and hence the method can be straightforwardly extended to include other coupled physics. We validate the
+method on a range of challenging test problems including a collapsing metal shell, cylinder impacts and the three-
+dimensional simulation of a buried explosive charge. Finally we demonstrate the robustness of the method, and its
+use in a multi-physics context, by modelling the BRL 105mm unconﬁned shaped charge with reactive high-explosive
+burn and rate-sensitive plasticity.
+©British Crown Owned Copyright 2023 /AWE
+Keywords: Eulerian solid dynamics, Solid-ﬂuid coupling, V olume-of-ﬂuid, Di use-interface, Multi-physics
+1. Introduction
+Accurate and robust computational methods for the treatment of dynamic problems involving multiple solid and ﬂuid
+materials are vital across many scientiﬁc and engineering disciplines. Applications include auto-mobile crashworthi-
+ness, sheet metal forming, inertial conﬁnement fusion, asteroid impacts and supernova core-collapse to name but a
+few. Such problems frequently involve large deformations which cannot be treated by purely Lagrangian methods due
+to mesh tangling, and so evolving the interfaces between materials explicitly becomes a necessary part of any viable
+numerical approach.
+Many approaches have been developed to tackle this problem. Arbitrary Lagrangian-Eulerian (ALE) methods are
+designed to avoid mesh tangling by decoupling the motion of the computational mesh from the motion of the material.
+ALE codes are often implemented using a Lagrange-plus-remap approach where the mesh motion is formulated as
+an operator-split advection step appended to a pure Lagrangian update, but direct ALE is also possible [10, 4]. Fixed
+grid Eulerian methods on the other hand have many attractive characteristics, chief amongst them being the complete
+avoidance of all mesh-tangling related issues which can hamper robustness. Historically, many multi-material Eulerian
+methods have been developed based on solving hypoelastic systems on staggered grids, with explicit artiﬁcial viscosity
+terms to resolve shocks (see [10] for a review of such methods). In more recent years numerous Godunov-type
+methods, originally developed for compressible ﬂuid ﬂow, have been extended to solid dynamics using hyperelastic
+models [42, 36, 37, 31, 51, 8, 7, 18, 32, 5]. Godunov methods use the solution of Riemann problems to deﬁne
+numerical ﬂuxes and introduce the required artiﬁcial viscosity implicitly. A distinct advantage of these pure Eulerian
+cell-centred methods is their amenability to implementation within adaptive mesh reﬁnement (AMR) frameworks,
+which is often essential to render complex multi-physics problems computationally tractable. The foremost challenge
+Email addresses: tim.law@awe.co.uk (Timothy R. Law), phil.barton@awe.co.uk (Philip T. Barton)
+©British Crown Owned Copyright 2023 /AWE 1arXiv:2304.11951v1  [physics.comp-ph]  24 Apr 2023of integrating these methods into numerical schemes suitable for simulating multi-material problems is the treatment
+of material interfaces, which form internal boundaries.
+Methods for treating material interfaces can be broadly divided into two categories: interface-tracking and
+interface-capturing (analogously to methods for handling shocks). Interface-tracking methods use an indicator func-
+tion that denotes the location of the interface, such as the zero contour of a level-set [40]. V olume-of-ﬂuid methods
+are another notable example, where the fraction of each material present in each cell is tracked and used to reconstruct
+an approximation of the interface [19, 41]. Cut cells may be discretised directly as polyhedra within a ﬁnite-volume
+or ﬁnite-element framework [37, 9], but this is complex and requires special treatments in order to avoid impractically
+small allowable timesteps. Alternatively, some approximate treatment may be used to evolve the solution around the
+interface, based on the true jump conditions. Examples include ghost-ﬂuid methods, pioneered by Fedkiw et al. [17],
+where the state in each material is extrapolated across the interface (either by solution of the Riemann problem or
+some other method) allowing the use of an unmodiﬁed single-material update, which, by virtue of the manipulated
+states near the interface, captures the required interface boundary conditions [18, 6, 45, 32, 35]. A variety of closure
+models have been developed for performing Lagrangian updates in cut cells, typically based on asserting some kind
+of equilibrium between materials [46, 3, 24].
+Interface-capturing methods di er in that the location of the interface is implicit in the solution. The update
+applied is the same irrespective of the number of materials present in each cell. The downside of this approach is
+that the interface tends to become smeared over time unless some sharpening procedure is used, hence these methods
+may also be referred to as di use-interface methods in contrast to the sharp (physical) interface usually o ered by
+interface-tracking. A recent review can be found in [33]. Many di use-interface methods have been developed for
+multi-ﬂuid systems [1, 44], but relatively few for solid-ﬂuid interactions [16, 15, 5], principally because obtaining a
+consistent representation of the thermodynamic state in the mixture region is challenging due to the great variation in
+material properties.
+This paper is devoted to the development of a Godunov-type sharp-interface method that may be viewed as a hy-
+brid of interface-capturing and interface-tracking methods. Our method is based on the di use-interface scheme
+presented by Barton [5], which is itself a development of the ﬁve-equation multi-ﬂuid model presented by Al-
+laire et al. [1] to include material strength. We design a specialised update procedure inspired by the multi-ﬂuid
+methods of Miller and Puckett [38], and Cutforth et al. [12] for cells that contain more than one material, which
+preserves the sharp character of interfaces by means of volume-of-ﬂuid advection. The solution within these cells is
+derived from the Riemann problem posed in terms of the underlying di use-interface model, and a pressure relaxation
+step is included to force the solution to converge to this model. Our mixed-cell update may be viewed as an alter-
+native to other interface sharpening methods such as Tangent of Hyperbola INterface Capturing (THINC) [60, 49]
+(previously applied to this problem by Barton [5]) and other anti-di usion schemes [48, 50, 25]. The method is prac-
+tical (not requiring any complicated geometric considerations), robust (capable of treating multiple solids and ﬂuids
+undergoing extreme deformation), and extensible (amenable to the addition of coupled physics).
+The remainder of the paper is organised as follows. In Section 2 we lay out the theoretical underpinnings of
+the method, including the evolution equations and the thermodynamic and kinematic framework. In Section 3 we
+describe the numerical method in detail. In Section 4 we validate the method through application to a strenuous series
+of problems culminating in the simulation of an explosive charge buried in clay. Finally in Section 5 we show the
+potential of our method by using it to model the BRL 105mm unconﬁned shaped charge, an extremely challenging
+multi-physics problem featuring reactive high-explosive burn and rate-sensitive elasto-plastic solid dynamics. We
+conclude the work in Section 6.
+2. Governing theory
+2.1. Evolution equations—derivation
+The sharp-interface method is presented as an extension to the di use-interface method of Barton [5]. Under this
+model, materials are allowed to mix at their interfaces. Each material lis described by its mass density l, volume-
+fractionland speciﬁc internal energy El. The model assumes mechanical equilibrium: materials in a mixture share
+a common velocity uand mixture stress tensor . The basic conservation equations for mass, momentum and energy
+are then as follows
+©British Crown Owned Copyright 2023 /AWE 2Bpllq
+Bt rplluq  0 (1)
+Bpuq
+Bt rpubuq  r (2)
+BpEq
+Bt rpEuq  rpuq (3)
+where,EE puuq{2 and Eare the mixture density, total energy density and speciﬁc internal energy
+respectively, which along with the volume-fraction are subject to the thermodynamically consistent mixture rules
+1¸
+ll(4)
+¸
+lll(5)
+E¸
+lllEl(6)
+In contrast to the model from Barton [5] which uses simple advection equations for volume-fraction, here we use
+the volume-fraction evolution equation from [38, 31, 12] which is derived directly from the continuity equation (1)
+and therefore takes account of the relative compressibility of each material due to the divergence of the velocity ﬁeld.
+First, expanding product derivatives gives
+Bl
+Bt rpluql
+lBl
+Btl
+lurl(7)
+If we assume that any compression that takes place is isentropic, and that isotropic stress is maintained during the
+advection process, then the pressure change in each material will be equal to the pressure change of the mixture. Then
+we can use the deﬁnition of the isentropic bulk modulus KSBp{B|Sto replace references to the partial densities
+in (7) with fractions of the mixture density.
+Kl
+S
+lBlBplBpKS
+B (8)
+where KSp°
+ll{Kl
+Sq1is the mixture bulk modulus. Substituting (8) into (7) gives
+Bl
+Bt rpluqlKS
+Kl
+SB
+Bt ur
+(9)
+Finally summing (1) over materials to give the continuity equation of the mixture and substituting B{Bt ur
+ruinto (9), we obtain the volume-fraction evolution equation1
+Bl
+Bt rpluqlKS
+Kl
+Sru (10)
+1We note that while the choice of right-hand side weighting in the volume-fraction equation can be motivated physically as described, phe-
+nomenological choices can also work well. We have tested substituting the Gr ¨uneisen parameter for the isentropic bulk modulus, to make the
+volume-fraction evolution appear consistent with the internal energy evolution described later, and found no signiﬁcant di erence in the perfor-
+mance of the method.
+©British Crown Owned Copyright 2023 /AWE 3The pressure for each material is assumed to be deﬁned by an equation of state of the Mie-Gr ¨uneisen form
+plpl;El;devpHl
+eqq pl
+refpl;devpHl
+eqq l lplqpElEl
+refpl;devpHl
+eqqq (11)
+where  lis the Gr ¨uneisen parameter and dev pHeqis the deviatoric part2of the 33 Hencky elastic strain tensor. The
+reference energy is assumed to admit an additive decomposition, comprising a contribution due to cold compression
+or dilation, Ec, and a contribution due to isochoric shear strain, Es
+El
+refpl;devpHl
+eqq  El
+cplq El
+spl;devpHl
+eqq (12)
+pl
+refpl;devpHl
+eqq 2;lBEl
+ref
+Bl(13)
+The shear energy is given by
+El
+spl;devpHl
+eqqGlplq
+lJ2pdevpHl
+eqq (14)
+where Glis the shear modulus and J2pdevpHeqq trpdevpHeqdevpHeqTqis the second invariant of shear strain. In
+ﬂuids the shear modulus is taken to be zero, leading to zero shear energy contribution.
+Following hyperelastic theory the Cauchy stress tensor is a product of thermodynamic compatibility and is found
+through taking derivatives of internal energy with respect to density and deviatoric strain (see [5] for a full derivation)
+lpl;El;devpHl
+eqq plpl;El;devpHl
+eqqI 2GlplqdevpHl
+eq (15)
+Using the assumption that all components in a mixture are in mechanical equilibrium and therefore have the same
+pressure, along with the assumption that materials have a common deviatoric strain, the mixture stress becomes
+p;E;devpHeqq pp;E;devpHeqqI 2GpqdevpHeq (16)
+where the mixture pressure pand mixture shear modulus Gare given by
+pE°
+l 
+llEl
+reflpl
+ref{ l
+°
+ll{ l(17)
+G°
+llGl{ l
+°
+ll{ l(18)
+The mixture Gr ¨uneisen parameter  is deﬁned as
+ 1°
+ll{ l(19)
+In order to track elastic deformations in solid media, it is ﬁrst noted that the Hencky deviatoric strain can be
+deﬁned in terms of the unimodular elastic left stretch tensor Veaccording to
+2The matrix deviator dev pMqis deﬁned as M1
+3trpMqI, where trpMqdenotes the matrix trace.
+©British Crown Owned Copyright 2023 /AWE 4devpHeqlnpVeq (20)
+An additional nine equations are then included to evolve Ve
+BVe
+Bt rpVebuqruVe 2
+3pruqVe (21)
+The source term represents relaxation due to inelastic deformation, deﬁned later.
+It is sometimes necessary to evolve additional history variables to support the closure models, For instance equiv-
+alent plastic strain or the reactant mass fraction in a condensed-phase explosive. These additional history parameters
+can be collectively denoted by the vectors lfor each material, and evolve according to
+Blll
+Bt rplllbuqll9l(22)
+For the interested reader, further examples of how multi-physics can be introduced into the model in this way include
+the treatment of reactive mixtures in [55], continuum damage mechanics and fracture in [56], and phase transitions
+in [59].
+Finally, around material interfaces we require an additional set of equations to evolve the partial internal energies
+of each material. In [38] an internal energy evolution equation was proposed which added a pdvwork term to the
+right-hand-side of the conservative advection equation, inspired by the right-hand-side of the volume-fraction equation
+(10). Here we propose an alternative formulation which is equally self-consistent, but which uses the mixture rules to
+determine the additional source terms, including those taking account of material strength. By expanding the energy
+equation (3) into internal and kinetic contributions we obtain
+BpEq
+Bt rpEuq:ru0 (23)
+Using the deﬁnition of stress (16) and substituting the mixture rules for energy, pressure and the shear modulus gives
+¸
+l
+BpllElq
+Bt rpllEluql 
+ lpplI 2GldevpHeqq:ru
+0 (24)
+from which we assume the internal energy equations for individual materials
+BpllElq
+Bt rpllEluql 
+ lpplI 2GldevpHeqq:ru (25)
+2.2. Evolution equations—summary
+The complete system of evolution equations for which we seek solutions comprises (1)-(3), (10), (21), and (22). In
+vector form, this system can be written:
+BU
+Bt ¸
+kBFkpUq
+Bxk¸
+kSkpUq SsplitpUq (26)
+where the vector of conserved variables Uand the ﬂuxes in the xkdirection FkpUqare deﬁned (in Cartesian coordi-
+nates) as
+©British Crown Owned Copyright 2023 /AWE 5U
+ll
+l
+ui
+E
+Ve;i j
+lll
+m
+; FkpUq
+lluk
+luk
+uiukik
+Euk°
+iikui
+Ve;i jukVe;k jui
+lll
+muk
+(27)
+The source terms are separated reﬂecting the splitting strategy used in the numerical implementation
+SkpUq
+0
+lKS{Kl
+SBuk{Bxk
+0
+0
+2
+3Ve;i jBuk{BxkuiBVe;k j{Bxk
+0
+;SsplitpUq
+0
+0
+0
+0
+
+ll9l
+m
+(28)
+To assist in determining solutions in mixed cells, the system is complemented by the evolution equations for internal
+energies (25).
+2.3. Quasi-linear primitive formulation and wave speeds
+Our choice of numerical method requires solution of the quasi-linear primitive form of the evolution equations, which
+neglecting the inelastic and history-rate source terms can be written
+BW
+Bt ¸
+kAkpWqBW
+Bxk0 (29)
+where Wis the vector of primitive variables
+Wpll;l;ui;p;Ve;i j;l
+mqT(30)
+The matrix in the quasi-linear formulation, Akis given by (in the x-direction)
+AxpWq
+u0ll0 0 0 0 0 0 0 0 0 0 0 0 0
+0u 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+Bl
+1Cl
+1u 0 0 1{A1
+11A1
+21A1
+31A1
+12A1
+22A1
+32A1
+13A1
+23A1
+330
+Bl
+2Cl
+20 u 0 0 A2
+11A2
+21A2
+31A2
+12A2
+22A2
+32A2
+13A2
+23A2
+330
+Bl
+3Cl
+30 0 u 0A3
+11A3
+21A3
+31A3
+12A3
+22A3
+32A3
+13A3
+23A3
+330
+0 0a20 0 u0 0 0 0 0 0 0 0 0 0
+0 02
+3Ve;11 0 0 0 u0 0 0 0 0 0 0 0 0
+0 01
+3Ve;21Ve;11 0 0 0 u0 0 0 0 0 0 0 0
+0 01
+3Ve;31 0Ve;110 0 0 u0 0 0 0 0 0 0
+0 02
+3Ve;12 0 0 0 0 0 0 u0 0 0 0 0 0
+0 01
+3Ve;22Ve;12 0 0 0 0 0 0 u0 0 0 0 0
+0 01
+3Ve;32 0Ve;120 0 0 0 0 0 u0 0 0 0
+0 02
+3Ve;13 0 0 0 0 0 0 0 0 0 u0 0 0
+0 01
+3Ve;23Ve;13 0 0 0 0 0 0 0 0 0 u0 0
+0 01
+3Ve;33 0Ve;130 0 0 0 0 0 0 0 0 u0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 u
+(31)
+where
+©British Crown Owned Copyright 2023 /AWE 6Ai
+jk1
+Bdevpqi1
+BVe;jk(32)
+Bl
+i1
+Bdevpqi1
+Bpllq(33)
+Cl
+i1
+Bdevpqi1
+Bl(34)
+(35)
+The derivative of the tensor logarithm is given by Jog [21], and so
+Ai
+jk2b2i j1kV1
+e;i1 (36)
+The bulk sound speed aand the shear speed bare deﬁned next.
+The wave speeds are required by the primitive variable formulation, the Riemann solver, and in order to estimate
+the allowable time-step. In [5] it was shown how the non-linear characteristic wave speeds derived from the charac-
+teristic polynomial of Akare a function of the eigenvalues of the 3 3acoustic tensor . In lieu of a costly evaluation
+of this tensor the fastest longitudinal wave speed is estimated as
+c2;lpl;pl;devpHl
+eqq a2;lpl;pl;devpHl
+eqq 4
+3b2;lplq (37)
+The bulk sound speed is computed by di erentiating (11) with respect to density at constant entropy, and using the
+relation d ETdSpdv
+a2;lpl;pl;devpHl
+eqqBpl
+refpl;devpHl
+eqq
+Bl p lplq 1qplpl
+refpl;devpHl
+eqq
+l  (38)
+plpl
+refpl;devpHl
+eqq
+ lplqB l
+Bll lplqBEl
+refpl;devpHl
+eqq
+Bl
+The shear speed is given by
+b2;lplqGlplq
+l(39)
+In cells containing more than one material, the mixture wave speed is calculated according to
+c2°
+lllc2;l{ l
+°
+ll{ l(40)
+2.4. Closure models
+It is noted that the Mie-Gr ¨uneisen framework embodies many speciﬁc equations of state, depending on the functional
+form assumed for the reference energy /pressure, Gr ¨uneisen parameter and shear modulus. For example (superscripts
+lhave been omitted for clarity):
+The ideal gas law is given by El
+refpref0, 1 and G0.
+The sti ened gas equation of state describing denser ﬂuids is given by ErefE8,prefp8, 1 and
+G0.
+©British Crown Owned Copyright 2023 /AWE 7The Jones-Wilkins-Lee (JWL) equation of state [27, 29, 34] describing explosive products (and sometimes
+reactants) is given by   0,G0 and
+ErefA
+R10exp
+R10
+
+ B
+R20exp
+R20
+
+prefAexp
+R10
+
+ Bexp
+R20
+
+The equation of state from [13] describing elastic solids is given by   0and
+ErefK0
+202
+0
+
+1
+2
+ Es
+pref2BEref
+B
+GG0
+0
+ 1
+Plastic relaxations are incorporated via the source term following the method of convex potentials. The V on
+Mises ﬂow rule is used, leading to the following functional form
+c
+3
+2devpq
+||devpq||Ve (41)
+where||M||JpMqis the Frobenius norm and ¥0 is the plastic rate. The latter is a closure model which must be
+provided for each material, and the following mixture rule is used
+°
+lll{ l
+°
+ll{ l(42)
+In this work we consider both ideal plasticity, and the rate-dependent model from Johnson and Cook [23]. For the
+former the plastic rate is given by
+ll
+0Hc
+3
+2||devpq||Y
+(43)
+where Hpsqis the Heaviside function, Yis the constant yield stress, and l
+0Ñ8 . For the rate-dependent model, we
+have
+ll
+0exp
+1
+c3c
+3
+2||devpq||
+Yp"lpq1
+(44)
+Yp"l
+pqp c1 c2p"l
+pqnq
+1TT0
+TmeltT0
+m
+(45)
+wherel
+0is the reference rate, c3controls the rate dependency, c1is the yield stress, c2is the strain hardening factor,
+nis the strain hardening exponent, Tmeltis the melting temperature of the material, T0is a reference temperature, and
+mis the thermal softening exponent. This model is a function of the equivalent plastic strain "l
+p, so an additional
+evolution equation is required to track this quantity
+©British Crown Owned Copyright 2023 /AWE 8Bll"l
+p
+Bt rpll"l
+puqlll(46)
+which is added as a history variable for the corresponding material.
+Condensed-phase explosives are treated using the reactive burn model from [55], where the reactants and products
+are represented as a physical mixture. The reactant mass fraction, denoted , is added as a history variable for the
+corresponding material with the evolution equation
+Blll
+Bt rpllluqll9l(47)
+Various forms for the reaction rate 9have been proposed, notably the ignition and growth model [30], viz.
+9Ib
+01a
+x
+HpFigfq  (48)
+G1cfdpyHpFG1fq  (49)
+G2efgpzHpfFG2q (50)
+f1 (51)
+where Hpsqdenotes the Heaviside function.
+3. Numerical method
+We leverage the AMReX block-structured adaptive mesh reﬁnement framework in our implementation [14]. AMReX
+has native support for advanced architectures such as Graphics Processing Units (GPUs) which have the potential to
+dramatically accelerate calculations. All of the 2D and 3D simulations presented later in this work are performed on
+NVIDIA A100 GPUs.
+Solutions are found using structured computational grids consisting of hexahedral cells with cell centres denoted
+by the indices i;j;k. Each cell Ci jkhas the dimensions xixi 1{2xi1{2,yjyj 1{2yj1{2,zk
+zk 1{2zk1{2, where i1
+2,j1
+2,k1
+2denote cell boundary quantities. Each cell therefore forms the control
+volume Vi jkxiyjzk. The method is implemented in a dimensionally split fashion, which ensures coupling at
+cell corners is accounted for, and also greatly simpliﬁes the volume-of-ﬂuid advection. A timestep thus consists of x,
+yandzupdates, followed by the split source term updates. Within each cell the solution is advanced according to
+Un;p1q
+i jkUn
+i jkt
+xi
+F1;i 1{2F1;i1{2
+ tS1pUn
+i jkq
+Un;p2q
+i jkUn;p1q
+i jkt
+yj
+F2;j 1{2F2;j1{2
+ tS2pUn;p1q
+i jkq
+Un;p3q
+i jkUn;p2q
+i jkt
+zk
+F3;k 1{2F3;k1{2
+ tS3pUn;p2q
+i jkq
+Un 1
+i jkUn;p3q
+i jk tSsplitpUn;p3q
+i jkq
+where Fk;i1{2are the cell-wall numerical ﬂuxes to be deﬁned later. The volume-of-ﬂuid method is incoporated into
+the dimensionally split part of the update, described in detail below.
+The basic procedure may be outlined as follows:
+1. For each coordinate direction:
+©British Crown Owned Copyright 2023 /AWE 9(a) Perform MUSCL reconstruction of the primitive variables and extrapolate to the half-time-step according
+to the MUSCL-Hancock method.
+(b) Use the HLLD Riemann solver [32, 5] to compute interfacial states and numerical ﬂuxes at all faces.
+(c) Reconstruct material interfaces using the initial volume-fraction ﬁeld and use the interfacial speeds from
+step 1b to compute the volume of each material transported across each face.
+(d) Local to material interfaces, apply the mixed-cell update formulae to evolve the state. Then relax each
+mixed-cell to pressure equilibrium and sum the partial internal energies to retrieve the total energy.
+(e) Update state within single-material cells (i.e. all cells not updated in step 1d) using the HLLD ﬂuxes from
+step 1b.
+2. Calculate the operator-split source terms. Reinstate the symmetry property for the unimodular elastic left stretch
+tensor.
+For clarity we describe the update in the x-direction, modiﬁcations for the y- and z-directions are trivial.
+3.1. Reconstruction
+In order to obtain second-order accuracy in smooth single-material regions, we use the MUSCL-Hancock method [53],
+wherein the input data for the Riemann problems is computed by performing a limited MUSCL reconstruction of the
+initial cell average states, and then extrapolating the reconstructed states forward in time to the half-step t t{2.
+These states are then used to compute the numerical ﬂuxes. The method can be applied to either the conserved or
+primitive variables, but testing has shown that reconstruction of the primitive variables yields better results, with fewer
+oscillations in the vicinity of material interfaces. This is in line with the ﬁndings of Johnsen and Colonius [22].
+The reconstruction is carried out as follows. Given the piecewise constant vector of primitive variables Win each
+cell, the MUSCL method constructs a piecewise linear function from which the left and right boundary values can be
+written
+Wi1{2;RWi1
+2pRqpWi 1Wiq; (52)
+Wi 1{2;LWi 1
+2pLqpWiWi1q; (53)
+with
+LWi 1Wi
+WiWi1 ;RWiWi1
+Wi 1Wi (54)
+whereis a vanishingly small number used to avoid division by zero. The function pqrepresents the slope limiter,
+which prevents spurious oscillations and ensures that the Total Variation Diminishing (TVD) property is maintained.
+In the examples presented here the limiter of Van-Leer [52] is used
+pqmax
+0; ||
+1 || 
+(55)
+The extrapolation in time is carried out using
+Wn 1{2
+i1{2;RWn
+i1{2;Rt
+xAxpWn
+iq
+Wn
+iWn
+i1{2;R
+(56)
+Wn 1{2
+i 1{2;LWn
+i 1{2;Lt
+xAxpWn
+iq
+Wn
+i 1{2;LWn
+i
+(57)
+We note that in [5] material interfaces were sharpened following MUSCL reconstruction using the algebraic
+Tangent of Hyperbola INterface Capturing (THINC) technique from Xiao et al. [60], but that this is unnecessary in our
+scheme as the interfaces are always conﬁned to a single cell by virtue of the specialised mixed-cell update. However
+it may still be advantageous to apply the THINC technique to ﬁelds other than the material volume-fractions. For
+example, Wallis et al. [56] use THINC to sharpen the material damage ﬁeld used for Continuum Damage Modelling
+(CDM).
+©British Crown Owned Copyright 2023 /AWE 10xt
+Sl
+L Sl
+RSs
+L Ss
+RS⋆
+ULU⋆
+LU⋆⋆
+L U⋆⋆
+R
+U⋆
+R
+URFigure 1: The HLLD solver assumes the solution to the Riemann problem contains six constant states interposed by ﬁve discontinuous waves: two
+fast longitudinal waves, two slow shear waves, and one central contact discontinuity.
+3.2. Solution of Riemann problems
+The numerical ﬂuxes and interfacial states are obtained using the HLLD approximate Riemann solver, originally
+developed for magnetohydrodynamics but repurposed for solid dynamics in [32, 5]. The solution consists of six
+constant states interposed by ﬁve waves (see Figure 1). Given the reconstructed left and right states ULpWn 1
+2
+Lqand
+URpWn 1
+2
+Rqas input, the ﬂuxes are
+FHLLD$
+''''''''&
+''''''''%FpULq ifSl
+L¥0
+FpULq Sl
+LpU
+LULq ifSl
+L 0¤Ss
+L
+FpULq Sl
+LpU
+LULq Ss
+LpU
+LU
+LqifSs
+L 0¤S
+FpURq Sl
+RpU
+RURq Ss
+RpU
+RU
+RqifS 0¤Ss
+R
+FpURq Sl
+RpU
+RURq ifSs
+R 0¤Sl
+R
+FpURq ifSl
+R 0(58)
+where the left longitudinal, left shear, contact, right shear, and right longitudinal wave speeds are given respectively
+by
+Sl
+LminpuLcL;uRcRq (59)
+Ss
+LSb
+L (60)
+SLuLpSl
+LuLqRuRpSl
+RuRq L;11R;11
+LpSl
+LuLqRpSl
+RuRq(61)
+Ss
+RS b
+R (62)
+Sl
+RmaxpuL cL;uR cRq (63)
+Note that in ﬂuids, b0 and therefore Ss
+LSSs
+Rso the solver reduces to the standard HLLC scheme.
+The intermediate states U
+L,U
+L,U
+RandU
+Rare obtained through manipulation of the jump conditions
+Sl
+KpUKU
+KqFpUKqFpU
+Kq (64)
+Ss
+KpU
+KU
+KqFpU
+KqFpU
+Kq (65)
+It is assumed that normal stress and normal velocity are constant across shear waves, but may jump across longitudinal
+waves. Similarly, the transverse stresses and velocities may jump across shear waves but are assumed constant across
+©British Crown Owned Copyright 2023 /AWE 11longitudinal waves. Solving (64) under these assumptions gives the states between the two pairs of longitudinal and
+shear waves
+U
+KK
+l
+Kl
+K
+l
+K
+l
+KS
+l
+KvK
+l
+KwK
+l
+KEK pSuKqpKSK;11{pSl
+KuKqq
+Ve;K;11{K
+Ve;K;21
+Ve;K;31
+Ve;K;12{K
+Ve;K;22
+Ve;K;32
+Ve;K;13{K
+Ve;K;23
+Ve;K;33
+l
+Kl
+Kl
+K;m
+(66)
+where
+KSl
+KuK
+Sl
+KS(67)
+Between the two shear waves no-slip boundary conditions—constant transverse stresses and transverse velocities—
+are used to describe how the solution varies across the contact wave, which reﬂects the underpinning mechanical
+equilibrium of the model. The intermediate states then become
+U
+KU
+K 1
+SSs
+K
+0
+0
+0
+
+K;21K;21
+
+K;31K;31
+v
+K
+K;21vKK;21 w
+K
+K;31wKK;31
+0
+V
+e;K;11pv
+KvKq
+V
+e;K;11pw
+KwKq
+0
+V
+e;K;12pv
+KvKq
+V
+e;K;12pw
+KwKq
+0
+V
+e;K;13pv
+KvKq
+V
+e;K;13pw
+KwKq
+0
+(68)
+We also require the intermediate stresses which are given by
+©British Crown Owned Copyright 2023 /AWE 12
+11;K11;KKpSl
+KuKqpSuKq (69)
+
+j1;Kj1;Kforj2;3 (70)
+
+11;K
+11;K (71)
+
+j1;KLRpuj;Luj;Rq Lj1;RRj1;L
+LRforj2;3 (72)
+where
+K
+KpSSs
+Kq
+The ﬂuxes FHLLD are used directly to deﬁne the cell wall ﬂuxes Fk;i1{2to update single-material cells following
+the standard MUSCL-Hancock method. In order to perform the mixed-cell update the ﬂuxes are not needed, but we
+do require the states evaluated at the interface
+Uint$
+''''''''&
+''''''''%UL ifSl
+L¥0
+U
+LifSl
+L 0¤Ss
+L
+U
+LifSs
+L 0¤S
+U
+RifS 0¤Ss
+R
+U
+RifSs
+R 0¤Sl
+R
+UR ifSl
+R 0(73)
+It is important to note that where the interfacial stresses are required (e.g. in (84)), these must be taken directly from
+(69)–(72). Evaluating them from Uintusing the equation of state is invalid and will cause the scheme to fail.
+3.3. Interface reconstruction
+Material interfaces are reconstructed using the method of Youngs [61, 41]. In each cell, and for each material, the
+gradient of the volume fraction ﬁeld is approximated using ﬁnite di erences and an outward-facing normal vector is
+calculated
+nlrl
+|rl|(74)
+An oriented plane associated with this normal is then positioned such that it cuts the cell producing the required
+volume fraction. This plane is taken as a linear approximation of the interface within the cell. In cells with two
+materials, the second material interface is simply the ﬁrst with the sign of the normal vector reversed. In cells with
+three or more materials, producing an accurate reconstruction is more complicated and has been studied by many
+authors [11, 26, 47]. This problem is outside the scope of the current work, and we adopt a simple approach. The
+user of the code speciﬁes a global ordering of materials, and interfaces are computed between adjacent pairs in this
+ordering using a cumulative sum of the individual volume fraction ﬁelds. For instance, with four materials, we would
+compute the interface of material one using 1, material two using 1 2and material three using 1 2 3. The
+interface of material four would be the same as material three with the normal sign reversed.
+Once we have the required material interfaces deﬁned, we require the signed transported volumes of each mate-
+rial across the left and right faces of the cell (in the sweep direction), Vl
+i1{2andVl
+i 1{2respectively. These are
+computed as the intersection of the material polyhedra underneath the interfaces and the cuboidal region traced out by
+the motion of the continuum normal to and through the cell face by a distance t uint, with sign equivalent to uint. In
+thex-direction this cuboid has the signed volume yzt uint, and the sum of the transported volumes°
+lVlmust
+exactly equal this value at each face. A 2D illustration of this process is given in Figure 2.
+©British Crown Owned Copyright 2023 /AWE 13i−3
+2i−1 i−1
+2i i+1
+2i+ 1 i+3
+2∆t|uint
+i−1
+2| ∆t|uint
+i+1
+2|
+∆V0
+i−1
+2∆V1
+i−1
+2
+∆V0
+i+1
+2∆V1
+i+1
+2Figure 2: Illustration of the calculation of transported material volumes at each face. The ﬁlled regions show the reconstructed interface between
+two materials. The hatched regions denote the advected volumes, with widths given in terms of the interfacial speeds. The transported material
+volumes consist of the intersection of these regions with each material.
+3.4. Mixed-cell update
+The specialised mixed-cell update must be applied in all cells containing more than one material, but additionally in
+cells that could become mixed following the update. In practice this means all pure cells that are adjacent to a mixed-
+cell in the direction of the sweep, or two adjacent pure cells containing di erent materials (in the case where the
+material interface coincides exactly with the adjoining face). Even in the most demanding multi-material calculations
+this will typically be less than 10% of the total cell count, so the computational burden of this process is small.
+Following interface reconstruction, the intermediate volume fractions (neglecting contributions from the right-
+hand side of (10)) are computed using volume-of-ﬂuid advection
+˜ll;nVl
+RVl
+L
+V(75)
+where Vis the volume of the cell. In this section the subscripts LandRare used as short-hand for i1
+2andi 1
+2
+respectively to denote quantities located at the left and right faces of the cell under consideration.
+Following application of (75), the sum of the volume fractions ˜lin the cell may not equal one (whenever the
+velocity divergence is non-zero). The di erence (1°
+m˜m) must be redistributed amongst the materials in the cell
+in accordance with their relative compressibility. To compute the right-hand side of (10) we require the bulk modulus
+for each material following advection, denoted ˜Kl
+S, which we obtain through a volume-weighted averaging procedure
+as detailed in [38, 12]
+˜Kl
+S;iVl
+LpKl
+S;L l
+iViKl
+S;iVl
+RpKl
+S;R
+˜l
+iVi(76)
+where the upwind bulk moduli at the left and right faces are given by
+pKl
+S;L#
+Kl
+S;i1ifuint
+i1
+2¡0
+Kl
+S;iotherwise(77)
+pKl
+S;R#
+Kl
+S;iifuint
+i 1
+2¡0
+Kl
+S;i 1otherwise(78)
+The post-advection bulk modulus of the mixture is then
+©British Crown Owned Copyright 2023 /AWE 14rKS¸
+l˜l
+˜Kl
+S1
+(79)
+Note that the same approach is used to determine the post-advection Gr ¨uneisen parameters ˜ landr used in the internal
+energy equations below. The ﬁnal volume fractions are then given by
+l;n 1˜l p1¸
+m˜mq˜lrKS
+˜Kl
+S(80)
+where the bracketed expression may be identiﬁed as the time integral of the velocity divergence
+p1¸
+m˜mqtuint
+Ruint
+L
+x(81)
+The mass, momentum and energy transported across the face of each mixed-cell are computed using upwinding.
+This is important to ensure that the procedure is self-consistent: when the cell is emptied of material l, the correspond-
+ing contributions to mass, momentum and energy must be set to zero. The relevant upwind quantities (denoted with
+a wide hat pq) are calculated at the left and right faces of the cell as in (77) and (78) respectively. We also require the
+transported density of the mixture at each face, given by
+pK°
+lpl
+KVl
+K°
+lVl
+K;forKL;R (82)
+The discrete update equations for the partial densities, momenta, elastic stretches and history variables are as
+follows. The advective terms are di erenced in line with (75). Note that the inelastic and history-rate source terms
+are omitted as these are evaluated separately.
+l;n 1l;n 1l;nl;nVl
+Rpl
+RVl
+Lpl
+L
+V(83)
+n 1un 1
+inun
+iVRpRpui;RVLpLpui;L
+V tint
+i1;Rint
+i1;L
+x(84)
+Vn 1
+e;i jVn
+e;i jVRpVe;i j;RVLpVe;i j;L
+V 2
+3Vn
+e;i jp1¸
+l˜lq  (85)
+t
+x
+pun
+juint
+j;LqVint
+e;1j;L puint
+j;Run
+jqVint
+e;1j;R
+l;n 1l;n 1l;n 1
+ml;nl;nl;n
+mVl
+Rpl
+Rpl
+m;RVl
+Lpl
+Lpl
+m;L
+V(86)
+The momentum update (84) is importantly not the same as the one from [38], which used the interfacial velocity rather
+than the upwinded velocity in the advective terms. We found the original to be highly unstable when a dense material
+is leaving a cell containing a light material, as the dense material’s contribution to the momentum is not correctly set
+to zero. This resulted in large spikes in velocity which caused calculations to fail. The new update does not exhibit
+these problems.
+The discrete energy update based on (25) is given by
+©British Crown Owned Copyright 2023 /AWE 15l;n 1l;n 1El;n 1l;nl;nEl;nadvpl;vol shear (87)
+advVl
+Rpl
+RpEl
+RVl
+Lpl
+LpEl
+L
+V
+volp1¸
+m˜mq˜lr 
+˜ l
+shear2Gl;¸
+idevpHeq
+i1tuint
+i;Ruint
+i;L
+x
+˜lr 
+˜ l
+Cutforth et al. presented an energy update which reportedly improved robustness signiﬁcantly in complex simula-
+tions [12]. Following their approach, the time-level of the pressure pl;in the discrete energy equation is taken to
+dier depending on whether the cell is in compression or expansion:
+pl;#
+pl;nifuint
+Ruint
+L 0
+pl;n 1otherwise(88)
+In order to ensure a consistent evaluation of the stress, the same logic is applied when chosing the time-level of the
+shear modulus Gl;and the deviatoric strain dev pHeq.
+In the case of compression the update may be readily evaluated. In the implicit case (expansion), we invoke the
+equation of state (11) to rearrange the right-hand side
+l;n 1l;n 1El;n 1l;nl;nEl;nadv volpl;n 1 l;n 1El;n 1
+refpl;n 1
+refq shear
+1 vol l;n 1{l;n 1(89)
+Then all of the variables on the right-hand side of (89) are known: l;n 1is given by (80), l;n 1is given by (83),
+devpHeqn 1is given by (85), and  l;n 1,El;n 1
+ref,pl;n 1
+refandGl;n 1are all assumed to depend only on l;n 1and
+devpHeqn 1.
+In the case of other equations of state where a closed-form rearrangement is not possible (for instance reactive
+mixtures along the lines of [55], or cavitating liquids along the lines of [59]), a root-ﬁnding procedure may be used to
+perform the implicit update.
+3.5. Pressure relaxation
+After the update mixed-cells will not in general be in pressure equilibrium, which is a requirement of the base di use-
+interface method. A pressure relaxation step is therefore included to iteratively adjust volume-fractions and internal
+energies until equilibrium is attained. We ﬁrst outline the pressure relaxation scheme proposed by Miller and Puckett
+in [38], and then describe changes we have made to improve robustness.
+The following equations are solved to adjust the component pressures in mixed-cells towards equilibrium in a
+controlled manner.
+ppl plplKl
+S
+ll(90)
+¸
+ll0 (91)
+These yield approximate expressions for the equilibrium pressure pand the required change in volume-fraction for
+each material l
+©British Crown Owned Copyright 2023 /AWE 16p°
+llpl{Kl
+S°
+ll{Kl
+S(92)
+ll
+Kl
+Spplpq (93)
+Due to the linearisation implicit in (93), Miller and Puckett enforced a limit on the maximum relative volume change
+in a single iteration of the relaxation, viz. |l{l|¤. When the cell is under compression 0:1, and0:05 in
+expansion.
+On each iteration, (92) is used to obtain an estimate of the equilibrium pressure, which is then used in (93) to
+calculate the amount by which each volume-fraction should change. If any of the values exceed the threshold, all of
+them are rescaled (this ensures that they continue to sum to zero)
+lÐlmin
+l
+|l{l|(94)
+Finally the volume-fractions are changed, and a pdvcorrection is made to each partial internal energy
+lÐl l(95)
+llElÐllElpl(96)
+The process is repeated until each component pressure is within some prescribed tolerance.
+We found the above scheme to lack robustness, particularly within solids where tiny changes in volume-fraction
+result in relatively large changes in pressure. We observed oscillatory behaviour around the desired equilibrium
+point, where the calculated volume-fraction changes would repeatedly overshoot the target pressure, resulting in non-
+convergence. In order to address this we modify the threshold adaptively. Each time a sign-change is detected in l
+we reduce the threshold value . The threshold is given by
+0exppNsignq (97)
+where0is the initial threshold value, is a free parameter that controls the rate of fall-o , and Nsignis the number of
+iterations in which a sign-change in lhas been detected. We typically take 00:01 and0:1. Unlike Miller
+and Puckett we do not distinguish between compression and expansion when applying the threshold.
+3.6. Plastic update
+The plastic source term is evaluated as detailed by Barton [5]. This update is independent of the volume-of-ﬂuid
+method and is performed identically in pure and mixed cells, but is summarised here for completeness. First the
+following ordinary di erential equation is solved using the backwards Euler method to evolve the strain invariant for
+each material that adheres to a plasticity law
+9Jlc
+3
+2l;Jl;Pr0;Jl;s (98)
+and the mixture strain invariant is obtained following
+J°
+llJl{ l
+°
+ll{ l(99)
+©British Crown Owned Copyright 2023 /AWE 17Material 0(g cm3)K0(GPa) G0(GPa)  0 
+Aluminium 6061-T6 2.703 76.3 26.36 1.484 0.627 2.288
+Copper 8.930 136.45 39.38 2.0 1.0 3.0
+Clay 1.932 49.4 6.0 1.0 1.0 -
+Table 1: Material parameters for the equation of state from [13], as given in Section 2.4. Where is not speciﬁed a constant shear modulus is used:
+GG0.
+where Jl0 in ﬂuids. It is noted that since the ODE only need be solved for materials where l¡0 the volume-
+of-ﬂuid method increases the e ciency of this update by virtue of there being fewer mixed cells. Finally the mixture
+strain invariant at the new time level is used to update the stretch tensor
+V
+eexpJ
+JdevpH
+eq
+(100)
+In the course of this last step the symmetry and unimodularity of the stretch tensor is reinstated, which may be lost
+during the hyperbolic update:
+VeÐb
+VeVT
+e (101)
+4. Veriﬁcation and validation
+4.1. Solid-solid Riemann problem
+The ﬁrst test is a solid-solid Riemann problem taken from [8], involving an interaction between aluminium and copper
+resulting in a complex wave structure. The initial left and right states are as follows:
+uL
+2
+0
+0:1
+km s1;Fe;L
+1 0 0
+0:01 0:95 0:02
+0:015 0 0 :9
+;ELEref;L
+uR
+0
+0:03
+0:01
+km s1;Fe;R
+1 0 0
+0:015 0:95 0
+0:01 0 0 :9
+;EREref;R
+where Feis the elastic deformation gradient tensor, from which the initial densities and elastic stretches are found via
+0
+det|Fe|(102)
+Vea
+FeFTe
+3a
+det|Fe|(103)
+Both materials are assumed to be purely elastic and are governed by the equation of state from [13] with parameters
+given in Table 1. The domain is xPr0;1swith the discontinuity initially located at x0:5, with aluminium to the
+left and copper to the right. The problem is run to time 0 :5s with CFL number 0.1.
+Results are presented in Figure 3 for a mesh with 500 cells. The volume-of-ﬂuid method (labelled VOF) is
+compared against the base di use-interface method with THINC interface sharpening [5] (labelled DI +THINC) and
+the exact solution derived using the method from [8]. Convergence is illustrated in Figure 4, which gives L1-norms
+for density and velocity relative to the exact solution.
+As expected, away from the material interface the results are equivalent to the di use-interface solution, however
+at the contact the ability of the volume-of-ﬂuid scheme to maintain a sharp interface is demonstrated. Barton noted
+that THINC contributes to oscillations in the tangential stress and velocity ﬁelds at the interface—these are notably
+reduced with the new method.
+©British Crown Owned Copyright 2023 /AWE 180 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 14681012
+x/c55/c2b/c4b/c56ρ/c55/c3b /c2b/c4b−3/c56
+/c31/c74/c1c/c2b/c69
+/c2e/c41/c59/c68/c3e/c41/c4c/c2a
+/c6f/c50/c36(a)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 10.511.522.5
+x/c55/c2b/c4b/c56E/c55/c46/c43 /c3b−1/c56 (b)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 100.511.52
+x/c55/c2b/c4b/c56u/c55/c46/c4b /c62−1/c56
+(c)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 1−4−3−2−1012·10−2
+x/c55/c2b/c4b/c56v/c55/c46/c4b /c62−1/c56(d)
+Figure 3: Solid-solid Riemann problem.
+©British Crown Owned Copyright 2023 /AWE 190 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 1−2·10−202·10−24·10−26·10−28·10−20.1
+x/c55/c2b/c4b/c56w/c55/c46/c4b /c62−1/c56/c31/c74/c1c/c2b/c69
+/c2e/c41/c59/c68/c3e/c41/c4c/c2a
+/c6f/c50/c36(e)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 1−60−50−40−30−20−10
+x/c55/c2b/c4b/c56σ11/c55/c3a/c53/c1c/c56
+(f)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 1−1−0.500.511.5
+x/c55/c2b/c4b/c56σ21/c55/c3a/c53/c1c/c56
+(g)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 1−2.5−2−1.5−1
+x/c55/c2b/c4b/c56σ31/c55/c3a/c53/c1c/c56 (h)
+Figure 3: Solid-solid Riemann problem (cont.)
+©British Crown Owned Copyright 2023 /AWE 20100 200 400 800 1 ,600 3 ,2000.0010.01
+NL1(ρ)
+O(h) = 1
+/c2e/c41/c59/c68/c3e/c41/c4c/c2a
+/c6f/c50/c36(a)
+100 200 400 800 1 ,600 3 ,2000.0010.01
+NL1(u) (b)
+100 200 400 800 1 ,600 3 ,2000.00010.0010.01
+NL1(v)
+(c)
+100 200 400 800 1 ,600 3 ,2000.00010.0010.01
+NL1(w) (d)
+Figure 4: Solid-solid Riemann problem, L1-norms versus exact solution.
+©British Crown Owned Copyright 2023 /AWE 214.2. Solid-ﬂuid Riemann problem
+The second test is a solid-ﬂuid Riemann problem, again taken from [8], featuring highly stressed moving aluminium
+in contact with quiescent air. This test is used to verify that the volume-of-ﬂuid method can correctly treat an interface
+between two materials with radically di erent properties. The initial left and right states are as follows:
+uL
+2
+0
+0:1
+km s1;Fe;L
+1 0 0
+0:01 0:95 0:02
+0:015 0 0 :9
+;ELEref;L
+uR0km s1;Ve;RI;  R103g cm3;pR104GPa
+The aluminium is assumed to be purely elastic and is governed by the equation of state from [13] with parameters
+given in Table 1. The air is governed by an ideal gas equation of state with 1:4. The problem is run to time 0 :6s
+with CFL number 0.1.
+Results are shown in Figure 5. The exact solution has been computed for the case with vacuum instead of air, but
+this makes little di erence to the solution within the metal which is shown. The air supports a right-going shock not
+present in the vacuum which can be seen in the normal velocity ﬁeld.
+4.3. Shell collapse
+The shell collapse problem has been studied by many authors, an early contributor being Verney [54], and is a demand-
+ing test of energy conservation and symmetry preservation. This can be seen in solutions obtained using alternative
+Eulerian sharp interface treatments such as the ghost-ﬂuid method, where high resolution is typically required to ob-
+tain a reasonable solution [6, 32]. In contrast our method exhibits smaller conservation errors and is able to provide
+excellent results even on extremely coarse meshes.
+A cylindrical aluminium shell is modelled with initial inner radius of 0 :8 cm and initial outer radius 1 :0 cm; the
+domain size is r0;1:1s2cm. An initial velocity distribution is applied that causes the shell to collapse incompressibly.
+Plastic distortional e ects convert kinetic energy to internal energy, and eventually the shell stops. Howell and Ball
+present formulae for the stopping radii [20]. In this case we have a ﬁnal inner radius of 0 :3 cm and a ﬁnal outer
+radius of approximately 0 :671 cm. The initial radial velocity is given by 0 :8u0{rwhere u00:437 km s1. The
+equation of state parameters for the aluminium are given in Table 1, and ideal plasticity is used with constant yield
+stressY0:2976 GPa. The remainder of the domain is ﬁlled with air governed by an ideal gas equation of state
+with1:4 and01:225103g cm3. The problem is run to time 30 s with CFL number 0.6. Figure 6 shows
+snapshots of velocity magnitude within the shell, and the location of the interface, at t0, 10, 20 and 30 s.
+The ﬁnal inner and outer radii are shown as a function of angle in Figure 7a and 7b respectively for a range of
+mesh sizes. In all cases it can be seen that the radial error is limited to less than 2%, even on a very coarse mesh with
+only 64 cells in each coordinate direction. In contrast, both Barton et al. [6] and Lopez Ortega et al. [32] report errors
+in the region of 35% for similarly sized meshes using ghost-ﬂuid methods. At higher (but still moderate) resolutions,
+the deviations from radial symmetry are reduced.
+Conservation histories for total mass and total energy as shown in Figure 7c and 7d respectively for the same range
+of mesh sizes. Although the volume-of-ﬂuid method is not fully conservative, it can be seen that the error in total
+mass for this problem is less than a ﬁfth of a percent, and the error for total energy is limited to less than ﬁve percent.
+4.4. Cylinder impact
+Cylinder impacts provide a strenuous test of elasto-plastic ﬂow and are included here to validate the rate-sensitive
+plasticity treatment. A cylinder strikes a rigid anvil (here modelled using a perfectly reﬂecting boundary) and deforms
+plastically, ﬂowing radially outwards until all kinetic energy has been converted to internal energy and the cylinder
+stops, with a reduced length. Wilkins and Guinan provide experimental data in [58], and we also compare against
+results given by Barton [5] using the underlying di use-interface method.
+The initial length of the cylinder is L02:347 cm and the radius is 0 :381 cm. We predict the ﬁnal length Lf
+for a range of impact velocities in 2D axisymmetric geometry, using a domain of 1 :252:5 cm and a mesh size of
+5121024. The cylinder is aluminium 6061-T6 with parameters given in Table 1. The Johnson-Cook rate-sensitive
+©British Crown Owned Copyright 2023 /AWE 220 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 10123
+x/c55/c2b/c4b/c56ρ/c55/c3b /c2b/c4b−3/c56
+/c31/c74/c1c/c2b/c69
+/c2e/c41/c59/c68/c3e/c41/c4c/c2a
+/c6f/c50/c36(a)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 100.511.522.5
+x/c55/c2b/c4b/c56u/c55/c46/c4b /c62−1/c56 (b)
+0 0 .1 0 .2 0 .3 0 .4 0 .5 0 .6 0 .7 0 .8 0 .9 1−12−10−8−6−4−20
+x/c55/c2b/c4b/c56σ11/c55/c3a/c53/c1c/c56
+(c)
+Figure 5: Solid-ﬂuid Riemann problem.
+(a)
+ (b)
+ (c)
+ (d)
+Figure 6: The collapsing shell problem: magnitude of velocity within the shell measured in km s1(velocity of surrounding air not shown) and
+0:5 contour at intervals of 10 s from t0s tot30s.
+©British Crown Owned Copyright 2023 /AWE 230 0 .2 0 .4 0 .6 0 .8 1 1 .2 1 .4 1 .60.29400.29600.29800.3000
+θ/c41/c4d/c4d/c32/c60 /c60/c1c/c2f/c42/c6d/c62 /c55/c2b/c4b/c56 /c1b/c4d/c1c/c48/c76/c69/c42/c2b
+/c6f/c50/c36 64×64
+/c6f/c50/c36 128×128
+/c6f/c50/c36 256×256
+/c6f/c50/c36 512×512(a)
+0 0 .2 0 .4 0 .6 0 .8 1 1 .2 1 .4 1 .60.66600.66800.67000.67200.67400.6760
+θ/c50/c6d/c69/c32/c60 /c60/c1c/c2f/c42/c6d/c62 /c55/c2b/c4b/c56/c1b/c4d/c1c/c48/c76/c69/c42/c2b
+/c6f/c50/c36 64×64
+/c6f/c50/c36 128×128
+/c6f/c50/c36 256×256
+/c6f/c50/c36 512×512 (b)
+0 5 10 15 20 25 3005·10−20.10.15
+t(µs)/c2a/c3f/c1c/c4d/c3b/c32 /c42/c4d /c69/c51/c69/c1c/c48 /c4b/c1c/c62/c62 /c55/c57/c56/c6f/c50/c36 64×64
+/c6f/c50/c36 128×128
+/c6f/c50/c36 256×256
+/c6f/c50/c36 512×512
+(c)
+0 5 10 15 20 25 30−4−3−2−10
+t(µs)/c2a/c3f/c1c/c4d/c3b/c32 /c42/c4d /c69/c51/c69/c1c/c48 /c32/c4d/c32/c60/c3b/c76 /c55/c57/c56/c6f/c50/c36 64×64
+/c6f/c50/c36 128×128
+/c6f/c50/c36 256×256
+/c6f/c50/c36 512×512(d)
+Figure 7: Final radii and energy conservation for the aluminium shell collapse problem at a range of mesh sizes. (a) shows the predicted inner
+radius as a function of the angle Pr0;
+2s, (b) shows the predicted outer radius, (c) shows percentage conservation of total mass and (d) shows
+percentage conservation of total energy. The dashed lines show the analytic radii computed using the formulae from Howell and Ball [20]. The
+volume-of-ﬂuid method produces excellent results even at the coarsest mesh resolution, in stark contrast to previously published ghost-ﬂuid method
+results. Radial symmetry is well preserved and improves as the mesh is reﬁned, and conservation errors are low.
+©British Crown Owned Copyright 2023 /AWE 24Material c1 c2 c3 n0 m T 0pKqTmeltpKq
+Aluminium 6061-T6 0.324 0.114 0.002 0.45 105- - -
+Copper 0.09 0.292 0.025 0.31 1051.09 288.15 1356
+Table 2: Parameters for the Johnson-Cook rate-sensitive plasticity model.
+(a)
+ (b)
+ (c)
+ (d)
+Figure 8: The cylinder impact problem with an impact velocity of 373 m s1: equivalent plastic strain is shown along with the 0:5 contour at
+intervals of 10 s from t0s tot30s.
+plasticity model is used, including work-hardening e ects, with parameters given in Table 2. Thermal softening is
+disabled here by setting TmeltÑ 8 . The cylinder is immersed in quiescent air governed by an ideal gas equation
+of state with 1:4 and01:225103g cm3. All materials are initialised to a pressure of 1 atm and a CFL
+number of 0.6 is used. The time evolution of the cylinder /air interface and the equivalent plastic strain is shown for
+the 373 m s1case in Figure 8.
+The ﬁnal ratios Lf{L0for each impact velocity are compared in Figure 9. The volume-of-ﬂuid method matches
+experiment very well, correctly predicting the non-linear trend.
+4.5. Buried explosive
+The buried explosive problem previously studied in [5] is useful to contrast the behaviour of the volume-of-ﬂuid
+method against the di use-interface method for problems involving large deformations and interface breakup. A
+charge buried in soft clay detonates resulting in ejecta and crater formation.
+For 2D axisymmetric simulations the domain is r0;2sr 2;4sm. For full 3D simulations, one quadrant is
+modelled, and the domain is r0;2sr 2;2sr 0;2sm. The initial location of the clay /air interface is y0. The
+material parameters for the clay are given in Table 1. Rather than using a ﬁxed Gr ¨uneisen parameter, a power-law
+form is used
+  0
+0
+q
+(104)
+©British Crown Owned Copyright 2023 /AWE 25191 283 3730.7080.7940.891
+/c41/c4b/c54/c1c/c2b/c69 /c70/c32/c48/c51/c2b/c42/c69/c76 /c55/c4b /c62−1/c56Lf/L0
+/c31/c74/c54/c58 /c55/c71/c42/c48/c46/c42/c4d/c62 /c1c/c4d/c2f /c3a/c6d/c42/c4d/c1c/c4d/c2d /c52/c4e/c64/c6a/c56
+/c2e/c41/c59/c68/c3e/c41/c4c/c2a /c55/c22/c1c/c60/c69/c51/c4d/c2d /c6b/c79/c52/c4e/c56
+/c6f/c50/c36Figure 9: Results for the cylinder impact test case. The ratio of the ﬁnal length of the cylinder to its initial length, both from experiment and
+predicted using the DI +THINC and VOF methods.
+with q1. The air is modelled using an ideal gas equation of state with 1:4 and01:225103g cm3.
+The clay and air are given an initial pressure of 1 atm. The explosive products are initialised in the cylinder centred at
+p0;13:081;0qcm with radius 8 :763 cm and height 5 :842 cm. The phenomenological balloon model is used to model
+the explosive products, sharing the equation of state with the air [28]. The initial product density is 1 :63 g cm3, and
+the initial speciﬁc internal energy is 6 :0568 kJ g1. Gravitational and atmospheric e ects are not important over the
+short timescales considered and so are not included.
+Results for the 2D axisymmetric case are shown in Figure 10. Snapshots of pressure and a numerical Schlieren
+of density are shown at t0:3, 1, 1:8 and 3 ms for the volume-of-ﬂuid method and the underlying di use-interface
+method with THINC interface sharpening. The function used to deﬁne the Schlieren plots is from [43]
+exp
+|r|
+max
+i jk|ri jk|
+
+where we take 8000. At the earlier times, excellent agreement is seen between the two methods in terms of cavity
+dimensions and ground shock propagation. At the later times, the crater dimensions agree well and the volume-of-
+ﬂuid method shows its strengths by resolving ﬁne-scale turbulent structures resulting from the break up of the lofted
+clay, which are suppressed in the di use-interface solution. A zoomed in density Schlieren at the ﬁnal time is shown in
+Figure 11a that highlights these details. Closer examination of the log-scale volume-fraction ﬁeld in Figure 11b shows
+that the interface does not fully break when using the di use-interface method, instead unphysical thin ligaments with
+low but non-zero volume fraction develop.
+Results from the 3D simulations are shown in Figure 12 including the contours of the clay /air interface and the
+pressure in the ground. Our ﬁndings are analogous to the 2D axisymmetric case, with good agreement between the
+two methods on cavity and crater dimensions, as well as ground shock propagation. The 3D volume-of-ﬂuid method
+exhibits the same advantages as in 2D, showing excellent ﬁdelity in the break-up of the lofted clay.
+5. Application: modelling the BRL 105mm shaped charge
+In this section we apply the method to modelling the BRL 105 mm unconﬁned shaped charge as detailed in [2].
+Shaped charges use convergent detonation waves in a high-explosive to produce a hyper-velocity metal jet with many
+©British Crown Owned Copyright 2023 /AWE 26(a)
+ (b)
+ (c)
+ (d)
+(e)
+ (f)
+ (g)
+ (h)
+Figure 10: Comparison between DI +THINC and VOF for the 2D axisymmetric buried explosive problem. The mesh size is 800 2400. Panels
+(a), (b), (c) and (d) show t0:3, 1:0, 1:8 and 3 ms respectively, and similarly for panels (e)–(h). In each panel the left half of the image shows
+DI+THINC and the right half shows the corresponding VOF solution. The ﬁrst row shows a numerical Schlieren of density and the second shows
+pressure measured in GPa. The yellow lines denote the 0:5 contour. While the two methods agree well on ground shock and crater dimensions,
+it is clear that the DI +THINC method has suppressed the growth of turbulent instabilities in the wake of lofted ejecta, which are much more
+pronounced in the VOF solution.
+©British Crown Owned Copyright 2023 /AWE 27(a)
+ (b)
+Figure 11: Close-up of t3 ms for the 2D axisymmetric buried explosion problem. (a) shows the numerical Schlieren of density, showing how
+the VOF method captures ﬁne-scale turbulent ﬂow in the wake of the lofted ejecta. (b) compares the log-scale clay ejecta volume fraction ﬁelds
+between DI +THINC and VOF. Unphysical ligament formation can be clearly observed in the DI +THINC solution, the interface never truly breaks.
+This is absent in the VOF solution.
+Comp-B 0(g cm3) A(GPa) B(GPa) R1 R2  0CV(kJ K1g1)
+Reactants 1 :717 7:7811045:031 11:3 1:13 0:8938 2 :487103
+Products 1 :717 5:2421027:678 4:2 1:1 0:34 103
+Table 3: JWL equation of state parameters for Comp-B, taken from [39].
+industrial and defence applications. They are also stringent tests of elasto-plastic hydrodynamics methods as they
+typically include multiple materials arranged in a complex conﬁguration and subject to extreme deformation. This
+particular shaped charge has been modelled by other authors [57, 3], allowing us to draw useful comparisons. Note
+that it is not our intention to ﬁne tune the model to match experiment, only to show that the volume-of-ﬂuid method is
+capable of treating this extremely strenuous scenario and producing reasonable results. It is noted that the underlying
+diuse-interface method with THINC interface sharpening does not work well for this problem as the thin jet becomes
+smeared over a large area.
+The 2D axisymmetric domain is r0;6sr 6;40scm, with the origin chosen to be coincident with the inner liner
+apex. The geometry of the shaped charge is given in [2], but unfortunately not all pertinent details are speciﬁed. For
+simplicity we omit the tetryl booster pellet and detonator from our model and ignore the rounded apex of the liner.
+Our modiﬁed geometry is shown in Figure 13.
+The liner is copper with parameters given in Table 1. The Johnson-Cook rate-sensitive plasticity model is used,
+including both work-hardening and thermal-softening e ects, with parameters given in Table 2. The high-explosive
+(Comp-B) is treated using the reactive burn model from [55], summarised in Section 2.4. The reactants and products
+both obey the JWL equation of state, with parameters given in Table 3. The explosive is assumed to have no strength
+hence G0. The parameters for the ignition and growth model are a0:01,b0:222, c0:222, d0:666,
+e0:0,g0:0,x4:0,y2:0,z0:0,Fig0:3,FG11:0,FG21:0,I4:4102p10sq1,
+G14:14101GPayp10sq1andG20:0 GPazp10sq1, taken from [39]. The heat of detonation associated
+with the Comp-B is 6 :3 kJ g1. The shaped charge is immersed in air governed by an ideal gas equation of state with
+1:4 and01:225103g cm3.
+All materials are initialised to a pressure of 1 atm, except for a hemispherical booster region centred at the back of
+the explosive with radius 1 :439 cm and pressure 27 GPa, used to initiate the detonation. Twenty ﬁve Lagrangian tracer
+particles are initially located along the inner surface of the liner, evenly spaced along the z-axis at intervals of 0 :25 cm
+starting from z3:0 cm. The time history of the velocity is measured for each tracer particle.
+Figure 14a–14d shows the high-explosive burn and subsequent collapse of the liner that occurs during the ﬁrst
+©British Crown Owned Copyright 2023 /AWE 28(a)
+ (b)
+(c)
+ (d)
+Figure 12: Comparison between DI +THINC and VOF for the 3D buried explosive problem. The mesh size is 240 480240. (a)–(d) show
+t0:3, 1:0, 1:4 and 1:8 ms respectively. In each image the left half shows DI +THINC and the right half shows the corresponding VOF solution.
+The yellow contour shows the clay /air interface and the colouring indicates pressure. As in 2D the two methods agree well on ground shock and
+crater dimensions, but VOF o ers much improved ﬁdelity for the lofted ejecta.
+©British Crown Owned Copyright 2023 /AWE 29/c2a/c51/c4b/c54/c40/c22 /c2a/c51/c54/c54/c32/c60α= 21◦6.0 in
+3.4 in 3.25 in
+0.106 inFigure 13: The BRL 105mm unconﬁned shaped charge, simpliﬁed from the diagram given in [2].
+eighteen microseconds. The detonation wave is initiated by the high pressure booster region. Just after t3s the
+wave strikes the apex of the liner and pressure begins to build up in that region. At t12s the jet is beginning
+to form as the liner turns in and is rapidly accelerated. By t18s the high-explosive is fully burnt and the high
+pressure stagnant region can be clearly seen. Figure 14e and 14f show the late-time jet formation at t45 and
+60s respectively. The jet reaches a stable speed and begins to thin out due to the velocity gradient along its length.
+The jet also has a blunt tip, which is in good agreement with the Arbitrary Lagrangian-Eulerian results presented by
+Barlow et al. [3], and as they note matches what is typically seen in experiment. Close inspection of the density ﬁeld
+reveals fragments of copper breaking o the tip.
+Figure 15a shows the time history of the velocity of each Lagrangian tracer particle over the course of the simu-
+lation. The inner apex of the liner is accelerated close to the detonation velocity of the Comp-B (7 :98 mms1). By
+the end of the simulation the particle velocities have stabilised. Figure 15b shows the slice corresponding to t60s
+as a function of the initial z-coordinate of each tracer particle. The experimental results from [2] are overlaid. The
+jet velocity is particularly sensitive to the parameters used in the reactive burn model which have not been tuned, but
+nevertheless a fairly good match is obtained.
+6. Conclusions
+We have presented a novel Godunov-type volume-of-ﬂuid method for the simulation of large deformation multi-
+material problems featuring elasto-plastic solids and ﬂuids. The method can be viewed as an interface-sharpening
+extension to the di use-interface method of Barton [5]. The method is practical, robust and extensible, and has been
+shown capable of treating a range of challenging problems with excellent ﬁdelity.
+References
+[1] G. Allaire, S. Clerc, and S. Kokh. A ﬁve-equation model for the simulation of interfaces between compressible ﬂuids. Journal of Computa-
+tional Physics , 181(2):577–616, 2002.
+[2] F.E. Allison and R. Vitali. An application of the jet-formation theory to a 105mm shaped charge. Technical Report AD0277458, Army
+Ballistic Research Lab, Aberdeen Proving Ground, MD, 1962.
+[3] A.J. Barlow, R.N. Hill, and M.J. Shashkov. Constrained optimization framework for interface-aware sub-scale dynamics closure model for
+multimaterial cells in lagrangian and arbitrary lagrangian–eulerian hydrodynamics. Journal of Computational Physics , 276:92–135, 2014.
+[4] A.J. Barlow, P.H. Maire, W.J. Rider, R.N. Rieben, and M.J. Shashkov. Arbitrary lagrangian–eulerian methods for modeling high-speed
+compressible multimaterial ﬂows. Journal of Computational Physics , 322:603–665, 2016.
+[5] P.T. Barton. An interface-capturing godunov method for the simulation of compressible solid-ﬂuid problems. Journal of Computational
+Physics , 390:25–50, 2019.
+©British Crown Owned Copyright 2023 /AWE 30(a)
+ (b)
+(c)
+ (d)
+(e)
+(f)
+Figure 14: Time evolution of the shaped charge problem. (a)–(d) shows the HE burn and the liner collapse during the ﬁrst eighteen microseconds.
+In each panel, the top half shows pressure measured in GPa and the bottom half shows density measured in g cm3. (e) and (f) show the late-time
+jet formation at t45 and 60s. The top half of each panel shows the axial speed measured in mm s1and the bottom half shows the density.
+The yellow line denotes the 0:5 contour.
+©British Crown Owned Copyright 2023 /AWE 310 10 20 30 40 50 6002468
+t(µs)/c47/c1c/c3b/c60/c1c/c4d/c3b/c42/c1c/c4d /c70/c32/c48/c51/c2b/c42/c69/c76 (mm µs−1)(a)
+3 4 5 6 7 8 912345678
+/c41/c4d/c42/c69/c42/c1c/c48 /c69/c60/c1c/c2b/c32/c60 z/c2b/c51/c51/c60/c2f/c42/c4d/c1c/c69/c32 (cm)/c43/c32/c69 /c70/c32/c48/c51/c2b/c42/c69/c76 (mm µs−1)
+/c31/c74/c54/c58 /c55/c1b/c48/c48/c42/c62/c51/c4d /c1c/c4d/c2f /c6f/c42/c69/c1c/c48/c42/c2d /c52/c4e/c65/c6b/c56
+/c6f/c50/c36 (b)
+Figure 15: (a) shows the time history of the velocity of each Lagrangian tracer particle, initially distributed along the inner liner. (b) shows the
+stabilised jet velocity at t60s as a function of the initial position of each Lagrangian particle, alongside the tabulated experimental results
+from [2], where the error bars correspond to a 5% uncertainty.
+[6] P.T. Barton, R. Deiterding, D. Meiron, and D. Pullin. Eulerian adaptive ﬁnite-di erence method for high-velocity impact and penetration
+problems. Journal of Computational Physics , 240:76–99, 2013.
+[7] P.T. Barton, D. Drikakis, and E.I. Romenskii. An eulerian ﬁnite-volume scheme for large elastoplastic deformations in solids. International
+Journal for Numerical Methods in Engineering , 81(4):453–484, 2010.
+[8] P.T. Barton, D. Drikakis, E.I. Romenskii, and V .A. Titarev. Exact and approximate solutions of riemann problems in non-linear elasticity.
+Journal of Computational Physics , 228(18):7046–7068, 2009.
+[9] P.T. Barton, B. Obadia, and D. Drikakis. A conservative level-set based method for compressible solid /ﬂuid problems on ﬁxed grids. Journal
+of Computational Physics , 230(21):7867–7890, 2011.
+[10] D.J. Benson. Computational methods in lagrangian and eulerian hydrocodes. Computer Methods in Applied Mechanics and Engineering ,
+99(2):235–394, 1992.
+[11] D.J. Benson. V olume of ﬂuid interface reconstruction methods for multi-material problems. Applied Mechanics Reviews , 55(2):151–165, 04
+2002.
+[12] M. Cutforth, P.T. Barton, and N. Nikiforakis. A volume-of-ﬂuid reconstruction based interface sharpening algorithm for a reduced equation
+model of two-material compressible ﬂow. Computers &Fluids , 231:105158, 2021.
+[13] V .N. Dorovskii, A.M. Iskol’Dskii, and E.I. Romenskii. Dynamics of impulsive metal heating by a current and electrical explosion of conduc-
+tors. Journal of Applied Mechanics and Technical Physics , 24(4):454–467, 1983.
+[14] W. Zhang et al. AMReX: A Framework for Block-Structured Adaptive Mesh Reﬁnement. Journal of Open Source Software , 4(37):1370,
+2019.
+[15] N. Favrie and S.L. Gavrilyuk. Di use interface model for compressible ﬂuid – compressible elastic–plastic solid interaction. Journal of
+Computational Physics , 231(7):2695–2723, 2012.
+[16] N. Favrie, S.L. Gavrilyuk, and R. Saurel. Solid–ﬂuid di use interface model in cases of extreme deformations. Journal of Computational
+Physics , 228(16):6037–6077, 2009.
+[17] R.P. Fedkiw, T. Aslam, B. Merriman, and S. Osher. A non-oscillatory eulerian approach to interfaces in multimaterial ﬂows (the ghost ﬂuid
+method). Journal of Computational Physics , 152(2):457–492, 1999.
+[18] D.J. Hill, D. Pullin, M. Ortiz, and D. Meiron. An eulerian hybrid weno centered-di erence solver for elastic–plastic solids. Journal of
+Computational Physics , 229(24):9053–9072, 2010.
+[19] C.W. Hirt and B.D. Nichols. V olume of ﬂuid (vof) method for the dynamics of free boundaries. Journal of Computational Physics , 39(1):201–
+225, 1981.
+[20] B.P. Howell and G.J. Ball. A free-lagrange augmented godunov method for the simulation of elastic–plastic solids. Journal of Computational
+Physics , 175(1):128–167, 2002.
+[21] C.S. Jog. The explicit determination of the logarithm of a tensor and its derivatives. Journal of Elasticity , 93:141–148, 2008.
+[22] E. Johnsen and T. Colonius. Implementation of weno schemes in compressible multicomponent ﬂow problems. Journal of Computational
+Physics , 219(2):715–732, 2006.
+[23] G.R. Johnson and W.H. Cook. Fracture characteristics of three metals subjected to various strains, strain rates, temperatures and pressures.
+Engineering Fracture Mechanics , 21(1):31–48, 1985.
+[24] M. Klima, A.J. Barlow, M. Kucharik, and M.J. Shashkov. An interface-aware sub-scale dynamics multi-material cell model for solids with
+void closure and opening at all speeds. Computers &Fluids , 208:104578, 2020.
+[25] S. Kokh and F. Lagouti `ere. An anti-di usive numerical scheme for the simulation of interfaces between compressible ﬂuids by means of a
+©British Crown Owned Copyright 2023 /AWE 32ﬁve-equation model. Journal of Computational Physics , 229(8):2773–2809, 2010.
+[26] M. Kucharik, R.V . Garimella, S.P. Schoﬁeld, and M.J. Shashkov. A comparative study of interface reconstruction methods for multi-material
+ale simulations. Journal of Computational Physics , 229(7):2432–2452, 2010.
+[27] J.W. Kury, H.C. Hornig, E.L. Lee, J.L. McDonnel, D.L. Ornellas, M. Finger, F.M. Strange, and M.L. Wilkins. Metal acceleration by chemical
+explosives. In Fourth Symposium on Detonation , pages 3–13, 1965.
+[28] M. Larcher and F. Casadei. Explosions in complex geometries—a comparison of several approaches. International journal of protective
+structures , 1(2):169–195, 2010.
+[29] E.L. Lee, H.C. Hornig, and J.W. Kury. Adiabatic expansion of high explosive detonation products. Technical Report UCRL-50422, University
+of California Radiation Laboratory, 1968.
+[30] E.L. Lee and C.M. Tarver. Phenomenological model of shock initiation in heterogeneous explosives. The Physics of Fluids , 23(12):2362–
+2372, 1980.
+[31] I.N. Lomov, R. Pember, J. Greenough, and B. Liu. Patch-based adaptive mesh reﬁnement for multimaterial hydrodynamics. In Joint Russian-
+American Five-Laboratory Conference on Computational Mathematics /Physics , 6 2005.
+[32] A. L ´opez Ortega, M. Lombardini, D.I. Pullin, and D.I. Meiron. Numerical simulation of elastic–plastic solid mechanics using an eulerian
+stretch tensor approach and hlld riemann solver. Journal of Computational Physics , 257:414–441, 2014.
+[33] V . Maltsev, M. Skote, and P. Tsoutsanis. High-order methods for di use-interface models in compressible multi-medium ﬂows: A review.
+Physics of Fluids , 34(2):021301, 2022.
+[34] R. Meniko . Jwl equation of state. Technical Report LA-UR-15-29536, Los Alamos National Laboratory, 2015.
+[35] L. Michael and N. Nikiforakis. A multi-physics methodology for the simulation of reactive ﬂow and elastoplastic structural response. Journal
+of Computational Physics , 367:1–27, 2018.
+[36] G.H. Miller and P. Colella. A high-order eulerian godunov method for elastic–plastic ﬂow in solids. Journal of Computational Physics ,
+167(1):131–176, 2001.
+[37] G.H. Miller and P. Colella. A conservative three-dimensional eulerian method for coupled solid–ﬂuid shock capturing. Journal of Computa-
+tional Physics , 183(1):26–82, 2002.
+[38] G.H. Miller and E.G. Puckett. A high-order godunov method for multiple condensed phases. Journal of Computational Physics , 128(1):134–
+164, 1996.
+[39] M.J. Murphy, E.L. Lee, A.M. Weston, and A.E. Williams. Modeling shock initiation in composition b. In Tenth symposium on detonation,
+Boston, MA , 1993.
+[40] S. Osher and J.A. Sethian. Fronts propagating with curvature-dependent speed: Algorithms based on hamilton-jacobi formulations. Journal
+of Computational Physics , 79(1):12–49, 1988.
+[41] J.E. Pilliod and E.G. Puckett. Second-order accurate volume-of-ﬂuid algorithms for tracking material interfaces. Journal of Computational
+Physics , 199(2):465–502, 2004.
+[42] B.J. Plohr and D.H. Sharp. A conservative eulerian formulation of the equations for elastic ﬂow. Advances in Applied Mathematics , 9(4):481–
+499, 1988.
+[43] J.J. Quirk and S. Karni. On the dynamics of a shock–bubble interaction. Journal of Fluid Mechanics , 318:129–163, 1996.
+[44] R. Saurel and C. Pantano. Di use-interface capturing methods for compressible two-phase ﬂows. Annual Review of Fluid Mechanics ,
+50(1):105–130, 2018.
+[45] S. Schoch, K. Nordin-Bates, and N. Nikiforakis. An eulerian algorithm for coupled simulations of elastoplastic-solids and condensed-phase
+explosives. Journal of Computational Physics , 252:163–194, 2013.
+[46] M.J. Shashkov. Closure models for multimaterial cells in arbitrary lagrangian–eulerian hydrocodes. International Journal for Numerical
+Methods in Fluids , 56(8):1497–1504, 2008.
+[47] M.J. Shashkov and E. Kikinzon. Moments-based interface reconstruction, remap and advection. Journal of Computational Physics ,
+479:111998, 2023.
+[48] R.K. Shukla, C. Pantano, and J.B. Freund. An interface capturing method for the simulation of multi-phase compressible ﬂows. Journal of
+Computational Physics , 229(19):7411–7439, 2010.
+[49] K. Shyue and F. Xiao. An eulerian interface sharpening algorithm for compressible two-phase ﬂow: The algebraic thinc approach. Journal
+of Computational Physics , 268:326–354, 2014.
+[50] K.K. So, X.Y . Hu, and N.A. Adams. Anti-di usion interface sharpening technique for two-phase compressible ﬂow simulations. Journal of
+Computational Physics , 231(11):4304–4323, 2012.
+[51] V .A. Titarev, E.I. Romenskii, and E.F. Toro. Musta-type upwind ﬂuxes for non-linear elasticity. International Journal for Numerical Methods
+in Engineering , 73(7):897–926, 2008.
+[52] B. Van Leer. Towards the ultimate conservative di erence scheme iii. upstream-centered ﬁnite-di erence schemes for ideal compressible
+ﬂow. Journal of Computational Physics , 23(3):263–275, 1977.
+[53] B. Van Leer. Towards the ultimate conservative di erence scheme. iv. a new approach to numerical convection. Journal of Computational
+Physics , 23(3):276–299, 1977.
+[54] D. Verney. Evaluation de la limite ´elastique du cuivre et de l’uranium par des exp ´eriences d’implosion’lente’. In Behaviour of Dense Media
+Under High Dynamic Pressures, Symposium HDP , Paris , 1968.
+[55] T. Wallis, P.T. Barton, and N. Nikiforakis. A di use interface model of reactive-ﬂuids and solid-dynamics. Computers &Structures ,
+254:106578, 2021.
+[56] T. Wallis, P.T. Barton, and N. Nikiforakis. A ﬂux-enriched godunov method for multi-material problems with interface slide and void opening.
+Journal of Computational Physics , 442:110499, 2021.
+[57] W.N. Weseloh. Pagosa sample problem: Unconﬁned shaped charge. Technical Report LA-UR-16-20590, Los Alamos National Laboratory,
+2016.
+[58] M.L. Wilkins and M.W. Guinan. Impact of cylinders on a rigid boundary. Journal of Applied Physics , 44(3):1200–1206, 1973.
+[59] S.D. Wilkinson, P.T. Barton, and N. Nikiforakis. A thermal equilibrium approach to modelling multiple solid–ﬂuid interactions with phase
+©British Crown Owned Copyright 2023 /AWE 33transitions, with application to cavitation. International Journal of Multiphase Flow , 157:104234, 2022.
+[60] F. Xiao, Y . Honma, and T. Kono. A simple algebraic interface capturing scheme using hyperbolic tangent function. International Journal for
+Numerical Methods in Fluids , 48(9):1023–1040, 2005.
+[61] D.L. Youngs. Time-dependent multi-material ﬂow with large ﬂuid distortion. Numerical Methods for Fluid Dynamics , 1982.
+©British Crown Owned Copyright 2023 /AWE 34

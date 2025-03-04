@@ -1,0 +1,2968 @@
+Uncovering Adversarial Risks of Test-Time Adaptation
+Tong WuyFeiran JiazXiangyu QiyJiachen T. Wangy
+Vikash SehwagySaeed MahloujifaryPrateek Mittaly
+yPrinceton University ,zPenn State University
+Abstract
+Recently, test-time adaptation (TTA) has been
+proposed as a promising solution for addressing
+distribution shifts. It allows a base model
+to adapt to an unforeseen distribution during
+inference by leveraging the information from
+the batch of (unlabeled) test data. However,
+we uncover a novel security vulnerability of
+TTA based on the insight that predictions on
+benign samples can be impacted by malicious
+samples in the same batch. To exploit this
+vulnerability, we propose Distribution Invading
+Attack (DIA), which injects a small fraction of
+malicious data into the test batch. DIA causes
+models using TTA to misclassify benign and
+unperturbed test data, providing an entirely new
+capability for adversaries that is infeasible in
+canonical machine learning pipelines. Through
+comprehensive evaluations, we demonstrate the
+high effectiveness of our attack on multiple
+benchmarks across six TTA methods. In response,
+we investigate two countermeasures to robustify
+the existing insecure TTA implementations,
+following the principle of “security by design”.
+Together, we hope our ﬁndings can make the
+community aware of the utility-security tradeoffs
+in deploying TTA and provide valuable insights
+for developing robust TTA approaches.
+1. Introduction
+Test-time adaptation (TTA) (Wang et al., 2021b; Schneider
+et al., 2020; Goyal et al., 2022) is a cutting-edge machine
+learning (ML) approach that addresses the problem of
+distribution shifts in test data (Hendrycks & Dietterich,
+2019). Unlike conventional ML methods that rely on a ﬁxed
+base model, TTA generates batch-speciﬁc models to handle
+different test data distributions. Speciﬁcally, when test data
+are processed batch-wise (bat, 2021), TTA ﬁrst leverages
+Correspondence to: Tong Wu <tongwu@princeton.edu >.
+Figure 1. Overview of conventional machine learning and test-
+time adaptation. Test-time adaptation adapts to the test batch,
+but is vulnerable to malicious data at test time (in contrast to
+conventional machine learning).
+them to update the base model and then makes the ﬁnal
+predictions using the updated model. Methodologically,
+TTA differs from the conventional ML ( inductive learning )
+and falls within the transductive learning paradigm
+(Vapnik, 1998). TTA usually outperforms conventional ML
+under distribution shifts since 1) it gains the distribution
+knowledge from the test batch and 2) it can adjust the model
+adaptively. Empirically, TTA has been shown to be effective
+in a range of tasks, including image classiﬁcation (Wang
+et al., 2021b), object detection (Sinha et al., 2023), and
+visual document understanding (Ebrahimi et al., 2022).
+However, in this work, we highlight a potential security
+vulnerability in the test-time adaptation process — an
+adversary can introduce malicious behaviors into the
+model by crafting samples in the test batch . Our
+key insight is that TTA generates the ﬁnal predictive
+model based on the entire test batch rather than making
+independent predictions for each data as in a conventional
+ML pipeline. Therefore, the prediction for one entry in
+a batch will be inﬂuenced by other entries in the same
+batch. As a result, an adversary may submit malicious
+data at test time to interfere with the generation of the ﬁnal
+predictive model, consequently disrupting predictions on
+other unperturbed data submitted by benign users. This
+emphasizes the necessity of considering the utility-security
+tradeoffs associated with deploying TTA.
+Our Contributions. To exploit this vulnerability, we
+present a novel attack called Distribution Invading Attack
+(DIA) , which exploits TTA by introducing malicious data
+(Section 4). Speciﬁcally, DIA crafts (or uploads) a smallarXiv:2301.12576v2  [cs.LG]  4 Feb 2023Uncovering Adversarial Risks of Test-Time Adaptation 2
+number of malicious samples (e.g., 5% of the batch) to the
+test batch, aiming to induce the mispredictions of benign
+samples. We formulate DIA as a bilevel optimization
+problem with outer optimization on crafting malicious data
+and inner optimization on TTA updates. Next, we transform
+it into a single-level optimization via approximating model
+parameters, which can be solved by a projected gradient
+descent mechanism. DIA is a generic framework that can
+achieve multiple adversarial goals, including 1) ﬂipping the
+prediction of a crucial sample to a selected label (targeted
+attack) and 2) degrading performance on all benign data
+(indiscriminate attack).
+We empirically illustrate that DIA achieves a high attack
+success rate (ASR) on various benchmarks, including
+CIFAR-10-C, CIFAR-100-C, and ImageNet-C (Hendrycks
+& Dietterich, 2019) against a range of TTA methods, such
+asTeBN (Nado et al., 2020), TENT (Wang et al., 2021b),
+andHard PL (Lee et al., 2013) in Section 5. Notably, we
+demonstrate that targeted attacks using 5% of malicious
+samples in the test batch can achieve over 92% ASR
+on ImageNet-C. Our evaluation also indicates that DIA
+performs well across multiple model architectures and data
+augmentations. Furthermore, the attack is still effective even
+when there is a requirement for the malicious inputs to be
+camouﬂaged in order to bypass the manual inspection.
+In response, we explore countermeasures to strengthen the
+current TTA methods by incorporating the principle of
+“security by design” (Section 6). Given that adversarially
+trained models (Madry et al., 2018) are more resistant to
+perturbations, we investigate the possibility of defending
+against DIA using them as the base model. In addition, since
+the vulnerabilities of TTA primarily stem from the insecure
+computation of Batch Norm (BN), we explore two methods
+to robustly estimate it. First, we leverage the BN computed
+during training time, which is robust to DIA, as a prior for
+the ﬁnal BN statistics computation. Second, we observe that
+DIA impacts later BN statistics more than other layers and
+develop a method to adjust BN statistics accordingly. Our
+evaluation shows the effectiveness of combining adversarial
+models and robust BN estimation against DIA, providing
+guidance to future works for improving TTA robustness.
+Overall, our work shows that in effort to enhance utility,
+using test-time adaptation (transductive learning paradigm)
+inadvertently ampliﬁes the security risks. Such utility-
+secruity tradeoff has been deeply explored in inductive
+learning (Chakraborty et al., 2018), and we urge the
+community to build upon the prior works in inductive
+learning, by taking these security risks into account when
+enhancing the utility with transductive learning.2. Background and Related Work
+In this section, we introduce test-time adaptation and then
+review the related works in adversarial machine learning.
+More details can be found in A.
+2.1. Notation and Test-Time Adaptation
+LetDs:=f(xs
+i;ys
+i)gNs
+i=1be the training data set from the
+source domain, and Xt:=fxt
+igNt
+i=1be the unlabeled test
+data set from the target domain, where NsandNtdenote
+the number of points in DsandXt, respectively. The goal
+is to learn a prediction rule f(;)parameterized by that
+can correctly predict the label yt
+ifor each xt
+i2Xt. In the
+conventional ML ( inductive learning ) setting, we ﬁnd the
+best model parameters sby training on the source dataset
+Ds. However, in practice, training and test data distribution
+may shift, and a ﬁxed model f(;s)will result in poor
+performance (Hendrycks & Dietterich, 2019). To address
+this issue, test-time adaptation (TTA), under transductive
+learning setting, has been proposed (Wang et al., 2021b).
+Speciﬁcally, TTA ﬁrst obtains a f(;s)learned from the
+source training setDsor downloaded from an online source
+and then adapts to test data Xtduring inference. In this
+case, TTA can characterize the distribution of Xt, thereby
+boosting the performance.
+2.2. Leveraging the Test Batch in TTA
+TTA techniques are typically used when the test data is
+processed batch by batch in an online manner.1LetXt
+B=
+fxt
+igNBt
+i=1Xtbe a subset (i.e., batch ) of test data with size
+NBt, andf(;pre)be the pre-adapted model which is going
+to perform adaption immediately. Initially, we set pre=s.
+At each iteration, a new batch of test data Xt
+Bis available;
+parts of the model parameter are updated accordingly, and
+the ﬁnal predictions are based on the updated model. Here
+we introduce two mainstream techniques:
+Test-time Batch Normalization (TeBN). Batch Norm
+(BN) (Ioffe & Szegedy, 2015) normalizes the input features
+by batch mean and variance, reducing the internal covariate
+shifts in DNN. Nado et al. (2020) replace the normalization
+statisticsf;2gon the training set by the statistics of the
+test batch Xt
+B, denoted as B(Xt
+B) :=f(Xt
+B);2(Xt
+B)g,
+whereBis BN statistics. This can help the model
+generalize better to the unseen and shifted data distribution.
+Self-Learning (SL). SL updates part of model parameters
+Aby the gradient of loss function LTTA. Some methods
+likeTENT (Wang et al., 2021b) minimize the entropy of
+prediction distribution on a batch of test samples, where loss
+isLTTA(Xt
+B). We then denote the remaining parameters as
+F:=sn(A[B), which stay ﬁxed. In other methods
+1We exclude single-sample TTA methods (e.g., Zhang et al.
+(2021a)) which usually perform worse than batched version. In
+addition, they make independent predictions for each test data,
+avoiding the risks we discuss in this paper.Uncovering Adversarial Risks of Test-Time Adaptation 3
+like pseudo-labeling (PL), the loss can be formulated as
+LTTA(Xt
+B;ey), whereey=feyigNBt
+i=1denote the pseudo-
+labels. In the standard PL methods, the pseudo-labels ey
+can be directly predicted by the teacher, known as Hard
+PL(Lee et al., 2013), or by predicting the class probabilities,
+known as Soft PL (Lee et al., 2013). Later, Robust
+PLproposed by Rusak et al. (2022) and Conjugate PL
+developed by Goyal et al. (2022) further improve the pseudo-
+labels with more advanced TTA loss. Notably, all SL
+methods usually achieve the best performance when A
+equals the afﬁne transformations of BN layers (Rusak et al.,
+2022).
+2.3. Related Work
+Previous work on conventional ML risks has focused on
+adversarial attacks, such as evasion attacks (Biggio et al.,
+2013; Goodfellow et al., 2015; Carlini & Wagner, 2017),
+which perturb test data to cause mispredictions by the model
+during inference. However, our attack on TTA differs in
+that the malicious samples we construct can target benign
+and unperturbed data. Another form of ML risk is data
+poisoning (Biggio et al., 2012; Koh & Liang, 2017; Gu
+et al., 2017), which involves injecting malicious data into
+training samples, causing models trained on them to make
+incorrect predictions. Our attack differs in that we only
+assume access to unlabeled test data, making it easier to
+deploy in real-world environments.
+To the best of our knowledge, this is the ﬁrst work to uncover
+the adversarial risks of TTA methods. We discuss more
+related works in Appendix A.5.
+3. Threat Model
+As no previous literature has studied the vulnerabilities
+of TTA, we start by discussing the adversary’s objective,
+capabilities, and knowledge for our attack. We consider
+a scenario in which a victim gets a source model, either
+trained on source data or obtained online, and seeks to
+improve its performance using TTA on a batch of test data.
+Adversary’s Objective. The objective of Distribution
+Invading Attack (DIA) is to interfere with the performance
+of the post-adapted model in one of the following ways: (1)
+targeted attack : misclassifying a crucial targeted sample
+as a speciﬁc label, (2) indiscriminate attack : increasing
+the overall error rate on benign data in the same batch, or (3)
+stealthy targeted attack : achieving targeted attack while
+maintaining accuracy on other benign samples.
+Adversary’s Capabilities and Additional Constraints.
+The attacker can craft and upload a limited number of
+malicious samples to the test batch during inference. Since
+the DIA does not make any perturbations on the targeted
+samples, in our main evaluation, we do not require a
+constraint for malicious data as long as it is a valid image.
+However, bypassing the manual inspection is sometimesworthwhile; the adversary may also construct camouﬂaged
+malicious samples. Concretely, we consider two constraints
+on attack samples: (1) `1attacks (Goodfellow et al., 2015),
+the most common practice in the literature; (2) adversarially
+generated corruptions (e.g., snow) (Kang et al., 2019), which
+simulates the target distribution.
+Adversary’s Knowledge. We consider a white-box setting
+where the DIA adversary knows the pre-adapted model
+parameterspreand has read-only access to benign samples
+in the test batch (e.g., a malicious insider is involved).
+However, the adversary has no access to the training data
+or the training process. Furthermore, our main attacking
+methods (used in most experiments) do not require the
+knowledge of which TTA methods the victim will deploy.
+4. Distribution Invading Attack
+In this section, we ﬁrst identify the detailed vulnerabilities
+(Section 4.1), then formulate Distribution Invading Attack
+as a general bilevel optimization problem (Section 4.2), and
+ﬁnally discuss constructing malicious samples (Section 4.3).
+4.1. Indentiﬁng the Vulnerabilities of TTA
+The risk of TTA stems from its transductive learning
+paradigm, where the predictions on test samples are no
+longer independent of each other. In this section, we
+detail how speciﬁc approaches used in TTA expose security
+vulnerabilities.
+Re-estimating Batch Normalization Statistics. Most
+existing TTA methods (Nado et al., 2020; Wang et al.,
+2021b; Rusak et al., 2022) adopt test-time Batch
+Normalization ( TeBN ) as a fundamental approach for
+mitigating distribution shifts when the source model is
+CNN with BN layers. We denote the input of lth BN
+layer by zl, and test-time BN statistics for each BN layer
+can be computed by f E[zl];2 E[( zl)2]g
+through the forward path in turn, where the expectation (i.e.,
+average) Eis applied channel-wise on the input. When
+calculating BN statistics Bover a batch of test data, any
+perturbations to some samples in the batch can affect the
+statistics;2layer by layer and potentially alter the
+outputs (i.e., zout
+l:= (zl )=) of the other samples in
+the batch. Hence, adversaries can leverage this property to
+design Distribution Invading Attacks.
+Parameters Update. To further adapt the model to a target
+distribution, existing methods often update part of model
+parameters Aby minimizing unsupervised objectives
+deﬁned on test samples (Wang et al., 2021b; Rusak et al.,
+2022; Goyal et al., 2022). The updated parameter can
+be computed by: 
+A= arg minALTTA(Xt
+B;A)Hence,
+malicious samples inside Xt
+Bmay perturb the model
+parameters
+A, leading to incorrect predictions later.Uncovering Adversarial Risks of Test-Time Adaptation 4
+4.2. Formulating DIA as a Bilevel Optimization
+Problem
+We formulate the DIA as an optimization problem to exploit
+both vulnerabilities mentioned above. Intuitively, we want
+to craft some malicious samples Xt
+mal:=fxt
+mal;igNm
+i=1to
+achieve an attack objective (e.g., misclassifying a targeted
+sample). Then, the test batch Xt
+Bcomprises Xt
+maland other
+benign samples Xt
+Bnmal. The pre-adapted model parameter
+preis composed of parameters Athat will update, BN
+statisticsB, and other ﬁxed parameters F(i.e.,pre:=
+A[B[F). Here, we use L(f(;(Xt
+B)))to denote
+the general adversarial loss, and the problem for the attacker
+can be formulated as the following bilevel optimization:
+min
+Xt
+malL(f(;(Xt
+B))) (1)
+s:t:Xt
+B=Xt
+mal[Xt
+Bnmal;0
+B=f(Xt
+B);2(Xt
+B)g;
+
+A= arg min
+ALTTA(Xt
+B;A;0
+B;F);
+(Xt
+B) =
+A[0
+B[F;(2)
+where0
+Bis the updated BN statistics given the test batch
+data,
+Ais the parameter that is optimized over TTA
+loss, and(Xt
+B)is the optimized model parameters
+containing
+A,0
+B, and other ﬁxed parameters F. In
+most cases, test-time adaptation methods perform a single-
+step gradient descent update (Wang et al., 2021b), and
+the inner optimization for TTA simpliﬁes to 
+A=0
+A=
+A @LTTA(Xt
+B)=@A. Now, we discuss how we design
+the speciﬁc adversarial loss L(f(;(Xt
+B)))for achieving
+various objectives.
+Targeted Attack. We aim to cause the model to predict a
+speciﬁc incorrect targeted label _ytgtfor a targeted sample
+xt
+tgt2Xt
+Bnmal. Thus, the objective can be formulated as:
+bXt
+mal:= arg min
+Xt
+malL(f(xt
+tgt;(Xt
+B));_ytgt) (3)
+whereLis the cross-entropy loss.
+Indiscriminate Attack. The objective turns to degrade the
+performance of all benign samples as much as possible.
+Given the correct labels of benign samples yt
+Bnmal, we
+deﬁne the goal of indiscriminate attack as follows:
+bXt
+mal:= arg min
+Xt
+mal L(f(Xt
+Bnmal;(Xt
+B));yt
+Bnmal):(4)
+Stealthy Targeted Attack. In some cases, when
+performing targeted attack , the performance of the other
+benign samples Xt
+Bn(tgt[mal), which is the whole test batch
+excluding malicious and targeted data, may drop. A solution
+is conducting targeted attacks and maintaining the accuracy
+of other benign data simultaneously, which is:
+bXt
+mal:= arg min
+Xt
+malL(f(xt
+tgt;(Xt
+B));_ytgt)+
+!L(f(Xt
+Bn(tgt[mal );(Xt
+B));yt
+Bn(tgt[mal )):(5)Algorithm 1 for constructing Distribution Invading Attack
+1:Input: Pre-adapted model parameters pre=A[
+B[F, test batch (Xt
+B;yt
+B)which contains malicious
+samples Xt
+maland benign samples Xt
+Bnmal, targeted
+samples xt
+tgtand incorrect targeted label _ytgt, attack
+learning rates , constraint, number of steps N, TTA
+update rate: , perturbation m=0
+2:Output: Perturbed malicious input Xt
+mal+m
+3:forstep= 1;2;:::;N do:
+4:Xt
+B (Xt
+mal+m)[Xt
+Bnmal
+5:0
+B f(Xt
+B);2(Xt
+B)g
+6: (Optional)0
+A A @LTTA(Xt
+B)=@A
+#0
+AAinthesingle -level version.
+7: 0
+A[0
+B[F
+8: m (m sign(rmL(f(;(Xt
+B)))))
+#Lischosen from Eq.(3),Eq.(4),orEq.(5)
+9:end for
+10:returnbXt
+mal=Xt
+mal+m
+We introduce a new weight term !to capture the trade-off
+between these two objectives.
+4.3. Constructing Malicious Inputs via Projected
+Gradient Descent
+We solve the bilevel optimization problems deﬁned in
+the last section via iterative projected gradient descent ,
+summarized in Algorithm 1. Our solution generalizes across
+the three adversary’s objectives, where L(f(;(Xt
+B)))
+can be replaced by Eq. (3), Eq. (4), or Eq. (5). We follow
+the general projected gradient descent method but involve
+TTA methods. Concretely, Line 4 updates the test batch, and
+Line 5 computes the test-time BN. Then, Line 6 and Line
+7 perform parameter updates. In Line 8, we compute the
+gradient toward the objective (three attacks we discussed
+previously) and update the perturbation mwithlearning
+rate. Since, in most cases, we do not consider a constraint
+for the malicious images, the projection is to ensure the
+images are valid in the [0,1] range. For `1constrained
+DIA attacks, we will also leverage the to clip mwith
+constraint(e.g.,= 8=255). Finally, we get the optimal
+malicious output samples bXt
+mal=Xt
+mal+m.
+Implementation. While Algorithm 1 is intuitive, the
+gradient computation can be inconsistent and incur a
+high computational cost due to the bilevel optimization.
+Furthermore, we notice that TTA methods only perform
+a short and one-step update on Aparameters at each
+iteration (Line 6). Therefore, we approximate 0
+A
+Ain most experiments, which makes the inner TTA
+gradient update (Line 6) optional.2Since the re-estimated
+2Line 6 is necessary for models without BN layers.Uncovering Adversarial Risks of Test-Time Adaptation 5
+0
+Bdoes not involve any inner gradient computation, we
+then decipher the problem as a single-level optimization.
+Our empirical evaluation indicates the effectiveness of
+our method, reaching comparable or even higher results
+(presented in Appendix C.2). An additional beneﬁt of our
+method is we no longer need to know which TTA methods
+the victim will choose. We also provide some theoretical
+analysis in Appendix B.1
+5. Evaluation of Distribution Invading
+Attacks
+In this section, we report the results of Distribution Invading
+Attacks. We present the experimental setup in Section 5.1,
+discuss the main results for targeted attacks in Section 5.2,
+present the results for indiscriminate and stealthy targeted
+attacks in Section 5.3, and consider extra constraints in
+Section 5.4. Further results are presented in Appendix D.
+5.1. Experimental Setup
+Dataset & Architectures. We evaluate our attacks on
+the common distribution shift benchmarks: CIFAR-10 to
+CIFAR-10-C, CIFAR-100 to CIFAR-100-C, and ImageNet
+to ImageNet-C (Hendrycks & Dietterich, 2019) with
+medium severity (level 3). We primarily use ResNet-26 (He
+et al., 2016) for CIFAR-C3, and ResNet-50 for ImageNet-C.
+Test-time Adaptation Methods. We select six TTA
+methods, which are TeBN (Nado et al., 2020),
+TENT (Wang et al., 2021b), Hard PL (Lee et al.,
+2013), Soft PL (Lee et al., 2013), Robust PL (Rusak
+et al., 2022), and Conjugate PL (Goyal et al., 2022). We
+follow the settings of their experiments, where the batch
+size is 200, and all other hyperparameters are also default
+values. As a result, all TTA methods signiﬁcantly boost
+thecorruption accuracy (i.e., the accuracy on benign
+corrupted test data like ImageNet-C), which is shown in
+Appendix C.3.
+Attack Settings (Targeted Attack). We consider each test
+batch as an individual attacking trial where we randomly
+pick one targeted sample with a targeted label.4The attacker
+can inject a small set of malicious data inside this batch
+without restrictions as long as their pixel values are valid.
+In total, there are 750 trials for CIFAR-C and 375 trials for
+ImageNet-C. We estimate our attack effectiveness by attack
+success rate (ASR) averaged across all trials. Note that
+except TeBN , for each trial, TTA methods use the current
+batch to update A, and send it to the next trial. Hence, pre
+is different for different trials. Further experimental setup
+details are in Appendix D.1.
+3CIFAR-C denotes both CIFAR-10-C and CIFAR-100-C.
+4Unless otherwise speciﬁed, most experiments in this paper are
+conducted using targeted attack.
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+CIFAR-10-C
+CIFAR-100-C
+ImageNet-CFigure 2. Success rate of our proposed attack across numbers of
+malicious samples from 1 to 128 (0.5% to 64%). [TTA: TeBN ]
+5.2. Main Results of Targeted Attack
+Distribution Invading Attack achieves a high attack
+success rate (ASR) across benchmarks and TTA
+methods (Table 1). We selectNm=f10;20;40gof
+malicious samples out of 200 data in a batch for CIFAR-
+C andNm=f5;10;20gfor ImageNet-C. By constructing
+40 malicious samples on CIFAR-10-C and CIFAR-100-C,
+our proposed attack can shift the predictions of the victim
+sample to a random targeted label in more than 82.93% trials.
+For ImageNet-C, just 10 malicious samples are sufﬁcient
+to attack all TTA methods with an attack success rate of
+more than 92.80%. The ASR of TeBN are higher than
+other TTA methods since the attacks here only exploited
+the vulnerabilities from re-estimating batch normalization
+statistics. We demonstrate that further parameter updates
+of other TTA methods cannot greatly alleviate the attack
+effectiveness. For example, the drop of ASR is less than
+6.7% for ImageNet-C with 10 malicious samples.
+DIA reaches near-100% ASR, with 64, 32, and 16
+malicious samples for CIFAR-10-C, CIFAR-100-C, and
+ImageNet-C, respectively (Figure 2). We then evaluate
+our attack with more comprehensive experiments across
+the number of malicious samples. Speciﬁcally, 1 to 128
+malicious samples are considered, which is 0.5% to 64%
+of batch size. TeBN is selected as the illustrated TTA
+method (Appendix D.2 presents more methods). Generally,
+the attack success rate increases when the attacker can
+control more samples. For CIFAR-10-C, we observe that
+the attacker has to manipulate 64 (32% of the batch size)
+samples to ensure victim data will be predicted as a targeted
+label with a near-100% chance. Although 32% seems to
+be a relatively strong assumption compared to conventional
+poisoning attacks, it is worth noting that DIA only requires
+perturbing test data which might not be actively monitored.
+DIA also works across model architectures and data
+augmentations (Table 2). Instead of ResNet-26, we also
+consider two more common architectures: VGG (Simonyan
+& Zisserman, 2015) with 19 layers (VGG-19), and Wide
+ResNet (Zagoruyko & Komodakis, 2016) with a depth of
+28 and a width of 10 (WRN-28) on CIFAR-C dataset.
+Our proposed attack is also effective across different
+architectures, despite the attack success rates suffering
+some degradations ( <20%) for VGG-19. We hypothesize
+that the model with more batch normalization layers is
+more likely to be exploited by attackers, where ResNet-26,Uncovering Adversarial Risks of Test-Time Adaptation 6
+Table 1. Attack success rate of Distribution Invading Attack (targeted attacks) across benchmarks and TTA methods. Nmrefers to the
+number of malicious data, where the batch size is 200.
+Dataset Nm TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+CIFAR-10-C
+(ResNet26)10 (5%) 25.87 23.20 25.33 23.20 24.80 23.60
+20 (10%) 55.47 45.73 48.13 47.47 49.47 45.73
+40 (20%) 92.80 83.87 84.27 82.93 86.93 85.47
+CIFAR-100-C
+(ResNet26)10 (5%) 46.80 26.40 31.20 27.60 32.13 26.13
+20 (10%) 93.73 72.80 87.33 78.53 82.93 71.60
+40 (20%) 100.00 100.00 99.87 100.00 99.87 100.00
+ImageNet-C
+(ResNet50)5 (2.5%) 80.80 75.73 69.87 62.67 66.40 57.87
+10 (5%) 99.47 98.67 96.53 94.13 96.00 92.80
+20 (10%) 100.00 100.00 100.00 100.00 100.00 100.00
+Table 2. Effectiveness of the Distribution Invading Attack across
+various model architectures and data augmentations. [CIAFR-C:
+Nm=40; ImageNet-C: Nm=10]. Table 6 presents full results.
+Dataset Architectures TeBN(%) TENT(%) Hard PL(%)
+CIFAR-10-CResNet-26 92.80 83.87 84.27
+VGG-19 79.07 65.33 67.47
+WRN-28 93.73 89.60 90.80
+CIFAR-100-CResNet-26 100.00 100.00 99.87
+VGG-19 88.00 82.93 86.53
+WRN-28 97.47 83.60 87.07
+Dataset Augmentations TeBN(%) TENT(%) Hard PL(%)
+ImageNet-CStandard 99.47 98.67 96.53
+AugMix 98.40 96.00 93.60
+DeepAugment 96.00 94.67 91.20
+VGG-19, and WRN-28 contain 28, 16, and 25 BN layers,
+respectively. We further reﬁne the statement through more
+experiments in Appendix D.3. In addition, we also select
+two more data augmentation methods, AugMix (Hendrycks
+et al., 2020) and DeepAugment (Hendrycks et al., 2021),
+on top of ResNet-50, which is known to improve the
+model generalization on the corrupted dataset. Strong data
+augmentation techniques provide mild mitigations against
+our attacks (with 10 malicious samples) but still mistakenly
+predict the targeted data in more than 91% of trials.
+5.3. Alternating Attacking Objective
+Our previous DIA evaluations focus on targeted attacks.
+However, as we discussed in Section 4.2, malicious actors
+can also leverage our attacking framework to achieve
+alternative goals by slightly modifying the loss function.
+5.3.1. I NDISCRIMINATE ATTACK
+The ﬁrst alternative objective is to degrade the performance
+on all benign samples, which is done by leveraging Eq. (4).
+Here, we adopt the corruption error rate on the benign
+corrupted dataset as the attack evaluation metric.
+By injecting a small set of malicious samples, the error
+rate grows (Table 3). Besides attack effectiveness, we
+report the error rate for 0 malicious samples (which stands
+for no attacks) as the standard baseline. Our attack causes
+the error rate on benign samples to rise from 11% to
+28% and from34% to56% for the CIFAR-10-C andTable 3. Average benign corruption error rate of TTA when
+deploying DIA indiscriminate attack. Table 7 presents full results.
+Dataset Nm TeBN(%) TENT(%) Hard PL(%)
+CIFAR-10-C
+(ResNet-26)0 (0%) 10.73 10.47 11.05
+40 (20%) 28.02 27.01 27.91
+CIFAR-100-C
+(ResNet-26)0 (0%) 34.52 33.31 34.66
+40 (20%) 58.41 54.44 56.59
+ImageNet-C
+(ResNet-50)0 (0%) 47.79 45.45 43.42
+20 (10%) 79.03 75.01 70.26
+0.0 0.1 0.2
+Weight 
+020406080100Attack Success Rate
+ResNet-26
+VGG-19
+WRN-28
+0.0 0.1 0.2
+Weight 
+0246810Corruption Accuracy DegradationResNet-26
+VGG-19
+WRN-28
+Figure 3. Adjusting the weight !achieves a high attack
+success rate (line) and a high benign corruption accuracy (bar).
+[Benchmark: CIFAR-10-C, Nm=40, TTA method: TeBN ]
+CIFAR-100-C benchmarks, respectively. Furthermore, only
+20 malicious samples (10%) for ImageNet-C boost the error
+rate to more than 70%. Since all benign samples remain
+unperturbed, the increasing error rate demonstrates the extra
+risks of TTA methods compared to the conventional ML.
+5.3.2. S TEALTHY TARGETED ATTACK
+In Table 1,40 samples are needed for the CIFAR-C
+dataset to achieve a high attacking performance. Thus, the
+malicious effect might also affect the predictions for other
+benign samples, resulting in losing attacking stealth. We
+adopt Eq. (5) to simultaneously achieve targeted attacks and
+maintain corruption accuracy. Here, we use the corruption
+accuracy degradation on benign samples to measure the
+stealthiness.
+When!= 0:1, stealthy DIA can both achieve a high
+attack success rate and maintain corruption accuracy
+(Figure 3). We select CIFAR-10-C with 40 malicious data
+andTeBN method, where !=f0;0:1;0:2g. We observe
+that if!= 0:1, the corruption accuracy degradation drops
+to2%. At the same time, the ASR remains more than
+75%. Appendix D.5 has more results on CIFAR-100-C.Uncovering Adversarial Risks of Test-Time Adaptation 7
+(a) (b) (c) (d)
+Figure 4. (a) Test data from ImageNet-C with Gaussian noise. (b)
+L1constrained DIA on test data ( =8=255). (c) A clean data from
+the ImageNet validation set. (d) Snow attack on the clean data.
+2/255 8/255 32/255 128/255
+Epsilon020406080100Attack Success Rate
+TeBN
+TENT
+HardPL
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+TeBN
+TENT
+HardPL
+Figure 5. Illustration of the attack success rate across various 
+ofL1constraints [ Nm= 5] (left) and the different number of
+malicious samples (right) [ = 8=255]. [Targeted Attack]
+5.4. Additional Constraints on Malicious Images
+We further consider the stealth of malicious samples to
+avoid suspicion. The model may reject test samples that are
+anomalous and refuse to adapt based on them.
+5.4.1.`pBOUND
+Like much other literature in the adversarial machine
+learning community, we adopt the `pconstraints as
+imperceptible metrics to perturb the malicious samples.
+Speciﬁcally, we conduct targeted attack experiments on the
+ImageNet-C by varying the `1bound of 5 malicious data
+samples. Figure 5 reports the attacking effectiveness trends
+in terms of various `1constraints, where DIA with =
+32=255reach similar performance with unconstrained
+attacks . Furthermore, we speciﬁcally select the =8=255
+to run extra experiments on the number of malicious
+samples, as the resulting images are almost imperceptible to
+the original images (showed in Figure 4(b) and Figure 26).
+As a result, DIA achieves near-100% attack success rate,
+with 32 (=8=255) malicious samples for ImageNet-C.
+5.4.2. S IMULATED CORRUPTIONS
+Since our out-of-distribution benchmark is composed of
+common corruptions, another idea is to leverage such
+intrinsic properties and generate “imperceptible” adversarial
+samples adaptively. For example, we can apply the
+adversarially optimized snow distortions to the clean images
+and insert them into the test data in snow distribution. Then,
+these injected malicious images (shown in Figure 4(d)) are
+hard to be distinguished from benign corrupted data. For
+implementation, we again compute the gradient of the loss
+function in Eq. (3) and adopt the same approach as Kang
+et al. (2019).
+Adversarially optimized simulated corruption is
+another effective and input-stealthy DIA vector (Table
+4).We apply the Snow attack to the ImageNet-C withTable 4. Average attack success rate of adversarially optimized
+snow corruptions and fog corruptions. [ Nm=20; Targeted Attack]
+Dataset Corruption/Attack TeBN(%) TENT(%) Hard PL(%)
+ImageNet-C
+(ResNet50)Snow/Snow Attack 64.00 68.00 68.00
+Fog/Fog Attack 84.00 76.00 72.00
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+Standard
+Salman
+Engstrom
+Source TeBN
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+Figure 6. (Left) Attack success rate of DIA against robust models,
+including Salman et al. (2020) and Engstrom et al. (2019), across
+numbers of malicious samples. As a reference, 128 is 64% of the
+whole batch containing 200 samples. (Right) Corruption accuracy
+of robust models. [TTA method: TeBN ]
+snow corruptions, similar to Fog. By inserting 20 malicious
+samples, the attack success rate reaches at least 60%
+and 72% for Snow and Fog, respectively. Our ﬁndings
+show attackers can leverage test distribution knowledge to
+develop a better threat model. More details are presented in
+Appendix D.6.
+6. Mitigating Distribution Invading Attacks
+Next, we turn our attention to developing mitigation
+methods. Our goal is two folds: maintaining the beneﬁts of
+TTA methods and mitigating Distribution Invading Attacks.
+Note that we present additional results, including all CIFAR-
+C experiments, in Appendix E.
+6.1. Leveraging Robust Model to Mitigate DIA
+Our ﬁrst idea is to replace the source model with a robust
+model (i.e., adversarially trained models (Madry et al.,
+2018)). Our intuition is that creating adversarial examples
+during training causes shifts in the batch norm statistics.
+(Adversarially) training with such samples will robustify the
+model to be resistant to BN perturbations. We evaluate the
+targeted DIA against robust ResNet-50 trained by Salman
+et al. (2020) and Engstrom et al. (2019), which are the best
+ResNet-50 models from RobustBench (Croce et al., 2020).
+Since our single-level attacks only exploit the vulnerabilities
+of re-estimating the BN statistics, evaluating defenses on
+TTA with updating parameters could give a false sense of
+robustness. Therefore, most countermeasure experiments
+mainly focus on the TeBN method.
+Adversarially trained models boost robustness against
+DIA and maintain the corruption accuracy (Figure 6).
+We report the ASR curve of two robust models and observe
+that they signiﬁcantly mitigate the vulnerabilities from the
+test batch. For example, with 8 malicious samples, robust
+models degrade ASR by 80% for ImageNet-C. At theUncovering Adversarial Risks of Test-Time Adaptation 8
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Attack Success Rate
+Standard
+Salman
+Engstrom
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+Figure 7. Controlling= 0.6 can degrade the attack success rate
+(line) while maintaining high corruption accuracy (bar). [ Nm=20]
+same time, the TeBN method signiﬁcantly improves the
+corruption accuracy of robust models, reaching even higher
+results. However, DIA still achieves more than 70% success
+rate with 32 malicious samples (16% of the whole batch).
+6.2. Robust Estimate of Batch Normalization Statistics
+We then seek to mitigate the vulnerabilities by robustifying
+the re-estimation of Batch Norm statistics.
+Smoothing via training-time BN statistics. Since training-
+time BN cannot be perturbed by DIA, we can combine the
+training-time and test-time BN statistics. This approach
+is also mentioned in (Schneider et al., 2020; You et al.,
+2021); however, their motivation is to stabilize the BN
+estimation when batch size is small (e.g., <32) and improve
+the corruption accuracy. It can be formulated as =
+s+ (1 )t;2=2
+s+ (1 )2
+t;where ( ;2)
+stand for ﬁnal BN statistics, ( s;2
+s) are training-time BN,
+and (t;2
+t) are test-time BN. We view the training-time
+BN statistics as a robust prior for ﬁnal estimation and adopt
+smoothing factor to balance the weight.
+Leveraging Training-time Batch Norm statistics
+mitigates the vulnerabilities for both standard and
+adversarial models (Figure 7). We speciﬁcally select
+Nm= 20 and set =f0:0;0:2;0:4;0:6;0:8;1:0g, where
+= 0:0ignores the test-time BN and = 1:0ignores
+training-time BN. It appears that improving generally
+results in both ASR and corruption accuracy drops on
+ImageNet-C. However, the degradation in corruption
+accuracy happens only when  >0:6. Therefore, setting
+= 0:6is a suitable choice, which can mitigate the ASR to
+20% for 20 malicious samples with robust models.
+Adptively Selecting Layer-wise BN statistics. We also
+explore and understand the DIA by visualizing each layer
+BN in Appendix E.4. Given the discovery where BN
+statistics shift on the latter layers when applying DIA, we
+can strategically select training or test time BN statistics for
+different layers. Hence, we take advantage of training-time
+BN for the last few layers to constrain the malicious effects.
+Adaptive Layer-wise BN further constrains the
+malicious effect from DIA (Figure 8). Given= 0.6 is a
+suitable choice for whole BN layers, we further leverage
+full training-time BN ( = 1.0) for the last Ntr=f0, 1, 2, 4,
+0 1 2 4 8 16 32
+Training-time BN Layer020406080100Attack Success Rate
+Standard
+Salman
+Engstrom
+0 1 2 4 816 32
+Training-time BN Layer020406080100Corruption AccuracyStandard
+Salman
+EngstromFigure 8. Balancing layer-wise BN can degrade the ASR (line)
+while maintaining high corruption accuracy (bar). [ Nm=20,=0.6]
+8, 16gBN layers. It appears that increasing training-time
+BN layers (from Ntr= 0 toNtr= 16) results in tiny
+corruption accuracy drops ( 2%) and generally helps the
+robustness against DIA. For example, if we set Ntr= 8,
+ASR drops40% for the standard model with Nm= 20.
+In conclusion, applying both approaches, our best results
+achieve a negligible corruption accuracy degradation and
+mitigate ASR by 50% for the standard model and
+40% for the robust model on ImageNet-C. However,
+our mitigations have not fully resolved the issue, where
+increasing the number of malicious data samples may
+still allow successful DIA attacks with a high probability.
+We encourage future researchers to consider the potential
+adversarial risks when developing TTA techniques.
+7. Discussion and Future Work
+While our proposed attacks are promising in terms of
+effectiveness, several limitations exist. Many recent works
+in test-time adaptation have been proposed, which leverage
+different adaptation techniques (e.g., (Niu et al., 2022)).
+Most of them still suffer from the two vulnerabilities
+we identiﬁed in Section 4 and can be attacked by DIA
+directly (see Appendix D.10). However, an adaptive attack
+design should be considered if the TTA techniques change
+signiﬁcantly (e.g., methods neither using test-time BN nor
+self-learning). Furthermore, methods under the general
+transductive learning settings (i.e., predictions affected by
+test batch) also involve similar risks, which we encourage
+the community to explore in future studies.
+Another direction is relaxing the adversary’s knowledge
+assumption. In our white-box threat model, we assume
+the adversary has the full knowledge of the test batch,
+including targeted and benign samples. However, obtaining
+this information in real-world scenarios might be difﬁcult
+(e.g., some users keep the uploaded images secret (Deng
+et al., 2021)). One potential method to relax this assumption
+is to utilize outsourced information (e.g., online images) to
+replace the benign images and optimize the expected loss
+like EOT (Athalye et al., 2017). Furthermore, when model
+architectures and parameters are not exposed to adversaries
+(black-box threat model), launching DIA attacks could
+become more challenging. Future works should consider
+methods using model ensemble (Geiping et al., 2020) orUncovering Adversarial Risks of Test-Time Adaptation 9
+diverse inputs (Xie et al., 2018) to boost the transferability
+of DIA’s malicious data.
+8. Conclusion
+In this work, we investigate adversarial risks of test-time
+adaptation (TTA). First, we present a novel framework
+called Distribution Invading Attack, which can be used
+to achieve new malicious goals. Signiﬁcantly, we prove
+that manipulating a small set of test samples can affect the
+predictions of other benign inputs if adopting TTA, which
+is not studied at all in previous literature. We then explore
+mitigation strategies, such as utilizing an adversarially-
+trained model as a source model and robustly estimating BN
+statistics. Overall, our ﬁndings uncover the risks of TTA
+and inspire future works build robust and effective TTA
+techniques.
+9. Acknowledgements
+We are grateful to Ahmed Khaled, Chong Xiang, Ashwinee
+Panda, Tinghao Xie, William Yang, Beining Han, Liang
+Tong, and Prof. Olga Russakovsky for providing generous
+help and insightful feedback on our project. This work
+was supported in part by the National Science Foundation
+under grant CNS-2131859, the ARL’s Army Artiﬁcial
+Intelligence Innovation Institute (A2I2), Schmidt DataX
+award, Princeton E-fﬁliates Award, and Princeton Gordon
+Y . S. Wu Fellowship.
+References
+Online versus batch prediction. https://cloud.
+google.com/ai-platform/prediction/
+docs/online-vs-batch-prediction , 2021.
+Athalye, A., Engstrom, L., Ilyas, A., and Kwok,
+K. Synthesizing robust adversarial examples. In
+International Conference on Machine Learning , 2017.
+Bartler, A., B ¨uhler, A., Wiewel, F., D ¨obler, M., and
+Yang, B. Mt3: Meta test-time training for self-
+supervised test-time adaption. In Camps-Valls, G.,
+Ruiz, F. J. R., and Valera, I. (eds.), Proceedings of The
+25th International Conference on Artiﬁcial Intelligence
+and Statistics , volume 151 of Proceedings of Machine
+Learning Research , pp. 3080–3090. PMLR, 28–30 Mar
+2022. URL https://proceedings.mlr.press/
+v151/bartler22a.html .
+Biggio, B., Nelson, B., and Laskov, P. Poisoning
+attacks against support vector machines. arXiv preprint
+arXiv:1206.6389 , 2012.
+Biggio, B., Corona, I., Maiorca, D., Nelson, B., Srndic, N.,
+Laskov, P., Giacinto, G., and Roli, F. Evasion attacksagainst machine learning at test time. In ECML/PKDD ,
+2013.
+Carlini, N. Poisoning the unlabeled dataset of semi-
+supervised learning. ArXiv , abs/2105.01622, 2021.
+Carlini, N. and Terzis, A. Poisoning and backdooring
+contrastive learning. ArXiv , abs/2106.09667, 2021.
+Carlini, N. and Wagner, D. A. Towards evaluating the
+robustness of neural networks. 2017 IEEE Symposium on
+Security and Privacy (SP) , pp. 39–57, 2017.
+Chakraborty, A., Alam, M., Dey, V ., Chattopadhyay, A., and
+Mukhopadhyay, D. Adversarial attacks and defences: A
+survey. ArXiv , abs/1810.00069, 2018.
+Chen, J., Wu, X., Guo, Y ., Liang, Y ., and Jha, S. Towards
+evaluating the robustness of neural networks learned
+by transduction. CoRR , abs/2110.14735, 2021. URL
+https://arxiv.org/abs/2110.14735 .
+Chen, J., Cheng, Y ., Gan, Z., Gu, Q., and Liu, J. Efﬁcient
+robust training via backward smoothing. In AAAI
+Conference on Artiﬁcial Intelligence , 2022.
+Croce, F., Andriushchenko, M., Sehwag, V ., Debenedetti,
+E., Flammarion, N., Chiang, M., Mittal, P., and Hein,
+M. Robustbench: a standardized adversarial robustness
+benchmark. arXiv preprint arXiv:2010.09670 , 2020.
+Croce, F., Gowal, S., Brunner, T., Shelhamer, E., Hein, M.,
+and Cemgil, A. T. Evaluating the adversarial robustness
+of adaptive test-time defenses. ArXiv , abs/2202.13711,
+2022.
+Dai, S., Mahloujifar, S., and Mittal, P. Parameterizing
+activation functions for adversarial robustness. 2022
+IEEE Security and Privacy Workshops (SPW) , pp. 80–
+87, 2022.
+Damodaran, B. B., Kellenberger, B., Flamary, R., Tuia,
+D., and Courty, N. Deepjdot: Deep joint distribution
+optimal transport for unsupervised domain adaptation. In
+Proceedings of the European Conference on Computer
+Vision (ECCV) , pp. 447–463, 2018.
+Deng, S., Garg, S., Jha, S., Mahloujifar, S., Mahmoody, M.,
+and Guha Thakurta, A. A separation result between data-
+oblivious and data-aware poisoning attacks. Advances
+in Neural Information Processing Systems , 34:10862–
+10875, 2021.
+Di, J. Z., Douglas, J., Acharya, J., Kamath, G., and
+Sekhari, A. Hidden poison: Machine unlearning enables
+camouﬂaged poisoning attacks. ArXiv , abs/2212.10717,
+2022.Uncovering Adversarial Risks of Test-Time Adaptation 10
+D¨obler, M., Marsden, R. A., and Yang, B. Robust mean
+teacher for continual and gradual test-time adaptation.
+ArXiv , abs/2211.13081, 2022.
+Ebrahimi, S., Arik, S. O., and Pﬁster, T. Test-time adaptation
+for visual document understanding, 2022. URL https:
+//arxiv.org/abs/2206.07240 .
+Engstrom, L., Ilyas, A., Salman, H., Santurkar, S.,
+and Tsipras, D. Robustness (python library),
+2019. URL https://github.com/MadryLab/
+robustness .
+Fournier, A., Fussell, D. S., and Carpenter, L. C. Computer
+rendering of stochastic models. Commun. ACM , 25:371–
+384, 1982.
+Galstyan, A. G. and Cohen, P. R. Empirical comparison
+of ”hard” and ”soft” label propagation for relational
+classiﬁcation. In ILP, 2007.
+Gandelsman, Y ., Sun, Y ., Chen, X., and Efros, A. A.
+Test-time training with masked autoencoders. ArXiv ,
+abs/2209.07522, 2022.
+Ganin, Y ., Ustinova, E., Ajakan, H., Germain, P., Larochelle,
+H., Laviolette, F., Marchand, M., and Lempitsky, V .
+Domain-adversarial training of neural networks. The
+journal of machine learning research , 17(1):2096–2030,
+2016.
+Gao, J., Zhang, J., Liu, X., Darrell, T., Shelhamer, E., and
+Wang, D. Back to the source: Diffusion-driven test-time
+adaptation. arXiv preprint arXiv:2207.03442 , 2022a.
+Gao, Y ., Shi, X., Zhu, Y ., Wang, H., Tang, Z., Zhou, X., Li,
+M., and Metaxas, D. N. Visual prompt tuning for test-time
+domain adaptation. ArXiv , abs/2210.04831, 2022b.
+Geiping, J., Fowl, L., Huang, W. R., Czaja, W., Taylor,
+G., Moeller, M., and Goldstein, T. Witches’ brew:
+Industrial scale data poisoning via gradient matching.
+ArXiv , abs/2009.02276, 2020.
+Geiping, J., Fowl, L., Somepalli, G., Goldblum, M., Moeller,
+M., and Goldstein, T. What doesn’t kill you makes
+you robust (er): Adversarial training against poisons and
+backdoors. arXiv preprint arXiv:2102.13624 , 2021.
+Goldwasser, S., Kalai, A. T., Kalai, Y ., and Montasser,
+O. Beyond perturbations: Learning guarantees with
+arbitrary adversarial test examples. Advances in Neural
+Information Processing Systems , 33:15859–15870, 2020.
+Gong, T., Jeong, J., Kim, T., Kim, Y ., Shin, J., and
+Lee, S.-J. NOTE: Robust continual test-time adaptation
+against temporal correlation. In Oh, A. H., Agarwal, A.,
+Belgrave, D., and Cho, K. (eds.), Advances in NeuralInformation Processing Systems , 2022. URL https:
+//openreview.net/forum?id=E9HNxrCFZPV .
+Goodfellow, I. J., Shlens, J., and Szegedy, C. Explaining and
+harnessing adversarial examples. CoRR , abs/1412.6572,
+2015.
+Gowal, S., Rebufﬁ, S.-A., Wiles, O., Stimberg, F., Calian,
+D. A., and Mann, T. Improving robustness using
+generated data. In Neural Information Processing
+Systems , 2021.
+Goyal, S., Sun, M., Raghunathan, A., and Kolter, Z. Test-
+time adaptation via conjugate pseudo-labels. ArXiv ,
+abs/2207.09640, 2022.
+Gu, T., Dolan-Gavitt, B., and Garg, S. Badnets: Identifying
+vulnerabilities in the machine learning model supply
+chain. Arxiv , 2017.
+He, K., Zhang, X., Ren, S., and Sun, J. Deep residual
+learning for image recognition. 2016 IEEE Conference
+on Computer Vision and Pattern Recognition (CVPR) , pp.
+770–778, 2016.
+Hendrycks, D. and Dietterich, T. G. Benchmarking
+neural network robustness to common corruptions and
+perturbations. ArXiv , abs/1903.12261, 2019.
+Hendrycks, D., Mu, N., Cubuk, E. D., Zoph, B., Gilmer,
+J., and Lakshminarayanan, B. Augmix: A simple data
+processing method to improve robustness and uncertainty.
+ArXiv , abs/1912.02781, 2020.
+Hendrycks, D., Basart, S., Mu, N., Kadavath, S., Wang, F.,
+Dorundo, E., Desai, R., Zhu, T. L., Parajuli, S., Guo, M.,
+Song, D. X., Steinhardt, J., and Gilmer, J. The many faces
+of robustness: A critical analysis of out-of-distribution
+generalization. 2021 IEEE/CVF International Conference
+on Computer Vision (ICCV) , pp. 8320–8329, 2021.
+Hu, X., Uzunbas, M. G., Chen, S., Wang, R., Shah,
+A., Nevatia, R., and Lim, S.-N. Mixnorm: Test-
+time adaptation through online normalization estimation.
+ArXiv , abs/2110.11478, 2021.
+Huang, H., Gu, X., Wang, H., Xiao, C., Liu, H., and
+Wang, Y . Extrapolative continuous-time bayesian neural
+network for fast training-free test-time adaptation. In Oh,
+A. H., Agarwal, A., Belgrave, D., and Cho, K. (eds.),
+Advances in Neural Information Processing Systems ,
+2022. URL https://openreview.net/forum?
+id=wiHzQWwg3l .
+Ioffe, S. and Szegedy, C. Batch normalization: Accelerating
+deep network training by reducing internal covariate shift.
+InInternational conference on machine learning , pp. 448–
+456. PMLR, 2015.Uncovering Adversarial Risks of Test-Time Adaptation 11
+Iwasawa, Y . and Matsuo, Y . Test-time classiﬁer adjustment
+module for model-agnostic domain generalization. In
+Neural Information Processing Systems , 2021.
+Jia, X., Zhang, Y ., Wu, B., Ma, K., Wang, J., and Cao, X.
+Las-at: Adversarial training with learnable attack strategy.
+2022 IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR) , pp. 13388–13398, 2022.
+Kang, D., Sun, Y ., Hendrycks, D., Brown, T. B., and
+Steinhardt, J. Testing robustness against unforeseen
+adversaries. ArXiv , abs/1908.08016, 2019.
+Kantorovich, L. V . On the translocation of masses. In Dokl.
+Akad. Nauk. USSR (NS) , volume 37, pp. 199–201, 1942.
+Koh, P. W. and Liang, P. Understanding black-
+box predictions via inﬂuence functions. ArXiv ,
+abs/1703.04730, 2017.
+Kojima, T., Matsuo, Y ., and Iwasawa, Y . Robustifying
+vision transformer without retraining from scratch by
+test-time class-conditional feature alignment. ArXiv ,
+abs/2206.13951, 2022.
+Kundu, J. N., Venkat, N., RahulM., V ., and Babu,
+R. V . Universal source-free domain adaptation. 2020
+IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pp. 4543–4552, 2020.
+Lee, D.-H. et al. Pseudo-label: The simple and
+efﬁcient semi-supervised learning method for deep neural
+networks. In Workshop on challenges in representation
+learning, ICML , volume 3, pp. 896, 2013.
+Li, R., Jiao, Q., Cao, W., Wong, H.-S., and Wu, S. Model
+adaptation: Unsupervised domain adaptation without
+source data. 2020 IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR) , pp. 9638–9647,
+2020.
+Li, Y ., Wang, N., Shi, J., Liu, J., and Hou, X. Revisiting
+batch normalization for practical domain adaptation.
+arXiv preprint arXiv:1603.04779 , 2016.
+Liang, J., Hu, D., and Feng, J. Do we really need to
+access the source data? Source hypothesis transfer for
+unsupervised domain adaptation. In III, H. D. and
+Singh, A. (eds.), Proceedings of the 37th International
+Conference on Machine Learning , volume 119 of
+Proceedings of Machine Learning Research , pp. 6028–
+6039. PMLR, 13–18 Jul 2020.
+Liu, Y ., Kothari, P., van Delft, B., Bellot-Gurlet, B., Mordan,
+T., and Alahi, A. Ttt++: When does self-supervised
+test-time training fail or thrive? In Neural Information
+Processing Systems , 2021.Long, M., Cao, Z., Wang, J., and Jordan, M. I. Conditional
+adversarial domain adaptation. Advances in neural
+information processing systems , 31, 2018.
+Loshchilov, I. and Hutter, F. Sgdr: Stochastic gradient
+descent with warm restarts. arXiv: Learning , 2016.
+Madry, A., Makelov, A., Schmidt, L., Tsipras, D., and
+Vladu, A. Towards deep learning models resistant to
+adversarial attacks. arXiv preprint arXiv:1706.06083 ,
+2017.
+Madry, A., Makelov, A., Schmidt, L., Tsipras, D., and
+Vladu, A. Towards deep learning models resistant to
+adversarial attacks. ArXiv , abs/1706.06083, 2018.
+Marchant, N. G., Rubinstein, B. I. P., and Alfeld, S. Hard to
+forget: Poisoning attacks on certiﬁed machine unlearning.
+InAAAI Conference on Artiﬁcial Intelligence , 2021.
+Mehra, A., Kailkhura, B., Chen, P.-Y ., and Hamm,
+J. Understanding the limits of unsupervised
+domain adaptation via data poisoning. In
+Ranzato, M., Beygelzimer, A., Dauphin, Y .,
+Liang, P., and Vaughan, J. W. (eds.), Advances
+in Neural Information Processing Systems ,
+volume 34, pp. 17347–17359. Curran Associates,
+Inc., 2021. URL https://proceedings.
+neurips.cc/paper/2021/file/
+90cc440b1b8caa520c562ac4e4bbcb51-Paper.
+pdf.
+Mirza, M. J., Micorek, J., Possegger, H., and Bischof, H.
+The norm must go on: Dynamic unsupervised domain
+adaptation by normalization. 2022 IEEE/CVF Conference
+on Computer Vision and Pattern Recognition (CVPR) , pp.
+14745–14755, 2021.
+Nado, Z., Padhy, S., Sculley, D., D’Amour, A.,
+Lakshminarayanan, B., and Snoek, J. Evaluating
+prediction-time batch normalization for robustness under
+covariate shift. ArXiv , abs/2006.10963, 2020.
+Nelson, B., Barreno, M., Chi, F. J., Joseph, A. D.,
+Rubinstein, B. I. P., Saini, U., Sutton, C., Tygar, J. D., and
+Xia, K. Exploiting machine learning to subvert your spam
+ﬁlter. In USENIX Workshop on Large-Scale Exploits and
+Emergent Threats , 2008.
+Niu, S., Wu, J., Zhang, Y ., Chen, Y ., Zheng, S., Zhao, P.,
+and Tan, M. Efﬁcient test-time model adaptation without
+forgetting. In The Internetional Conference on Machine
+Learning , 2022.
+Pang, T., Lin, M., Yang, X., Zhu, J., and Yan, S. Robustness
+and accuracy could be reconcilable by (proper) deﬁnition.
+InInternational Conference on Machine Learning , 2022.Uncovering Adversarial Risks of Test-Time Adaptation 12
+Rebufﬁ, S.-A., Gowal, S., Calian, D. A., Stimberg, F., Wiles,
+O., and Mann, T. A. Fixing data augmentation to improve
+adversarial robustness. ArXiv , abs/2103.01946, 2021.
+Rusak, E., Schneider, S., Pachitariu, G., Eck, L., Gehler,
+P. V ., Bringmann, O., Brendel, W., and Bethge,
+M. If your data distribution shifts, use self-learning,
+2022. URL https://openreview.net/forum?
+id=1oEvY1a67c1 .
+Saito, K., Watanabe, K., Ushiku, Y ., and Harada, T.
+Maximum classiﬁer discrepancy for unsupervised domain
+adaptation. In Proceedings of the IEEE conference on
+computer vision and pattern recognition , pp. 3723–3732,
+2018.
+Salman, H., Ilyas, A., Engstrom, L., Kapoor, A., and Madry,
+A. Do adversarially robust imagenet models transfer
+better? ArXiv , abs/2007.08489, 2020.
+Schneider, S., Rusak, E., Eck, L., Bringmann, O., Brendel,
+W., and Bethge, M. Improving robustness against
+common corruptions by covariate shift adaptation. ArXiv ,
+abs/2006.16971, 2020.
+Sehwag, V ., Mahloujifar, S., Handina, T., Dai, S., Xiang,
+C., Chiang, M., and Mittal, P. Robust learning meets
+generative models: Can proxy distributions improve
+adversarial robustness? In International Conference on
+Learning Representations , 2022.
+Shafahi, A., Najibi, M., Ghiasi, M. A., Xu, Z., Dickerson,
+J., Studer, C., Davis, L. S., Taylor, G., and Goldstein,
+T. Adversarial training for free! Advances in Neural
+Information Processing Systems , 32, 2019.
+Simonyan, K. and Zisserman, A. Very deep convolutional
+networks for large-scale image recognition. CoRR ,
+abs/1409.1556, 2015.
+Singh, S. and Shrivastava, A. Evalnorm: Estimating batch
+normalization statistics for evaluation. 2019 IEEE/CVF
+International Conference on Computer Vision (ICCV) , pp.
+3632–3640, 2019.
+Sinha, S., Gehler, P., Locatello, F., and Schiele, B. Test: Test-
+time self-training under distribution shift. In Proceedings
+of the IEEE/CVF Winter Conference on Applications of
+Computer Vision (WACV) , pp. 2759–2769, January 2023.
+Sun, Y ., Wang, X., Liu, Z., Miller, J., Efros, A. A., and
+Hardt, M. Test-time training with self-supervision for
+generalization under distribution shifts. In ICML , 2020.
+Tram `er, F., Shokri, R., Joaquin, A. S., Le, H. M.,
+Jagielski, M., Hong, S., and Carlini, N. Truth serum:
+Poisoning machine learning models to reveal their secrets.
+Proceedings of the 2022 ACM SIGSAC Conference on
+Computer and Communications Security , 2022.Vapnik, V . Statistical learning theory . John Wiley & Sons,
+1998.
+V orobeychik, Y . and Kantarcioglu, M. Adversarial Machine
+Learning . Morgan Claypool, 2018.
+Wang, D., Ju, A., Shelhamer, E., Wagner, D. A., and Darrell,
+T. Fighting gradients with gradients: Dynamic defenses
+against adversarial attacks. ArXiv , abs/2105.08714,
+2021a.
+Wang, D., Shelhamer, E., Liu, S., Olshausen, B. A., and
+Darrell, T. Tent: Fully test-time adaptation by entropy
+minimization. In ICLR , 2021b.
+Wang, H., Zhang, A., Zheng, S., Shi, X., Li, M., and Wang,
+Z. Removing batch normalization boosts adversarial
+training. In ICML , 2022a.
+Wang, J.-K. and Wibisono, A. Towards understanding
+gd with hard and conjugate pseudo-labels for test-time
+adaptation. ArXiv , abs/2210.10019, 2022.
+Wang, Q., Fink, O., Van Gool, L., and Dai, D. Continual test-
+time domain adaptation. In Proceedings of Conference
+on Computer Vision and Pattern Recognition , 2022b.
+Wang, X., Jin, Y ., Long, M., Wang, J., and Jordan,
+M. I. Transferable normalization: Towards improving
+transferability of deep neural networks. Advances in
+neural information processing systems , 32, 2019.
+Wong, E., Rice, L., and Kolter, J. Z. Fast is better than
+free: Revisiting adversarial training. In International
+Conference on Learning Representations , 2019.
+Wu, D., Xia, S., and Wang, Y . Adversarial weight
+perturbation helps robust generalization. arXiv: Learning ,
+2020a.
+Wu, J. and He, J. Indirect invisible poisoning attacks
+on domain adaptation. In Proceedings of the 27th
+ACM SIGKDD Conference on Knowledge Discovery
+and Data Mining , KDD ’21, pp. 1852–1862, New
+York, NY , USA, 2021. Association for Computing
+Machinery. ISBN 9781450383325. doi: 10.1145/
+3447548.3467214. URL https://doi.org/10.
+1145/3447548.3467214 .
+Wu, Y .-H., Yuan, C.-H., and Wu, S.-H. Adversarial
+robustness via runtime masking and cleansing. In
+III, H. D. and Singh, A. (eds.), Proceedings
+of the 37th International Conference on Machine
+Learning , volume 119 of Proceedings of Machine
+Learning Research , pp. 10399–10409. PMLR, 13–18
+Jul 2020b. URL https://proceedings.mlr.
+press/v119/wu20f.html .Uncovering Adversarial Risks of Test-Time Adaptation 13
+Xie, C., Zhang, Z., Wang, J., Zhou, Y ., Ren, Z., and Yuille,
+A. L. Improving transferability of adversarial examples
+with input diversity. 2019 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR) , pp.
+2725–2734, 2018.
+Xie, C., Wu, Y ., van der Maaten, L., Yuille, A. L., and He, K.
+Feature denoising for improving adversarial robustness.
+2019 IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR) , pp. 501–509, 2019.
+Xie, C., Tan, M., Gong, B., Wang, J., Yuille, A. L., and Le,
+Q. V . Adversarial examples improve image recognition.
+2020 IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR) , pp. 816–825, 2020.
+You, F., Li, J., and Zhao, Z. Test-time batch statistics
+calibration for covariate shift. ArXiv , abs/2110.04065,
+2021.
+Zagoruyko, S. and Komodakis, N. Wide residual networks.
+ArXiv , abs/1605.07146, 2016.
+Zhang, M., Levine, S., and Finn, C. Memo: Test time
+robustness via adaptation and augmentation. ArXiv ,
+abs/2110.09506, 2021a.
+Zhang, M., Marklund, H., Dhawan, N., Gupta, A., Levine,
+S., and Finn, C. Adaptive risk minimization: Learning to
+adapt to domain shift. In NeurIPS , 2021b.
+Zhang, X., Gu, S. S., Matsuo, Y ., and Iwasawa, Y . Domain
+prompt learning for efﬁciently adapting clip to unseen
+domains, 2021c. URL https://arxiv.org/abs/
+2111.12853 .
+Zhou, A. and Levine, S. Bayesian adaptation for covariate
+shift. Advances in Neural Information Processing
+Systems , 34:914–927, 2021.Uncovering Adversarial Risks of Test-Time Adaptation 14
+A. Omitted Details in Background and Related Work
+In this appendix, we cover additional details on batch normalization (Appendix A.1) and self-learning (Appendix A.2),
+along with TTA algorithms in Appendix A.3. Then, we discuss conventional machine learning vulnerabilities including
+adversarial examples and data poisoning in Appendix A.4. Furthermore, we include a comprehensive review of the existing
+literature in Appendix A.5.
+A.1. Batch Normalization
+In batch normalization, we calculate the BN statistics for each BN layer lby computing the mean and variance 2of
+the pre-activations zl: E[zl],2 E[(zl )2]. The expectation Eis computed channel-wise on the input. We then
+normalize the pre-activations by subtracting the mean and dividing by the standard deviation: zl= (zl )=. Finally,
+we scale and shift the standardized pre-activations zltoz0
+l=T
+lzl+lby learnable afﬁne parameters fl;lg. In our
+experiments, the parameters updated during the TTA procedures are A=fl;lgL
+l=1, whereLis the number of BN layers.
+The statistics of the source data are replaced with those of the test batch.
+A.2. Objectives of Self-Learning
+We provide detailed formulations of the TTA loss functions used in self-learning (SL) methods. Let h(;)be the hypothesis
+function parameterized by , which we consider to be the logit output (w.l.o.g.). The probability that sample xbelongs to
+classjis denoted as p(jjx) =(h(x;)), where()is the softmax function. Here, we use to denoteprefor simplicity.
+TENT (Wang et al., 2021b). This method minimizes the entropy of model predictions.
+LTTA(Xt
+B) := 1
+NBtNBtX
+i=1X
+jp(jjxt
+i) logp(jjxt
+i) (6)
+Hard PL (Galstyan & Cohen, 2007; Lee et al., 2013). The most likely class predicted by the pre-adapted model is
+computed as the pseudo label for the unlabeled test data.
+LTTA(Xt
+B;ey()) := 1
+NBtNBtX
+i=1logp(eyi()jxt
+i);
+whereeyi() = argmax
+jp(jjxt
+i);8xt
+i2Xt
+B(7)
+Soft PL (Galstyan & Cohen, 2007; Lee et al., 2013). Instead of using the predicted class, the softmax function is applied
+directly to the prediction to generate a pseudo label.
+LTTA(Xt
+B;ey()) := 1
+NBtNBtX
+i=1X
+jeyi() logp(jjxt
+i);
+whereeyi() =p(jjxt
+i);8xt
+i2Xt
+B(8)
+Robust PL (Rusak et al., 2022). It has been shown that the cross-entropy loss is sensitive to label noise. To mitigate the
+side effect to the training stability and hyperparameter sensitivity, Robust PL replaces the cross-entropy (CE) loss of the
+Hard PL with a Generalized Cross Entropy (GCE) .
+LTTA(Xt
+B;ey()) := 1
+NBtNBtX
+i=1q 1(1 p(eyi()jxt
+i)q);
+whereeyi() = argmax
+jp(jjx);8xt
+i2Xt
+B(9)
+whereq2(0;1]adjusts the shape of the loss function. When q!1, the GCE loss approaches the MAE loss, whereas when
+q!0, it reduces to the CE losses.Uncovering Adversarial Risks of Test-Time Adaptation 15
+Conjugate PL (Goyal et al., 2022). We consider the source loss function, which can be expressed as L(h(x;);y) =
+g(h(x;)) yTh(x;), wheregis a function and yis a one-hot encoded class label. The TTA loss for self-learning with
+conjugate pseudo-labels can be written as follows:
+LTTA(Xt
+B;ey()) := 1
+NBtNBtX
+i=1L(h(xt
+i;)=T;eyi());
+whereeyi() =rg(h(xt
+i)=T;);8xt
+i2Xt
+B(10)
+The temperature Tis used to scale the predictor.
+A.3. TTA algorithms in details
+In this subsection, we present the detailed algorithm of test-time adaptation (Algorithm 2). In our setting, the model is
+adapted online when a batch of test data comes and then makes the prediction immediately.
+Algorithm 2 Test-Time Adaptation
+1:Input: Source model parameters s, number of steps N, TTA update rate: 
+2:Initialization: =s
+3:forstep= 1;2;:::;N do
+4: Obtain a new test batch Xt
+Bfrom the test domain.
+5:B f(Xt
+B);2(Xt
+B)g
+6:A A @LTTA(Xt
+B)=@A
+7: A[B[F
+8: Make the prediction ^yt
+B=f(Xt
+B;)
+9:end for
+A.4. Conventional Machine Learning Vulnerabilities
+The following subsection provides additional background on ML vulnerabilities and their relevance to DIA. We then
+emphasize the distinctiveness of the proposed attack, which differentiates it from other known adversarial examples and data
+poisoning attacks.
+Adversarial Examples. The vast majority of work studying vulnerabilities of deep neural networks concentrates on
+ﬁnding the imperceptible adversarial examples . Those examples have been successfully used to fool the model at test
+time (Goodfellow et al., 2015; Carlini & Wagner, 2017; V orobeychik & Kantarcioglu, 2018). Commonly, generating an
+adversarial example ^xt=xt+^can be formulated as follows:
+^= arg max
+L(f(xt+;s);yt)s:t:kkp"; (11)
+whereLis the loss function (e.g., cross-entropy loss), xt;ytdenote one test data, kkp"is the`pconstraint of the
+perturbation . The objective is to optimize to maximize the prediction loss L. For`1constraint, the problem can be
+solved by Projected Gradient Descent (Madry et al., 2018) as
+ "(+sign(rL(f(xt+;s);yt))): (12)
+Here, "denotes projecting the updated perturbation back to the constraint, and is the attack step size. By iteratively
+updating through Eq. (12), the attacker will likely cause the model to mispredict. Our single-level variant of the DIA attack
+employs an algorithm similar to the projected gradient descent.
+One characteristic of adversarial examples in ML pipeline is that the perturbations have to be made on the targeted data.
+Therefore, as long as the user keeps the test data securely (not distorted), the machine learning model can always make
+benign predictions. Our attack, targeted at TTA, differs from adversarial examples, where our malicious samples can beUncovering Adversarial Risks of Test-Time Adaptation 16
+inserted into a test batch and attack the benign and unperturbed data. Therefore, there exists an increasing security risk if
+deploying TTA.
+Data Poisoning Attacks. In terms of attacking benign samples without directly modifying the data, another pernicious
+attack variant, data poisoning , can accomplish this goal. Speciﬁcally, an adversary injects poisoned samples into a training
+set and aims to cause the trained model to mispredict the benign sample. There are two main objectives for a poisoning
+attack: targeted poisoning and indiscriminate. For targeted poisoning attacks (Koh & Liang, 2017; Carlini & Terzis, 2021;
+Carlini, 2021; Geiping et al., 2020), the attacker’s objective is to attack one particular sample with a pre-selected targeted
+label, which can be written as follows:
+min
+L 
+f 
+xt
+tgt;()
+;_ytgt
+s:t:() = arg min
+1
+NsNsX
+i=1L(f(xs
+i+i;);ys
+i) (13)
+where xt
+tgtis the targeted samples and _ytgtis the correpsonding incorrect targeted labels. xs
+iis the training data and ys
+i
+is the corresponding ground truth. We use the ito denote the perturbation on training data xs
+i, and since there are Nm
+poisoning samples, some istays zero to represent clean samples.
+Forindiscriminate attacks (Nelson et al., 2008; Biggio et al., 2012), the adversary seeks to reduce the accuracy of all test
+data, which can be formulated as:
+min
+ 1
+NtNtX
+j=1L 
+f 
+xt
+j;()
+;yt
+j
+s:t:()2arg min
+1
+NsNsX
+i=1L 
+f 
+xt
+i+i;
+;yt
+i
+(14)
+where xt
+jis the test data and yt
+jis the ground truth of it. These objectives also guide the design of our adversary’s goals.
+However, the key characteristic of data poisoning for the machine learning model is the assumption of access to training data
+for adversaries. Therefore, if the model developer obtains the training data from a reliable source and keeps the database
+secure, then there is no chance for any poisoning attacks to be effective. Our attack for TTA differs from data poisoning, in
+which DIA only requires test data access. This makes our attack easier to access, as data in the wild environment (test data)
+are less likely to be monitored.
+A.5. Extended Related Work
+We present more related works of our paper in this subsection.
+Unsupervised Domain Adaptation. Unsupervised domain adaptation (UDA) deals with the problem of adapting a model
+trained on a source domain to perform well on a target domain, using both labeled source data and unlabeled target data.
+One common approach (Ganin et al., 2016; Long et al., 2018) is to use a neural network with shared weights for both the
+source and target domains and introduce an additional loss term to encourage the network to learn domain-invariant features.
+Other approaches include explicitly (Saito et al., 2018; Damodaran et al., 2018) or implicitly (Li et al., 2016; Wang et al.,
+2019) aligning the distributions of the source and target domains. One category related to our settings is source-free domain
+adaptation (Liang et al., 2020; Kundu et al., 2020; Li et al., 2020), where they assume a source model and the entire test set.
+For instance, SHOT (Liang et al., 2020) uses information maximization and pseudo-labels to align the source and target
+domain during the inference stage.
+Test-time Adaptation. TTA obtains the model trained on the source domain and performs adaptation on the target domain.
+Some methods (Sun et al., 2020; Liu et al., 2021; Gandelsman et al., 2022) modify the training objective by adding a self-
+supervised proxy task to facilitate test-time training. However, in many cases, access to the training process is unavailable.
+Therefore some methods for test-time adaptation only revise the Batch Norm (BN) statistics (Singh & Shrivastava, 2019;
+Nado et al., 2020; Schneider et al., 2020; You et al., 2021; Hu et al., 2021). Later, TENT (Wang et al., 2021b), BACS (Zhou
+& Levine, 2021), and MEMO (Zhang et al., 2021a) are proposed to improve the performance by minimizing entropy at test
+time. Other approaches (Galstyan & Cohen, 2007; Lee et al., 2013; Rusak et al., 2022; Goyal et al., 2022; Wang & Wibisono,
+2022) use pseudo-labels generated by the source (or other) models to self-train an adapted model. As an active research area,
+recent efforts have been made to further improve TTA methods in various aspects. For example, Niu et al. (2022) seeks
+to solve the forgetting problem of TTA. Wang et al. (2022b); Gong et al. (2022); Huang et al. (2022) propose methods toUncovering Adversarial Risks of Test-Time Adaptation 17
+address the continual domain shifts. Iwasawa & Matsuo (2021) improves the pseudo-labels by using the pseudo-prototype
+representations. Zhang et al. (2021c); Kojima et al. (2022); Gao et al. (2022b) leverage recent vision transformer model
+architecture to improve TTA.
+Most TTA methods assume a batch of test samples is available, while some papers consider the test samples coming
+individually (Zhang et al., 2021a; Gao et al., 2022a; Bartler et al., 2022; Mirza et al., 2021; D ¨obler et al., 2022). For instance,
+MEMO (Zhang et al., 2021b) leverages various augmentations on single test input and then adapts the model parameters.
+Gao et al. (2022a) propose using diffusion to convert the out-of-distribution samples back to the source domain. Such a
+“single-sample” adaption paradigm makes an independent prediction on each data, avoiding the risk (i.e., DIA) of TTA.
+However, batch-wise test samples provide more information about the distribution, usually achieving better performance.
+Adversarial Examples and Defenses. A host of works have explored the imperceptible adversarial examples (Goodfellow
+et al., 2015; Carlini & Wagner, 2017; V orobeychik & Kantarcioglu, 2018) which fool the model at test time and raise
+security issues. In response, adversarial training (Madry et al., 2017) (training with adversarial samples) has been proposed
+as an effective technique for defending against adversarial examples. Later, there existed a host of enhanced methods on
+robustness (Wu et al., 2020a; Sehwag et al., 2022; Dai et al., 2022; Gowal et al., 2021), time efﬁciency (Shafahi et al., 2019;
+Wong et al., 2019), and utility-robustness tradeoff (Pang et al., 2022; Wang et al., 2022a).
+Adversarial Defense via Transductive Learning. The security community has also explored the use of transductive
+learning to enhance the robustness of ML (Goldwasser et al., 2020; Wu et al., 2020b; Wang et al., 2021a). However, the
+latter work by Chen et al. (2021); Croce et al. (2022) demonstrated these defenses through transductive learning have only
+a small improvement in robustness. Our paper focuses on another perspective, where transductive learning induces new
+vulnerabilities in benign and unperturbed data.
+Data Poisoning Attacks and Defenses. Data poisoning attacks refer to injecting poisoned samples into a training set
+and causing the model to predict incorrectly. It has been applied to different machine learning algorithms, including the
+Bayesian-based method (Nelson et al., 2008), support vector machines (Biggio et al., 2012), as well as neural networks
+(Koh & Liang, 2017). Later, Carlini (2021) tries to poison the unlabeled training set of semi-supervised learning and Carlini
+& Terzis (2021) target at contrastive learning with an extremely limited number of poisoning samples. Recently, researchers
+have utilized poisoning attacks to achieve other goals (e.g., enhancing membership inference attacks (Tram `er et al., 2022)
+and breaking machine unlearning (Marchant et al., 2021; Di et al., 2022)). For defense, Geiping et al. (2021) has shown that
+adversarial training can also effectively defend against data poisoning attacks.
+Adversarial Risk in Domain Adaptation. Only a few papers discuss adversarial risks in the context of domain adaptation
+settings. One example is (Mehra et al., 2021), which proposes several methods for adding the poisoned data to the source
+domain data exploiting both the source and target domain information. Another example is (Wu & He, 2021), which
+introduces I2Attack , an indirect, invisible poisoning attack that only manipulates the source examples but can cause the
+domain adaptation algorithm to make incorrect predictions on the targeted test examples. However, both approaches assume
+that the attacker has access to the source data and cannot be applied to the source-free (TTA) setting.Uncovering Adversarial Risks of Test-Time Adaptation 18
+B. Theorical Analysis of Distribution Invading Attacks
+In this appendix, we provide technical details of computing the DIA gradient described in Section 4. Then, we analyze why
+smoothing via training-time BN can mitigate our attacks. For simplicity, we consider the case for a single layer, and the
+gradient computation can be generalized to the case of a multi-layer through backpropagation.
+B.1. Understanding the Vulnerabilities of Re-estimating BN Statistics
+Recall the setting where xt
+tgt2Rd,Xt
+B= (xi;j)i=1:::n;j =1:::d2Rnd,~ w2Rdandb2R. The output of a linear layer
+with batch normalization5on a single dimension can be written as
+f(xt
+tgt) =xt
+tgt (Xt
+B)p
+2(Xt
+B)~ w+b (15)
+whereand2:Rnd!Rddenote the coordinate-wise mean and variance. In addition, the square rootpis also applied
+coordinate-wise. Suppose we can perturb xiinXt
+B, which corresponds to a malicious data point in Xt
+mal. In order to ﬁnd
+the optimal perturbation direction that causes the largest deviation in the prediction of f(xt
+tgt), we compute the following
+derivative:
+@f(xt
+tgt)
+@xi;j=( 1
+n)((Xt
+B))j [(xt
+tgt)j (Xt
+B)j]@((Xt
+B))j
+@xi;j
+((Xt
+B))2
+jwj
+=( 1
+n)
+((Xt
+B))j 
+(xt
+tgt)j (Xt
+B)j
+((Xt
+B)) 1
+j(xi;j (Xt
+B)j)	
+((Xt
+B))2
+jwj
+where ((Xt
+B))j=1
+nnX
+i=1xi;j
+((Xt
+B))j=vuut1
+nnX
+i=1x2
+i;j  
+1
+nnX
+i=1xi;j!2
+Then, we can leverage the above formula to search for the optimal malicious data.
+B.2. Analysis of Smoothing via Training-time BN Statistics
+We robustly estimate the ﬁnal BN statistics by =~ s+(1 )~ t;2=~ 2
+s+(1 )~ 2
+t, where (~ s;~ 2
+s) are training-time
+BN and (~ t=(Xt
+B);~ 2
+t=2(Xt
+B)) are test-time BN (shown in Section 6.2). Therefore, the output of a linear layer with
+smoothed batch normalization on a single dimension can be re-written as
+f(xt
+tgt) =xt
+tgt ((1 )(Xt
+B) +~ s)p
+(1 )2(Xt
+B) +~ 2s~ w+b (16)
+The new gradient can be computed by
+5For the purpose of this analysis, we will set the scale parameter to 1 and the shift parameter to 0. This assumption does not limit the
+generalizability of our results.Uncovering Adversarial Risks of Test-Time Adaptation 19
+@f(xt
+tgt)
+@xi;j=( 1 
+n)~j [(xt
+tgt)j (1 )(Xt
+B)j (~ s)j]1
+2(~j) 1(1 )@((Xt
+B))j
+@xi;j
+(1 )((Xt
+B))2
+j+(~ 2s)jwj
+=( 1 
+n)
+((Xt
+B))2
+j 
+(xt
+tgt)j (1 )((Xt
+B))j (~ s)j
+(~j) 1(xi;j ((Xt
+B))j)	
+(1 )((Xt
+B))2
+j+(~ 2s)jwj
+where ((Xt
+B))j=1
+nnX
+i=1xi;j;
+((Xt
+B))j=vuut1
+nnX
+i=1x2
+i;j (1
+nnX
+i=1xi;j)2
+~j:=q
+(1 )((Xt
+B))2
+j+(~ 2s)j:
+Here, whenever (Xt
+B)~ s, and2(Xt
+B)~ 2
+s, the norm of graident jj@f(xt
+tgt)
+@xi;jjjwill decrease as increases. Speciﬁcally,
+jj@f(xt
+tgt)
+@xi;jjj= 0when= 1, which means the BN statistics is only based on the training-time BN and do not involve any
+adversarial risks.Uncovering Adversarial Risks of Test-Time Adaptation 20
+C. Preliminary Results
+C.1. Sanity Check of Utilizing Training-time BN Statistics for TTA
+In this experiment, we evaluate the performance of TTA using training-time BN statistics on CIFAR-10-C, CIFAR-100-C,
+and ImageNet-C with the ResNet architecture (He et al., 2016). Note that we did not include the result of the TeBN method,
+as it is identical to the Source method (directly using the source model without any TTA method). For other TTA methods,
+only afﬁne transformation parameters (i.e., scale land shiftl) within the BN layer are updated. All other hyperparameters
+stay the same with experiments in Goyal et al. (2022), including batch size 200 and TTA learning rate =0:001.
+Source TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyResNet-26
+Source TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyResNet-26
+Source TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyResNet-50
+(a) CIFAR-10-C (b) CIFAR-100-C (c) ImageNet-C
+Figure 9. Test-time adaptations exhibit an obvious degradation on corruption datasets when using training-time BN statistics. [Severity
+Level: 3]
+Adopting training-time BN completely ruins performance gain for TTA (Figure 9). We observe that all TTA methods
+exhibit a signiﬁcant degradation (from 15% to50%) across benchmarks. It can be inferred that the utilization of test-time
+batch normalization statistics is paramount to all TTA methods implemented.
+C.2. Preliminary Results of Bilevel Optimization
+We study the effectiveness of utilizing bilevel optimization to ﬁnd the malicious data bXt
+mal.
+Table 5. Attack success rate of Distribution Invading Attack with and without bilevel optimization. (We omit TeBN as it is identical for
+both methods)
+Dataset Nm Bilevel TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+CIFAR-10-C
+(ResNet26)10 (5%) 7 23.20 25.33 23.20 24.80 23.60
+10 (5%) X 22.93 23.73 22.80 24.00 23.73
+20 (10%) 7 45.73 48.13 47.47 49.47 45.73
+20 (10%) X 44.40 47.33 46.40 47.60 45.20
+40 (10%) 7 83.87 84.27 82.93 86.93 85.47
+40 (10%) X 82.80 84.53 82.40 84.53 84.67
+CIFAR-100-C
+(ResNet26)10 (5%) 7 26.40 31.20 27.60 32.13 26.13
+10 (5%) X 26.93 31.87 28.80 32.93 26.40
+20 (10%) 7 72.80 87.33 78.53 82.93 71.60
+20 (10%) X 72.27 85.87 78.13 85.47 72.13
+40 (10%) 7 100.00 99.87 100.00 99.87 100.00
+40 (10%) X 100.00 99.73 100.00 100.00 100.00
+ImageNet-C
+(ResNet50)5 (2.5%) 7 75.73 69.87 62.67 66.40 57.87
+5 (2.5%) X 74.93 70.13 62.13 67.47 59.43
+10 (5%) 7 98.67 96.53 94.13 96.00 92.80
+10 (5%) X 98.40 97.07 94.40 96.27 93.43
+20 (10%) 7 100.00 100.00 100.00 100.00 100.00
+20 (10%) X 100.00 100.00 100.00 99.73 100.00Uncovering Adversarial Risks of Test-Time Adaptation 21
+Our proposed single-level solution yields comparable effectiveness to the Bi-level Optimization approach (Table 5).
+We evaluate the DIA method with and without the bilevel optimization (inner loop) step, revealing that, in most cases, the
+difference between them is generally less than 1%. In addition, we observe that using bilevel optimization results in a
+substantial increase (by a factor of 10) in computational time.
+C.3. Effectiveness of Test-time Adaptations on Corruption Datasets
+We demonstrate the effectiveness of applying TTA methods to boost corruption accuracy. We use Source to denote the
+performance of the source model without TTA.
+Source TeBN TENT HardPL SoftPL RPLConjugate
+Adaptation Method020406080100Corruption Accuracy ResNet-26
+Source TeBN TENT HardPL SoftPL RPLConjugate
+Adaptation Method020406080100Corruption AccuracyResNet-26
+Source TeBN TENT HardPL SoftPL RPLConjugate
+Adaptation Method020406080100Corruption AccuracyResNet-50
+(a) CIFAR-10-C (b) CIFAR-100-C (c) ImageNet-C
+Figure 10. Test-time adaptations consistently improve the accuracy on corruption datasets with severity level 3.
+All TTA methods signiﬁcantly boost the accuracy on distribution shift benchmarks (Figure 10). We observe the
+absolute performance gains of TTA on corrupted inputs are >5%for CIFAR-10-C, >10% for CIFAR-100-C, and >12%
+for ImageNet-C. These promising results incentivize the use of TTA methods in various applications when test data
+undergoes a shift in distribution.Uncovering Adversarial Risks of Test-Time Adaptation 22
+D. Additional Experiment Details and Results of Distribution Invading Attacks
+In this appendix, we show some supplementary experimental details and results in Section 5. We begin by outlining our
+experimental setup in Appendix D.1. This is followed by the experiments that study the effectiveness of DIA by varying the
+number of malicious samples in Appendix D.2 and using various models and data augmentations in Appendix D.3. Then,
+we delve into different types of attack objectives and constraints, including (1) indiscriminate attack (Appendix D.4), (2)
+stealthy targeted attack (Appendix D.5), and (3) distribution invading attack via simulated corruptions (Appendix D.6).
+Besides, we examine various TTA design choices, such as larger learning rates (Appendix D.8) and increased optimization
+steps (Appendix D.9). We also consider the DIA under various corruption choices by adjusting the severities of corruption
+in Appendix D.6 and present the detailed results of all types of corruptions in Appendix D.11. Other new baseline methods
+are applied in Appendix D.10.
+D.1. Addtional details of Experiment setup
+Dataset. Our attacks are evaluated on CIFAR-10 to CIFAR-10-C, CIFAR-100 to CIFAR-100-C, and ImageNet to ImageNet-
+C (Hendrycks & Dietterich, 2019), which contain 15 types of corruptions on test data. We select all corruption types and set
+the severity of the corruption as 3 for most experiments.6Therefore, our CIFAR-10-C and CIFAR-100-C evaluation sets
+contain 10,00015 = 150,000 images with 3232resolution from 10 and 100 classes, respectively. For ImageNet-C,
+there are 5,00015 = 75,000 high-resolution ( 224224) images from 1000 labels to evaluate our attacks.
+Source Model Details. We follow the common practice on distribution shift benchmarks (Hendrycks & Dietterich, 2019),
+and train our models on the CIFAR-10, CIFAR-100, and ImageNet. For training models on the CIFAR dataset, we use the
+SGD optimizer with a 0.1 learning rate, 0.9 momentum, and 0.0005 weight decay. We train the model with a batch size of
+256 for 200 epochs. We also adjust the learning rate using a cosine annealing schedule (Loshchilov & Hutter, 2016). This
+shares the same conﬁgurations with Goyal et al. (2022). As we mentioned previously, the architectures include ResNet with
+26 layers (He et al., 2016), VGG 19 with layers (Simonyan & Zisserman, 2015), Wide ResNet with 28 layers (Zagoruyko &
+Komodakis, 2016). For the ImageNet benchmark, we directly utilize the models downloaded from RobustBench (Croce
+et al., 2020) (https://robustbench.github.io/), including standard trained ResNet-50 (He et al., 2016), AugMix (Hendrycks
+et al., 2020), DeepAugment (Hendrycks et al., 2021), robust models from Salman et al. (2020), and Engstrom et al. (2019).
+We want to emphasize that TTA does not necessarily need to train a model from scratch, and downloading from outsourcing
+is acceptable and sometimes desirable.
+Test-time Adaptation Methods. Six test-time adaptation methods are selected, including TeBN (Schneider et al., 2020),
+TENT (Wang et al., 2021b), Hard PL (Lee et al., 2013; Galstyan & Cohen, 2007), Soft PL (Lee et al., 2013; Galstyan
+& Cohen, 2007), Robust PL (Rusak et al., 2022), and Conjugate PL (Goyal et al., 2022), where they all obtain obvious
+performance gains when data distribution shifts. We use the same default hyperparameters with Wang et al. (2021b) and
+Goyal et al. (2022), where the code is available at github.com/DequanWang/tent and github.com/locuslab/tta-conjugate.
+Besides setting the batch size to 200, we use Adam for the TTA optimizer, = 0:001for the TTA learning rate, and 1 for
+temperature. TTA is done in 1 step for each test batch.
+Attack Setting. Each test batch is an individual attacking trial, which contains 200 samples. Therefore, there are 150,000/200
+= 750 trials for CIFAR-C and 75,000/200 = 375 trials for ImageNet-C. All of our experimental results are averaged across
+all trials. For targeted attacks, we use attack success rate (ASR) as the evaluation metrics for attack effectiveness, which
+means the ratio of DIA can ﬂip the targeted sample to the pre-select label. For indiscriminate attacks, we use corruption
+corruption error rate (i.e., the error rate on the benign corrupted data) to measure the effectiveness. For stealthy targeted
+attacks, we again use attack success rate (ASR) as the attacking effectiveness metrics. In addition, since we want to
+maintain the corruption accuracy, we leverage the corruption accuracy degradation (i.e., the accuracy drop of benign
+corrupted data compared to “no attack”) as the metric.
+For other hyperparameters, we set the attacking steps N= 500 and attacking optimization rate = 1=255. In addition, the
+attack effectiveness can be further improved if applying more iterations or multiple random initializations like Madry et al.
+(2018). We leave more enhancing DIA techniques as future directions.
+6the severities of the corruption range from 1 to 5, and 3 can be considered as medium corruption degree.Uncovering Adversarial Risks of Test-Time Adaptation 23
+D.2. More Experiments of DIA across Number of Malicious Samples
+Figure 11 depicts the effectiveness of the DIA success rate in relation to the number of malicious samples. We selected
+TeBN ,TENT , and Hard PL as demonstrated TTA methods and observed them perform similarly. Our conclusion “DIA
+obtains near-100% ASR, using 64 malicious samples for CIFAR-10-C, 32 for CIFAR-100-C, and 16 for ImageNet-C” still
+holds.
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+TeBN
+TENT
+HardPL
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+TeBN
+TENT
+HardPL
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+TeBN
+TENT
+HardPL
+(a) CIFAR-10-C (b) CIFAR-100-C (c) ImageNet-C
+Figure 11. Success rate of our proposed attack across numbers of malicious samples from 1 to 128 (0.5% to 64%). [TTA: TeBN ,TENT ,
+andHard PL ] (Extended version of Figure 2)
+D.3. Effectiveness of DIA across Various Model Architectures and Data Augmentations
+Then we conduct more comprehensive experiments on DIA across model architectures, data augmentations, and the number
+of malicious samples. In Table 6 (full version of Table 2), we observe that the attack success rate of the VGG (Simonyan &
+Zisserman, 2015) architecture is less affected by the number of malicious samples compared to the Wide ResNet (Simonyan
+& Zisserman, 2015) architecture. For example, the ASR of VGG improves from 42% to79% while Wide ResNet
+improves from16% to94% ifNmincreases from 10 to 40 for the TeBN method on CIFAR-10-C. Therefore, our
+previous hypothesis should be modiﬁed to “ with a sufﬁcient number of malicious data , more BN layers expose more
+vulnerabilities.” For ImageNet-C, we are still observing the mild mitigation effect from strong data augmentations.
+D.4. Effectiveness of Indiscriminate Attack
+We further present detailed results of indiscriminate attacks with more TTA methods and options for the number of malicious
+samples. Since the benign corruption error rates are different for different numbers of malicious data, we include the
+corruption error rate improvement in the bracket with red color.
+Table 7. Average corruption error rate of TTA when deploying indiscriminate attack. The red number inside the bracket is the corruption
+error rate improvement. (Extended version of Table 3)
+Dataset Nm TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+CIFAR-10-C
+(ResNet26)10 (5%) 15.66 (+4.96) 15.16 (+4.74) 15.86 (+4.84) 15.56 (+4.86) 16.60 (+5.04) 14.32 (+4.51)
+20 (10%) 20.09 (+9.37) 19.43 (+9.00) 20.14 (+9.10) 19.77 (+9.06) 21.04 (+9.46) 18.51 (+8.70)
+40 (20%) 28.02 (+17.29) 27.01 (+16.54) 27.91 (+16.86) 27.47 (+16.69) 28.81 (+17.20) 26.09 (+16.26)
+CIFAR-100-C
+(ResNet26)10 (5%) 43.84 (+7.22) 42.90 (+7.32) 44.65 (+7.92) 43.45 (+7.56) 45.34 (+8.02) 42.01 (+7.53)
+20 (10%) 51.99 (+13.44) 50.33 (+12.60) 52.00 (+13.33) 50.80 (+12.82) 52.52 (+13.21) 49.39 (+12.71)
+40 (20%) 58.41 (+23.89) 54.44 (+21.13) 56.59 (+21.93) 54.93 (+21.22) 56.97 (+21.72) 53.33 (+21.06)
+ImageNet-C
+(ResNet50)5 (2.5%) 57.42 (+9.45) 54.53 (+8.90) 52.32 (+8.70) 50.53 (+8.50) 51.52 (+8.43) 50.18 (+8.52)
+10 (5%) 67.18 (+19.21) 62.39 (+16.76) 58.70 (+15.09) 55.90 (+13.88) 57.08 (+13.97) 55.60 (+13.94)
+20 (10%) 79.03 (+31.24) 75.01 (+29.57) 70.26 (+26.84) 65.67 (+23.81) 67.53 (+24.60) 65.30 (+23.80)
+The indiscriminate DIA causes a large error rate increase on benign samples (Table 7). We observe that the ratio
+between the fraction of malicious data and error rate improvement is about 0.9 for CIFAR-10-C and 1.2 for CIFAR-100-
+C. For example, the error rate increases 12% with 20 (10%) malicious data for CIFAR-100-C. Signiﬁcantly, 20 (10%)
+malicious data cause the error rate improves 25% for ImageNet-C. In addition, compared to other TTA methods, TeBN is
+still the most vulnerable method against DIA.Uncovering Adversarial Risks of Test-Time Adaptation 24
+Table 6. Effectiveness of distribution invading attack across various model architectures, data augmentation, and the number of malicious
+data. (Full version of Table 2)
+Dataset Nm Architectures TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+CIFAR-10-C10 (5%)ResNet-26 25.87 23.20 25.33 23.20 24.80 23.60
+VGG-19 41.73 30.27 30.13 28.00 33.07 29.07
+WRN-28 16.27 14.40 14.67 14.53 15.73 13.87
+20 (10%)ResNet-26 55.47 45.73 48.13 47.47 49.47 45.73
+VGG-19 60.13 44.80 46.67 44.13 46.67 44.67
+WRN-28 46.00 41.47 43.33 41.60 44.00 40.53
+40 (20%)ResNet-26 92.80 83.87 84.27 82.93 86.93 85.47
+VGG-19 79.07 65.33 67.47 64.13 67.47 64.13
+WRN-28 93.73 89.60 90.80 90.13 91.20 89.33
+CIFAR-100-C10 (5%)ResNet-26 46.80 26.40 31.20 27.60 32.13 26.13
+VGG-19 42.13 32.00 41.33 33.60 33.87 37.33
+WRN-28 29.60 14.67 16.53 15.47 18.13 14.53
+20 (10%)ResNet-26 93.73 72.80 87.33 78.53 82.93 71.60
+VGG-19 71.60 57.33 71.60 61.87 63.60 66.13
+WRN-28 64.80 38.67 44.13 40.93 46.40 39.87
+40 (20%)ResNet-26 100.00 100.00 99.87 100.00 99.87 100.00
+VGG-19 88.00 82.93 86.53 85.73 87.33 85.47
+WRN-28 97.47 83.60 87.07 86.67 90.13 79.73
+Dataset Nm Augmentations TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+ImageNet-C5 (2.5%)Standard 80.80 75.73 69.87 62.67 66.40 57.87
+AugMix 72.53 65.60 59.47 53.60 56.27 49.07
+DeepAugment 67.20 63.73 58.67 53.87 57.33 53.33
+10 (5%)Standard 99.47 98.67 96.53 94.13 96.00 92.80
+AugMix 98.40 96.00 93.60 88.27 92.00 87.20
+DeepAugment 96.00 94.67 91.20 87.47 89.60 86.67
+20 (10%)Standard 100.00 100.00 100.00 100.00 100.00 100.00
+AugMix 100.00 100.00 100.00 100.00 100.00 100.00
+DeepAugment 100.00 100.00 100.00 100.00 100.00 100.00
+D.5. Effectiveness of Stealthy Targeted Attack
+Next, we present more results of the stealthy targeted attack on the CIFAR-C dataset in Figure 12. We use 40 malicious data
+andTeBN method, where !=f0;0:1;0:2g. Speciﬁcally, we select three architectures, including ResNet-26, VGG-19, and
+WRN-28. Since different architectures result in various corruption accuracy, we use the corruption accuracy degradation
+to measure the stealthiness, where the best attack should have 0% degradation. We observe that we can obtain <2%
+degradation by sacriﬁcing the attack success rates about 10% when != 0:1. In addition, we ﬁnd the attack success rates of
+Wide ResNet-28 drop much more than other model architectures.
+0.0 0.1 0.2
+Weight 
+020406080100Attack Success Rate
+ResNet-26
+VGG-19
+WRN-28
+0.0 0.1 0.2
+Weight 
+0246810Corruption Accuracy DegradationResNet-26
+VGG-19
+WRN-28
+0.0 0.1 0.2
+Weight 
+020406080100Attack Success Rate
+ResNet-26
+VGG-19
+WRN-28
+0.0 0.1 0.2
+Weight 
+0246810Corruption Accuracy DegradationResNet-26
+VGG-19
+WRN-28
+(a) CIFAR-10-C (b) CIFAR-100-C
+Figure 12. Adjusting the weight !achieves a high attack success rate (line) and a minimal benign corruption accuracy degradation (bar).
+[Nm=40, TTA method: Norm] (Extended version of Figure 3)Uncovering Adversarial Risks of Test-Time Adaptation 25
+D.6. Distribution Invading Attack via Simulated Corruptions
+This subsection presents the details of generating simulated corruption and then demonstrates its effectiveness.
+Constructing Simulated Corruptions. We directly utilize the methods of Kang et al. (2019) to construct adversarially
+snow and fog effects, which are available at github.com/ddkang/advex-uar. Speciﬁcally, we use many tiny occluded image
+regions representing snowﬂakes at randomly chosen locations. Then, the intensity and directions of those “snow pieces”
+are adversarially optimized. Furthermore, the adversarial fog is generated by adversarially optimizing the diamond-square
+algorithm (Fournier et al., 1982), a technique commonly used to create a random, stochastic fog effect. We present some
+snow and fog attack examples in Figure 27.
+Simulated corruptions can be used as an input-stealthy DIA approach (Table 8). For evaluation, we use snow to attack
+clean images and insert them into the validation set of snow corruption. Similarly, we use a fog attack for the fog corruption
+dataset. We observe that either adversarial snow or fog can effectively attack all TTA approaches with at least 60% of attack
+success rate.
+Table 8. Average attack success rate of adversarially optimized snow corruptions and fog corruptions. [ Nm=20; Target Attack] (Extended
+version of Table 4)
+Dataset Corruption TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+ImageNet-C
+(ResNet-50)Snow 64.00 68.00 68.00 60.00 68.00 60.00
+Fog 84.00 76.00 72.00 76.00 76.00 76.00
+D.7. Effectiveness of DIA across Severities of Corruption
+1 2 3 4 5
+Severity Levels of Corruptions020406080100Attack Success Rate
+TeBN
+TENT
+HardPL
+1 2 3 4 5
+Severity Levels of Corruptions020406080100Corruption AccuracyTeBN
+TENT
+HardPL
+(a) Attack Success Rate (b) Corruption Accuracy
+Figure 13. Illustration of how severity levels of corruption affect the corruption accuracy and attack success rate of our attack on the
+ImageNet-C dataset. (Line plot: attack success rate; bar plot: corruption accuracy) [ Nm=5; Target Attack]
+1 2 3 4 5
+Severity Levels of Corruptions0153045607590Attack Success Rate
+TeBN
+1 2 3 4 5
+Severity Levels of Corruptions0153045607590Corruption Accuracy
+TeBN
+1 2 3 4 5
+Severity Levels of Corruptions0153045607590Attack Success Rate
+TeBN
+1 2 3 4 5
+Severity Levels of Corruptions0153045607590Corruption Accuracy
+TeBN
+(a) CIFAR-10-C (b) CIFAR-100-C
+Figure 14. Illustration of how severity levels of corruption affect the corruption accuracy and attack success rate of our attack on the
+CIFAR-C dataset. (Line plot: attack success rate; bar plot: corruption accuracy) [ Nm=20; Target Attack]Uncovering Adversarial Risks of Test-Time Adaptation 26
+Larger corruption severity tends to be more vulnerable against Distribution Invading Attack (Figure 13 and Figure
+14). Our previous evaluation only concentrates on the level 3 severity (medium) of corruption; now, we analyze the impact
+of corruption severity. First, the accuracy signiﬁcantly drops when corruptions are more severe, e.g., the average degradation
+from level 1 to level 5 is nearly 30% on ImageNet-C. Therefore, as expected, the ASR of the Distribution Invading Attack
+gets higher as the models (updated by TTA methods) tend not to be conﬁdent in their predictions. Similar behaviors are
+observed for the CIFAR-C dataset.
+D.8. Effectiveness of DIA with Larger TTA Learning Rate
+We conduct ablation studies (shown in Table 9) on the TTA learning rate (set as 0.001 for previous experiments). Concretely,
+we increase to 0.005 and evaluate DIA. Our single-level optimization method exhibits some performance degradations
+when the TTA learning rate rises but still reaches near-100% ASR with 20 (10%) malicious data. Furthermore, we also
+observe the corruption accuracy with = 0:005drop4% on average.
+Table 9. Effectiveness of distribution invading attack with larger TTA learning rate ( ) on ImageNet-C dataset.
+Nm TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+5 (2.5%)0.001 80.80 75.73 69.87 62.67 66.40 57.87
+0.005 80.80 52.00 46.93 35.73 45.33 32.00
+10 (5%)0.001 99.47 98.67 96.53 94.13 96.00 92.80
+0.005 99.47 87.73 83.73 74.67 82.13 71.47
+20 (5%)0.001 100.00 100.00 100.00 100.00 100.00 100.00
+0.005 100.00 100.00 99.73 98.13 100.00 98.67
+D.9. Effectiveness of DIA with More TTA Optimization Steps
+In this subsection, we conduct ablation studies (shown in Table 10) where the TTA optimization step is no longer 1 step but
+5 steps. We observe a degradation (0% to 25%) in DIA performance if the TTA optimizes the unsupervised loss with 5 steps.
+However, with 20 malicious data, the ASR is still near-100%.
+Table 10. Effectiveness of distribution invading attack with more TTA optimization steps on ImageNet-C dataset.
+Nm Steps TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+5 (2.5%)1 80.80 75.73 69.87 62.67 66.40 57.87
+5 80.80 58.13 53.07 39.73 49.87 36.00
+10 (5%)1 99.47 98.67 96.53 94.13 96.00 92.80
+5 99.47 93.60 88.53 79.73 87.20 77.87
+20 (5%)1 100.00 100.00 100.00 100.00 100.00 100.00
+5 100.00 100.00 100.00 99.73 100.00 99.47
+D.10. Effectiveness of DIA with Additional Baseline Methods
+In this subsection, we present our DIA can also attack advanced methods of TENT , like ETA (Niu et al., 2022). In general,
+ETA introduces a technique to boost the efﬁciency of TENT by actively selecting reliable samples for updating the base
+model. However, they still suffer from the vulnerabilities of re-estimating BN statistics. Therefore, we can directly apply
+DIA, and our results demonstrate that ETA is even more vulnerable than TENT for the CIFAR-C dataset (Table 11).
+Furthermore, 20 malicious data can still achieve near-100% ASR on the ImageNet-C benchmark.Uncovering Adversarial Risks of Test-Time Adaptation 27
+Table 11. Attack success rate of Distribution Invading Attack (targeted attacks) across benchmarks and TTA methods.
+Dataset Nm TeBN(%) TENT(%) ETA(%)
+CIFAR-10-C
+(ResNet26)10 (5%) 25.87 23.20 24.53
+20 (10%) 55.47 45.73 53.07
+40 (20%) 92.80 83.87 89.87
+CIFAR-100-C
+(ResNet26)10 (5%) 46.80 26.40 33.60
+20 (10%) 93.73 72.80 86.67
+40 (20%) 100.00 100.00 100.00
+ImageNet-C
+(ResNet50)5 (2.5%) 80.80 75.73 41.33
+10 (5%) 99.47 98.67 81.60
+20 (10%) 100.00 100.00 99.47Uncovering Adversarial Risks of Test-Time Adaptation 28
+D.11. Effectiveness of DIA across Various Corruption Types
+We then report the result of DIA for all 15 corruption types on Table 12. We select Nm= 20 for CIFAR-10-C and
+CIFAR-100-C and Nm= 5for ImageNet-C. We observe that the predictions under Brightness corruption are the hardest to
+attack. This is the expected result because the benign accuracy of Brightness is the highest (Schneider et al., 2020).
+Table 12. Effectiveness of Distribution Invading Attack across various corruption types. (CIFAR-C: Nm=20; ImageNet-C: Nm=5)
+Dataset Corruption Type TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+CIFAR-10-C
+(ResNet-26)
+(Nm=20 (10%))Gaussian Noise 68.0 48.0 52.0 50.0 56.0 50.0
+Shot Noise 70.0 54.0 56.0 62.0 62.0 54.0
+Impulse Noise 76.0 48.0 58.0 54.0 62.0 50.0
+Defocus Blur 44.0 38.0 38.0 40.0 40.0 40.0
+Glass Blur 50.0 44.0 52.0 44.0 48.0 42.0
+Motion Blur 54.0 48.0 46.0 50.0 52.0 46.0
+Zoom Blur 44.0 46.0 44.0 46.0 44.0 44.0
+Snow 58.0 44.0 42.0 44.0 50.0 44.0
+Frost 48.0 46.0 48.0 50.0 48.0 48.0
+Fog 60.0 40.0 46.0 44.0 48.0 40.0
+Brightness 38.0 38.0 40.0 38.0 38.0 40.0
+Contrast 62.0 48.0 48.0 48.0 50.0 50.0
+Elastic Transform 56.0 56.0 58.0 50.0 54.0 52.0
+Pixelate 44.0 46.0 46.0 44.0 40.0 44.0
+JPEG Compression 60.0 42.0 48.0 48.0 50.0 42.0
+All 55.47 45.73 48.13 47.47 49.47 45.73
+CIFAR-100-C
+(ResNet-26)
+(Nm=20 (10%))Gaussian Noise 100.0 80.0 92.0 86.0 94.0 74.0
+Shot Noise 100.0 80.0 98.0 82.0 86.0 82.0
+Impulse Noise 96.0 82.0 92.0 90.0 90.0 74.0
+Defocus Blur 86.0 64.0 82.0 72.0 82.0 68.0
+Glass Blur 96.0 78.0 80.0 78.0 78.0 66.0
+Motion Blur 94.0 74.0 82.0 80.0 82.0 74.0
+Zoom Blur 90.0 60.0 80.0 62.0 70.0 60.0
+Snow 92.0 72.0 80.0 74.0 72.0 66.0
+Frost 94.0 72.0 94.0 74.0 82.0 78.0
+Fog 94.0 76.0 92.0 86.0 92.0 76.0
+Brightness 86.0 64.0 84.0 72.0 72.0 68.0
+Contrast 96.0 80.0 94.0 88.0 94.0 78.0
+Elastic Transform 100.0 74.0 90.0 80.0 84.0 70.0
+Pixelate 90.0 64.0 84.0 80.0 78.0 72.0
+JPEG Compression 92.0 72.0 86.0 74.0 88.0 68.0
+All 93.73 72.80 87.33 78.53 82.93 71.60
+ImageNet-C
+(ResNet-50)
+(Nm=5 (2.5%))Gaussian Noise 92.0 92.0 72.0 56.0 64.0 52.0
+Shot Noise 88.0 76.0 68.0 56.0 60.0 48.0
+Impulse Noise 92.0 84.0 80.0 68.0 80.0 60.0
+Defocus Blur 100.0 96.0 88.0 84.0 84.0 80.0
+Glass Blur 92.0 84.0 84.0 68.0 72.0 64.0
+Motion Blur 88.0 88.0 84.0 68.0 76.0 68.0
+Zoom Blur 84.0 76.0 76.0 72.0 76.0 68.0
+Snow 72.0 64.0 56.0 56.0 56.0 56.0
+Frost 88.0 72.0 72.0 64.0 68.0 52.0
+Fog 88.0 84.0 80.0 76.0 80.0 68.0
+Brightness 48.0 48.0 44.0 40.0 40.0 40.0
+Contrast 96.0 96.0 88.0 84.0 88.0 80.0
+Elastic Transform 56.0 60.0 52.0 48.0 48.0 40.0
+Pixelate 56.0 52.0 52.0 44.0 48.0 36.0
+JPEG Compression 72.0 64.0 52.0 56.0 56.0 56.0
+All 80.80 75.73 69.87 62.67 66.40 57.87Uncovering Adversarial Risks of Test-Time Adaptation 29
+E. Additional Experiments on Robust Models and Mitigation Methods
+In this appendix, we show some additional ﬁndings and results of our mitigating methods as the complement of Section 6.
+The roadmap of this section is as follows. We ﬁrst investigate the role of robust models from two aspects. In Appendix E.1,
+we apply TTA to the adversarially trained models and surprisingly witness an improvement in clean accuracy. We then
+evaluate the robust models’ performance facing the corruption accuracy in Appendix E.2 and analyze their effectiveness in
+resisting DIA attacks in Appendix E.3. Furthermore, we extensively study the Robust Batch Normalization (BN) estimation.
+In Appendix E.4, we visualize the behaviors of Layer-wise BN. Then we provide the additional results of Robust BN
+Estimation on CIFAR-C in Appendix E.5, ImageNet-C in Appendix E.6. Finally, we conduct a parameter search for Robust
+BN estimation in Appendix E.7.
+E.1. Additional Findings of Adversarial Models and TTA on Clean Data
+Dataset Models Source(%) TeBN(%) TENT(%) Hard PL(%) Soft PL(%) Robust PL(%) Conjugate PL(%)
+CIFAR-10(Dai et al., 2022) WRN-28 87.02 87.00 91.74 90.83 91.62 90.93 91.68
+(Wu et al., 2020a) WRN-28 88.25 86.35 92.81 91.35 93.07 93.02 91.59
+(Gowal et al., 2021) WRN-28 87.49 87.42 88.39 88.22 88.44 88.21 88.44
+(Sehwag et al., 2022) RN-18 84.59 84.38 87.24 87.25 87.63 87.05 86.73
+CIFAR-100(Sehwag et al., 2022) WRN-34 65.93 67.37 73.96 70.63 74.06 73.93 72.81
+(Wu et al., 2020a) WRN-34 60.38 55.37 62.01 59.43 62.19 61.89 61.87
+(Chen et al., 2022) WRN-34 64.07 61.94 67.58 61.29 68.11 69.09 65.02
+(Jia et al., 2022) WRN-34-20 67.31 64.17 69.72 68.60 70.21 69.97 69.71
+Table 13. Clean accuracy can be improved by the test-time adaptation for adversarially trained models on CIFAR-10 and CIFAR-100. As
+a reference, the accuracy of the standard Wide ResNet with 28 layers (WRN-28) is 94.78% for CIFAR-10 and 78.78% for CIFAR-100.
+(RN-18 is ResNet-18, WRN-34 is Wide ResNet 34 )
+One of the notable weaknesses of adversarial training is the apparent performance degradation on clean test data (Madry
+et al., 2018; Xie et al., 2019), owing to the divergent distributions of adversarial and clean inputs for batch normalization
+(BN). Therefore, (Xie et al., 2020) proposed to use distinct BN layers to handle data from two distributions and (Wang
+et al., 2022a) leveraged normalizer-free networks (removing BN layers) to improve clean accuracy. As we discussed, TTA
+methods exhibit promising improvement in mitigating distribution shifts. Therefore, we consider if they can improve the
+accuracy of clean input when training data draws from the distribution of adversarial data.
+TTA methods achieve a non-trivial clean accuracy improvement for adversarially trained models on CIFAR-10 and
+CIFAR-100 (Table 13). We select a list of adversarial training methods (Dai et al., 2022; Wu et al., 2020a; Gowal et al.,
+2021; Sehwag et al., 2022; Chen et al., 2022; Jia et al., 2022) as the source model and use TTA methods on clean inputs. All
+of them are downloaded from RobustBench (Croce et al., 2020). As shown, Soft PL signiﬁcantly improves the average
+accuracy3.35% for CIFAR-10 and 4.22% for CIFAR-100. The most signiﬁcant improvement even boosts 8.13%
+compared to no TTA method. This result is interesting as another perspective to understand TTA better, and we hope future
+works can explore more on it. We also observe that simply replacing the BN statistics does not work as well as using
+adversarial models on ImageNet.
+E.2. Corruption Accuracy of Robust Models
+We evaluate the corruption accuracy, where Wide ResNet with 28 layers trained by Gowal et al. (2021) and Wu et al. (2020a)
+are chosen for CIFAR-10-C, and Wide ResNet with 28 layers developed by Pang et al. (2022) and Rebufﬁ et al. (2021) are
+selected for CIFAR-100-C. Note that all adversarial models are downloaded from RobustBench (Croce et al., 2020).
+Robust models with TTA achieve better performance than the standard model on CIFAR-10-C, but worse
+performance on CIFAR-100-C (Figure 15 and Figure 16). For CIFAR-10-C, we observe a performance boost from using
+robust models. For example, Wu et al. (2020a) achieves a 5% improvement than the standard one. For CIFAR-100-C,
+robust models cannot perform similarly to the standard model. However, leveraging adversarial models and TTA can still
+exceed the standard model without TTA. Since they may use different training conﬁgurations (e.g., training batch size, data
+augmentations, inner optimization steps), we leave the question of “training the best adversarial source model for TTA” as
+future works.Uncovering Adversarial Risks of Test-Time Adaptation 30
+Robust models achieve comparable performance with the standard model on ImageNet-C if TTA is deployed (Figure
+17). We then evaluate the corruption accuracy of robust models on the ImageNet-C dataset. Speciﬁcally, adversarially
+trained ResNet 50 models originated by Salman et al. (2020) and Engstrom et al. (2019) are selected. We observe that the
+average corruption accuracy of adversarial models can signiﬁcantly beneﬁt from test-time adaptation methods. For example,
+the average corruption accuracy of robust models is 10% less than the standard model but reaches similar performance
+when TTA is deployed. Furthermore, robust models generally gain higher accuracy on larger severity than the standard ones
+(e.g.,10% improvement on severity 5 with TTA).
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Gowal
+Wu
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Gowal
+Wu
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Gowal
+Wu
+(a) Average severity (b) Severity 1 (c) Severity 2
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Gowal
+Wu
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Gowal
+Wu
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Gowal
+Wu
+(d) Severity 3 (e) Severity 4 (f) Severity 5
+Figure 15. Corruption accuracy of the standard and robust models (Gowal et al. (2021) and Wu et al. (2020a)) on CIFAR-10-C under
+different severity levels.
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+(a) Average severity (b) Severity 1 (c) Severity 2
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+(d) Severity 3 (e) Severity 4 (f) Severity 5
+Figure 16. Corruption accuracy of the standard and robust models (Pang et al. (2022) and Rebufﬁ et al. (2021)) on CIFAR-100-C under
+different severity levels.Uncovering Adversarial Risks of Test-Time Adaptation 31
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+(a) Average severity (b) Severity 1 (c) Severity 2
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+Source TeBN TENT HardPL SoftPL RPL Conjugate
+Adaptation Method020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+(d) Severity 3 (e) Severity 4 (f) Severity 5
+Figure 17. Corruption accuracy of the standard and robust models (Salman et al. (2020) and Engstrom et al. (2019)) on ImageNet-C
+under different severity levels.
+E.3. Mitigating Distribution Invading Attacks by Robust Models on CIFAR-C Benchmarks
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+Standard
+Gowal
+Wu
+2021222324252627
+# of Malicious Samples020406080100Attack Success Rate
+Standard
+Pang
+Rebuffi
+(a) CIFAR-10-C (b) CIFAR-100-C
+Figure 18. Attack success rate of our proposed attacks against robust models across the numbers of malicious samples. As a reference,
+128 is 64% of the whole batch containing 200 samples. Robust models for CIFAR-10-C are Gowal et al. (2021) and Wu et al. (2020a);
+robust models for CIFAR-100-C are Pang et al. (2022) and Rebufﬁ et al. (2021). [TTA method: TeBN ]
+In Figure 18, we report the ASR of standard and two robust models across the number of malicious samples on the CIFAR-C
+dataset. Adversarial models mitigate the vulnerability against DIA but cannot fully alleviate it. For example, with
+32 malicious samples, robust models degrade 60% and70% ASR for CIFAR-10-C and CIFAR-100-C, respectively.
+However, increasing malicious samples still breaks robust source models.
+E.4. Understanding the Layer-wise Batch Normalization behaviors
+To further design a more robust approach, we seek to understand what happens to BN statistics when deploying the
+Distribution Invading Attack. Therefore, we visualize the BN mean histogram and BN variance histogram of all 53 layers
+in Figure 28 and 29, with and without attacks. We use the Wasserstein distance with`1-norm to measure the discrepancy
+between two histograms. Speciﬁcally, given two probability measures w;voverR, the Wasserstein distance under
+Kantorovich formulation (Kantorovich, 1942) is deﬁned as
+DW(w;v) := min
+2(w;v)Z
+RRjz z0jd(z;z0) (17)
+where (w;v) :=
+2P(RR)jR
+R(z;z0)dz=w;R
+R(z;z0)dz0=v	
+denotes a collection of couplings
+between two distributions wandv. Here, we view each histogram as a discrete probability distribution in a natural sense.
+Note that the histograms for different layers may have different overall scales; hence, we normalize the `1distancejz z0j
+by the range of the histogram of benign samples for a fair comparison.Uncovering Adversarial Risks of Test-Time Adaptation 32
+Figure 19(a) presents the Wasserstein distance for each layer, and interestingly, we observe that DWremains low on most
+layers but leaps on the last few layers, especially the BN layer 52. Then, we visualize the histograms of layer 52 in Figure
+19(b), which appears to be an obvious distribution shift.
+0 10 20 30 40 50
+# of BN layer0.000.020.040.060.080.100.120.14Wasserstein distance
+Batch Mean
+0 10 20 30 40 50
+# of BN layer0.00.10.20.30.40.5Wasserstein Distance
+Batch Variance
+0.14
+ 0.12
+ 0.10
+ 0.08
+ 0.06
+ 0.04
+ 0.02
+BN layer 52020406080100120Batch Mean
+No Attack
+Attack
+0.005 0.010 0.015 0.020 0.025 0.030 0.035
+BN layer 52020406080100120140Batch Variance
+No Attack
+Attack
+(a) Wasserstein Distance (b) BN Statistics Histogram
+Figure 19. (a) Wasserstein Distance between malicious and benign BN Statistics gets unexpectedly high at BN Layer 52. (b) Histogram
+of batch mean and variance at BN Layer 52. (More ﬁgures are presented in Figure 28 and Figure 29).
+E.5. Effectiveness of Robust BN Estimation on CIFAR-C
+We report the effectiveness of our two robust estimation methods, smoothing via training-time BN statistics and adaptively
+selecting layer-wise BN statistics on CIFAR-C. Precisely, we use Nm= 40, which is very challenging for defense (ASR
+reaches near-100%). Again, we select =f0:0;0:2;0:4;0:6;0:8;1:0gfor balancing training-time and test-time BN. For
+adaptively selecting layer-wise BN statistics, we leverage full training-time BN ( = 1.0) for the last Ntr=f0, 1, 2, 4, 8,
+16gBN layers.
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Attack Success Rate
+Standard
+Gowal
+Wu
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Corruption AccuracyStandard
+Gowal
+Wu
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Attack Success Rate
+Standard
+Pang
+Rebuffi
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+(a) CIFAR-10-C (b) CIFAR-100-C
+Figure 20. Controlling= 0.6 can degrade the attack success rate (line) while maintaining high corruption accuracy (bar). [ Nm=40]
+0 1 2 4 8 16
+Training-time BN Layer020406080100Attack Success Rate
+Standard
+Gowal
+Wu
+0 1 2 4 8 16
+Training-time BN Layer020406080100Corruption AccuracyStandard
+Gowal
+Wu
+0 1 2 4 8 16
+Training-time BN Layer020406080100Attack Success Rate
+Standard
+Pang
+Rebuffi
+0 1 2 4 8 16
+Training-time BN Layer020406080100Corruption AccuracyStandard
+Pang
+Rebuffi
+(a) CIFAR-10-C (b) CIFAR-100-C
+Figure 21. Controlling layer-wise BN can degrade the attack success rate (line) while maintaining high corruption accuracy (bar). [ Nm=40;
+=0.6]
+Robustly estimating the ﬁnal BN statistics signiﬁcantly enhance performance against DIA. Figure 20 demonstrates
+the effectiveness of smoothing with training-time BN, which degrades the ASR 30% for the standard model if we select 
+= 0.6. Then, we stick with = 0.6 and apply layer-wise BN. As a result, the ASR further degrades by about 15% withoutUncovering Adversarial Risks of Test-Time Adaptation 33
+sacriﬁcing the corruption accuracy (shown in Figure 21). In conclusion, applying two of our robust estimating methods can
+degrade45% for the standard model and 30% for the adversarial model in total.
+Our method involves a trade-off between TTA performance and robustness to DIA attacks. It does not inherently eliminate
+vulnerability when exploiting the test batch information. In addition, selecting the right hyper-parameters (i.e., andNtr)
+without the out-of-distribution information is another challenging problem.
+E.6. Addtional Experiments of Robust BN Estimation on ImageNet-C
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Attack Success Rate
+Standard
+Salman
+Engstrom
+0.0 0.2 0.4 0.6 0.8 1.0
+Smoothing Factor 
+020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+0 1 2 4 8 16 32
+Training-time BN Layer020406080100Attack Success Rate
+Standard
+Salman
+Engstrom
+0 1 2 4 816 32
+Training-time BN Layer020406080100Corruption AccuracyStandard
+Salman
+Engstrom
+(a) Smoothing via training-time BN statistics (b) Adaptively selecting layer-wise BN statistics. [ =0.6]
+Figure 22. Robustly estimating the ﬁnal BN statistics can degrade the attack success rate (line) while maintaining high corruption accuracy
+(bar) on ImageNet-C. [ Nm=40] This is the complementary evaluation of Figure 7 and Figure 8 with more malicious samples.
+Figure 22 shows the additional experiments of section 6.2 with a stronger attacking setting ( Nm= 40). We observe the
+conclusions keep the same where selecting an appropriate andNtr(i.e.,= 0.6,Ntr= 16) can decrease the ASR for
+70% and20% for the robust and standard model, respectively, and maintain the corruption accuracy.
+E.7. More Evaluations of Corruption Accuracy for Robustly Estimating BN
+In this subsection, we present a more comprehensive parameters search for the smoothing factor and number of training-
+time BN layers Ntrto understand their effect on corruption accuracy. Speciﬁcally, we analyze standard and robust models
+on CIFAR-C and ImageNet-C benchmarks.
+As shown in Figure 23, Figure 24, and Figure 25, we observe that the corruption accuracy generally reaches the best when
+= 0:5andNtr= 0. The improvement compared to TeBN (= 0andNtr= 0) is limited (2%) except for the robust
+models on CIFAR-100-C. The corruption accuracy drops dramatically for  > 0:7. Furthermore, increasing Ntralso
+decreases the accuracy of corrupted data.
+0 1 2 4 8 16
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+86.50 86.54 86.54 86.49 85.97 84.77
+86.53 86.55 86.55 86.47 85.99 84.56
+86.53 86.55 86.57 86.46 86.01 84.27
+86.59 86.61 86.61 86.54 86.08 83.96
+86.65 86.65 86.65 86.52 86.05 83.53
+86.64 86.65 86.64 86.47 85.90 82.88
+86.53 86.50 86.45 86.22 85.45 82.16
+86.06 85.96 85.88 85.63 84.56 81.06
+84.86 84.71 84.60 84.26 82.93 79.56
+82.01 81.78 81.58 81.20 79.93 77.62
+74.92 74.92 74.92 74.92 74.92 74.927678808284868890
+Corruption Accuracy
+0 1 2 4 8 16
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+84.86 84.82 84.77 84.52 84.43 83.52
+85.12 85.04 85.02 84.80 84.69 83.63
+85.34 85.23 85.18 84.96 84.85 83.66
+85.44 85.35 85.28 85.10 84.97 83.71
+85.52 85.42 85.36 85.19 85.04 83.73
+85.51 85.41 85.38 85.23 85.03 83.62
+85.38 85.28 85.23 85.12 84.88 83.43
+85.09 84.98 84.92 84.83 84.55 83.07
+84.38 84.25 84.21 84.11 83.76 82.28
+82.83 82.69 82.67 82.56 82.25 81.15
+79.54 79.54 79.54 79.54 79.54 79.547678808284868890
+Corruption Accuracy
+0 1 2 4 8 16
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+83.22 83.23 83.15 82.97 82.76 82.13
+83.56 83.56 83.46 83.28 83.05 82.38
+83.89 83.87 83.79 83.59 83.35 82.67
+84.20 84.19 84.08 83.90 83.65 82.95
+84.50 84.43 84.34 84.15 83.96 83.16
+84.68 84.62 84.51 84.34 84.09 83.22
+84.72 84.63 84.55 84.41 84.07 83.08
+84.57 84.46 84.38 84.19 83.83 82.74
+83.97 83.84 83.74 83.57 83.18 81.98
+82.56 82.40 82.30 82.13 81.73 80.81
+79.10 79.10 79.10 79.10 79.10 79.107678808284868890
+Corruption Accuracy
+(a) Standard WRN-28 (b) Gowal et al. (2021) (c) Wu et al. (2020a)
+Figure 23. Corruption accuracy of balancing training-time BN across and number of Training-time BN layers on CIFAR-10-C.Uncovering Adversarial Risks of Test-Time Adaptation 34
+0 1 2 4 8 16
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+68.80 68.98 68.98 68.88 68.42 65.65
+68.89 68.99 68.97 68.86 68.39 65.48
+68.92 68.98 68.97 68.86 68.28 65.27
+68.97 69.00 68.97 68.87 68.13 65.08
+68.98 69.01 68.93 68.79 67.92 64.79
+68.92 68.93 68.88 68.69 67.52 64.37
+68.65 68.58 68.56 68.36 66.88 63.80
+67.98 67.88 67.81 67.60 65.92 63.06
+66.49 66.39 66.32 66.02 64.34 61.99
+63.47 63.36 63.30 63.03 61.84 60.21
+56.44 56.44 56.44 56.44 56.44 56.44
+50.052.555.057.560.062.565.067.570.0
+Corruption Accuracy
+0 1 2 4 8 16
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+57.10 57.03 57.01 56.93 56.86 56.13
+57.57 57.48 57.49 57.39 57.32 56.60
+58.07 58.01 58.00 57.89 57.86 56.98
+58.52 58.45 58.43 58.35 58.27 57.31
+58.89 58.82 58.80 58.76 58.61 57.52
+59.10 59.00 58.98 58.90 58.76 57.57
+59.11 58.98 58.99 58.88 58.64 57.41
+58.77 58.70 58.69 58.54 58.20 56.90
+57.98 57.83 57.81 57.62 57.30 56.05
+56.28 56.10 56.04 55.88 55.57 54.68
+52.52 52.52 52.52 52.52 52.52 52.52
+50.052.555.057.560.062.565.067.570.0
+Corruption Accuracy
+0 1 2 4 8 16
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+54.30 54.31 54.43 55.49 55.81 54.41
+55.35 55.34 55.42 56.04 56.20 54.68
+56.06 56.01 56.07 56.47 56.58 54.91
+56.71 56.62 56.66 56.93 57.00 55.15
+57.39 57.21 57.23 57.40 57.41 55.38
+57.80 57.64 57.62 58.02 57.72 55.44
+57.83 57.64 57.62 57.67 57.58 55.23
+57.37 57.19 57.18 57.15 56.93 54.71
+56.36 56.09 56.07 56.05 55.73 53.77
+54.42 54.15 54.13 54.11 53.79 52.47
+50.59 50.59 50.59 50.59 50.59 50.59
+50.052.555.057.560.062.565.067.570.0
+Corruption Accuracy
+(a) Standard WRN-28 (b) Pang et al. (2022) (c) Rebufﬁ et al. (2021)
+Figure 24. Corruption accuracy of balancing training-time BN across and number of Training-time BN layers on CIFAR-100-C.
+0 1 2 4 8 16 32
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+52.18 52.11 51.95 51.79 51.97 51.80 48.06
+52.43 52.34 52.17 52.04 52.23 51.85 48.18
+52.52 52.44 52.35 52.30 52.42 51.87 48.07
+52.73 52.65 52.55 52.50 52.54 51.74 47.87
+52.83 52.81 52.75 52.69 52.54 51.58 47.48
+53.11 53.04 52.91 52.88 52.55 51.42 46.97
+53.27 53.20 53.13 52.97 52.50 51.15 46.23
+53.23 53.18 53.06 52.83 52.00 50.24 45.28
+52.23 52.12 51.97 51.59 50.41 48.61 44.46
+49.20 49.08 48.90 48.56 47.40 46.08 43.71
+39.83 39.83 39.83 39.83 39.83 39.83 39.83
+25303540455055
+Corruption Accuracy
+0 1 2 4 8 16 32
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+53.50 53.60 53.62 53.61 53.61 53.51 51.71
+53.58 53.68 53.74 53.69 53.66 53.57 51.61
+53.65 53.75 53.75 53.74 53.66 53.55 51.42
+53.64 53.73 53.72 53.69 53.63 53.38 51.06
+53.53 53.56 53.56 53.52 53.44 53.12 50.51
+53.28 53.31 53.28 53.28 53.06 52.67 49.73
+52.89 52.85 52.80 52.78 52.44 51.97 48.43
+52.03 51.94 51.87 51.71 51.24 50.46 46.11
+49.61 49.48 49.38 49.10 48.28 47.06 42.19
+43.56 43.34 43.11 42.72 41.75 40.55 37.19
+30.66 30.66 30.66 30.66 30.66 30.66 30.66
+25303540455055
+Corruption Accuracy
+0 1 2 4 8 16 32
+Training-time BN Layer0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+53.14 53.17 53.26 53.20 53.19 52.98 50.99
+53.34 53.38 53.46 53.35 53.26 53.05 51.11
+53.35 53.40 53.44 53.41 53.25 53.10 51.03
+53.42 53.46 53.40 53.44 53.23 53.05 50.87
+53.23 53.29 53.29 53.23 53.03 52.70 50.41
+52.99 52.99 52.98 52.92 52.64 52.32 49.51
+52.52 52.53 52.53 52.43 52.07 51.41 48.19
+51.46 51.37 51.36 51.23 50.60 49.68 45.90
+48.80 48.69 48.60 48.37 47.48 46.36 42.36
+42.74 42.59 42.48 42.21 41.18 40.19 37.45
+31.02 31.02 31.02 31.02 31.02 31.02 31.02
+25303540455055
+Corruption Accuracy
+(a) Standard ResNet-50 (b) Salman et al. (2020) (c) Engstrom et al. (2019)
+Figure 25. Corruption accuracy of balancing training-time BN across and number of Training-time BN layers on ImageNet-C.Uncovering Adversarial Risks of Test-Time Adaptation 35
+F. Visiualization of Constrained Attacks
+F.1. Examples of Corrupted Images and Corresponding L1Malicious Images
+Figure 26. Demonstrations of 15 types of corrupted benign images (upper) and malicious images with = 8=255(lower) from the
+ImageNet-C benchmark. Most malicious images are visually imperceptible compared with their original ones. [Severity level: 3]Uncovering Adversarial Risks of Test-Time Adaptation 36
+F.2. Examples of Corrupted Images and Adversarial Corrupted Images
+Figure 27. Demonstrations of the corrupted snow and fog dataset from ImageNet-C with severity level 3 and adversarially corrupted
+images (DIA). We observe that manually distinguishing malicious and benign samples is hard.Uncovering Adversarial Risks of Test-Time Adaptation 37
+G. Visualization of Batch Normalization Statistics
+0.2
+ 0.1
+ 0.0 0.1 0.201020304050BN layer 1
+No Attack
+Attack
+0.5
+ 0.0 0.5 1.0 1.50.02.55.07.510.012.515.017.5BN layer 2
+No Attack
+Attack
+0.6
+ 0.4
+ 0.2
+ 0.0 0.2 0.40.02.55.07.510.012.515.017.5BN layer 3
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1 0.2020406080100120BN layer 4
+No Attack
+Attack
+1
+ 0 1 2020406080BN layer 5
+No Attack
+Attack
+0.2
+ 0.0 0.2 0.40510152025BN layer 6
+No Attack
+Attack
+0.3
+ 0.2
+ 0.1
+ 0.0 0.10246810121416BN layer 7
+No Attack
+Attack
+0.10
+ 0.05
+ 0.00 0.05 0.10020406080100BN layer 8
+No Attack
+Attack
+0.6
+ 0.4
+ 0.2
+ 0.0 0.20.02.55.07.510.012.515.017.5BN layer 9
+No Attack
+Attack
+0.1
+ 0.0 0.1 0.20510152025BN layer 10
+No Attack
+Attack
+0.10
+ 0.05
+ 0.00 0.05020406080100120140BN layer 11
+No Attack
+Attack
+0.4
+ 0.2
+ 0.0 0.2 0.4051015202530BN layer 12
+No Attack
+Attack
+0.2
+ 0.0 0.2 0.401020304050BN layer 13
+No Attack
+Attack
+0.3
+ 0.2
+ 0.1
+ 0.0 0.1 0.2050100150200BN layer 14
+No Attack
+Attack
+0.4
+ 0.2
+ 0.0 0.20255075100125150175200BN layer 15
+No Attack
+Attack
+0.2
+ 0.0 0.205101520253035BN layer 16
+No Attack
+Attack
+0.50
+ 0.25
+ 0.00 0.25 0.5005101520253035BN layer 17
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1050100150200250BN layer 18
+No Attack
+Attack
+0.2
+ 0.0 0.2 0.40510152025303540BN layer 19
+No Attack
+Attack
+0.2
+ 0.0 0.20510152025BN layer 20
+No Attack
+Attack
+0.10
+ 0.05
+ 0.00 0.05 0.10020406080100120140BN layer 21
+No Attack
+Attack
+0.3
+ 0.2
+ 0.1
+ 0.0 0.105101520253035BN layer 22
+No Attack
+Attack
+0.2
+ 0.0 0.2 0.40102030405060BN layer 23
+No Attack
+Attack
+0.15
+ 0.10
+ 0.05
+ 0.00 0.050255075100125150175200BN layer 24
+No Attack
+Attack
+0.4
+ 0.2
+ 0.0 0.201020304050607080BN layer 25
+No Attack
+Attack
+0.3
+ 0.2
+ 0.1
+ 0.0 0.1 0.2020406080BN layer 26
+No Attack
+Attack
+0.2
+ 0.0 0.2050100150200250300350BN layer 27
+No Attack
+Attack
+0.2
+ 0.0 0.2050100150200250300BN layer 28
+No Attack
+Attack
+0.5
+ 0.0 0.5020406080100120BN layer 29
+No Attack
+Attack
+0.5
+ 0.0 0.5020406080100BN layer 30
+No Attack
+Attack
+0.1
+ 0.0 0.1050100150200250300350BN layer 31
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1 0.20102030405060BN layer 32
+No Attack
+Attack
+0.2
+ 0.0 0.2020406080100BN layer 33
+No Attack
+Attack
+0.10
+ 0.05
+ 0.00 0.05050100150200250BN layer 34
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1010203040506070BN layer 35
+No Attack
+Attack
+0.1
+ 0.0 0.1 0.2 0.301020304050607080BN layer 36
+No Attack
+Attack
+0.05
+ 0.00 0.05050100150200250BN layer 37
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.10102030405060BN layer 38
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1 0.2 0.301020304050607080BN layer 39
+No Attack
+Attack
+0.10
+ 0.05
+ 0.00 0.05 0.10050100150200250300350400BN layer 40
+No Attack
+Attack
+0.1
+ 0.0 0.1010203040506070BN layer 41
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1 0.201020304050607080BN layer 42
+No Attack
+Attack
+0.10
+ 0.05
+ 0.00 0.05050100150200250300BN layer 43
+No Attack
+Attack
+0.2
+ 0.1
+ 0.0 0.1020406080100120140160BN layer 44
+No Attack
+Attack
+0.1
+ 0.0 0.1 0.2 0.30255075100125150175200BN layer 45
+No Attack
+Attack
+0.1
+ 0.0 0.1 0.202004006008001000BN layer 46
+No Attack
+Attack
+0.05
+ 0.00 0.05 0.100100200300400500600700BN layer 47
+No Attack
+Attack
+0.5
+ 0.0 0.5 1.00255075100125150175200BN layer 48
+No Attack
+Attack
+0.4
+ 0.2
+ 0.0 0.2 0.4050100150200250300BN layer 49
+No Attack
+Attack
+0.1
+ 0.0 0.102004006008001000BN layer 50
+No Attack
+Attack
+1
+ 0 1 2050100150200250BN layer 51
+No Attack
+Attack
+0.125
+ 0.100
+ 0.075
+ 0.050
+ 0.025
+020406080100120BN layer 52
+No Attack
+Attack
+0.02
+ 0.00 0.02 0.040100200300400500600700BN layer 53
+No Attack
+Attack
+Figure 28. Full layer-by-layer visualization of BN mean histogram with and without DIA attacks. The distribution differs on the last few
+layers.Uncovering Adversarial Risks of Test-Time Adaptation 38
+0 5 1005101520BN layer 1
+No Attack
+Attack
+0.00 0.05 0.10 0.15 0.2005101520253035BN layer 2
+No Attack
+Attack
+0.00 0.05 0.100.02.55.07.510.012.515.017.5BN layer 3
+No Attack
+Attack
+0.00 0.01 0.02 0.03020406080100BN layer 4
+No Attack
+Attack
+0.0 0.1 0.2 0.3020406080100120140BN layer 5
+No Attack
+Attack
+0.00 0.02 0.04 0.06 0.080246810121416BN layer 6
+No Attack
+Attack
+0.01 0.02 0.03 0.040246810121416BN layer 7
+No Attack
+Attack
+0.000 0.002 0.004 0.006020406080BN layer 8
+No Attack
+Attack
+0.01 0.02 0.03 0.04 0.05 0.060.02.55.07.510.012.515.017.5BN layer 9
+No Attack
+Attack
+0.01 0.02 0.030.02.55.07.510.012.515.017.5BN layer 10
+No Attack
+Attack
+0.000 0.002 0.004 0.006020406080100120140BN layer 11
+No Attack
+Attack
+0.0 0.1 0.2 0.30102030405060BN layer 12
+No Attack
+Attack
+0.01 0.02 0.03 0.04051015202530BN layer 13
+No Attack
+Attack
+0.000 0.005 0.010 0.0150255075100125150175200BN layer 14
+No Attack
+Attack
+0.000 0.025 0.050 0.075 0.100 0.125050100150200250BN layer 15
+No Attack
+Attack
+0.0 0.1 0.2 0.3 0.401020304050607080BN layer 16
+No Attack
+Attack
+0.00 0.02 0.04 0.06 0.0805101520253035BN layer 17
+No Attack
+Attack
+0.000 0.005 0.010 0.015 0.020050100150200250300350BN layer 18
+No Attack
+Attack
+0.025 0.050 0.075 0.100 0.1250510152025303540BN layer 19
+No Attack
+Attack
+0.01 0.02 0.03 0.040510152025BN layer 20
+No Attack
+Attack
+0.0000 0.0025 0.0050 0.0075 0.0100 0.01250255075100125150175200BN layer 21
+No Attack
+Attack
+0.01 0.02 0.03 0.0405101520BN layer 22
+No Attack
+Attack
+0.010 0.015 0.020 0.025 0.030051015202530BN layer 23
+No Attack
+Attack
+0.000 0.001 0.002 0.003 0.004020406080100120BN layer 24
+No Attack
+Attack
+0.025 0.050 0.075 0.100 0.125020406080BN layer 25
+No Attack
+Attack
+0.01 0.02 0.03 0.04 0.05 0.06010203040506070BN layer 26
+No Attack
+Attack
+0.000 0.005 0.010 0.015050100150200BN layer 27
+No Attack
+Attack
+0.00 0.01 0.02 0.03 0.04050100150200250BN layer 28
+No Attack
+Attack
+0.025 0.050 0.075 0.100 0.125020406080100BN layer 29
+No Attack
+Attack
+0.02 0.04 0.06 0.08020406080100BN layer 30
+No Attack
+Attack
+0.000 0.005 0.010 0.0150100200300400BN layer 31
+No Attack
+Attack
+0.01 0.02 0.03 0.040102030405060BN layer 32
+No Attack
+Attack
+0.01 0.02 0.03 0.04010203040506070BN layer 33
+No Attack
+Attack
+0.000 0.002 0.004 0.006050100150200250300BN layer 34
+No Attack
+Attack
+0.01 0.02 0.03 0.04020406080BN layer 35
+No Attack
+Attack
+0.01 0.02 0.03020406080100BN layer 36
+No Attack
+Attack
+0.000 0.002 0.004 0.006 0.008 0.0100100200300400BN layer 37
+No Attack
+Attack
+0.010 0.015 0.020 0.025 0.030010203040506070BN layer 38
+No Attack
+Attack
+0.005 0.010 0.0150102030405060BN layer 39
+No Attack
+Attack
+0.000 0.001 0.002 0.003 0.004 0.005050100150200250300BN layer 40
+No Attack
+Attack
+0.01 0.02 0.03020406080100BN layer 41
+No Attack
+Attack
+0.02 0.04 0.06 0.08020406080100120140160BN layer 42
+No Attack
+Attack
+0.000 0.005 0.010 0.0150100200300400500BN layer 43
+No Attack
+Attack
+0.01 0.02 0.03 0.040255075100125150175200BN layer 44
+No Attack
+Attack
+0.0 0.1 0.20100200300400500BN layer 45
+No Attack
+Attack
+0.00 0.01 0.02 0.0302004006008001000120014001600BN layer 46
+No Attack
+Attack
+0.00 0.01 0.0202004006008001000120014001600BN layer 47
+No Attack
+Attack
+0.1 0.2 0.3 0.4050100150200250BN layer 48
+No Attack
+Attack
+0.01 0.02 0.03 0.04050100150200BN layer 49
+No Attack
+Attack
+0.000 0.002 0.004 0.006 0.008020040060080010001200BN layer 50
+No Attack
+Attack
+0.25 0.50 0.75 1.00 1.25050100150200250BN layer 51
+No Attack
+Attack
+0.01 0.02 0.03020406080100120140BN layer 52
+No Attack
+Attack
+0.000 0.001 0.002 0.003 0.0040200400600800BN layer 53
+No Attack
+Attack
+Figure 29. Full layer-by-layer visualization of BN variance histogram with and without DIA attacks. The distribution differs on the last
+few layers.

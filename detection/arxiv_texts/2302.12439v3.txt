@@ -1,0 +1,1235 @@
+Simultaneous upper and lower bounds of American-style
+option prices with hedging via neural networks
+Ivan Guo∗1,2, Nicolas Langren´ e†3, and Jiahao Wu1
+1School of Mathematical Sciences, Monash University, Melbourne, Australia
+2Centre for Quantitative Finance and Investment Strategies, Monash University, Australia
+3Guangdong Provincial Key Laboratory of Interdisciplinary Research and Application for Data
+Science, BNU-HKBU United International College, Zhuhai, China
+November 15, 2024
+Abstract
+In this paper, we introduce two novel methods to solve the American-style option
+pricing problem and its dual form at the same time using neural networks. Without
+applying nested Monte Carlo, the first method uses a series of neural networks to si-
+multaneously compute both the lower and upper bounds of the option price, and the
+second one accomplishes the same goal with one global network. The avoidance of ex-
+tra simulations and the use of neural networks significantly reduce the computational
+complexity and allow us to price Bermudan options with frequent exercise opportuni-
+ties in high dimensions, as illustrated by the provided numerical experiments. As a
+by-product, these methods also derive a hedging strategy for the option, which can also
+be used as a control variate for variance reduction.
+1 Introduction
+Pricing American-style options is a type of optimal control/stopping problem for which
+numerical methods have been extensively explored due to the lack of analytical solutions.
+However, classical methods based on partial differential equations and binomial trees become
+expensive computationally when there are multiple factors impacting the value of the option,
+∗Ivan Guo’s work was partially supported by the Australian Research Council (Grant DP220103106) and
+CSIRO Data61 Risklab.
+†Nicolas Langren´ e’s work was supported in part by the Guangdong Provincial Key Laboratory of Inter-
+disciplinary Research and Application for Data Science, BNU-HKBU United International College, project
+code 2022B1212010006, and in part by the UIC Start-up Research Fund UICR0700041-22.
+1arXiv:2302.12439v3  [q-fin.CP]  14 Nov 2024a limitation known as the curse of dimensionality . To circumvent this difficulty, simulation-
+based methods have been extensively explored [47, 4, 13, 39, 48, 10, 12, 3, 36, 11, 40]. By
+directly solving the pricing problem, these methods typically generate a candidate optimal
+stopping strategy and a lower bound on the price, which is more in the interest of the
+buying party. On the other hand, option sellers would be more interested in an upper
+bound. Haugh and Kogan [30] and Rogers [45] independently explored the duality of the
+pricing problem, based on which a variety of methods have been proposed [2, 34, 9, 44, 46]
+to derive an upper bound on the option price by solving its dual problem.
+Among the dynamic programming-based methods, the Least Squares Monte Carlo
+(LSMC) method [39, 48] has gained much popularity. In search of the optimal stopping
+strategy, continuation values are approximated by a pre-defined, static basis via linear re-
+gression. However, as the dimension of the problem increases, the number of basis functions
+significantly increases and the method can become numerically unstable. Various studies,
+including Kohler et al. [35], Lapeyre and Lelong [37] and Herrera et al. [31], have proposed to
+replace the linear regression in the LSMC method by neural networks (NNs). Additionally,
+Gouden` ege et al. [27] and Gouden` ege et al. [28] have employed Gaussian process regres-
+sion to estimate the continuation value. Reppen et al. [43] applied NNs to parameterise
+the stopping boundary. Moreover, Bayer et al. [5] have devised a forward and a backward
+algorithm to approximate the stopping strategy by randomising them with independent
+noises, while Gonon [26] has utilised neural networks to directly approximate the value
+function and showed that the method is free of the curse of dimensionality. Other works
+[29, 42, 16, 24, 41, 23] have explored the application of deep learning in option pricing by
+addressing the corresponding partial differential equations (PDEs) or backward stochastic
+differential equations (BSDEs).
+Besides option pricing, hedging strategies are crucial in risk management. Most exist-
+ing methods for generating hedging strategies either involve taking the first derivative of
+approximated option value functions [3, 11, 33, 41] or approximating the function repre-
+senting the difference between option values at different times once the option has been
+priced [7, 6]. However, the efficiency of these strategies relies on the accurate differentiation
+of the estimated continuation value function. Since functions with similar values can have
+very different derivatives, even satisfying approximations of the value process can lead to
+ineffective hedging strategies.
+The primary contribution of our work lies in incorporating the dual formulation of the
+option price into the modified LSMC method to design algorithms that concurrently pro-
+duce both lower and upper bounds of the option price. Moreover, our method facilitates
+the derivation of hedging strategies as an immediate by-product, computed directly from
+the dual martingale used in the upper bound estimate instead of the differentiation. Unlike
+2traditional methods, our approach offers hedging strategies at all times before maturity, not
+just at exercise times, and can serve as a control variate to reduce variance, thereby yield-
+ing a more accurate lower bound. Becker et al. [8] proposed a method to price Bermudan
+options in high-dimensions. However, in their method, they first find a stopping strategy to
+approximate a lower bound, based on which they then derive an upper bound using nested
+Monte Carlo. Similarly, their hedging strategy is also based on the stopping strategy with
+another independent simulation. Their other work [7] has a similar structure but approxi-
+mates the stopping strategy instead. In the case of pricing Bermudan options with frequent
+exercise opportunities, which approximates an American-style option, the computational
+cost can be very high as the cost of nested simulation increases quadratically with the
+number of stopping opportunities. Similar methods designed by Lokeshwar et al. [38], Be-
+lomestny et al. [9] do not require nested simulations, but the derivation of a biased upper
+estimate is separate from the determination of the stopping strategy. The work by Hur´ e
+et al. [32] on reflected BSDEs resolution shares some resemblance, but it only generates a
+point estimate, and the details in the dynamic programming are different.
+In addition, we present the use of one global network instead of a series of networks
+in the derivation by treating time as an additional state variable. Global networks have
+been introduced to solve semi-linear PDEs [15] and other control problems [25, 22]. In such
+stopping problems, the target values are known when the training starts as they are outputs
+of the problem, rather than inputs. However, the training targets are unavailable at the
+outset of the problem. We propose to alternate the update of stopping strategies and the
+network training till it produces satisfactory results.
+This paper is structured in the following order. Section 2 lays out the theoretical ground-
+work for combining the LSMC algorithm with the dual formulation. In Section 3, we
+introduce the numerical methods devised and then present various variants in Section 4.
+Section 5 is dedicated to demonstrating numerical results in both low- and high-dimensional
+settings, and then we conclude in Section 6.
+2 Problem formulation
+Consider an American option with maturity T >0. Let (Ω ,F,F= (Ft)t∈[0,T],Q) be a
+filtered probability space, where Fis the augmented filtration of a d-dimensional Brownian
+motion ( Wt)t∈[0,T], andQis the equivalent martingale measure.
+Define βt=ertas the value of the risk-free account at t∈[0, T], where the constant r
+is the risk-free interest rate. The price of the option is based on drisky assets whose value
+process ( St)t∈[0,T]is Markovian and is the solution to the SDE
+dSt=rStdt+σ(t, St)dWt,
+3where σ: [0, T]×Rd→Rd×dis assumed to satisfy sufficient regularity conditions to ensure
+the well-posedness of the equation.
+2.1 The lower bound of the option price
+Let (Zt)t∈[0,T]denote the F-adapted continuous discounted payoff process of the option
+satisfying E[supt∈[0,T]Zt]<∞. Let τ: Ω→[0, T] be a stopping time, and Tbe the set of
+all stopping times with respect to the filtration F. Then, the value of the American option
+at time tdiscounted back to time 0 is
+Vt= ess sup
+τ∈T,τ⩾tEh
+ZτFti
+,
+and in particular the value at time zero is
+V0= ess sup
+τ∈TE[Zτ].
+For any specific stopping strategy τ′∈ T, we have V′
+0=E[Zτ′]⩽ess sup
+τ∈TE[Zτ] =V0.
+Hence the estimate of an American option price given by one strategy is a lower bound of
+the real value.
+2.2 The upper bound of the option price
+Denote by MUIthe set of all uniformly integrable martingales with initial state set to
+zero. Since the discounted option value process ( Vt)t∈[0,T]is a supermartingale of class D,
+it has a unique Doob-Meyer decomposition:
+Vt=V0+M∗
+t−A∗
+t, (1)
+where M∗∈ MUI, and A∗is a predictable non-decreasing process with A∗
+0= 0.
+The American option pricing problem has a dual form:
+V0= inf
+M∈MUIE"
+sup
+t∈[0,T]Zt−Mt#
+, (2)
+and the infimum is attained at M=M∗. We refer to Rogers [45], Haugh and Kogan [30]
+for proofs of this duality.
+Denote M ⊂ MUIas the set of martingales that are both uniformly integrable and
+square integrable. We restrict our search for M∗within the set M. This does not pose
+a problem in our numerical experiments as the optimal martingales corresponding to the
+options we price satisfy this condition. Since M∗∈ M and is adapted to the Brownian
+4filtration F, the Brownian martingale representation theorem states that there exists a
+predictable process Hwith values in Rsuch that EhRT
+0H2
+sdsi
+<∞, and
+M∗
+t=M∗
+0+Zt
+0HsdWs. (3)
+This allows us to estimate the optimal martingale M∗by approximating the process H
+numerically, and then generate an upper bound of the option price.
+2.3 The hedging strategy
+Consider a measurable adapted process ( Jt)t∈[0,T]with values in Rd+1, where Jiis the
+number of units of the i-th asset held in a portfolio consisting of drisky assets and one
+risk-free asset. The value of the portfolio at time tis
+Ut=J0
+tβt+dX
+i=1Ji
+tSi
+t.
+The process satisfies the conditionRT
+0|Ju|2du=Pd
+i=1RT
+0|Ji
+u|2du <∞a.s, and it is a
+self-financing hedging strategy if
+Ut
+βt=U0+Zt
+0Juβ−1
+uσ(u, Su) dWu. (4)
+Combining the Doob-Meyer decomposition (1) and the Brownian martingale represen-
+tation (3), we obtain
+Vt=V0+Zt
+0HudWu−A∗
+t. (5)
+For the portfolio to super-replicate the option, we needUt
+βt⩾Ztfor all t∈[0, T]. It is
+well-known that the cheapest such portfolio satisfies U0=V0andUt
+βt⩾Vt⩾Ztfor all
+t∈[0, T]. Comparing equations (4) and (5), we see that this can be achieved by setting
+Jt=βtHt
+σ(t, St).
+Hence, the hedging strategy Jcan be computed directly from the process H. The process
+A∗can be interpreted as the losses incurred every time the optimal exercise opportunity is
+missed.
+3 Valuing an American option numerically
+From now on, we only approximate American options by Bermudan options whose
+exercise times are restricted to the discrete set ti=t0+i·∆t, for i∈ {1, ..., n},where
+5∆t=T
+n. Note that since the pricing progress proceeds backward in time, in this paper, at
+ti, the previous step refers to ti+1and the next step refers to ti−1.
+We design two algorithms based on the combination of resolutions of both the primal
+and the dual problem. One uses a series of neural networks, and the other one uses only one
+global network. To avoid any confusion, we refer to the algorithm with multiple networks
+as Method I, and the global one as Method II.
+3.1 Method I: multiple neural networks
+3.1.1 The regression rule
+By taking the expectation of the discounted option value conditioned on Ftiand applying
+the Doob-Meyer decomposition, we have
+Vti+1=Eh
+Vti+1Ftii
++Zti+1
+tiHudWu. (6)
+In this equation, the conditional expectation is the continuation value , and the integral is
+themartingale increment from titoti+1. Since the stock price process is Markovian, both
+the conditional expectation and the process ( Hti)i∈{0,1,...,n}can be estimated as functions
+of the state variables Sti[18, 17].
+Let Φi(Sti) :Rd→Rand Ψi(Sti) :Rd→Rdbe approximations of the continuation
+function and the process Htiatti, respectively. We refer to Ψ( Sti) as the martingale
+increment function . Due to the independence among stocks, the martingale increment can
+be approximated byPd
+j=1β-1
+tiΨi(Sti)j∆Wj
+ti, where ∆ Wj
+ti=Wj
+ti+1−Wj
+ti. For simplicity, we
+leave out the superscript that indicates dimension and the symbol for summation in the
+rest of this section.
+Based on (6), we perform regression at each time through:
+min
+Φ,Ψ
+βtiVti+1−Φi(Sti)−dX
+j=1Ψi(Sti)j∆Wj
+ti
+2
+.
+In this method, one neural network is used to regress the continuation value and the
+martingale increment on the current stock prices at time ti∈ {t0, t1, t2, ..., t n−1}. In this
+work, we use fully-connected feedforward neural networks to perform these regressions. Let
+NNΘdenote fully connected feedforward artificial neural networks, with Θ describing the
+structure of a network. Θ = ( L,[n1, . . . , n L]) represents a network with Llayers, and each
+layer lhasnlneurons. In particular, n1andnLare the number of input features and the
+number of outputs, respectively. Each network takes the form:
+σnL−1◦AL−1◦ ··· ◦ σ1◦A1,
+6where Alsignifies an affine transformation from layer lto layer l+ 1:
+Al(x) =wT
+lx+bl,
+forx∈Rnl,wl∈Rnl×nl+1,bl∈Rl+1, and σlis the activation function applied to Al.
+3.1.2 The stopping strategy
+Letτi: Ω→ {ti+1, . . . , t n=T}be a stopping time, and Tibe the set of all stopping
+times that takes values greater than ti.
+The optimal stopping strategy is to exercise the option once the immediate payoff is
+higher than the continuation value. Let f(St) :Rd→Rbe the payoff of the option at
+t∈[0, T]. The stopping time can be represented as:
+τi= min {tj∈ {ti+1..., tn−1}:f(Stj)⩾Φj(Stj)} ∧tn.
+3.1.3 The update rule
+Consider two random processes ( Yti)n
+i=1and ( Xti)n
+i=1, defined as the following:
+•Attn=T, the option holder has to either exercise the option if it is in the money or
+let it expire if it is out of the money. Let
+Ytn=Xtn=f(Stn).
+•At each t∈ {t0, t1, . . . , t n−1}, the option holder either exercises the option immediately
+if the payoff value is higher than the continuation value, or hold it till the next exercise
+point if it is lower. Let
+Yti=
+
+f(Sti) , if f(Sti)⩾Φi(Sti)
+β−1
+∆tYti+1−Ψi(Sti)·∆Wti, iff(Sti)<Φi(Sti).
+Xti=
+
+f(Sti) if f(Sti)⩾β−1
+∆tXti+1−Ψi(Sti)·∆Wti
+β−1
+∆tXti+1−Ψi(Sti)·∆Wti,iff(Sti)< β−1
+∆tXti+1−Ψi(Sti)·∆Wti.(7)
+In the update of Yti, neglecting the subtraction term, it simply applies the stopping
+strategy. By averaging Yt0over all paths, we get a lower bound of the option price. The
+discounted payoff at the optimal stopping time is used as the regression target, which can
+significantly reduce the bias but introduce a higher variance. To cancel this negative effect,
+we subtract the martingale increment Ψi(Sti)·∆Wtiadjusted with the time value. If the
+approximation of Htiis perfect, the variance can be cancelled out completely. A proof is
+given in Appendix A to show that this term reduces the variance of the estimate.
+7In the update of Xti, the subtraction of the martingale increment serves a different
+purpose. Note that (7) can be written as a recursive equation:
+Xti= max {f(Sti), β−1
+∆tXti+1−Ψi(Sti)·∆Wti}.
+By expanding the recursion, we can have:
+Xt0= max {f(St0), β−1
+∆tmax{f(St1), . . . , (8)
+β−1
+∆tmax{f(Stn-1), β−1
+∆tf(Stn)−Ψn-1(Stn-1)·∆Wtn-1}
+···−Ψ1(St1)·∆Wt1}−Ψ0(St0)·∆Wt0}.
+Recall the duality (2). For a martingale M, we have:
+Vt0⩽max{Zt0, . . . , Z tn−1−n−2X
+i=0∆Mti, Ztn−n−1X
+i=0∆Mti}
+= max {Zt0, . . . , max{Ztn−1, Ztn−∆Mtn−1}−n−2X
+i=0∆Mti}
+= max {Zt0,max{Zt1, . . .max{Ztn−2,max{Ztn−1, Ztn−∆Mtn−1} −∆Mtn−2}
+. . .−∆Mt1}−∆Mt0}. (9)
+Since ∆ Mti≈β-1
+tiΨi(Sti)∆WtiandZti=β−1
+tif(Sti), from (8) and (9), we can see that
+E[Xt0] is an upper bound of the price.
+The processes XtiandYtican also be interpreted in the following way. The variable Yti
+is a proxy of the buyer’s price, as the two cases correspond to the stopping decision based
+on comparing the exercise payoff and the continuation value. The variable Xtiis a proxy
+of the seller’s price, as the two cases correspond to whether the seller needs to update their
+hedging targets based on the comparison of the exercise payoff and the hedging price.
+Note that in all numerical experiments shown in this paper, t0is not considered an
+exercise date, coinciding with the fact that one does not exercise the option at the initial
+time. This choice is reflected in the algorithm 1 by directly letting Yt0=β−1
+∆tYt1−Ψ0(St0)·
+∆Wt0without checking the comparison condition. However, the regression is still performed
+to obtain the martingale increment function at t0.
+3.1.4 The whole process
+We outline the entire pricing process using Method I in the algorithm below. Through-
+out the training process, all trained models are saved for future use. Subsequently, an
+independent out-of-sample simulation is conducted to derive estimates. This second sim-
+ulation can be executed in two ways: following the training algorithm by determining the
+values backward, or starting from the initial time and making decisions forward.
+8Algorithm 1: American-style Option Pricing with Multiple Neural Networks
+Result: Functions Φi, Ψifori∈ {0,1, ..., n−1}
+Simulate Nstock paths
+Initialise Ytn=Xtn= max( f(Stn),0)
+fori=n-1:1 do
+Regress β−1
+∆tYti+1onSti: min
+Φi,Ψi(β−1
+∆tYti+1−Φi(Sti)−Ψi(Sti)∆Wti)2
+Yti=β−1
+∆tYti+1−Ψi(Sti)∆Wti
+Xti=β−1
+∆tXti+1−Ψi(Sti)∆Wti
+iff(Sti)>Φi(Sti)then
+Yti=f(Sti)
+end
+iff(Sti)> X tithen
+Xti=f(Sti)
+end
+end
+Regress β−1
+∆tYt1onSt0: min( β−1
+∆tYt1−Φ0(St0)−Ψ0(St0)∆Wt0)2
+Yt0=β−1
+∆tYt1−Ψ0(St0)∆Wt0
+Xt0= (β−1
+∆tXt1−Ψ0(St0)∆Wt0) 1f(St0)⩽Xt0+f(St0) 1f(St0)>Xt0
+3.1.5 Discussion on the convergence
+Since its introduction, numerous studies have been conducted to analyse the convergence
+analysis of the LSMC method. In their original work, Longstaff and Schwartz [39] showed
+the convergence in cases with only two early exercise opportunities. Subsequently, Cl´ ement
+et al. [19] established a more general almost sure convergence by modifying the method to
+regress all paths instead of solely in-the-money ones. Egloff [20] showed both the convergence
+and error estimates by using Vapnik-Chervonenkis classes with the assumption of convexity,
+allowing for relaxation of linearity assumption in approximation spaces. Eventually, Zanger
+[49] derived a general convergence result, providing new overall error estimates for the
+algorithm without assuming linearity or convexity of approximation spaces, and without
+requiring an independent data set. This result validated the application of neural networks
+in the method and the avoidance of an independent data set in regression. Regarding the
+upper bound, Hur´ e et al. [32] established the convergence of the method for deriving upper
+bounds in the context of solving reflected BSDEs.
+The convergence of our method, which incorporates duality into the primal problem,
+follows from the literature mentioned above.
+Remark 3.1. El Karoui et al. [21] showed that pricing American options is related to
+9reflected BSDEs, the solution of which is an Ft-measurable triple (Vt, Ht, Kt)fort∈[0, T]
+with values in (R,Rn,R+), and satisfies:
+
+
+Vt=ZT+RT
+tb(s, Vs, Hs) ds+KT−Kt−RT
+tHsdWs,
+Vt⩾Zt,0⩽t⩽T,
+K0= 0,andRT
+0(Vt−Zt) dKt= 0..
+Our work can be easily extended to solve this type of BSDE. The processes VandHhere have
+the same meaning as we have defined before, and our work generates numerical solutions for
+them. The process Kcan be seen as the non-decreasing process Aand calculated by a second
+simulation where we accumulate the gap between the value process and the payoff process.
+Note we have b(·,·,·) = 0 in our case. However, if we have a model where b(·,·,·)̸= 0, we
+can still approximate it by adding one more term to our regression.
+3.2 Method II: one global neural network
+After pricing a vanilla American-style put option under the Black-Scholes model that
+has 50 exercise points using Method I, we plot Φi(¯Sti), Ψi(¯Sti), and the hedging ratio
+Ji(¯Sti) for i∈ {0,1, ...,49}, in Figure 1, to visualise the approximated functions, where ¯Sti
+is the standardised stock price. We can see that continuation functions and the martingale
+increment functions at different times tihave similar shapes, and they evolve continuously
+in time.
+Figure 1: Estimates of continuation functions, martingale increment functions and hedging ratio
+of a 1D American-style put option with 50 exercise dates (same parameters as the one in Section 5).
+Each line represents a function at a step. Left: the continuation function; Middle : the martingale
+increment function; Right : the hedging ratio. The colorbar represents the step: 0 is the initial time
+and 50 is the maturity.
+10Remark 3.2. Under the Black-Scholes model, the first derivative of a continuous function
+is expected to align with the hedging ratio, thereby establishing a link to the martingale in-
+crement function. While we might expect the martingale increment functions to present a
+flat trajectory near the value of −1along the left axis, the middle plot in Figure 1 displays
+a deviation from this pattern. This discrepancy arises because the plot illustrates the ap-
+proximated martingale increment function of the standardised stock price, rather than the
+direct hedging ratios with respect to the stock price itself. By adjusting Ψiwith the diffusion
+term, we can illustrate the hedging ratio, shown on the right plot, and it is more aligned to
+the expected shape. Furthermore, we have not imposed any constraints restriction on the
+shape of the function during training. The further the data points deviate from the centre,
+the less data is available, leading to increased extrapolation at the plot’s extremities.
+3.2.1 The whole process
+Based on the similarity in the shape of functions and their continuous progression in
+time, we propose a second method where we only use one network for all regressions by
+including the time/step as an input variable.
+We apply the same stopping strategy, and the regression and the updates of process X
+andYat each time remain the same. However, this approach poses additional challenges
+as it requires target values at all times when we start training the model. In method I,
+the update of Ytibefore the regression provides a relatively accurate target values for the
+training of the corresponding network, but this is not available in method II. To overcome
+this challenge, we propose a novel approach where we achieve the goal by alternating the
+model training and stopping strategy updates.
+Initially, we set the maturity as the stopping time, so target values at ti∈ {t0, . . . , t n−1}
+areβ−1
+(n−i)∆tf(tn). We train the model using these target values for a given number of
+epochs and then use the trained model to determine a new series of Ytiusing the update
+rule stated before. Once all target values are updated, we do the training again. We
+repeat this training-updating process till some predefined criterion is met. We choose small
+numbers as the number of epochs among updates, especially for the earlier training, since
+the stopping strategies we applied are unlikely to be optimal at the start.
+Denote Φ II(ti, Sti) :R+×Rd−→Rand Ψ II(ti, Sti) :R+×Rd−→Rdas the approxi-
+mations of the continuation functions and the martingale increment functions. Method II
+is summarised in Algorithm 2.
+11Algorithm 2: American-style Option Pricing with One Global Network
+Result: Functions Φ II, ΨII
+Simulate Nstock price paths
+Initial: Yti+1=β−1
+(n−i+1)∆ tf(Stn), for i∈ {0, ..., n−1}
+while stopping criterion is not met do
+fori= 1 : epoch do
+Regress β−1
+∆tYti+1on (ti, Sti,∆Wti) for i∈ {0, ..., n−1}:
+min
+ΦII,ΨII 
+β−1
+∆tYti+1−ΦII(ti, Sti)−ΨII(ti, Sti)∆Wti2
+end
+Ytn=Xtn=f(Stn)
+fori=n−1 : 1do
+Yti=β−1
+∆tYti+1−Ψ(ti, Sti)∆Wti
+iff(Sti)>ΦII(ti, Sti)then
+Yti=f(Sti)
+end
+Xti=β−1
+∆tXti+1−ΨII(ti, Sti)∆Wti
+iff(Sti)> X tithen
+Xti=f(Sti)
+end
+end
+Yt0=β−1
+∆tYt1−ΨII(t0, St0)∆Wt0
+Xt0= (β−1
+∆tXt1−ΨII(t0, St0)∆Wt0) 1f(St0)⩽Xt0+f(St0) 1f(St0)>Xt0
+end
+3.2.2 Discussion on the convergence
+While single global networks have been used to address a wide range of optimal stopping
+problems, the convergence analysis for backward methods remains lacking. Tsitsiklis and
+Van Roy [48], Herrera et al. [31] have proposed similar approaches to price American-style
+options with some insights into the convergence properties. A key distinction between our
+method to theirs is that they use estimated continuation value rather than the exact optimal
+payoff to make stopping decisions, and they start with a completely random initial strategy.
+They showed that the method converges eventually, but there are no results on the rate of
+convergence and the error bounds.
+The rationale behind our proposed method is that when the initial strategy is to wait
+until maturity, we have relatively accurate target values for decisions made closer to the
+maturity date. In particular, the target values for determining the second-to-last exer-
+cise decisions would be exact. The use of the exact optimal payoff avoids the reliance on
+12estimated continuation values for making stopping decisions. As training progresses, the
+stopping decisions at later times will improve first, which in turn, improves the accuracy
+of target values for earlier stopping decisions. This iterative refinement ensures that, over
+time, the target values for all times converge to their true values, enhancing the overall
+decision-making process.
+4 Algorithm variants
+There are two sources of errors in our methods. Firstly, there is the time discretisation
+error induced by approximating the continuous martingale using the Euler scheme. This
+error scales proportionally with the step size square root√
+∆t, potentially resulting in
+suboptimal upper bounds in cases where the option offers infrequent exercise opportunities.
+The other source is regression, which can be mitigated by using a larger data set, utilizing
+more suitable network architectures, and prolonging the training duration. However, these
+approaches come at the expense of increased computational costs and memory requirements.
+To enhance the performance of our algorithms, we present five different variants aimed
+at generating more accurate results, reducing computational cost and addressing memory
+exhaustion issues. In this section, we present numerical results to evaluate the effectiveness
+of each variant in pricing 1D put options, 5D max-call options, or both. These options share
+parameters with those presented in Section 5. The objective of this section is to assess the
+impact of different variants on our methods through comparisons with the original version.
+Variation 1: add a second term for martingale increment approximation
+The approximationPd
+j=1Ψi(Sti)j∆Wj
+tideteriorates with the step size increasing. To
+improve the accuracy of the martingale increment estimates, we propose to add one more
+term in the regression. The choice of the term depends on the model, provided it satisfies
+the martingale property of having a zero mean increment. We choose (∆ Wti)2−∆tin our
+work, which can be connected to the Milstein scheme. This variant requires more outputs
+from the network and results in a change of the loss function:
+min
+Φ,Ψ1,Ψ2
+β−1
+∆tYti+1−Φ(Sti)−dX
+j=1Ψi
+1(Sti)j∆Wj
+ti−dX
+j=1Ψi
+2(Sti)j((∆Wj
+ti)2−∆t)
+2
+.
+The updates of XandYneed to be changed accordingly as the martingale increment
+becomes the sum of two terms. This variation can be applied to both methods.
+The changes in results introduced by this variation applied to method I are shown in
+Table 1. We can see that with similar training times in each case, this variant significantly
+13reduces the gap between the lower and the upper bound, mainly caused by better approxi-
+mations of the upper bound. The lower bound also improves due to a more effective variance
+reduction. Additionally, this improvement is more pronounced when the pricing problem is
+more complicated.
+LB UB Diff
+Time Mean S.D. Mean S.D. Mean S.D.
+1D1 Term 34 4.4748 0.0007 4.5559 0.0022 0.0811 0.0024
+2 Terms 34 4.4765 0.0002 4.4936 0.0017 0.0171 0.0018
+5D1 Term 56 26.1372 0.0090 28.2132 0.0169 2.0761 0.0177
+2 Terms 52 26.1464 0.0039 26.8974 0.0074 0.7510 0.0081
+Table 1: Option Pricing with/without a second martingale increment term applied in method I.
+The first column indicates the option type, and the second column shows whether a second term is
+added in the martingale increment approximation. The networks in the 1D case have three hidden
+layers of 30 neurons, and the one in the 5D case has two layers of 64 neurons.
+Variation 2: add sub-steps
+Refining the martingale approximation can also be achieved by reducing the step size.
+In the context of Bermudan option pricing, this can be achieved by adding substeps be-
+tween two exercise times, where we do not make stopping decisions but only accumulate
+martingale increments. This variant is particularly important in pricing options with less
+frequent exercise opportunities. The 5D max-call option we have been pricing has only 9
+exercise opportunities over 3 years. As demonstrated in Figure 2, adding substeps markedly
+enhances the accuracy of the upper bound estimation when pricing this option. The initial
+introduction of substeps brings about a notably sharper improvement in the bounds, which
+tends to taper off as more substeps are added. However, it is important to note that the
+computational time increases with the addition of substeps, as also depicted in Figure 2,
+but the speed of increase is slower than linear.
+Figure 2 also indicates that Method II produces better results with slower training, but
+this observation can vary with the adjustments of training parameters. Further comparisons
+between these two methods will be detailed throughout this paper, forming a conclusion at
+the end.
+Variation 3: use separate networks for the two functions
+In our approaches, we initially utilized a single network to estimate both the continu-
+ation value function and the martingale increment function. However, given the potential
+140 5 10 15 20 25 302626.527
+Number of SubstepsEstimatePrice Bounds
+LB-Method I
+UB-Method I
+LB-Method II
+UB-Method II
+0 5 10 15 20 25 3001,0002,0003,000
+Number of SubstepsEstimateRunning Time
+Method I
+Method II
+Figure 2: Price bounds ( Left) and corresponding running times ( Right ) of a 5D max-call Bermudan
+option with different numbers of substeps using both method I and II.
+complexity difference between these functions, especially when the model gets more compli-
+cated and the dimension gets higher, we propose to use separate networks to approximate
+them, where one is dedicated to generating the continuation value and the other for cal-
+culating the martingale increment functions. To evaluate the efficacy of this variant, we
+applied it to Method I across three different scenarios: a 1D put, a 5D max-call with no
+substep, and a 5D max-call with 31 substeps. For each scenario, we ensured that the net-
+works had a comparable number of parameters. We can see from Table 2 that variant 3
+can produce more accurate results with less training time in all three cases, and this effect
+is more notable in more complex problems (5D max-call option with 32 substeps). When
+implementing this variant with Method II, we observed a similar pattern, reinforcing the
+benefits of employing separate networks for approximating distinct functions.
+Variation 4: train on data from parts of the exercise times
+In Method II, the standard practice involves training the model across all simulated
+paths at every timestep. Anticipating that data shares similarities across different times,
+we suggest an alternative strategy that focuses on training with data from selectively chosen
+timesteps. This approach hinges on the premise that not every timestep contributes uniquely
+to model accuracy, allowing for strategic data reduction. Two methodologies are proposed
+for selecting which timesteps to include in the training process: a random selection or
+a systematic, evenly-spaced grid approach. For example in a scenario with 50 exercise
+opportunities and the aim is to train the model using data from only half of the exercise
+times, we could either randomly choose 25 timesteps from the set {0,1,2, ...,49}or use data
+15LB UB Diff
+Separate Time Mean S.D. Mean S.D. Mean S.D.
+1DFalse 33 4.4766 0.0001 4.4929 0.0014 0.0162 0.0014
+True 29 4.4757 0.0005 4.4899 0.0009 0.0141 0.0009
+5D0SFalse 65 26.1318 0.0054 26.9200 0.0070 0.7883 0.0105
+True 64 26.1138 0.0066 26.8869 0.0055 0.7731 0.0073
+5D31SFalse 1179 26.1528 0.0012 26.2887 0.0110 0.1359 0.0113
+True 994 26.1527 0.0011 26.2263 0.0028 0.0736 0.0026
+Table 2: Options pricing with/without using separate networks in Method I. In the first column,
+1D, 5D0S, and 5D31S represent the option priced: the 1D American-style put, the 5D max-call
+Bermudan with no substep and the 5D max-call Bermudan with 31 substeps. The second column
+indicates whether separate networks are used.
+from every other timestep, i.e. t=t1, t3, ..., t 49.
+In Figure 3, we illustrate the impact of this timestep selection strategy on training
+duration and the accuracy of the results when pricing a 1D American-style put. This
+modification clearly reduces the computational cost but also compromises the accuracy of
+the results. While this trade-off is anticipated, our goal is to strike a balance between
+computational efficiency and result accuracy.
+0 10 20 30 40 50200400600700
+Number of steps usedTraining Time (Secs)Grid
+Random
+0 10 20 30 40 501.31.82.3·10−2
+Number of steps usedBounds DifferenceGrid
+Random
+Figure 3: Changes in the estimated bounds and training time with different numbers of timesteps
+used in training. The option priced is a 1D American-style put option.
+16Variation 5: generate fresh data while training
+In general, larger training sets often yield more accurate and robust results, albeit at the
+expense of increased computational demands. However, due to the nature of the problem, we
+have to simulate the whole path before the training. The memory requirement can become
+extremely high, particularly in high-dimensional problems. To address this challenge, Chan
+et al. [14], A¨ ıd et al. [1] recommended storing the random seed used during simulation. This
+enables us to only preserve data points at one step in a path and discard the remainder.
+Once the network is trained, the state values for subsequent networks are reconstructed using
+the saved seed and the current states. However, this introduces more calculation during
+training and can only be applied to Method I. To overcome these limitations, we introduce
+an alternative solution designed to circumvent the memory constraints in scenarios where
+Method II is employed, where data from all times are needed when training starts.
+In the original Method II, all Npaths are generated at the start. Among updates, the
+data set is split into the training and the validation set randomly and the training set is
+then grouped into batches of size Nbatch. The network is then trained for a given number of
+epochs by looping over all training batches in each epoch. The validation set is then used
+to check the stopping criteria after each update. With this variant, we only generate the
+validation set before the start of the training, serving the same purpose as in the original
+version. Among updates, we generate Nbatch paths, and train the network using this batch
+for a given number of epochs, and then discard them. We repeat this generating-training-
+discarding process multiple times before the stopping criteria are evaluated. By utilizing
+smaller batch sizes and continually generating additional paths as needed, we can effectively
+train on a larger number of paths without encountering memory exhaustion issues.
+Figure 4 shows the difference between the lower and the upper bound of the option
+price throughout the training process for both the 1D put option (upper two plots) and
+the 5D max-call option (bottom two plots). The left two plots show these differences when
+employing various numbers of batches among updates. Initially, a higher number of batches
+leads to more favourable results. The difference diminishes when we train the model for
+a longer time. However, there is no definite conclusion on the optimal number of batches.
+The right two plots illuminate the difference using Method I, Method II, and Method II
+with variation 5 and 25 batches among updates. In all three cases, the second martingale
+term and separate networks are applied. All three schemes produce satisfactory results in
+pricing the 1D put option, but the base of Method II performs worse when pricing the 5D
+max-call option. We can see that Method I is more stable and converges faster among all
+three schemes, variant 5 exhibits superior performance to the base version.
+170 100 200 300 400 50000.51
+Time(secs)Bounds Differences1 batch
+5 batches
+10 batches
+25 batches
+50 batches
+0 100 200 300 400 50000.51
+Time(secs)Bounds DifferencesMethod II
+Method II-V5
+Method I
+0 200 400 600 800 1,00001234
+Time(secs)Bounds Differences1 batch
+5 batches
+10 batches
+25 batches
+50 batches
+0 200 400 600 800 1,00002.55
+Time(secs)Bounds DifferencesMethod II
+Method II-V5
+Method I
+Figure 4: Left: changes in results from different numbers of batches used among updates of the
+stopping strategy when we generate fresh data for training. Right: changes of the results using
+different methods: blue line: original method II; red line: method II with variation 5 and 25 batches
+were used among updates; brown line: method I with variation 1. The top and bottom two plots
+correspond to the 1D put option and the 5D max-call option, respectively.
+18Discussion
+We summarise the contributions of each variation brings to our methods in Table 3
+based on numerous experiments that were conducted apart from the ones demonstrated in
+this section, so the conclusion is generic. The second column indicates to which method
+one variation can be applied. There are three aspects one variation can affect: the accuracy
+of estimates, the training time and the computational memory required. We use ✓and
+✗to indicate an improvement and a deterioration respectively. If a variation does not
+significantly impact one of these aspects, the corresponding cell remains blank.
+From Table 3, we can see that variant 1 and variant 3 can improve the accuracy without
+prolonging the training time. Variant 2 improves the accuracy at the expense of the com-
+putational speed, while the opposite is true for variant 4. Variation 5 is the only one that
+helps us overcome the memory exhaustion problem, and compared to the base of Method II,
+it also produces narrower bounds differences with shorter running time. All variations that
+can be applied to one method can be used at the same time to combine their effects.
+In addition to these five variants, we also tested a warm-start approach applied to
+Method I, where previously trained network is used as the initial network at the next step.
+Since it is a standard method in the field, its impact is detailed in Appendix B.
+Variations Method Accuracy Time Memory
+V1: Add a second martingale term I, II ✓
+V2: Add sub-steps I, II ✓ ✗
+V3: Use two separate networks I, II ✓
+V4: Train on partial data II ✗ ✓
+V5: Train on fresh data II ✓ ✓ ✓
+Table 3: Algorithm variants and their impacts on three different aspects. ✓and✗represent an
+improvement and deterioration, respectively.
+5 Numerical results
+This section presents the numerical results obtained through both methods we proposed,
+incorporating variations 1 and 3 in Method I, and variations 1, 3, and 5 in Method II. The
+warm-start training has also been applied to Method I. Our experimental setup includes
+the use of the ADAM optimizer, and mean squared error for the loss function. Softplus
+is chosen as the activation function due to its smoothness property. We standardise all
+input variables, except for the time variable in Method II. To mitigate overfitting, cross-
+validation is rigorously applied throughout the training phase. The out-of-sample test
+19set has 106paths across all scenarios. Networks with different structures were used in
+different cases, as detailed in each subsection. The selection of a specific network is based
+on extensive experimentation. We choose the ones that require the least hyperparameter
+tuning. Computations were executed on an NVIDIA P100 GPU under the system Intel
+Xeon-E5-2680-v4. The program is written in Python 3.8.5 using PyTorch 1.8.
+Subsequent subsections demonstrate statistics of the pricing results for each option
+priced by repeating the process 10 times, including means and standard deviations of the
+lower bound, the upper bound and their difference. The total running time (in seconds) for
+each repetition is also recorded.
+Additionally, we plot histograms to depict both the total hedging errors ε1and the worst
+hedging errors ε2using an independent dataset containing 106paths. These metrics are
+computed as follows. Let τibe the stopping time for path i. The error for that path at τi
+is defined as
+εi
+1=V0+τi−∆tX
+t=t0β−1
+tH(Si
+t)∆Wi
+t−β−1
+τiZi
+τi,
+and the worst error is defined as
+εi
+2=V0+ min
+ti∈{t1,...,tn}
+ti−∆tX
+t=t0β−1
+tH(Si
+t)∆Wi
+t−β−1
+tiZi
+ti
+.
+5.1 Options under the Black–Scholes model
+Consider American-style options with dunderlying assets, whose prices follow the dy-
+namics
+dSi
+t= (r−δi)Si
+tdt+σiSi
+tdWi
+t,
+fori∈ {1,2, . . . , d }, where the risk-free interest rate r∈R, the dividend rate δi∈Rand
+the volatility σi∈R+. Each Brownian Motion is independent of the others.
+5.1.1 1D American-style put option
+We first test our method on a 1D vanilla American-style put option with the following
+parameters:
+T= 1, K= 40, n= 50, S0= 36, r= 0.06, δ= 0, σ= 0.2
+where Tis the maturity, Kis the strike price, and nis the number of exercise opportunities.
+We use the same notation for all cases in this section. The payoff function at tis
+f(St, K) = (K−St)+.
+20We use 105paths to train the model in Method I, and 7 .63×106in Method II. The difference
+in the number of paths used is caused by the nature of method II, which stops when the
+learning stagnates. This means that the number 7 .63×106is only an upper bound on the
+actual number of paths used. Moreover, method II is designed to not remember any path,
+so that there is no challenge on the memory budget.
+The benchmark computed by the finite difference method is 4 .478. The results generated
+by our schemes are shown in Table 5. In method I, at each time the training ceases once
+the loss of the validation set stagnates for 20 epochs. In method II, the training stops when
+the validation set loss stagnates for more than 5 updates, and we train 20 batches for 20
+epochs among updates. Method I uses two networks with the structures ([1, 20, 20, 1],[1,
+20, 20, 2]) at each time, while Method II employs a total of two networks with structures
+([2, 20, 20, 20, 1], [2, 20, 20, 20, 2]). The total numbers of parameters trained are 49150
+and 1863 for Methods I and II, respectively. From Table 5, we can see that both methods
+generate tight bounds. Even though Method I exhibits shorter training times, it involves
+significantly more free variables in the training process.
+Figure 5 shows the hedging errors defined at the start of this section. We can see that
+both hedging errors are distributed close to zero and the shape is symmetric. Their means,
+standard deviations and the ratio of the standard deviation to the estimated option value
+are shown in Table 4.
+Mean S.D. Mean/ ˆV
+Total Error 6.7004×10−70.05165 1.4965×10−7
+Worst Error −1.1479×10−20.04367 −2.564×10−3
+Table 4: Hedging errors for the 1D American-style put option with 100,000 paths using the model
+trained via method I.
+LB UB Diff
+Time Mean S.D. Mean S.D. Mean S.D.
+I 70 4.4770 0.0003 4.4899 0.0006 0.0129 0.0008
+II 93 4.4749 0.0008 4.4880 0.0008 0.0131 0.0014
+Table 5: 1D American-style put option pricing using both schemes. Benchmark estimate: 4 .478.
+The first column indicates the method used. Method I uses two networks with structures ([1, 20,
+20, 1],[1, 20, 20, 2]) at each time, while Method II uses in total two networks with structures ([2, 20,
+20, 20, 1], [2, 20, 20, 20, 2]).
+21Figure 5: Hedging errors for the 1D American-style put option along 100,000 paths by directly
+using the model we trained via method I.
+5.1.2 High-dimensional Bermudan max-call option
+Consider an option with dunderlying assets. We assume there is no correlation between
+Brownian Motions WiandWj,i, j∈ {1,2, ..., d}, on which each stock price is based. The
+model has the following parameters:
+T= 3, K= 100 , n= 9, r= 0.05, δi= 0.1, σ= 0.2.
+The payoff of this option is
+max
+i∈{1,2,...,d}Si
+t−K+
+.
+Given the sizeable step interval of ∆ t=1
+3, we engage variation 2, employing 32 substeps
+in our experiments. In Method I, training concludes when the validation set’s loss ceases
+to decrease after 5 epochs. In method II, the training stops when the validation set loss
+stagnates for more than 5 updates, and we train 20 batches for 20 epochs among updates.
+Method I consistently employs 106training paths, while Method II’s path count varies due
+to the nature of the scheme, as detailed in Table 6.
+Table 8 presents the pricing results of a max-call option with three different initial stock
+prices in both 5D and 10D settings. The benchmark given is extracted from Becker et al.
+[8], including the approximated bounds where the left (right) value is the lower (upper)
+bound (the number on the top), alongside the aggregate computation time (the summation
+22d S0= 90 S0= 100 S0= 110
+51.189×1071.083×1071.239×107
+10 7.98×1061.056×1079.4×106
+Table 6: The number of training paths used in pricing the Bermudan max-call option using
+method II. The first column shows the number of underlying assets.
+at the bottom). The numbers in the summation are calculation time in seconds for lower
+bounds, upper bounds and hedging strategies, respectively. The benchmark duration for
+hedging reflects the time to formulate a complete hedging strategy from 0 to Twith 96
+substeps, chosen due to the resemblance of its hedging error to our results, as illustrated in
+Figure 6 and Table 7.
+Mean S.D. S.D./ ˆV
+Total Error 1.0492×10−60.9612 4.012×10−8
+Worst Error −6.9951×10−20.9616 −2.675×10−3
+Table 7: Hedging errors of the 5D max-call option where S0= 100 with 100,000 paths using the
+model trained via method I.
+Figure 6: Hedging errors of 5D Bermudan max-call option with 32 sub-steps.
+From Table 8, we can see that the empirical results from both methods align closely
+with the benchmarks yet achieving quicker total computation times. The gaps between
+23lower and upper bounds in the benchmark are relatively tighter than the ones derived
+from our methods. This is because options being priced have infrequent exercise times
+which allows them to use nested Monte Carlo to derive more accurate results, while our
+method is designed to derive both bounds and hedging strategies simultaneously with lower
+computational cost. From the table we can see that our lower bounds invariably remain
+beneath our upper bounds; by contrast, there is one contradicting case in their results.
+In addition, their method is faster in deriving the price bounds but slower in deriving
+hedging strategies comparing to ours. However, we acknowledge that the difference in
+computational time can be partially contributed by different computing environments and
+other programming related factors. Our method also generates smaller hedging errors on
+average. We can also see that our methods become more competitive in the 10D case, and
+this is particularly true for Method II which can generate tighter bounds with less running
+time. This advantage is expected to become increasingly significant in more complicated
+cases, given its lower requirement for computing resources.
+LB UB Diff
+dS0 Time Mean S.D. Mean S.D. Mean S.D. Benchmark
+590I1002 16.6377 0.0009 16.6862 0.0023 0.0484 0.0026 (16.644, 16.648)
+II1127 16.6314 0.0030 16.6856 0.0025 0.0542 0.0040 132+8+1546
+100I1022 26.1523 0.0012 26.2195 0.0021 0.0672 0.0029 (26.156, 26.152)
+II1034 26.1411 0.0050 26.2259 0.0029 0.0848 0.0067 134+8+1668
+110I1177 36.7551 0.0252 36.8724 0.0068 0.1173 0.0311 (36.780, 36.796)
+II1038 36.7767 0.0013 36.8646 0.0024 0.0879 0.0024 133+8+1673
+1090I989 26.2613 0.0057 26.4823 0.0177 0.2210 0.0226 (26.277, 26.283)
+II 788 26.2446 0.0200 26.3822 0.0162 0.1376 0.0353 136+8+1792
+100I1035 38.3503 0.0067 38.5974 0.0286 0.2471 0.0345 (38.355, 38.378)
+II1045 38.3159 0.0235 38.4894 0.0144 0.1735 0.0375 136+7+1803
+110I1023 50.8961 0.0047 51.1810 0.0184 0.2849 0.0228 (50.869, 50.932)
+II 928 50.8764 0.0151 51.0601 0.0083 0.1837 0.0197 135+8+1777
+Table 8: Bermudan max-call option pricing using both methods. The first and the second columns
+show the number of underlying assets and the initial stock price, respectively. The third column
+indicates the method used. Benchmarks in the last column are extracted from [8]. The top value
+is the estimated price bounds, the three values shown below are the times for deriving a lower
+bound, an upper bound and a hedging strategy. Method I uses two networks with structures
+([d,50,25,1], [d,50,50,2d]) at each time, while method II uses in total two networks with struc-
+tures ([ d+ 1,50,50,50,1], [d+ 1,50,50,50,2d]).
+245.1.3 High dimensional American-style geometric-put option
+Consider a geometric option with dunderlying assets, where all stocks have the same
+dynamics. The parameters used for the stocks dynamics and the option payoff are:
+Si
+0= 1, r = 0.05, σ = 0.2, T = 1, K = 1.
+The payoff of this option is
+f(St) =
+K−dY
+j=1Sj
+t
++
+.
+Scenarios with different numbers of stocks and exercise opportunities are tested. Due to the
+property of the geometric payoff, this option with multiple underlying assets can be valued
+by a 1D put option by adjusting the parameters of the underlying:
+ˆS0=dY
+i=1Si
+0,ˆr=r·d,ˆσ=√
+d·σ.
+Table 9 shows the numerical results generated by our methods. They are dedicated to
+options with d∈ {5,10,20}underlying assets. For each option, n= 10 ,20,40,80 steps
+have been used to price the option. The reference values are calculated by the binomial
+tree method. We can see that the results derived by the proposed methods are close to
+the benchmark, showing their capability to price high-dimensional options with frequent
+exercises.
+25LB UB Diff Benchmark
+dn Time Mean S.D. Mean S.D. Mean S.D. (BT)
+510I235 0.1049 0.0001 0.1129 0.0002 0.0079 0.0002
+0.1072II 219 0.1041 0.0002 0.1152 0.0016 0.0111 0.0016
+20I402 0.1056 0.0001 0.1173 0.0015 0.0116 0.0016
+II 375 0.1047 0.0006 0.1201 0.0038 0.0154 0.0038
+40I701 0.1062 0.0001 0.1172 0.0018 0.011 0.0019
+II 691 0.1045 0.0004 0.1243 0.0027 0.0199 0.0028
+80I1302 0.1067 0.0001 0.1153 0.0013 0.0086 0.0014
+II1430 0.1044 0.0007 0.1277 0.0009 0.0234 0.0012
+1010I269 0.1256 0.0001 0.1396 0.002 0.014 0.0021
+0.1296II 188 0.1241 0.0003 0.1423 0.0033 0.0182 0.0035
+20I466 0.1276 0.0001 0.1389 0.0004 0.0113 0.0005
+II 422 0.1251 0.0003 0.1464 0.0034 0.0214 0.0036
+40I757 0.1284 0.0001 0.1406 0.0006 0.0122 0.0007
+II 856 0.1252 0.001 0.1506 0.0038 0.0254 0.0043
+80I1399 0.1288 0.0001 0.1434 0.0021 0.0145 0.0022
+II1364 0.1236 0.0011 0.1553 0.0018 0.0317 0.0023
+2010I314 0.1437 0.0001 0.1599 0.0003 0.0162 0.0003
+0.1502II 217 0.1412 0.0009 0.1658 0.0028 0.0247 0.0028
+20I509 0.1468 0.0001 0.1646 0.0009 0.0177 0.0009
+II 472 0.143 0.0015 0.1777 0.0147 0.0347 0.016
+40I869 0.1484 0.0001 0.1692 0.0023 0.0208 0.0024
+II 660 0.143 0.0019 0.2061 0.0201 0.0631 0.0212
+80I1341 0.1488 0.0002 0.1769 0.0021 0.0281 0.0023
+II1082 0.1424 0.0021 0.2213 0.026 0.0789 0.026
+Table 9: Pricing geometric put option using both methods. The first and the second columns
+show the number of underlying assets and the number of exercise points, respectively. The third
+column indicates the method used. Benchmarks in the last column are derived by the binomial tree
+method. Method I uses two networks with structures ([ d,50,50,1], [d,50,50,2d]) at each time, while
+method II uses in total two networks with structures ([ d+ 1,20,20,20,1], [d+ 1,20,20,20,2d]).
+265.2 American-style put option under the Heston model
+Finally, we test our methods under the Heston model, where the volatility itself is also
+stochastic: (
+dSt=rStdt+√VtStdWS,
+dVt=λ(σ2−Vt) dt+ξ√VtdWV.
+The option we price is the same as the one in Lapeyre and Lelong [37], characterized by
+the parameters:
+T= 1, K= 100 , n= 10, S0= 100 , V0= 0.01, r= 0.1, σ= 0.1, λ= 2, ξ= 0.2, ρ=−0.3,
+where ρis the correlation between Brownian Motions WSandWV.
+Since there are two Brownian motions involved in this scenario and we apply variation 1
+for enhanced precision, we have
+ΨS
+1(Sti)∆WS
+ti+ ΨV
+1(Sti)∆WV
+ti+ ΨS
+2(Sti)∆((WS
+ti)2−∆t) + ΨV
+2(Sti)∆((WV
+ti)2−∆t)
+as our martingale increment. Similar to the max-call option in section 5 .1.2, the step size
+∆t= 0.1 is big, so we use 9 substeps for the implementation.
+Figure 7 shows the change in the estimates with an increasing number of substeps
+using both methods. We can see that both lower and upper bounds decrease and the gap
+becomes narrower with decreasing step size due to the more accurate martingale increment
+approximation. However, as the estimated bounds decrease, the computational time rises.
+Given the insights from Figure 7, we choose to add 9 substeps to approximate the
+option price, since further improvement becomes trivial while significantly increasing com-
+putational expenses, shown in Table 10. The estimated bounds we generated are tight, and
+the computation time can be very small with the adjustment of the training path. However,
+we can see that the lower bound also decreases which is opposite to the examples before.
+This is caused by the truncation error occurred when simulating the Heston model using
+the Euler scheme. When the step size decreases, the model is better approximated due
+to the reduced bias from the truncation. The similar effect can be observed in European
+option pricing under the Heston model, shown in the last plot in Figure 7. Note that the
+total number of steps used in the simulation for the European option is the number of
+substeps times the n. In this table, we can see our results exhibit slight deviations from the
+benchmark. This is potentially attributable to model simulation variations.
+6 Conclusion
+In this paper, we introduce two innovative approaches aimed at simultaneously address-
+ing the American-style option pricing problem and its dual form, providing both lower and
+2703 9 271.61.651.71.75
+Number of SubstepsEstimatePrice Bounds
+LB-Method I
+UB-Method I
+LB-Method II
+UB-Method II
+03 9 270100300900
+Number of SubstepsEstimateRunning Time
+Method I
+Method II
+03 9 270.951
+Number of SubstepsEstimateEuropean Put Option
+Figure 7: Price bounds ( Left) and corresponding running times ( Right ) of the Heston put option
+with different numbers of substeps using both method I and II (variant 5).
+LB UB Diff
+Path Time Mean S.D. Mean S.D. Mean S.D.
+I1×10536 1.6416 0.0001 1.6659 0.0033 0.0244 0.0033
+1×106294 1.6419 0.0001 1.6514 0.0005 0.0094 0.0005
+II9.45×10528 1.6364 0.0030 1.6979 0.0271 0.0615 0.0291
+1.72×107348 1.6406 0.0007 1.6521 0.0007 0.0115 0.0008
+Table 10: 1D American-style put option under the Heston model with 9 substeps added. The
+benchmark from [37] is 1 .7±0.0016. The second column indicates the number of training paths
+employed. Method I uses two networks with structures ([2 ,50,50,1], [2,50,50,4]) at each time, while
+method II uses in total two networks with structures ([3 ,50,50,50,1], [3,50,50,50,4]).
+upper bounds on the option price using deep learning using neural networks. Both methods
+are based on the least squares Monte Carlo method with the incorporation of duality. The
+first method employs a series of networks to approximate the continuation values and mar-
+tingale increments at each exercise time. The second method applies one global network by
+adding time as a state variable to perform the regression and alternates the network training
+and the update of the stopping strategy till a stopping criterion is met. We propose several
+variants to enhance the methods from different perspectives. One notable advantage of
+our methods is that nested simulations are avoided, significantly reducing the computation
+complexity when pricing American-style/Bermudan options that have frequent exercise op-
+portunities. Moreover, the methods naturally yield hedging strategies, serving as effective
+control variates for variance reduction.
+Although the numerical results predominantly rely on the geometric Brownian Motion,
+it is important to emphasize that the applicability of our methods extends beyond this
+model. Our methods can take any model that can be simulated and satisfy conditions of the
+28martingale representation theorem such that martingale increments can be approximated.
+The demonstrated effectiveness in pricing options within the Heston model underscores
+the versatility of our approaches. This property of our methods provides a ground for
+exploration, encouraging their application to problems in more complicated models.
+From the results shown, we can see that both methods yield tight bounds for the approx-
+imated option price in both low and high-dimensional cases. Though the training process
+can be time-intensive for high-dimensional problems, the resulting models can be directly
+used to derive a hedging strategy without additional effort. In both methods, the inclusion
+of a second martingale increment term and the introduction of substeps for options with
+less frequent exercise points play important roles in improving the accuracy. In conclusion,
+Method I demonstrates greater stability and yields narrower bounds differences. However,
+its performance diminishes as the complexity of the problem increases and the required
+number of training paths grows too large. On the other hand, Method II with the applica-
+tion of variation 5, effectively overcomes these challenges. This is evidenced by its successful
+pricing of the 10D max-call option. Further exploration of this variant could be conducted
+to fully assess its capabilities and potential enhancements.
+Code availability
+Our code is openly available at:
+https://github.com/JiahaoWu27/American-Option-Pricing.git
+Disclosure of interest
+No potential competing interest was reported by the authors.
+References
+[1] R. A¨ ıd, L. Campi, N. Langren´ e, and H. Pham. A probabilistic numerical method for
+optimal multiple switching problems in high dimension. SIAM Journal on Financial
+Mathematics , 5(1):191–231, 2014.
+[2] L. Andersen and M. Broadie. Primal-dual simulation algorithm for pricing multidi-
+mensional American options. Management Science , 50(9):1222–1234, 2004.
+[3] V. Bally, G. Pag` es, and J. Printems. A quantization tree method for pricing and
+hedging multidimensional American options. Mathematical Finance: An International
+Journal of Mathematics, Statistics and Financial Economics , 15(1):119–168, 2005.
+29[4] J. Barraquand and D. Martineau. Numerical valuation of high dimensional multivariate
+American securities. Journal of Financial and Quantitative Analysis , 30(3):383–405,
+1995.
+[5] C. Bayer, D. Belomestny, P. Hager, P. Pigato, and J. Schoenmakers. Randomized op-
+timal stopping algorithms and their convergence analysis. SIAM Journal on Financial
+Mathematics , 12(3):1201–1225, 2021.
+[6] C. Beck, M. Hutzenthaler, A. Jentzen, and B. Kuckuck. An overview on deep learning-
+based approximation methods for partial differential equations. Discrete and Contin-
+uous Dynamical Systems - Series B , 2022.
+[7] S. Becker, P. Cheridito, and A. Jentzen. Deep optimal stopping. Journal of Machine
+Learning Research , 20(74):1–25, 2019.
+[8] S. Becker, P. Cheridito, and A. Jentzen. Pricing and hedging American-style options
+with deep learning. Journal of Risk and Financial Management , 13(7):158, 2020.
+[9] D. Belomestny, C. Bender, and J. Schoenmakers. True upper bounds for Bermudan
+products via non-nested Monte Carlo. Mathematical Finance: An International Jour-
+nal of Mathematics, Statistics and Financial Economics , 19(1):53–71, 2009.
+[10] B. Bouchard and N. Touzi. Discrete-time approximation and Monte-Carlo simulation of
+backward stochastic differential equations. Stochastic Processes and their applications ,
+111(2):175–206, 2004.
+[11] B. Bouchard and X. Warin. Monte-Carlo valuation of American options: facts and
+new algorithms to improve existing methods. In Numerical methods in finance , pages
+215–255. Springer, 2012.
+[12] M. Broadie, P. Glasserman, et al. A stochastic mesh method for pricing high-
+dimensional American options. Journal of Computational Finance , 7:35–72, 2004.
+[13] J. F. Carriere. Valuation of the early-exercise price for options using simulations and
+nonparametric regression. Insurance: Mathematics and Economics , 19(1):19–30, 1996.
+[14] R. H. Chan, C.-Y. Wong, and K.-M. Yeung. Pricing multi-asset American-style options
+by memory reduction Monte Carlo methods. Applied Mathematics and Computation ,
+179(2):535–544, 2006.
+[15] Q. Chan-Wai-Nam, J. Mikael, and X. Warin. Machine learning for semi linear PDEs.
+Journal of scientific computing , 79(3):1667–1712, 2019.
+30[16] Y. Chen and J. W. Wan. Deep neural network framework based on backward stochastic
+differential equations for pricing and hedging American options in high dimensions.
+Quantitative Finance , 21(1):45–67, 2021.
+[17] R. Chitashvili and M. Mania. On functions transforming a Wiener process into a
+semimartingale. Probability Theory and Related Fields , 109(1):57–76, 1997.
+[18] E. C ¸inlar, J. Jacod, P. Protter, and M. J. Sharpe. Semimartingales and Markov pro-
+cesses. Zeitschrift f¨ ur Wahrscheinlichkeitstheorie und verwandte Gebiete , 54(2):161–
+219, 1980.
+[19] E. Cl´ ement, D. Lamberton, and P. Protter. An analysis of a least squares regression
+method for American option pricing. Finance and Stochastics , 6(4):449–471, 2002.
+[20] D. Egloff. Monte Carlo algorithms for optimal stopping and statistical learning. Ann.
+Appl. Probab , 15(2):1396–1432, 2005.
+[21] N. El Karoui, E. Pardoux, and M. Quenez. American options. Numerical methods in
+finance , 13:215, 1997.
+[22] S. F´ ecamp, J. Mikael, and X. Warin. Risk management with machine-learning-based
+algorithms. arXiv preprint arXiv:1902.05287 , 2019.
+[23] C. Gao, S. Gao, R. Hu, and Z. Zhu. Convergence of the backward deep BSDE method
+with applications to optimal stopping problems. SIAM Journal on Financial Mathe-
+matics , 14(4):1290–1303, 2023.
+[24] M. Germain, H. Pham, and X. Warin. Neural networks-based algorithms for stochastic
+control and PDEs in finance. In Machine Learning and Data Sciences for Financial
+Markets: a Guide To Contemporary Practices , pages 426–452. Cambridge University
+Press, 2023.
+[25] E. Gobet and R. Munos. Sensitivity analysis using Itˆ o–Malliavin calculus and mar-
+tingales, and application to stochastic optimal control. SIAM Journal on control and
+optimization , 43(5):1676–1713, 2005.
+[26] L. Gonon. Deep neural network expressivity for optimal stopping problems. Finance
+and Stochastics , 28(3):865–910, 2024.
+[27] L. Gouden` ege, A. Molent, and A. Zanette. Machine learning for pricing American
+options in high-dimensional Markovian and non-Markovian models. Quantitative Fi-
+nance , 20(4):573–591, 2020.
+31[28] L. Gouden` ege, A. Molent, and A. Zanette. Variance reduction applied to machine
+learning for pricing Bermudan/American options in high dimension. In O. Kudryavt-
+sev and A. Zanette, editors, Applications of L´ evy processes , chapter 1. Nova Science
+Publishers, 2021.
+[29] J. Han, A. Jentzen, and W. E. Solving high-dimensional partial differential equations
+using deep learning. Proceedings of the National Academy of Sciences , 115(34):8505–
+8510, 2018.
+[30] M. B. Haugh and L. Kogan. Pricing American options: a duality approach. Operations
+Research , 52(2):258–270, 2004.
+[31] C. Herrera, F. Krach, P. Ruyssen, and J. Teichmann. Optimal stopping via randomized
+neural networks. Frontiers of Mathematical Finance , 3(1):31–77, 2024.
+[32] C. Hur´ e, H. Pham, A. Bachouch, and N. Langren´ e. Deep neural networks algorithms
+for stochastic control problems on finite horizon: convergence analysis. SIAM Journal
+on Numerical Analysis , 59(1):525–557, 2021.
+[33] S. Jain and C. W. Oosterlee. The stochastic grid bundling method: efficient pricing
+of Bermudan options and their Greeks. Applied Mathematics and Computation , 269:
+412–431, 2015.
+[34] F. Jamshidian. Numeraire-invariant option pricing and American, Bermudan, trigger
+stream rollover. In 4th Winter School on Financial Mathematics , 2004.
+[35] M. Kohler, A. Krzy˙ zak, and N. Todorovic. Pricing of high-dimensional American
+options by neural networks. Mathematical Finance , 20(3):383–410, 2010.
+[36] A. Kolodko and J. Schoenmakers. Iterative construction of the optimal Bermudan
+stopping time. Finance and Stochastics , 10(1):27–49, 2006.
+[37] B. Lapeyre and J. Lelong. Neural network regression for Bermudan option pricing.
+Monte Carlo Methods and Applications , 27(3):227–247, 2021.
+[38] V. Lokeshwar, V. Bharadwaj, and S. Jain. Explainable neural network for pricing and
+universal static hedging of contingent claims. Applied Mathematics and Computation ,
+417:126775, 2022.
+[39] F. A. Longstaff and E. S. Schwartz. Valuing American options by simulation: a simple
+least-squares approach. Review of Financial Studies , 14(1):113–147, 2001.
+[40] M. Ludkovski. Kriging metamodels and experimental design for Bermudan option
+pricing. Journal of Computational Finance , 22(1):37–77, 2018.
+32[41] A. S. Na and J. W. Wan. Efficient pricing and hedging of high-dimensional American
+options using deep recurrent networks. Quantitative Finance , 23(4):631–651, 2023.
+[42] M. Raissi. Forward–backward stochastic neural networks: deep learning of high-
+dimensional partial differential equations. In Peter Carr Gedenkschrift: Research Ad-
+vances in Mathematical Finance , pages 637–655. World Scientific, 2024.
+[43] A. M. Reppen, H. M. Soner, and V. Tissot-Daguette. Neural optimal stopping bound-
+ary.arXiv preprint arXiv:2205.04595 , 2022.
+[44] L. Rogers. Dual valuation and hedging of Bermudan options. SIAM Journal on Fi-
+nancial Mathematics , 1(1):604–608, 2010.
+[45] L. C. Rogers. Monte Carlo valuation of American options. Mathematical Finance , 12
+(3):271–286, 2002.
+[46] J. Schoenmakers, J. Zhang, and J. Huang. Optimal dual martingales, their analysis,
+and application to new algorithms for Bermudan products. SIAM Journal on Financial
+Mathematics , 4(1):86–116, 2013.
+[47] J. Tilley. Valuing American options in a path simulation model. Transactions of the
+Society of Actuaries , 45:499–519, 1993.
+[48] J. N. Tsitsiklis and B. Van Roy. Regression methods for pricing complex American-style
+options. IEEE Transactions on Neural Networks , 12(4):694–703, 2001.
+[49] D. Z. Zanger. Convergence of a least-squares Monte Carlo algorithm for American
+option pricing with dependent sample data. Mathematical Finance , 28(1):447–479,
+2018.
+A Variance reduction
+We have mentioned the process Hcan be approximated by a function of the stock price
+due to the Markovian property of the stock processes. From now on, let Ht=H(St).
+Proposition A.1. Given the option has not been exercised at t∈[0, T). Let τ∗∈ Ttbe the
+optimal stopping time. The martingale incrementRτ∗
+tH(Su) dWucan be used as control
+variate to reduce variance.
+Proof. Since Vτ∗isFTmeasurable, we can apply martingale representation:
+Vτ∗=E[Vτ∗] +Zτ∗
+0H(Su) dWu+ZT
+τ∗H(Su) dWu (10)
+33By taking expectations on both sides of (10) conditioned on Fτ∗, we can get
+Eh
+Vτ∗Fτ∗i
+=E[Vτ∗] +Zτ∗
+0H(Su) dWu+EZT
+τ∗H(Su) dWu|Fτ∗
+Note thatRT
+τ∗H(Su) dWu= 0. This can be interpreted through the theory of hedging. We
+have Ht= 0 for t∈(τ∗, T] because we stop hedging once the option is exercised. Hence,
+Vτ∗=E[Vτ∗] +Zt
+0H(Su) dWu+Zτ∗
+tH(Su) dWu. (11)
+We then take expectations on both sides of (11) conditioned on Ft:
+E[Vτ∗|Ft] =E[E[Vτ∗]|Ft] +EZt
+0H(Su) dWu|Ft
++E"Zτ∗
+tH(Su) dWu|Ft#
+=E[Vτ∗] +Zt
+0H(Su) dWu
+=Vτ∗−Zτ∗
+tH(Su) dWu. (12)
+We can have
+E"
+E[Vτ∗|Ft]·Zτ∗
+tH(Su) dWuFt#
+=E[Vτ∗|Ft]E"Zτ∗
+tH(Su) dWuFt#
+= 0,
+and
+E[E[Vτ∗|Ft]]E"Zτ∗
+tH(Su) dWu#
+= 0,
+implying E[Vτ∗|Ft] andRτ∗
+tH(Su) dWuare uncorrelated given Ft, so
+Var (Vτ∗) = Var ( E[Vτ∗|Ft]) + Var Zτ∗
+tH(Su) dWu!
+. (13)
+Combine (12) and (13), we have
+Var 
+Vτ∗−Zτ∗
+tH(Su) dWu!
+= Var ( Vτ∗)−Var Zτ∗
+tH(Su) dWu!
+⩽Var (Vτ∗).(14)
+Hence, by subtracting the termRτ∗
+tH(Su) dWufrom Vτ∗, the variance is reduced.
+Therefore, adding the control variateRτi
+tiHsdWsin the derivation of Ytireduces the
+variance.
+Note that we also show thatRT
+τiHsdWs= 0. This is in line with the hedging theory as
+we stop hedging once the stopping time is reached (the option is exercised).
+34B Warm-start training with the network trained one step
+before
+In the original version of method I, no technique for parameter initialisation is employed,
+resulting in the random initialisation of weights and biases at the onset of the training.
+While this randomness typically does not pose a problem in practice, there is a possibility
+for training stagnation from the start due to subpar parameter choices, and it can lead to
+time-consuming processes. To enhance efficiency, we adopt a strategy where the parameters
+of a previously trained network serve as the initial values for the model under the current
+training. The rationale behind this technique is the observed similarities in the shapes of
+both continuation functions and martingale increment functions at different times, as shown
+in Figure 1, suggesting that parameters across different networks should exhibit similarities.
+Table 11 and Figure 8 illustrate the impact of random and non-random initialisation on
+results.
+The table highlights that with this variant more accurate results are achievable in one-
+third of the time required for the base scheme. The enhancement in accuracy can be
+attributed to a better initial guess, facilitating more effective training in the right direc-
+tion. The figure affirms the effectiveness of this modification. At the step before maturity,
+both versions commence with random initialisation, resulting in similar numbers of epochs.
+However, this number significantly decreases for all other steps. In most steps, less than
+half the number of epochs is needed. This effect is particularly pronounced at the initial
+time where the same S0is used for all paths. Although ∆ Wt0values differ, the training
+becomes highly versatile. In the present example, the number of epochs is 10 times greater
+without the variant. This ratio can vary due to the randomness, with observed instances
+ranging from a worst-case scenario of 80 times more to a best-case scenario of 3 times more
+in experiments.
+Lower Bound Upper Bound Difference
+Time(sec) Mean S.D. Mean S.D. Mean S.D.
+Random start 360 4.4738 0.0007 4.4889 0.0005 0.0151 0.0010
+Warm start 135 4.4769 0.0002 4.4877 0.0004 0.0108 0.0005
+Table 11: Pricing 1D vanilla American-style put option (with the same parameters as the ones in
+Section 5.1.1). The first row displays results where weights are randomly initialised at each time.
+The second row shows the estimate when warm-start is applied.
+350 5 10 15 20 25 30 35 40 45 502050250
+StepNumber of EpochsOriginal
+Variant
+Figure 8: The number of epochs needed till the training stagnates at different steps with/without
+this variant when pricing a 1D vanilla American put option.
+36

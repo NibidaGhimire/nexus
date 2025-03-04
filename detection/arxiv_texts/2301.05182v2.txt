@@ -1,0 +1,1903 @@
+Thompson Sampling with Diﬀusion Generative Prior
+Yu-Guan Hsieh∗
+Université Grenoble Alpes
+yu-guan.hsieh@univ-grenoble-alpes.frShiva Prasad Kasiviswanathan
+Amazon
+kasivisw@gmail.com
+Branislav Kveton
+AWS AI Labs
+bkveton@amazon.comPatrick Blöbaum
+Amazon
+bloebp@amazon.com
+Abstract
+In this work, we initiate the idea of using denoising diﬀusion models to learn priors for online decision
+making problems. We speciﬁcally focus on the meta-learning for bandit framework, aiming to learn a
+strategy that performs well across bandit tasks of a same class. To this end, we train a diﬀusion model that
+learns the underlying task distribution and combine Thompson sampling with the learned prior to deal
+with new tasks at test time. Our posterior sampling algorithm is designed to carefully balance between the
+learned prior and the noisy observations that come from the learner’s interaction with the environment.
+To capture realistic bandit scenarios, we also propose a novel diﬀusion model training procedure that
+trains even from incomplete and noisy data, which could be of independent interest. Finally, our extensive
+experimental evaluations clearly demonstrate the potential of the proposed approach.
+∗Work done during internship at Amazon.
+1arXiv:2301.05182v2  [cs.LG]  30 Jan 2023Contents
+1 Introduction 3
+2 Preliminaries and Problem Description 5
+2.1 Denoising Diﬀusion Probabilistic Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+2.2 Meta-Learning of Bandit Tasks . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+3 Using Trained Diﬀusion Models in Thompson Sampling 7
+3.1 Variance Calibration . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+3.2 DiﬀTS: Thompson Sampling with Diﬀusion Prior . . . . . . . . . . . . . . . . . . . . . . . . . 7
+4 Training Diﬀusion Models from Imperfect Data 10
+4.1 Training with Imperfect Data . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+4.2 Variance Calibration with Imperfect Data . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+5 Numerical Experiments 12
+6 Concluding Remarks 15
+A Comparison of Diﬀusion Posterior Sampling Algorithms 21
+B Mathematics of Algorithm Design 22
+B.1 Reverse Step in Posterior Sampling from Diﬀusion Prior . . . . . . . . . . . . . . . . . . . . . 22
+B.2 On SURE-based Regularization . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+C Missing Experimental Details 24
+C.1 Construction of Bandit Instances . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+C.2 Diﬀusion Models– Model Design . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+C.3 Diﬀusion Models– Training . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+C.4 Other Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
+D Ablation Study 28
+D.1 Predicted versus Sampled Noise in Posterior Sampling . . . . . . . . . . . . . . . . . . . . . . 28
+D.2 Importance of Variance Calibration . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+D.3 Ablation Study for Training from Imperfect Data . . . . . . . . . . . . . . . . . . . . . . . . . 30
+E Additional Experiments 31
+E.1 Experimental Results with Diﬀerent Assumed Noise Levels . . . . . . . . . . . . . . . . . . . 31
+E.2 Comparison of Posterior Sampling Strategies on a Toy Problem . . . . . . . . . . . . . . . . . 31
+E.3 Training from Imperfect Image Data . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+F Expected Reward Visualization 35
+21 Introduction
+Uncertainty quantiﬁcation is an integral part of online decision making and forms the basis of various online
+algorithms that trade-oﬀ exploration against exploitation [Puterman, 1994, Sutton and Barto, 1998]. Among
+these methods, Bayesian approaches allow us to quantify the uncertainty using probability distributions, with
+the help of the powerful tools of Bayesian inference. Nonetheless, their performance is known to be sensitive
+to the choice of prior [Murphy, 2022].
+For concreteness, let us consider the problem of stochastic multi-armed bandits ( MABs) [Bubeck and
+Cesa-Bianchi, 2012, Lattimore and Szepesvári, 2020], in which a learner repeatedly pulls one of the K
+arms from a given set A=f1;:::;Kgand receives rewards that depend on the learner’s choices. More
+precisely, when arm atis pulled at round t, the learner receives reward rt2Rdrawn from an arm-dependent
+distributionPat. The goal of the learner is either to i) accumulate the highest possible reward over time
+(a.k.a. regret-minimization) or to ii) ﬁnd the arm with the highest expected reward within a prescribed
+number of rounds (a.k.a. best-arm identiﬁcation, see Even-Dar et al., 2006, Bubeck et al., 2009, Audibert
+et al., 2010).
+For both purposes, we need to have a reasonable estimate of the arms’ mean rewards a=EraPa[ra]. In
+general, this would require us to pull each arm a certain number of times, which becomes ineﬃcient when
+Kis large. While the no-free-lunch principle prevents us from improving upon this bottleneck in general
+situations, it is worth noticing that the bandit instances (referred as tasks hereinafter) that we encounter in
+most practical problems are far from arbitrary. To name a few examples, in recommendation systems, each
+task corresponds to a user with certain underlying preferences that aﬀect how much they like each item; in
+online shortest path routing, we operate in real-world networks that feature speciﬁc characteristics. In this
+regard, introducing such inductive bias to the learning algorithm would be beneﬁcial. In Bayesian models, this
+can be expressed through the choice of the prior distribution. Moreover, as suggested by the meta-learning
+paradigm, the prior itself can also be learned from data, which often leads to superior performance [Rothfuss
+et al., 2021, Hospedales et al., 2021]. This has led to the idea of meta-learning a prior for bandits [Peleg
+et al., 2022, Cella et al., 2020, Basu et al., 2021].
+On the other hand, we have recently witnessed the success of deep generative modeling in producing
+high-quality synthetic data across various modalities [Saharia et al., 2022, Wu et al., 2021, Brown et al., 2020].
+The impressive results show that these models come out as a powerful tool for modeling complex distributions.
+While diﬀerent models have their own strengths and weaknesses, diﬀusion models [Sohl-Dickstein et al., 2015,
+Ho et al., 2020] are particularly appealing for our use case because their iterative sampling scheme makes
+them more ﬂexible to be applied on a downstream task. In this regard, this paper attempts to answer the
+following question:
+Can diﬀusion models provide better priors to address the exploration-exploitation trade-oﬀ in bandits?
+Our Contributions. In this work, we initiate the idea of using diﬀusion models to meta-learn a prior for
+bandit problems. Our focus is on designing algorithms that have good empirical performance while being
+mathematically meaningful. Working towards this direction, we make the following contributions:
+(a)We propose a new Thompson sampling scheme that incorporates a prior represented by a diﬀusion model.
+The designed algorithm strikes a delicate balance between the learned prior and bandit observations,
+bearing in mind the importance of having an accurate uncertainty estimate. In particular, the deployment
+of the diﬀusion model begins with a variance calibration step. Then, in each round of the interaction, we
+summarize the interaction history by a masked vector of dimension K, and perform posterior sampling
+with a modiﬁed iterative sampling process that makes use of this vector.
+(b)Standard diﬀusion model training uses noise-free samples. Such data are however nearly impossible to
+obtain in most bandit applications. To overcome this limitation, we propose a novel diﬀusion model
+training procedure which succeeds with even incomplete and noisy data. Our method alternates between
+sampling from the posterior distribution and minimizing a tailored loss function that is suited to imperfect
+data. We believe that this training procedure could be of interest beyond its use in bandit problems.
+3(c)We perform experimental evaluations on various synthetic and real datasets to demonstrate the beneﬁt of
+the considered approach against several baseline methods, including Thompson sampling with Gaussian
+prior [Thompson, 1933], Thompson sampling with Gaussian mixture model ( GMM) prior [Hong et al.,
+2022b], and UCB1 [Auer, 2002]. The results conﬁrm that the use of diﬀusion prior consistently leads to
+improved performance. The improvement is especially signiﬁcant when the underlying problem is complex.
+Related Work. Prior to our work, the use of diﬀusion models in decision making has been explored by
+Janner et al. [2022], Ajay et al. [2022], who used conditional diﬀusion models to synthesize trajectories
+in oﬄine decision making. Their approaches demonstrated good performance on various benchmarks. In
+contrast, our focus is on online decision making, where exploration is crucial for the success of the algorithm.
+Additionally, we use diﬀusion models to learn a task prior, rather than a distribution speciﬁc to a single task.
+More generally, diﬀusion models have been used as priors in various areas, primarily for the goal of
+inverse problem solving. From a high-level perspective, one of the most common approach for diﬀusion model
+posterior sampling is to combine each unconditional sampling step with a step that ensures coherence with the
+observation. This approach was taken by Sohl-Dickstein et al. [2015], Song et al. [2022], Chung et al. [2022a]
+and the posterior sampling algorithm that we propose can also be interpreted in this way. Alternatively,
+close form expression for the conditional score function and the conditional reverse step can be derived if we
+assume the observed noise is carved from the noise of the diﬀusion process, as shown in Kawar et al. [2021a,
+2022]. Yet another solution is to approximate the posterior with a Gaussian distribution [Graikos et al., 2022].
+In this case, samples are reconstructed by minimizing a weighted sum of the denoising loss and a constraint
+loss, rather than using an iterative sampling scheme. For sake of completeness, in Appendix A we provide a
+more thorough comparison between our method and existing diﬀusion model posterior sampling algorithms.
+Regarding the algorithmic framework, we build upon the well-known Thompson sampling idea introduced
+by Thompson [1933] nearly a century ago. It has reemerged as one of the most popular algorithms for bandit
+problems in the last decade due to its simplicity and generality [Chapelle and Li, 2012, Russo and Van Roy,
+2014, Russo et al., 2018]. Nonetheless, it is only until more recently that a series of work [Lu and Van Roy,
+2019, Simchowitz et al., 2021] provides a through investigation into the inﬂuence of the algorithm’s prior, and
+conﬁrms the beneﬁt of learning a meta-prior in bandits via both empirical and theoretical evidence [Cella
+et al., 2020, Basu et al., 2021, Kveton et al., 2021, Peleg et al., 2022]. The main diﬀerence between our work
+and the above is the use of a more complex prior, which also goes beyond the previously studied mixture
+prior [Hong et al., 2022b] and multi-layered Gaussian prior [Hong et al., 2022a]. On a slightly diﬀerent note,
+a large corpus of work have investigated other ways to encode prior knowledge, including the use of arm
+hierarchy [Sen et al., 2021], graphs [Valko et al., 2014], or more commonly a latent parameter shared by the
+arms [Lattimore and Munos, 2014, Maillard and Mannor, 2014, Hong et al., 2020, Gupta et al., 2020]. The
+use of neural network for contextual bandits was speciﬁcally studied by Riquelme et al. [2018], where the
+authors compared a large number of methods that perform Thompson sampling of network models and found
+that measuring uncertainty with simple models (e.g., linear models) on top of learned representations often
+led to the best results. Instead, we focus on non-contextual multi-armed bandits and use neural networks
+to learn a prior rather than using it to parameterize actions. This viewpoint is thus complementary to the
+above more standard usage of neural networks in bandits.
+Notation. All the variables are multi-dimensional unless otherwise speciﬁed. For a vector x,xarepresents
+itsa-th coordinate, x2represents its coordinate-wise square, and diag(x)represents the diagonal matrix with
+the elements of xon the diagonal. A sequence of vectors (xl)l2fl1;:::;l 2gis written as xl1:l2. To distinguish
+random variables from their realization, we represent the former with capital letters and the latter with the
+corresponding lowercase letters. Conditioning on X=xis then abbreviated as jx. A Gaussian distribution
+centered at 2Rdwith covariance 2Rddis written asN(X;;)or simplyN(;)if the random
+variable in question is clear from the context. Finally, [n]denotes the sequence of integers f1;:::;ng.
+42 Preliminaries and Problem Description
+In this section, we brieﬂy review denoising diﬀusion models and introduce our meta-learning for bandits
+framework.
+2.1 Denoising Diﬀusion Probabilistic Model
+First introduced by Sohl-Dickstein et al. [2015] and recently popularized by Ho et al. [2020] and Song and
+Ermon [2019], denoising diﬀusion models (or the closely related score-based models) have demonstrated
+state-of-the-art performance in various data generation tasks. A large number of variants of these models
+have been proposed since then. In this paper, we primarily follow the notation and formulation of Ho et al.
+[2020], with minor modiﬁcations to suit our purposes.
+Intuitively speaking, diﬀusion models learn to approximate a distribution Q0overRdby training a series
+of denoisers with samples drawn from this distribution. Writing qfor the probability density function (assume
+everything is Lebesgue measurable for simplicity) and X0for the associated random variable, we deﬁne the
+forward diﬀusion process with respect to a sequence of scale factors (`)2(0;1)Lby
+q(x1:Ljx0) =L 1Y
+`=0q(x`+1jx`); q (X`+1jx`) =N(X`+1;p`+1x`;(1 `+1)Id):
+The ﬁrst equality suggests that the forward process forms a Markov chain that starts at x02Rd, while the
+second equality implies that the transition kernel is Gaussian. Further denoting the product of the scale
+factors by `=Q`
+i=1i, we then have q(X`jx0) =N(X`;p`x0;(1 `)Id).
+The sequence (`)2(0;1)Lis chosen to be decreasing and such that L0. We thus expect q(X`)
+N(0;Id). A denoising diﬀusion model learns to reverse the diﬀusion process by optimizing a certain parameter
+that deﬁnes a distribution Pover random variables X0
+0:L. The hope is that the marginal distribution P(X0
+0)
+would be a good approximation of Q0. In practice, this is achieved by setting p(X`) =N(0;Id), enforcing
+the learned reverse process to be Markovian, and modeling p(X`jx`+1)as a Gaussian parameterized by1
+p(X`jx`+1) =q(X`jx`+1;X0=h(x`+1;`+ 1))|{z}
+^x0
+=N
+X`;p`(1 `+1)
+1 `+1^x0+p`+1(1 `)
+1 `+1x`+1;1 `
+1 `+1(1 `+1)Id
+:(1)
+In the above his the learned denoiser and ^x0=h(x`+1;`+ 1)is the denoised sample obtained by taking in
+as input both the diﬀused sample x`+1and the diﬀusion step count `+ 1.2To see why the second equality of
+(1) holds, we write
+q(X`jx`+1;X0= ^x0)/q(x`+1jX`;X0= ^x0)q(X`jX0= ^x0) =q(x`+1jX`)q(X`jX0= ^x0):
+By the deﬁnition of the forward process, we have q(x`+1jX`) =N(x`+1;p`+1X`;(1 `+1)Id)and
+q(X`jX0= ^x0) =N(X`;p`^x0;(1 `)Id). The equality then follows immediately.
+2.2 Meta-Learning of Bandit Tasks
+Our work focuses on meta-learning problems in which the tasks are bandit instances drawn from an underlying
+distribution that we denote by T. As in standard meta-learning, the goal is to learn an inductive bias from
+1With a slight abuse of notation, we drop the prime from X0
+0:Lin the remaining of the work, but one should keep in mind
+that the distributions of X0:Linduced by the forward process and of X0
+0:Lmodeled by the diﬀusion model are distinct.
+2To obtainhwe typically train a neural network with a U-Net architecture. In [Ho et al., 2020], this network is trained to
+output the predicted noise z`= (x` p`h(x`;`))=p1 `.
+5Model
+T rainingV ariance
+CalibrationBandit
+Deplo ymentper f ect / imper f ect obser v ations of
+ fr om diff er ent taskse xpect ed r ewar ds
+diffusion model calibrat ed v ariances
+diffusion prior T ask DistributionT askactionf eedback
+Figure 1: Overview of the meta-learning for bandits with diﬀusion prior framework.
+the meta training set that would improve the overall performance of an algorithm on new tasks drawn from
+the same distribution. In the context of this paper, the inductive bias is encoded in the form of a prior
+distribution that would be used by the Thompson sampling algorithm when the learner interacts with new
+bandit instances.
+For the sake of simplicity, we restrict our attention to the multi-armed bandit scenario presented in
+Section 1, with the additional assumption that the noise in the rewards are Gaussian with known variance
+2
+bandit2R.3The only unknown information is thus the vector of the mean rewards = (a)a2A. In this
+speciﬁc situation, Thompson sampling takes as input a prior distribution over RK, samples a guess ~tof the
+mean reward vector from the posterior distribution at each round t, and pulls arm at2arg maxa2A~a
+tin
+that round. The posterior distribution itself is determined by both the prior and the interaction history, i.e.,
+the sequence of the action-reward pairs Ht 1= (as;rs)s2f1;:::;t 1g.
+As for the meta-training phase, we consider two situations that are distinguished by whether the learner
+has access to perfectdata or not. In the former case, the meta-training set is composed of the exact means
+Dtr=fBgBof training tasks Bdrawn from the distribution T, whereas in the latter case the training set
+is composed of incomplete and noisy observations of these vectors (see Section 4 for details). We use the
+termimperfect data to informally refer to the scenario where the data is incomplete and noisy. The entire
+algorithm ﬂow is summarized in Figure 1 and Algorithm 1. The model training and the variance calibration
+blocks together deﬁne the diﬀusion prior, which is then used by Thompson sampling in the deployment phase,
+as we will immediately see in Section 3.
+Algorithm 1 Meta-learning for Bandits with Diﬀusion Models
+1:Meta-Training Phase a): Diffusion Model Training
+2:Input:Training set containing reward observations from diﬀerent tasks
+3:Train a diﬀusion model hto model the distribution of the mean rewards (in case of imperfect data use
+Algorithm 5)
+4:Meta-Training Phase b): Variance Calibration
+5:Input:Diﬀusion model hand calibration set containing reward observations from diﬀerent tasks
+6:Use Algorithm 2 to estimate the mean squared reconstruction errors 1:Lof the model hfrom diﬀerent
+diﬀusion steps to calibrate the variance of each reverse step (in case of imperfect data use Algorithm 6)
+7:Meta-Deployment Phase
+8:Input:Diﬀusion model h, reconstruction error 1:L, and assumed noise level ^
+9:For any new task, run Thompson sampling with diﬀusion prior (Algorithm 4) with provided parameters
+3We make this assumption as we are using diﬀusion prior. As far as we are aware, all the existing diﬀusion model posterior
+sampling algorithms for the case of Gaussian noise either rely on this assumption or circumvent it by adding some adjustable
+hyperparameter. How to extend these algorithms to cope with unknown noise variance properly is an interesting open question.
+63 Using Trained Diﬀusion Models in Thompson Sampling
+In this section, we describe how a learned diﬀusion model can be incorporated as a prior for Thompson
+sampling. To begin, we ﬁrst revisit the probability distribution deﬁned by the diﬀusion model by introducing
+an additional variance calibration step. After that, we present our Thompson sampling algorithm that uses
+this new prior.
+3.1 Variance Calibration
+While Ho et al. [2020] ﬁxed the variance of p(X`jx`+1)to that ofq(X`jx`+1;x0)as expressed by Eq. (1),
+it was recently shown by Bao et al. [2021] that this choice was sub-optimal. This is critical when we use
+diﬀusion model as prior in online decision problems, as it prevents us from quantifying the right level of
+uncertainty. To remedy this, we follow Bao et al. [2022] and calibrate the variances of the reverse process
+with a calibration set Dcal=fxi;0gi2[ncal]. In the above, ncalis the number of calibration samples and we use
+subscriptito denote a particular data point.
+Our calibration step starts by quantifying the uncertainty of the denoiser output. Concretely, we model
+the distribution of X0jx`by a Gaussian distribution centered at the denoised sample h(x`;`). As for the
+covariance of the distribution, we take it as the diagonal matrix diag(2
+`)whose entries are given by
+a
+`=vuut1
+ncalncalX
+i=1kxa
+0(i) ha
+(xi;`;`)k2
+In words, for each sample xi;0, we ﬁrst diﬀuse it through the forward process to obtain xi;`. Then we compute
+the coordinate-wise mean squared error between the predicted ^x0and the actual x0. Pseudo-code of the
+above procedure is provided in Algorithm 2.
+Having introduced the above elements, we next deﬁne the calibrated reverse step as
+p;(X`jx`+1) =Z
+q(X`jx`+1;x0)p0
+;(x0jx`+1)dx0; (2)
+where=1:Lis the estimated variance parameter and p0
+;(X0jx`+1) =N(h(x`+1;`+ 1);diag(2
+`+1))is
+the aforementioned Gaussian approximation of X0jx`+1. Compared to (1), the variance of the reverse step
+gets slightly enlarged in a ways that reﬂects the uncertainty in the denoiser output. Note that we opt for a
+simple model here in which the covariance matrices are the same at all points, whereas Bao et al. [2022] ﬁt a
+neural network to predict the mean squared residual at every x`.
+Algorithm 2 Diﬀusion Model Variance Calibration
+1:Input:Diﬀusion model h, calibration setDcal=fxi;0gi2[ncal]
+2:Output: Variance parameters 1:L
+3:for`= 1:::Ldo
+4:for alli, samplexi;`fromX`jxi;0
+5:for alla, seta
+` q
+1
+ncalPncal
+i=1kxa
+0 ha
+(x`;`)k2
+6:end for
+3.2 DiﬀTS: Thompson Sampling with Diﬀusion Prior
+We next introduce our Thompson sampling with diﬀusion prior algorithm, abbreviated as DiﬀTS. Let
+p;be the prior as deﬁned in Section 3.1 and ybe an evidence with known q(yjx0). At each step, the
+algorithm should sample from the posterior X0jy. However, as an exact solution does not exist in general,
+we approximate this by a strategy that gradually guides the sample towards the evidence during the iterative
+7sampling process. This is achieved by conditioning the reverse Markovian process on Y=yand seeks an
+approximation for each conditional reverse step.
+In the case of multi-armed bandits, the evidence is the interaction history Ht= (as;rs)s2f1;:::;tgup to
+timet(suppose we are in round t+ 1) andx0=2RKis the mean reward vector of the task. It holds that
+q(Htjx0)/tY
+s=1q(rsj;as) =tY
+s=1N(rs;as;2
+bandit ): (3)
+In the above formula, we treat q(Htjx0)as a function of x0and and in this way we can ignore all the
+randomness in the learner’s actions that appears in q(Htjx0)via the proportionality. This is because the
+learner’s actions only depend on the mean reward vector via their interaction history with the environment,
+i.e.,q(asja1;r1;:::;as 1;rs 1;) =q(asja1;r1;:::;as 1;rs 1). The initialization and the recursive steps
+of our conditional sampling scheme tailored to this situation are then provided below. Detailed derivation
+behind the algorithm is provided in Appendix B.1.
+Sampling from XLjHt.For this part, we simply ignore Htand sample from N(0;Id)as before.
+Sampling from X`jx`+1;Ht.We have
+q(X`jx`+1;Ht)/q(X`jx`+1)q(HtjX`):
+It is thus suﬃcient to approximate the two terms on the right hand side by Gaussian distributions. For
+the ﬁrst term, we use directly the learned prior p;and writea
+`;xfor the standard deviation of the a-th
+coordinate. As for the second term, we approximate it by adjusting the known q(Htjx0)(see(3)) with the
+help of an approximation of q(x0jx`). Finally, we employ the perturbation sampling algorithm [Papandreou
+and Yuille, 2010] to sample from the posterior of the two Gaussians.
+Concretely, we ﬁrst create an unconditional latent variable x0
+`by sampling from the unconditional reverse
+processp;(X`jx`+1). We then perform coordinate-wise operation by distinguishing between the following
+two situations.
+•Armahas never been pulled in the ﬁrst trounds: In this case we just set xa
+`to bex0a
+`.
+•Armahas been pulled in the ﬁrst trounds: Let Na
+tbe the number of times that arm ahas been
+pulled up to time t(included), ^a
+t=Pt
+s=1rs1fas=ag=Na
+tbe the empirical mean of arm a’s reward,
+a
+t=bandit=p
+Na
+tbe the corresponding adjusted standard deviation, and
+z`+1= (x`+1 p`+1h(x`+1;`+ 1))=p
+1 `+1
+be the predicted noise from diﬀusion step `+ 1; we sample a diﬀused observation
+~ya
+`N(p`^a
+t+p
+1 `za
+`+1;(a
+`;y)2): (4)
+The standard deviation of the Gaussian is
+a
+`;y=s
+`
+(a
+t)2+`+1(1 `)
+`(1 `+1)(a
+`+1)2
+: (5)
+It takes into account both the uncertainty a
+tin observation and the uncertainty a
+`+1of predicting the
+clean sample x0fromx`+1. As for the mean of the Gaussian, we mimic the forward process that starts
+from ^a
+tbut use the predicted noise instead of a randomly sampled noise vector. We discuss how this
+inﬂuences the behavior of the posterior sampling algorithm in Appendices ??and E.2.
+Similar to [Papandreou and Yuille, 2010], performing a weighted average of the diﬀused observation and
+the unconditional latent variable then gives the output of the conditional reverse step
+xa
+`=(a
+`;x) 2x0a
+`+ (a
+`;y) 2~ya
+`
+(a
+`;x) 2+ (a
+`;y) 2:
+8.........
+Unconditional
+generationConditional
+generationR esult
+Pr edict ed noiseDiffused obser v ationObser v ationUnkno wn lat entFigure 2: Illustrationoftheproposedposteriorsampling
+with diﬀusion prior algorithm (Algorithm 3).
+W arm-upP ost erior
+SamplingLoss
+Minimizationminimiz eminimiz esamplesamplewit h curr ent model
+EMFigure 3: Overview of the proposed training procedure
+to deal with incomplete and/or noisy data.
+From Bandit to Partially Observed Vector. It is worth noticing that the algorithm that we introduce
+above only utilizes the interaction history Htvia empirical mean ^tand adjusted standard deviation t.
+Therefore, in each round of interaction it is suﬃcient to compute the empirical mean vector y=^t(we set
+ya= 0if armahas never been pulled), the vector of adjusted standard deviation =t, and a binary mask
+vectormsuch thatma= 1if and only if arm ahas been pulled in the ﬁrst trounds; then we can apply
+Algorithm 3 that performs posterior sampling by taking as evidence the vector yand treating it as if any
+observed entry ya(indicated by ma= 1) were sampled from N(xa
+0;(a)2)(see also Figure 2).4Written in this
+form allows the algorithm to be directly applied in the situation that we address in the next section. DiﬀTS
+is recovered by plugging the correct quantity into this algorithm as shown in Algorithm 4 (the assumed noise
+level ^plays the role of bandit).
+Algorithm 3 Posterior Sampling with Diﬀusion Prior
+1:Input:Evidencey2RK, noise standard deviation 2RK, binary mask m2f0;1gK, diﬀusion model
+hand associated variance parameters 1:L
+2:Output: Posterior sample x0(resp.x0:L) approximately sampled from X0jy(resp.X0:Ljy)
+3:Sample initial state xLN(0;Id)
+4:for`2L 1;:::; 0do
+5:Predict clean sample ^x0 h(x`+1;`+ 1), and associated noise z`+1
+6:Sample unconditional latent x`p;(X`jx`+1)
+7:fora2Asuch thatma= 1do
+8: Computea
+`;yfollowing (5) .usein the place of t
+9: Sample diﬀused observation ~ya
+`N(p`y+p1 `za
+`+1;a
+`;y)
+10: Setxa
+` (a
+`;x) 2xa
+`+(a
+`;y) 2~ya
+`
+(a
+`;x) 2+(a
+`;y) 2 . a
+`;xis the standard deviation of p;(Xa
+`jx`+1)
+11:end for
+12:end for
+Algorithm 4 Thompson Sampling with Diﬀusion Prior (DiﬀTS)
+1:Input:Diﬀusion model h, variance parameters 1:L, assumed noise level ^2R
+2:fort= 1;:::do
+3:Sample ~x0using Algorithm 3 with y0 ^t 1, t 1,mdeﬁned byma=1fNa
+t 1>0g
+4:Pull armat2arg maxa2A~xa
+0
+5:Update number of pulls Na
+t, scaled standard deviation a
+t, and empirical reward ^a
+tfora2A
+6:end for
+4This algorithm is in a sense just a special case of the algorithm that takes bandit interaction as evidence but can also be
+used as a subroutine of the more general algorithm.
+94 Training Diﬀusion Models from Imperfect Data
+Standard training procedure of diﬀusion models requires access to a dataset of clean samples Dtr=fxi;0gi2[ntr].
+Nonetheless, in most bandit applications, it is nearly impossible to obtain such dataset as the exact mean
+reward vector of each single task is never directly observed. Instead, one can collect imperfect observations
+of these vectors, either through previous bandit interactions or forced exploration. Taking this into account, in
+this section, we build towards a systematic procedure to train (and calibrate) diﬀusion models from imperfect
+data. Importantly, the application scope of our methodology goes beyond the bandit setup and covers any
+situation where imperfect data are available. As an example, we apply our approach to train from imperfect
+images (corrupted MNIST and Fashion-MNIST [Xiao et al., 2017] datasets) and obtain promising results
+(details are provided in Appendix E.3).
+Setup. For ease of exposition, we ﬁrst focus on the case of homogeneous noise. Extension to deal with
+non-homogeneous noise is later presented in Remark 1. When the noise is homogeneous with variance
+2
+data2R, the samples of the imperfect dataset Dtr=fyigi2[ntr]can be written as yi=mi(xi;0+zi)where
+mi2f0;1gKis a binary mask, ziis a noise vector sampled from N(0;2
+dataId), anddenotes element-wise
+multiplication.5Under this notation, we have ma
+i= 0if thea-th entry of the perturbed yiis unobserved and
+ma
+i= 1otherwise. In our bandit problem, such dataset can be obtained by randomly pulling a subset of
+arms once for each arm. We also assume that the associated masks fmigi2[ntr]and the noise level dataare
+known. We can thus rewrite the dataset as Dtr=f(yi;mi)gi2[ntr].
+4.1 Training with Imperfect Data
+In presence of perfect data, diﬀusion model training optimizes the denoising objective
+1
+LLX
+`=1Ex0Q 0;x`X`jx0[kx0 h(x`;`)k2]: (6)
+Nonetheless, neither x0norx`are available when we only have an imperfect dataset Dtr. To tackle these
+challenges, we propose an expectation-maximization ( EM) procedure which we summarize in Figure 3 and
+Algorithm 5. After a warm-up phase, we alternate between a posterior sampling step and a loss minimization
+step that play respectively the roles of the expectation and the maximization steps of standard EM.
+Posterior Sampling. If we hadx0, we could sample x`via the forward process and optimize the standard
+objective (6). This is however not the case. We thus propose to sample x0jointly with x`given observation y
+through posterior sampling with the current model parameter. Regarding diﬀusion model as a probability
+model over the random variables X0:L, this would then correspond to the posterior sampling step done in
+several variants of stochastic EM[Fort and Moulines, 2003]. In fact, a typical expectation step in EMfor a
+given parameter 0requires us to compute the expected log likelihood function
+Q() =nX
+i=1EXi;0:Ljyi;0;mi;0logp(Xi;0:L):
+Nonetheless, this is intractable in general due to the use of neural network in the deﬁnition of p, and that’s
+why we resort to sampling from the the posterior X0:Ljyi;mi;0. Concretely, in our experiments, we use
+Algorithm 3 to construct a dataset of posterior samples eDtr=f~xi;0:Lgi(note that that the algorithm allows
+us to sample jointly ~x0:Lgiveny).
+5As we will see Remark 1, the masking of an entry can also be viewed as an observation with inﬁnite variance.
+10Loss Minimization. Having obtained the posterior samples, we have the option to either maximize the
+log-likelihood of eDtror minimize the denoising lossP
+~x0:L2eDtrPL
+`=1k~x0 h(~x`;`)k2. Nonetheless, both of
+these approaches rely heavily on the generated posterior samples, which can bias the model towards generating
+low-quality samples during early stages of training. To address this issue, we propose to replace the sampled
+x0with corresponding observation yand use a modiﬁed denoising loss that is suited to imperfect data. Fix a
+small value "and a regularization parameter , the new loss function for a sample pair (y;~x`)at diﬀusion
+step`with associated mask mis deﬁned as
+L(;y;~x`;m;` ) =kmy mh(~x`;`)k2+ 2p`2
+dataEbN(0;Id)b>h(~x`+"b;`) h(~x`;`)
+"
+:(7)
+Compared to (6), we have a slightly modiﬁed mean squared error term (ﬁrst term) that handles incomplete
+data by only considering the observed entries as determined by the element-wise product with the mask. On
+the top of this, we include a regularization term (second term) that penalizes the denoiser from varying too
+much when the input changes to account for noisy observation. Our denoising loss ﬁnds its roots in works of
+[Metzler et al., 2018, Zhussip et al., 2019], which train denoisers in the absence of clean ground-truth data.
+In particular, the expectation here is an approximation of the divergence div~x`(h(~x`;`))that appears in
+Stein’s unbiased risk estimate ( SURE) [Stein, 1981, Eldar, 2008], an unbiased estimator of the mean squared
+error whose computation only requires the use of noisy samples.6
+From a practical viewpoint, the regularization term provides a trade-oﬀ between the bias and the variance
+of the learned model. When is set to 0, the model learns to generate noisy samples, which corresponds to a
+ﬂatter prior that encourages exploration. When gets larger, the model tries to denoise from the observed
+noisy samples. This can however deviate the model from the correct prior and accordingly jeopardize the
+online learning procedure.
+Warm-Up. In practice, we observe that posterior sampling with randomly initialized model produces
+poor training samples. Therefore, for only the warm-up phase, we sample y`from the forward distribution
+N(p`y;(1 `)Id)as in standard diﬀusion model training and minimize loss Levaluated at y`instead of
+~x`during this warm-up phase.
+Remark 1 (Bandit observations / observations with varying variances) .As suggested in Section 3.2, when
+the observations come from bandit interactions and each arm can be pulled more than once, we can ﬁrst
+summarize the interaction history by the empirical mean and the vector of adjusted standard deviation.
+Therefore, it actually remains to address the case of non-homogeneous noise where the noise vector ziis
+sampled fromN(0;diag(i2))for some vector i2RK. As the design of our posterior sampling algorithm
+already takes this into account, the posterior sampling steps of the algorithm remains unchanged. The only
+diﬀerence would thus lie in the deﬁnition of the modiﬁed loss (7). Intuitively, we would like to give more
+weights to samples that are less uncertain. This can be achieved by weighting the loss by the inverse of the
+variances, that is, we set
+L0(;y;~x`;m;;` ) =KX
+a=1majya ha
+(~x`;`)j
+(a)2+ 2p`EbN(0;I)b>h(~x`+"b;`) h(~x`;`)
+"
+:(8)
+To make sure the above loss is always well deﬁned, we may further replace (a)2by(a)2+for some
+small>0. It is worth noticing that one way to interpret the absence of observation ma= 0is to set the
+corresponding variance to inﬁnite, i.e., a= +1. In this case we see there is even no need of manymore as the
+coordinates with a= +1would already be given 0weight. Finally, to understand why we choose to weight
+with the inverse of the variance, we consider a scalar x, and a set of noisy observations y1;:::;ynrespectively
+drawn fromN(x;2
+1);:::;N(x;2
+n). Then, the maximum likelihood estimate of xisPn
+i=12
+iyi=(Pn
+i=12
+i).
+6When= 1,x`=~x`=p`y,m=1(i.e., all the entries are observed), and the expectation is replaced by the divergence,
+we recover SURE up to additive constant  K2
+data. See Appendix B.2 for details.
+11Algorithm 5 Diﬀusion Model Training from Imperfect (incomplete and noisy) Data
+1:Input:Training set Dtr=f(yi;mi)gi, calibration set Dcal, noise standard deviation data, number of
+warm-up, outer, and inner training steps S;J;andS0
+2:Output: Diﬀusion model h
+3:Warm-up
+4:fors= 1;:::;Sdo
+5:Sampley;mfrom Dtr
+6:Sample`from the uniform distribution over f1;:::;Lg
+7:Sampley`fromX`jX0=y
+8:Take gradient step to minimize L(;y;y`;m;` )(Eq. (7))
+9:end for
+10:Main Training Procedure
+11:forj= 1;:::;Jdo
+12: Posterior Sampling
+13:Compute reconstructions errors 1:Lwith Algorithm 6 using Dcal
+14:ConstructeD0
+tr=f~xi;0:L;yi;migiwith Algorithm 3
+15: Loss Minimization
+16:fors= 1;:::;S0do
+17: Sample ~x0:L;y;mfromeD0
+tr
+18: Sample`from the uniform distribution over f1;:::;Lg
+19: Take gradient step to minimize L(;y;~x`;m;` )(Eq. (7))
+20:end for
+21:end for
+4.2 Variance Calibration with Imperfect Data
+As mentioned in Section 3.1, a reliable variance estimate of the reverse process is essential for building a
+good diﬀusion prior. This holds true not only for the online learning process at test phase, but also for the
+posterior sampling step of our training procedure. The algorithm introduced in Section 3.1 calibrates the
+variance through perfect data. In this part, we extend it to operate with imperfect data.
+LetDcalbe a set of imperfect data constructed in the same way as Dtr. We write Da
+cal=f(y;m)2Dcal:
+ma= 1gas the subset of Dcalfor which a noisy observation of the feature at position ais available. Our
+algorithm (outlined in Algorithm 6) is inspired by the following two observations. First, if the entries are
+missing completely at random, observed ya
+0ofDa
+caland sampled xa
+0+zawithx0Q 0andzN(0;2I)
+have the same distribution. Moreover, for any triple (x0;y;x`)withy=x0+z,x`=p`x0+p1 `z`and
+x0,z, and z`sampled independently from Q0,N(0;2I), andN(0;I), it holds that
+E[kya
+0 ha
+(x`;`)k2] =E[kxa
+0 ha
+(x`;`)k2] +2:
+We can thus estimate E[kxa
+0 ha
+(x`;`)k2]if we manage to pair each ya
+02Da
+calwith a such x`.
+We again resort to Algorithm 3 for the construction of x`(referred to as ~x`in Algorithm 6 and hereinafter).
+Unlike the training procedure, here we ﬁrst construct ~x0and sample ~x`fromX`j~x0to decrease the mutual
+information between ~x`andy. Nonetheless, the use of our posterior sampling algorithm itself requires a
+prior with calibrated variance. To resolve the chicken-and-egg dilemma, we add a warm-up step where
+we precompute the reconstruction errors with Algorithm 2 by treating Dcalas the perfect dataset. In our
+experiments, we observe this step yields estimates of the right order of magnitude but not good enough to be
+used with Thompson sampling, while the second step brings the relative error to as small as 5%compare to
+the estimate obtained with perfect validation data using Algorithm 2.
+5 Numerical Experiments
+12Algorithm 6 Diﬀusion Model Variance Calibration from Imperfect (incomplete and noisy) Data
+1:Input:Diﬀusion model h, calibration set Dcal=fyi;migi2[ncal], noise standard deviation data
+2:Output: Variance parameters 1:L
+3:Data Set Preprocessing
+4:Precompute reconstructions errors 1:Lwith Algorithm 2 and Dcal Dcal(masks ignored)
+5:ConstructeDcal=f~xi;0;yi;migiwith Algorithm 3
+6:Variance Calibration
+7:for`= 1:::Ldo
+8:ConstructeDcal;`=f~xi;`;yi;migiby sampling ~xi;`fromX`j~xi;0
+9:fora= 1:::Kdo
+10: LeteDa
+cal;`=f~x`;y: (~x`;y;m )2eDcal;`;ma= 1g
+11: Seta
+` q
+1
+ncalP
+~x`;y2eDa
+cal;`kxa
+0 ha
+(x`;`)k2 2
+data
+12:end for
+13:end for
+Figure 4: An example task of the
+2D Maze problem. The red path in-
+dicates the optimal (super-)arm.In this section, we illustrate the beneﬁt of using diﬀusion prior through
+numerical experiments on real and synthetic data. Missing experimental
+details, ablation studies, and additional experiments are presented in
+Appendices C to E.
+Problem Construction. To demonstrate the wide applicability of our
+technique, we consider here three bandit problems respectively inspired
+by the applications in recommendation system, online pricing, and online
+shortest path routing [Talebi et al., 2017]. Detailed description of the task
+distributions and some visualization that help understand the problem
+structures are respectively provided in Appendices C.1 and F. The ﬁrst
+and the third problems listed below rely on synthetic data, and we obtain
+the rewards by perturbing the means with Gaussian noise of standard
+deviation= 0:1(we will thus only specify the construction of the means).
+As for the second problem, we use the iPinYou dataset [Liao et al., 2014].
+1.Popular and Niche Problem. We consider here the problem of choosing items to recommend to customers.
+LetK= 200. The arms (items) are separated into 40groups, each of size 5. Among these, 20groups of
+arms correspond to the popular items and tend to have high mean rewards. However, these arms are never
+the optimal ones. The other 20groups of arms correspond to the niche items. Most of them have low
+mean rewards but a few of them (those that match the preferences of the customer) have mean rewards
+that are higher than that of all the other arms. A task correspond to a customer so the partitions into
+groups and popular and niche items are ﬁxed across tasks while the remaining elements vary.
+2.iPinYou Bidding Problem. We consider here the problem of setting the bid price in auctions. Let v= 300
+be the value of the item. Each arm corresponds to a bid price b2f0;:::;299g, and the reward is either
+v bwhen the learner wins the auction or 0otherwise. The reward distribution of a task is then solely
+determined by the winning rates which are functions of the learner’s bid and the distribution of the highest
+bid from competitors. For the latter we use the corresponding empirical distributions of 1352ad slots
+from the iPinYou bidding data set [Liao et al., 2014] (each ad slot is a single bandit task).
+3.2D Maze Problem. We consider here an online shortest path routing problem on grid graphs. We formalize
+it as a reward maximization combinatorial bandit [Chen et al., 2013] with semi-bandit feedback. As shown
+in Figure 4, the super arms are the simple paths between the source and the destination (ﬁxed across the
+tasks) whereas the base arms are the edges of the grid graph. At each round, the learner picks a super
+arm and observes the rewards of all the base arms (edges) contained in this super arm (path). Moreover,
+the edges’ mean rewards in each task are derived from a 2D maze that we randomly generate. The mean
+reward is 1when there is a wall on the associated case (marked by the black color) and  0:01otherwise.
+130 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-25
+0 1000 2000 3000 4000 5000
+# Iterations020040060080010001200Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-25
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full(a)Popular and Niche
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (ours)
+UCBGTS-diag
+GTS-full (b) iPinYou Bidding
+0 1000 2000 3000 4000 5000
+# Iterations020040060080010001200Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full (c)2D Maze
+Figure 5: Regret performances on three diﬀerent problems with priors ﬁtted/trained on either exact expected rewards
+(top) or partially observed noisy rewards (bottom). The results are averaged over tasks of a test set and shaded areas
+represent standard errors.
+Training, Baselines, and Evaluation. To train the diﬀusion models, for each problem we construct a
+training setDtrand a calibration set Dcalthat contain the expected means of the tasks. We then conduct
+experiments for the following two conﬁgurations:
+1.Learn from perfect data: The priors are learned using DtrandDcalthat contain the exact mean rewards.
+Standard training procedure is applied here.
+2.Learn from imperfect data: The priors are learned using Dtrand Dcalthat are obtained from DtrandDcal
+by perturbing the samples with noise of standard deviation 0:1and then dropping each feature of a sample
+with probability 0:5. To tackle this challenging situation we adopt the approach proposed in Section 4.
+In terms of bandit algorithms, we compare our method, DiﬀTS, with UCB1 [Auer, 2002], with Thompson
+sampling with Gaussian prior using either diagonal or full covariance matrix (GTS-diag and GTS-full,
+Thompson, 1933), and with Thompson sampling with Gaussian mixture prior [Hong et al., 2022b].7The
+priors of the Thompson sampling algorithms are also learned with the same perfect / imperfect data that we
+use to train diﬀusion models. These thus form strong baselines against which we only improve in terms of the
+model used to learn the prior. As for the GMMbaseline, we use full covariance matrices and consider the
+case of either 10or25components (GMMTS-10 and GMMTS-25). We employ the standard EMalgorithm
+to learn the GMMwhen perfect data are available but fail to ﬁnd any existing algorithm that is able to learn
+a goodGMMon the imperfect data that we consider. We thus skip the GMMbaseline for the imperfect
+data setup. However, as we will see, even with imperfect data, the performance of DiﬀTS still remains better
+or comparable to GMMTS learned on perfect data.
+To evaluate the performance of the algorithms, we measure their average regret on a standalone test
+set— for a sequence of arms (at)t2f1;:::;Tgpulled by an algorithm in a bandit task, the induced regret is
+RegT=Ta? PT
+t=1at, wherea?2arg maxa2Aais an optimal arm in this task. The assumed noise level
+^is ﬁxed to the same value across all the methods.
+7For the 2D Maze problem we consider their combinatorial extensions in which the UCB index / sampled mean of a super
+arm is simply the sum of the corresponding quantities of the contained base arms [Chen et al., 2013, Wang and Chen, 2018].
+14Results. The results are presented in Figure 5. For ease of readability, among the two GMM priors ( 10
+and25components), we only show the one that achieves smaller regret. We see clearly that throughout
+the three problems and the two setups considered here, the proposed DiﬀTS algorithm always has the best
+performance. The diﬀerence is particularly signiﬁcant in the Popular and Niche and2D Maze problems, in
+which the regret achieved by DiﬀTS is around two times smaller than that achieved by the best performing
+baseline method. This conﬁrms that using diﬀusion prior is more advantageous in problems with complex
+task distribution.
+On the other hand, we also observe that the use of GMM prior in these two problems leads to performance
+worse than that of GTS-full, whereas it yields performance that is as competitive as DiﬀTS in the iPinYou
+Bidding problem. This is coherent with the visualizations we make in Appendix F, which shows that the
+ﬁtted GMM is only capable of generating good samples in the iPinYou Bidding problem. This, however,
+also suggests that the use of a more complex prior is a double-edged sword, and can lead to poor performance
+when the data distribution is not faithfully represented.
+In Appendix D, we further present ablation studies to investigate the impacts of various components of
+our algorithm. In summary, we ﬁnd out both the variance calibration step and the EM-like procedure for
+training with imperfect data are the most crucial to our algorithms, as dropping either of the two could lead
+to severe performance degradation. We also aﬃrm that the use of SURE-based regularization does lead to
+smaller regret, but ﬁnding the optimal regularization parameter is a challenging problem.
+Finally, while the good performance of DiﬀTS is itself an evidence of the eﬀectiveness of our sampling
+and training algorithms, we provide additional experiments in Appendix E to show how these methods can
+actually be relevant in other contexts.
+6 Concluding Remarks
+In this work, we argue that the ﬂexibility of diﬀusion models makes them a promising choice for representing
+complex priors in real-world online decision making problems. Then we design a new algorithm for multi-
+armed bandits that uses a diﬀusion prior with Thompson sampling. Our experiments show that this can
+signiﬁcantly reduce the regret when compared to existing bandit algorithms. Additionally, we propose a
+training procedure for diﬀusion models that can handle imperfect data, addressing a common issue in bandit
+scenario. This method is of independent interest.
+Our work raises a number of exciting but challenging research questions. One potential extension is to
+apply our approach to meta-learning problems in contextual bandits or reinforcement learning. This would
+involve modeling a distribution of functions or even of Markov decision processes by diﬀusion models, which
+remains a largely unexplored area despite a few attempts that work toward these purposes [Dutordoir et al.,
+2022, Nava et al., 2022]. Another factor not addressed in our work is the uncertainty of the learned model
+itself, in contrast to the uncertainty modeled by the model. When the diﬀusion model is trained on limited
+data, its uncertainty is high, and using it as a ﬁxed prior may lead to poor results. Regarding theoretical
+guarantees, several recent works [Chen et al., 2022a, Lee et al., 2022] have shown that unconditional sampling
+of diﬀusion models can approximate any realistic distribution provided suﬃciently accurate score estimate
+(the score-based interpretation of the predicted noise). Further extending the above results to cope with
+posterior sampling and deriving regret bounds would be a fruitful direction to work on.
+Finally, the posterior sampling algorithm for the diﬀusion model is a key bottleneck in scaling up our
+method. There has been signiﬁcant work on accelerating unconditional sampling of diﬀusion models [Salimans
+and Ho, 2021, Dockhorn et al., 2022, Zheng et al., 2022], but incorporating these into posterior sampling
+remains an open question.
+References
+Anurag Ajay, Yilun Du, Abhi Gupta, Joshua Tenenbaum, Tommi Jaakkola, and Pulkit Agrawal. Is conditional
+generative modeling all you need for decision-making? arXiv preprint arXiv:2211.15657 , 2022.
+15Jean-Yves Audibert, Sebastien Bubeck, and Remi Munos. Best arm identiﬁcation in multi-armed bandits. In
+Proceeding of the 23rd Annual Conference on Learning Theory , pages 41–53, 2010.
+Peter Auer. Using conﬁdence bounds for exploitation-exploration trade-oﬀs. Journal of Machine Learning
+Research , 3(Nov):397–422, 2002.
+Fan Bao, Chongxuan Li, Jun Zhu, and Bo Zhang. Analytic-dpm: an analytic estimate of the optimal reverse
+variance in diﬀusion probabilistic models. In International Conference on Learning Representations , 2021.
+Fan Bao, Chongxuan Li, Jiacheng Sun, Jun Zhu, and Bo Zhang. Estimating the optimal covariance with
+imperfect mean in diﬀusion probabilistic models. In International Conference on Machine Learning , pages
+1555–1584. PMLR, 2022.
+Soumya Basu, Branislav Kveton, Manzil Zaheer, and Csaba Szepesvári. No regrets for learning the prior in
+bandits. Advances in Neural Information Processing Systems , 34:28029–28041, 2021.
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners.
+Advances in neural information processing systems , 33:1877–1901, 2020.
+Sébastien Bubeck and Nicolò Cesa-Bianchi. Regret analysis of stochastic and nonstochastic multi-armed
+bandit problems. Foundations and Trends in Machine Learning , 5(1):1–122, 2012.
+Sebastien Bubeck, Remi Munos, and Gilles Stoltz. Pure exploration in multi-armed bandits problems. In
+Proceedings of the 20th International Conference on Algorithmic Learning Theory , pages 23–37, 2009.
+Leonardo Cella, Alessandro Lazaric, and Massimiliano Pontil. Meta-learning with stochastic linear bandits.
+InInternational Conference on Machine Learning , pages 1360–1370. PMLR, 2020.
+Olivier Chapelle and Lihong Li. An empirical evaluation of Thompson sampling. In Advances in Neural
+Information Processing Systems 24 , pages 2249–2257, 2012.
+Sitan Chen, Sinho Chewi, Jerry Li, Yuanzhi Li, Adil Salim, and Anru R Zhang. Sampling is as easy as learning
+the score: theory for diﬀusion models with minimal data assumptions. arXiv preprint arXiv:2209.11215 ,
+2022a.
+Ting Chen, Ruixiang Zhang, and Geoﬀrey Hinton. Analog bits: Generating discrete data using diﬀusion
+models with self-conditioning. arXiv preprint arXiv:2208.04202 , 2022b.
+Wei Chen, Yajun Wang, and Yang Yuan. Combinatorial multi-armed bandit: General framework and
+applications. In International Conference on Machine Learning , pages 151–159. PMLR, 2013.
+Hyungjin Chung, Jeongsol Kim, Michael T Mccann, Marc L Klasky, and Jong Chul Ye. Diﬀusion posterior
+sampling for general noisy inverse problems. arXiv preprint arXiv:2209.14687 , 2022a.
+Hyungjin Chung, Byeongsu Sim, and Jong Chul Ye. Come-closer-diﬀuse-faster: Accelerating conditional
+diﬀusion models for inverse problems through stochastic contraction. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition , pages 12413–12422, 2022b.
+Hyungjin Chung, Byeongsu Sim, and Jong Chul Ye. Improving diﬀusion models for inverse problems using
+manifold constraints. In Advances in Neural Information Processing Systems , 2022c.
+Prafulla Dhariwal and Alexander Nichol. Diﬀusion models beat GANs on image synthesis. Advances in
+Neural Information Processing Systems , 34:8780–8794, 2021.
+Tim Dockhorn, Arash Vahdat, and Karsten Kreis. GENIE: Higher-Order Denoising Diﬀusion Solvers. In
+Advances in Neural Information Processing Systems , 2022.
+Vincent Dutordoir, Alan Saul, Zoubin Ghahramani, and Fergus Simpson. Neural diﬀusion processes. arXiv
+preprint arXiv:2206.03992 , 2022.
+16YoninaCEldar. GeneralizedSUREforexponentialfamilies: Applicationstoregularization. IEEE Transactions
+on Signal Processing , 57(2):471–481, 2008.
+Eyal Even-Dar, Shie Mannor, and Yishay Mansour. Action elimination and stopping conditions for the
+multi-armed bandit and reinforcement learning problems. Journal of Machine Learning Research , 7:
+1079–1105, 2006.
+Gersende Fort and Eric Moulines. Convergence of the monte carlo expectation maximization for curved
+exponential families. The Annals of Statistics , 31(4):1220–1259, 2003.
+Alexandros Graikos, Nikolay Malkin, Nebojsa Jojic, and Dimitris Samaras. Diﬀusion models as plug-
+and-play priors. In Thirty-Sixth Conference on Neural Information Processing Systems , 2022. URL
+https://arxiv.org/pdf/2206.09012.pdf .
+Samarth Gupta, Shreyas Chaudhari, Subhojyoti Mukherjee, Gauri Joshi, and Osman Yağan. A uniﬁed
+approach to translate classical bandit algorithms to the structured bandit setting. IEEE Journal on Selected
+Areas in Information Theory , 1(3):840–853, 2020.
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diﬀusion probabilistic models. Advances in Neural
+Information Processing Systems , 33:6840–6851, 2020.
+Joey Hong, Branislav Kveton, Manzil Zaheer, Yinlam Chow, Amr Ahmed, and Craig Boutilier. Latent
+bandits revisited. In Advances in Neural Information Processing Systems 33 , 2020.
+Joey Hong, Branislav Kveton, Sumeet Katariya, Manzil Zaheer, and Mohammad Ghavamzadeh. Deep
+hierarchy in bandits. In Proceedings of the 39th International Conference on Machine Learning , 2022a.
+Joey Hong, Branislav Kveton, Manzil Zaheer, Mohammad Ghavamzadeh, and Craig Boutilier. Thompson
+sampling with a mixture prior. In International Conference on Artiﬁcial Intelligence and Statistics , pages
+7565–7586. PMLR, 2022b.
+Timothy Hospedales, Antreas Antoniou, Paul Micaelli, and Amos Storkey. Meta-learning in neural networks:
+A survey. IEEE transactions on pattern analysis and machine intelligence , 44(9):5149–5169, 2021.
+Paul Kuo-Ming Huang, Si-An Chen, and Hsuan-Tien Lin. Improving conditional score-based generation with
+calibrated classiﬁcation and joint training. In NeurIPS 2022 Workshop on Score-Based Methods , 2022.
+Ajil Jalal, Marius Arvinte, Giannis Daras, Eric Price, Alexandros G Dimakis, and Jon Tamir. Robust
+compressed sensing mri with deep generative priors. Advances in Neural Information Processing Systems ,
+34:14938–14954, 2021.
+Michael Janner, Yilun Du, Joshua B Tenenbaum, and Sergey Levine. Planning with diﬀusion for ﬂexible
+behavior synthesis. In International Conference on Machine Learning , 2022.
+Zahra Kadkhodaie and Eero Simoncelli. Stochastic solutions for linear inverse problems using the prior
+implicit in a denoiser. Advances in Neural Information Processing Systems , 34:13242–13254, 2021.
+Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diﬀusion-based
+generative models. arXiv preprint arXiv:2206.00364 , 2022.
+Bahjat Kawar, Gregory Vaksman, and Michael Elad. SNIPS: Solving noisy inverse problems stochastically.
+InAdvances in Neural Information Processing Systems , volume 34, pages 21757–21769, 2021a.
+Bahjat Kawar, Gregory Vaksman, and Michael Elad. Stochastic image denoising by sampling from the
+posterior distribution. In Proceedings of the IEEE/CVF International Conference on Computer Vision ,
+pages 1866–1875, 2021b.
+Bahjat Kawar, Michael Elad, Stefano Ermon, and Jiaming Song. Denoising diﬀusion restoration models. In
+Advances in Neural Information Processing Systems , 2022.
+17Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. Diﬀwave: A versatile diﬀusion
+model for audio synthesis. In International Conference on Learning Representations , 2020.
+Branislav Kveton, Mikhail Konobeev, Manzil Zaheer, Chih-wei Hsu, Martin Mladenov, Craig Boutilier, and
+Csaba Szepesvari. Meta-thompson sampling. In International Conference on Machine Learning , pages
+5884–5893. PMLR, 2021.
+Tor Lattimore and Remi Munos. Bounded regret for ﬁnite-armed structured bandits. In Advances in Neural
+Information Processing Systems 27 , pages 550–558, 2014.
+Tor Lattimore and Csaba Szepesvári. Bandit algorithms . Cambridge University Press, 2020.
+Holden Lee, Jianfeng Lu, and Yixin Tan. Convergence of score-based generative modeling for general data
+distributions. arXiv preprint arXiv:2209.12381 , 2022.
+Hairen Liao, Lingxiao Peng, Zhenchuan Liu, and Xuehua Shen. ipinyou global rtb bidding algorithm
+competition dataset. In Proceedings of the Eighth International Workshop on Data Mining for Online
+Advertising , pages 1–6, 2014.
+Xiuyuan Lu and Benjamin Van Roy. Information-theoretic conﬁdence bounds for reinforcement learning. In
+Advances in Neural Information Processing Systems 32 , 2019.
+Andreas Lugmayr, Martin Danelljan, Andres Romero, Fisher Yu, Radu Timofte, and Luc Van Gool. Repaint:
+Inpainting using denoising diﬀusion probabilistic models. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition , pages 11461–11471, 2022.
+Odalric-Ambrym Maillard and Shie Mannor. Latent bandits. In Proceedings of the 31st International
+Conference on Machine Learning , pages 136–144, 2014.
+Christopher A Metzler, Ali Mousavi, Reinhard Heckel, and Richard G Baraniuk. Unsupervised learning with
+Stein’s unbiased risk estimator. arXiv preprint arXiv:1805.10531 , 2018.
+Kevin P Murphy. Probabilistic machine learning: an introduction . MIT press, 2022.
+Elvis Nava, Seijin Kobayashi, Yifei Yin, Robert K Katzschmann, and Benjamin F Grewe. Meta-learning via
+classiﬁer (-free) guidance. arXiv preprint arXiv:2210.08942 , 2022.
+George Papandreou and Alan L Yuille. Gaussian sampling by local perturbations. Advances in Neural
+Information Processing Systems , 23, 2010.
+Amit Peleg, Naama Pearl, and Ron Meir. Metalearning linear bandits by prior update. In International
+Conference on Artiﬁcial Intelligence and Statistics , pages 2885–2926. PMLR, 2022.
+Martin Puterman. Markov Decision Processes: Discrete Stochastic Dynamic Programming . John Wiley &
+Sons, New York, NY, 1994.
+Sathish Ramani, Thierry Blu, and Michael Unser. Monte-Carlo SURE: A black-box optimization of regu-
+larization parameters for general denoising algorithms. IEEE Transactions on image processing , 17(9):
+1540–1554, 2008.
+Kashif Rasul, Calvin Seward, Ingmar Schuster, and Roland Vollgraf. Autoregressive denoising diﬀusion
+models for multivariate probabilistic time series forecasting. In International Conference on Machine
+Learning , pages 8857–8868. PMLR, 2021.
+Carlos Riquelme, George Tucker, and Jasper Snoek. Deep Bayesian bandits showdown: An empirical
+comparison of Bayesian deep networks for Thompson sampling. In Proceedings of the 6th International
+Conference on Learning Representations , 2018.
+Jonas Rothfuss, Dominique Heyn, Andreas Krause, et al. Meta-learning reliable priors in the function space.
+Advances in Neural Information Processing Systems , 34:280–293, 2021.
+18Daniel Russo and Benjamin Van Roy. Learning to optimize via posterior sampling. Mathematics of Operations
+Research , 39(4):1221–1243, 2014.
+Daniel J Russo, Benjamin Van Roy, Abbas Kazerouni, Ian Osband, Zheng Wen, et al. A tutorial on thompson
+sampling. Foundations and Trends ®in Machine Learning , 11(1):1–96, 2018.
+Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed
+Ghasemipour, Burcu Karagol Ayan, S Sara Mahdavi, Rapha Gontijo Lopes, et al. Photorealistic text-to-
+image diﬀusion models with deep language understanding. arXiv preprint arXiv:2205.11487 , 2022.
+Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diﬀusion models. In International
+Conference on Learning Representations , 2021.
+Rajat Sen, Alexander Rakhlin, Lexing Ying, Rahul Kidambi, Dean Foster, Daniel Hill, and Inderjit Dhillon.
+Top-kextreme contextual bandits with arm hierarchy. In Proceedings of the 38th International Conference
+on Machine Learning , 2021.
+MaxSimchowitz, ChristopherTosh, AkshayKrishnamurthy, DanielJHsu, ThodorisLykouris, MiroDudik, and
+Robert E Schapire. Bayesian decision-making under misspeciﬁed priors with applications to meta-learning.
+Advances in Neural Information Processing Systems , 34:26382–26394, 2021.
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning
+using nonequilibrium thermodynamics. In International Conference on Machine Learning , pages 2256–2265.
+PMLR, 2015.
+Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution.
+Advances in Neural Information Processing Systems , 32, 2019.
+Yang Song, Jascha Sohﬂ-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole.
+Score-based generative modeling through stochastic diﬀerential equations. In International Conference on
+Learning Representations , 2021.
+Yang Song, Liyue Shen, Lei Xing, and Stefano Ermon. Solving inverse problems in medical imaging with
+score-based generative models. In International Conference on Learning Representations , 2022.
+Charles M Stein. Estimation of the mean of a multivariate normal distribution. The annals of Statistics ,
+pages 1135–1151, 1981.
+Richard Sutton and Andrew Barto. Reinforcement Learning: An Introduction . MIT Press, Cambridge, MA,
+1998.
+Mohammad Sadegh Talebi, Zhenhua Zou, Richard Combes, Alexandre Proutiere, and Mikael Johansson.
+Stochastic online shortest path routing: The value of feedback. IEEE Transactions on Automatic Control ,
+63(4):915–930, 2017.
+William R Thompson. On the likelihood that one unknown probability exceeds another in view of the
+evidence of two samples. Biometrika , 25(3-4):285–294, 1933.
+Michal Valko, Remi Munos, Branislav Kveton, and Tomas Kocak. Spectral bandits for smooth graph functions.
+InProceedings of the 31st International Conference on Machine Learning , pages 46–54, 2014.
+Siwei Wang and Wei Chen. Thompson sampling for combinatorial semi-bandits. In International Conference
+on Machine Learning , pages 5114–5122. PMLR, 2018.
+Zachary Wu, Kadina E Johnston, Frances H Arnold, and Kevin K Yang. Protein sequence design with deep
+generative models. Current opinion in chemical biology , 65:18–27, 2021.
+Han Xiao, Kashif Rasul, and Roland Vollgraf. Fashion-mnist: a novel image dataset for benchmarking
+machine learning algorithms. arXiv preprint arXiv:1708.07747 , 2017.
+19Chin-Yun Yu, Sung-Lin Yeh, György Fazekas, and Hao Tang. Conditioning and sampling in variational
+diﬀusion models for speech super-resolution. arXiv preprint arXiv:2210.15793 , 2022.
+Hongkai Zheng, Weili Nie, Arash Vahdat, Kamyar Azizzadenesheli, and Anima Anandkumar. Fast sampling
+of diﬀusion models via operator learning. arXiv preprint arXiv:2211.13449 , 2022.
+Magauiya Zhussip, Shakarim Soltanayev, and Se Young Chun. Extending stein’s unbiased risk estimator
+to train deep denoisers with correlated pairs of noisy images. Advances in neural information processing
+systems, 32, 2019.
+20Appendix
+A Comparison of Diﬀusion Posterior Sampling Algorithms
+In this section we provide detailed explanation on how our algorithm for posterior sampling algorithm from a
+diﬀusion prior compares to the ones that has been proposed in the literature. While none of these algorithms
+was designed speciﬁcally for the multi-armed bandit setup that we consider, it turns out that our Algorithm 3
+shares the same general routine with many existing methods. In fact, a large family of algorithms proposed
+in the literature for posterior sampling with diﬀusion models (or equivalently, with trained denoisers or with
+learned score functions) goes through an iterative process that alternates between unconditional sampling
+and measurement consistency steps. The main diﬀerence thus lies in how the measurement consistency
+step is implemented. This can be roughly separated into the following three groups within the context of
+Algorithm 3.8We recall that unconditional sampled is represented by x0
+`and is drawn from p(X`jx`+1)[or
+p;(X`jx`+1)in our case].
+1.Direct mix with the observation y.The simplest solution is to mix directly the unconditional latent
+variablex0
+`with the observed features of y. That is, for a certain `2[0;1], we take
+x`= (1 m)x0
+`+m(`x0
+`+ (1 `)y): (9)
+This is essentially the approach taken by Sohl-Dickstein et al. [2015], Jalal et al. [2021], Kawar et al.
+[2021b], Kadkhodaie and Simoncelli [2021].9However, the mismatch between the noise levels of yandx0
+`
+could be detrimental.
+2.Mix with a noisier version of the observation. Alternatively, the most popular approach in the
+literature is probably to ﬁrst pass the observation through the forward process by sampling y`from
+N(Y`;p`y`;(1 `)Id)and then perform a weighted average between the unconditional latent variable
+x0
+`and the diﬀused observation y`.
+x`= (1 m)x0
+`+m(`x0
+`+ (1 `)y`): (10)
+This idea was introduced in Song et al. [2021, 2022] and subsequently used by Chung et al. [2022b],
+Lugmayr et al. [2022] where the authors improved diﬀerent aspects of the algorithm without modifying
+the implementation of the measurement consistency step.
+3.Gradient step with respect to denoiser input. The most involved but also the most general solution
+is to take a gradient step to ensure that the denoised output from the latent variable is close to our
+observation after applying the measurement operator. In other words, for a certain stepsize `, we set
+x`=x0
+` `rx0
+`km(y h(x0
+`;`))k2: (11)
+This was the method used by Chung et al. [2022a] and it was also jointly used with other measurement
+consistency strategy in Chung et al. [2022c], Yu et al. [2022].
+8In the literature this is often referred to as the problem of inpainting with noisy observation.
+9Concretely, instead of the mixing step it could be a gradient step that minimizes km(y x`+1)k2. This becomes equivalent
+to(9)if we replace x`+1byx0
+`and the stepsize is smaller than 1=2. Our presentation is intended to facilitate the comparison
+between diﬀerent methods while keeping the essential ideas. We thus also make similar minor modiﬁcations in (10) and (11).
+21Provided the above overview, it is clear that our method (Algorithm 3/Figure 2) is similar but diﬀerent
+from all the algorithms previously introduced in the literature. In fact, while we also use a diﬀused observation,
+it is sampled from N(~Y`;p`y0+p1 `za
+`+1;a
+`;y). The use of predicted noise za
+`+1for the forward process
+improves the coherence of the output as we will demonstrate on a simple example in Appendix E.2. On the
+other hand, the third approach mentioned above could potentially lead to even better results, but the need
+of computing the gradient with respect the denoiser makes it much less eﬃcient. Our method can then be
+regarded as an approximation of (11) by using
+h(x0
+`;`)x0
+` p1 `+1z`+1p`;
+which eliminates the need for computing the gradient of the denoiser.
+In additional to the aforementioned methods, other alternatives to perform posterior sampling with
+diﬀusion models include the use of a dedicated guidance network that learns directly q(yjx`)Dhariwal
+and Nichol [2021], Song et al. [2021], Huang et al. [2022], annealed Langevin dynamics Song and Ermon
+[2019], Gaussian approximation of posterior Graikos et al. [2022], and ﬁnally, a closed-form expression for the
+conditional score function and the conditional reverse step can be derived if we assume that the observed
+noise is carved from the noise of the diﬀusion process [Kawar et al., 2021a, 2022].
+B Mathematics of Algorithm Design
+In this appendix we provide mathematical derivations that inspire the design of several components of our
+algorithms.
+B.1 Reverse Step in Posterior Sampling from Diﬀusion Prior
+We next provide the derivation of the reverse step of our posterior sampling algorithm (variant of Algorithm 3
+as described in Section 3.2) that samples from XLjx`+1;y. For this, we write
+q(x`jx`+1;y) =q(x`jx`+1)q(yjx`;x`+1)
+q(yjx`+1)=q(x`jx`+1)R
+q(yjx0)q(x0jx`;x`+1)dx0
+q(yjx`+1):(12)
+The termq(x`jx`+1)can be simply approximated with p;(x`jx`+1). As for the integral, one natural
+solution is to use q(x0jx`;x`+1) =q(x0jx`)p0
+;(x0jx`). Then, for example, if q(yjx0) =N(y;x0;2Id),
+we can deduce Z
+q(yjx0)p0
+(x0jx`)dx0=N(y;h(x`;`);2Id+ diag(2
+`)):
+Nonetheless, as the denoiser hcan be arbitrarily complex, this does not lead to a close form expression to
+samplex`. Therefore, to avoid the use of involved sampling strategy in the recurrent step, we approximate
+q(x0jx`;x`+1)in a diﬀerent way. We ﬁrst recall that by deﬁnition of the diﬀusion model we may write
+X`=p`X0+p
+1 `Z`andX`+1=p`+1X`+p
+1 `Z`+1;
+where both Z`andZ`+1are random variable with distribution N(0;Id). This leads to
+X`+1=p`+1X0+p
+1 `+1Z`+1
+where
+Z`+1=s
+`+1(1 `)
+1 `+1Z`+s
+1 `+1
+1 `+1Z`+1:
+Therefore, we may take Z`+1as a reasonable approximation of Z`, while sampling Z`+1is basically the same
+as sampling from p0
+(X0jx`+1). To summarize, we write
+q(x0jx`;x`+1) =q
+Z`=x` p`x0p1 `x`;x`+1
+22q
+Z`+1=x` p`x0p1 `x`;x`+1
+=q
+X0=1p`+1
+x`+1  
+x` p`x0r
+1 `+1
+1 `x`;x`+1
+p0
+;
+X0=1p`+1
+x`+1  
+x` p`x0r
+1 `+1
+1 `x`+1
+=N s
+`(1 `+1)
+`+1(1 `)x0+x`+1p`+1 s
+1 `+1
+`+1(1 `)x`;
+h(x`+1;`+ 1);diag(2
+`+1)!
+=p`N
+x0;1p`(x` p
+1 `z`+1);`diag(2
+`+1)
+;
+where`=`+1(1 `)=(`(1 `+1))andz`+1represents the noise predicted by the denoiser from x`+1,
+that is,
+z`+1=x`+1 p`+1h(x`+1;`+ 1)p1 `+1:
+In this way, we have approximated q(x0jx`;x`+1)by a Gaussian with diagonal covariance and with mean
+that depends only linearly on x`. In the multi-armed bandit setup that we consider here, the relation between
+y=Htthe interaction history and x0=the mean reward vector obeys (3). There exists thus C(Ht)and
+eC(Ht)such that
+Z
+q(Htjx0)q(x0jx`;x`+1)dx0
+| {z }
+A=Z
+C(Ht)tY
+s=1N(rs;as;2)q(x0jx`;x`+1)dx0
+=Z
+eC(Ht)Y
+a2A
+Na
+t>0N(^a
+t;a;(a
+t)2)q(x0jx`;x`+1)dx0:
+Usingx0=, the aforementioned approximation of q(x0jx`;x`+1), and ignoring the multiplicative constant
+that does not depend on x`, we get
+A/ZY
+a2A
+Na
+t>0N(^a
+t;xa
+0;(a
+t)2)q(x0jx`;x`+1)dx0
+p`ZY
+a2A
+Na
+t>0N(^a
+t;xa
+0;(a
+t)2)Y
+a2AN
+xa
+0;1p`(xa
+` p
+1 `za
+`+1);`(a
+`+1)2
+dx0
+=p`Y
+a2A
+Na
+t>0Z
+N(^a
+t;xa
+0;(a
+t)2)N
+xa
+0;1p`(xa
+` p
+1 `za
+`+1);`(a
+`+1)2
+dxa
+0
+=p`Y
+a2A
+Na
+t>0N
+^a
+t;1p`(xa
+` p
+1 `za
+`+1);(a
+t)2+`(a
+`+1)2
+/Y
+a2A
+Na
+t>0N 
+xa
+`;p`^a
+t+p
+1 `za
+`+1;`((a
+t)2+`(a
+`+1)2):
+Plugging the above into (12), we obtain ~q(x`jx`+1;Ht) =Q
+a2A~q(xa
+`jx`+1;Ht)where ~q(xa
+`jx`+1;Ht) =
+p;(xa
+`jx`+1)ifais never pulled and otherwise it is the distribution satisfying
+~q(xa
+`jx`+1;Ht)/p;(xa
+`jx`+1)N 
+xa
+`;p`^a
+t+p
+1 `za
+`+1;`((a
+t)2+`(a
+`+1)2)
+:(13)
+23To conclude, we resort to the following lemma (see Papandreou and Yuille, 2010 for more general results).
+Lemma 1. Let1;2;1;22R. The following two sampling algorithms are equivalent.
+1. Samplexdirectly from the distribution whose density is proportional the product N(1;2
+1)N(2;2
+2).
+2. Samplex1fromN(1;2
+1),x2fromN(2;2
+2), and compute x= 2
+1x1+ 2
+2x2=( 2
+1+ 2
+2).
+Proof.It is well known that the product of two Gaussian PDFs is itself proportional to a Gaussian PDF.
+Concretely, we have
+N(1;2
+1)N(2;2
+2)/N 2
+11+ 2
+22
+ 2
+1+ 2
+2;1
+ 2
+1+ 2
+2
+: (14)
+On the other hand, the linear combination of two independent Gaussian variables is also a Gaussian variable.
+ForX1;X2that followN(1;2
+1);N(2;2
+2)andX= 2
+1X1+ 2
+2X2=( 2
+1+ 2
+2), we can compute
+E[X] = 2
+1E[X1] + 2
+2E[X2]
+ 2
+1+ 2
+2= 2
+11+ 2
+22
+ 2
+1+ 2
+2;
+Var[X] = 4
+1Var[X1] + 4
+2Var[X2]
+( 2
+1+ 2
+2)2= 2
+1+ 2
+2
+( 2
+1+ 2
+2)2=1
+ 2
+1+ 2
+2:
+Therefore,Xfollows the distribution of (14)and computing the linear combination of x1andx2as suggested
+is equivalent to sampling directly from the resulting distribution.
+We obtain the algorithm presented in Section 3.2 by applying Lemma 1 to (13) with
+N(1;2
+1) p;(xa
+`jx`+1)
+N(2;2
+2) N 
+xa
+`;p`^a
+t+p
+1 `za
+`+1;`((a
+t)2+`(a
+`+1)2)
+:
+B.2 On SURE-based Regularization
+In this part we show how the loss function (7)is related to Stein’s unbiased risk estimate (SURE). We ﬁrst
+note that by deﬁnition of the diﬀusion process, we have x`=p`x0+p1 `z`where z`is a random
+variable following the distribution N(0;Id). Moreover,p`h(x`;`)is an estimator ofp`x0fromx`. The
+corresponding SURE thus writes
+SURE(p`h(;`)) =kp`h(x`;`) x`k2 K(1 `) + 2(1 `) divx`(p`h(x`;`)):
+If it holdsx`=p`ywhileyfollows the distribution N(x0;2Id), we get immediately 1 `=`2. The
+above can thus be rewritten as
+SURE(p`h(;`)) =kp`h(x`;`) p`yk2 K`2+ 23
+2
+`2divx`(h(x`;`)):
+Dividing the above by `we get an unbiased estimate of E[kh(x`;`) x0k2], i.e.,
+E[kh(x`;`) x0k2] =E[kh(x`;`) yk2 K2+ 2p`2divx`(h(x`;`))]:
+On the right hand side inside expectation we recover Eq. (7) with m=1and= 1by replacing x`by~x`
+and the divergence by its Monte-Carlo approximation [Ramani et al., 2008].
+C Missing Experimental Details
+In this section, we provide missing experimental details mainly concerning the construction of the problem
+instances and the learning of priors. All the simulations are run on an Amazon p3.2xlarge instance equipped
+with 8 NVIDIA Tesla V100 GPUs.
+24C.1 Construction of Bandit Instances
+We provide below more details on how the bandit instances are constructed in our problems. Besides the
+three problems described in Section 5, we consider an additional Labeled Arms problem that will be used
+for our ablation study. Some illustrations of the constructed instances and the vectors generated by learned
+priors are provided in Appendix F. As in Popular and Niche and2D Maze problems, in the Labeled Arms
+problem we simply add Gaussian noise of standard deviation 0:1to the mean when sampling the reward. For
+these three problems we thus only explain how the means are constructed.
+1.Popular and Niche (K= 200arms). The arms are split into 40groups of equal size. 20of these
+groups represent the ‘popular’ items while the other 20represent the ‘niche’ items. For each bandit task,
+we ﬁrst construct a vector whose coordinates’ values default to 0. However, we randomly choose 1to
+3groups of niche items and set the value of each of these items to 1with probability 0:7(independently
+across the selected items). Similarly, we randomly choose 15to17groups of popular items and set their
+values to 0:8. Then, to construct the mean reward vector , we perturb the values of by independent
+Gaussian noises with standard deviation of 0:1. After that, we clip the values of the popular items to
+make them smaller than 0:95and clip the entire vector to the range [0;1].
+2.iPinYou bidding (K= 300arms). The set of tasks is constructed with the help of the iPinYou data set
+[Liao et al., 2014]. This data set contains logs of ad biddings, impressions, clicks, and ﬁnal conversions,
+and is separated into three diﬀerent seasons. We only use the second season that contains the ads from
+5advertisers (as we are not able to ﬁnd the data for the ﬁrst and the third season). To form the tasks,
+we further group the bids according to the associated ad slots. By keeping only those ad slots with at
+least 1000bids, we obtain a data set of 1352ad slots. Then, the empirical distribution of the paying
+price (i.e., the highest bid from competitors) of each ad slot is used to computed the success rate of
+every potential bid b2f0;:::; 299gset by the learner. The reward is either 300 bwhen the learner
+wins the auction or 0otherwise. Finally, we divide everything by the largest reward that the learner
+can ever get in all the tasks to scale the rewards to range [0;1].
+3.2D Maze (K= 180base arms). For this problem, we ﬁrst use the code of the github repository
+MattChanTK/gym-maze10to generate random 2D mazes of size 1919. Then, each bandit task can
+be derived from a generated 2D maze by associating the maze to a weighted 1010grid graph. As
+demonstrated by Figure 4, each case corresponds to either a node or an edge of the grid graph. Then,
+the weight (mean reward) of an edge (base arms) is either  1or 0:01depending on either there is a
+wall (in black color) or not (in white color) on the corresponding case. An optimal arm in this problem
+would be a path that goes from the source to the destination without bumping into any walls in the
+corresponding maze.
+4.Labeled Arms (K= 500arms). This problem is again inspired by applications in recommendation
+systems. We are provided here a set of 50labelsL=f1;:::;50g. Each arm is associated to a subset La
+of these labels with size card(La) = 7. To sample a new bandit task B, we randomly draw a set LBL
+again with size 7. Then for each arm a, we set a= 1 1=4card(La\LB)so that the more the two sets
+intersect the higher the value. Finally, to obtain the mean rewards , we perturb the coordinates of 
+by independent Gaussian noises of standard deviation 0:1and scale the resulting vector to the range
+[0;1].
+Training, Calibration, and Test Sets. Training, calibration, and test set are constructed for each of
+the considered problem. Their size are ﬁxed at 5000,1000,100for the Popular and Niche ,2D Maze, and
+Labeled Arms Problems, and at 1200,100, and 52for the iPinYou Bidding problem.
+10https://github.com/MattChanTK/gym-maze
+25C.2 Diﬀusion Models– Model Design
+In all our experiments (including the ones described in Appendices D and E), we set the diﬀusion steps of
+the diﬀusion models to L= 100and adopt a linear variance schedule that varies from 1 1= 10 4to
+1 L= 0:1. The remaining details are customized to each problem, taking into account the speciﬁcity of
+the underlying data distribution.
+1.Labeled Arms andPopular and Niche . These two problems have the following two important features:
+(i) The expected means of the bandit instances do not exhibit any spatial correlations (see Figures 16a
+and 17a). ( ii) The values of the expected means are nearly binary.
+The ﬁrst point prevents us from using the standard U-Net architecture. Instead, we consider an architecture
+adapted from Kong et al. [2020], Rasul et al. [2021], with 5residual blocks and each block containing 6
+residual channels.11Then, to account for the lack of spatial correlations, we add a fully connected layer at
+the beginning to map the input to a vector of size 1286, before reshaping these vectors into 6channels
+and feeding them to the convolutional layers. In a similar fashion, we also replace the last layer of the
+architecture by a fully connected layer that maps a vector of size 1286to a vector of size K. We ﬁnd
+that these minimal modiﬁcation already enable the model to perform well on these two problems.
+As for the latter point, we follow Chen et al. [2022b] and train the denoisers to predict the clean sample
+x0as it is reported in the said paper that this leads to better performance when the data are binary.
+2.iPinYou Bidding . As shown in Figure 20, the pattern of this problem looks similar to that of natural
+images. We therefore adopt the standard U-Net architecture, with an adaption to the 1-dimensional case
+as described by [Janner et al., 2022]. The model has three feature map resolutions (from 300to75) and
+the number of channels for each resolution is respectively 16,32, and 64. No attention layer is used. The
+denoiser is trained to predict noise as in Ho et al. [2020], Song and Ermon [2019].
+3.2D Maze As explained in Appendix C.1 and illustrated in Figure 4, the weighted grid graphs are themselves
+derived by the 2D mazes. We can accordingly establish a function that maps each 1010weighted grid
+graph to an image of size 1919and vice-versa— it suﬃces to match the value of each associated (edge,
+pixel) pair. For technical reason, we further pad the 1919images to size 2020by adding one line of
+ 1at the right and one row of  1at the bottom (see Figure 21). We then train diﬀusion models to learn
+the distribution of the resulting images. For this, we use a 2-dimensional U-Net directly adapted from the
+ones used by Ho et al. [2020]. The model has three feature map resolutions (from 2020to55) and
+the number of channels for each resolution is respectively 32,64, and 128. A self-attention block is used at
+every resolution. We again train the denoiser to predict the clean sample x0as we have binary expected
+rewards here ( 0:01or 1).
+C.3 Diﬀusion Models– Training
+Through out our experiments, we use Adam optimizer with learning rate 510 4and exponential decay
+rates1= 0:9and2= 0:99. The batch size and the epsilon constant in SURE-based regularization are
+respectively ﬁxed at 128and= 10 5. When the perfect data sets DtrandDcalare provided, we simply
+train the diﬀusion models for 15000steps on the training set Dtrand apply Algorithm 2 on the calibration
+setDcalto calibrate the variances. The training procedure is more complex when only imperfect data are
+available. We provide the details below.
+Posterior Sampling. As explained in Section 4 and Algorithm 5, to train from imperfect data we sample
+the entire chain of diﬀused samples ~x0:Lfrom the posterior. However, while Algorithm 3 performs sampling
+with predicted noise z`+1and as we will show in Appendix E.2, this indeed leads to improved performance
+in a certain aspect, we observe that when used for training, it prevents the model from making further
+progress. We believe this is because in so doing we are only reinforcing the current model with their own
+11These numbers are rather arbitrary and do not seem to aﬀect much our results.
+26Figure 6: The three paths (super-arms) for UCB initialization in the 2D Maze experiment.
+predictions. Therefore, to make the method eﬀective, in our experiments we slightly modify the posterior
+sampling algorithm that is used during training. While we still construct samples x0:Lfollowing Algorithm 3,
+the samples ~x0:Lused for the loss minimization phase are obtained by replacing z`+1(line 9) by ~z`+1sampled
+fromN(0;Id)in the very last sampling step. That is, from x`+1we sample both x`for further iterations of
+the algorithm and ~x`to be used for loss minimization.
+Training Procedure Speciﬁcation. When training and validation data are incomplete and noisy, we
+follow the training procedure described in Algorithm 5 with default values S= 15000 warm-up steps, J= 3
+repeats, and S0= 3000steps within each repeat (thus 24000steps in total). Moreover, during the warm-up
+phase we impute the missing value with constant 0:5when constructing the diﬀused samples ~x`. As for
+the regularization parameter , we ﬁx it at 0:1for the Popular and Niche ,2D Maze, and Labeled Arms
+problems.
+Nevertheless, training from imperfect data turns out to be diﬃcult for the iPinYou Bidding problem. We
+conjecture this is both because the training set is small and because we train the denoiser to predict noise
+here. Two modiﬁcations are then brought to the above procedure to address the additional diﬃculty. First,
+as SURE-based regularization can prevent the model from learning any pattern from data when information
+is scarce, we drop it for the warm-up phase and the ﬁrst two repeats (i.e., the ﬁrst 21000steps). We then get
+a model that has learned the noisy distribution. We then add back SURE-based regularization with = 0:25
+in the third repeat. After the 24000steps, the model is good enough at reconstructing the corrupted data set,
+but the unconditionally generated samples suﬀer from severe mode collapse. Provided that the reconstructed
+samples are already of good quality, we ﬁx the latter issue simply by applying standard training on the
+reconstructed samples for another 3000steps (thus 27000training steps in total).
+C.4 Other Details
+In this part we provide further details about the evaluation phase and the baselines.
+Assumed Noise Level. All the bandit algorithms considered in our work take as input a hyperparameter
+^that should roughly be in the order of the scale of the noise. For the results presented in Section 5, we set
+^= 0:1for the Popular and Niche and2D Maze problems and ^= 0:2for the iPinYou Bidding problem.
+The former is exactly the ground truth standard deviation of the underlying noise distribution. For the
+iPinYou Bidding problem the noise is however not Gaussian, and ^= 0:2is approximately the third quartile
+of the empirical distribution of the expected rewards’ standard deviations (computed across tasks and arms).
+In Appendix E.1, we present additional results for algorithms run with diﬀerent assumed noise levels ^.
+UCB1. The most standard implementation of the UCB1 algorithm sets the upper conﬁdence bound to
+Ua
+t= ^a
+t+ ^s
+2 logt
+Na
+t: (15)
+27Instead, in our experiments we use Ua
+t=^a
+t+^=p
+Na
+t. Eq. (15) is more conservative than our implementation,
+and we thus do not expect it to yield smaller regret within the time horizon of our experiments.
+UCB1 Initialization. In contrary to Thompson sampling-based methods, UCB1 typically requires an
+initialization phase. For vanilla multi-armed bandits ( Popular and Niche ,iPinYou Bidding , and Labeled
+Arms) this simply consists in pulling each arm once. For combinatorial bandits we need to pull a set of super
+arms that covers all the base arms. In the 2D Maze experiment we choose the three paths shown in Figure 6.
+Gaussian Prior with Imperfect Data. To ﬁt a Gaussian on incomplete and noisy data, we proceed as
+follows: First, we compute the mean of arm afrom those samples that have observation for a. Next, in a
+similar fashion, the covariance between any two arms are only computed with samples that have observations
+for both arms. Let the resulting matrix be ^. Since the covariance matrix of the sum of two independently
+distributed random vectors (in our case X0and noise) is the sum of the covariance matrices of the two random
+vectors, we further compute ^0=^ 2
+dataIdas an estimate of the covariance matrix of X0. Finally, as ^0
+is not necessarily positive semi-deﬁnite and can even have negative diagonal entries, for TS with diagonal
+covariance matrix we threshold the estimated variances to be at least 0and for TS with full covariance matrix
+we threshold the eigenvalues of the estimated covariance matrix ^0to be at least 10 4.12
+Arm Selection in 2D MazeProblem. All the algorithms we use in the 2D Maze problem ﬁrst com-
+pute/sample some values for each base arm (edge) and then select the super arm (path) that maximizes the
+sum of its base arms’ values (for DiﬀTS we ﬁrst map the sampled 2020image back to a weighted graph
+and the remaining is the same). Concretely, we implement this via Dijkstra’s shortest path algorithm applied
+to the weighted graphs with weights deﬁned as the opposite of the computed/sampled values. However, these
+weights are not guaranteed to be non-negative, and we thus clip all the negative values to 0before computing
+the shortest path.
+D Ablation Study
+In this appendix, we perform ablation studies on the Popular and Niche and Labeled Arms problems to
+explore the impacts of various design choices of our algorithms.
+D.1 Predicted versus Sampled Noise in Posterior Sampling
+In the DiﬀTS scheme that we develop (Algorithms 3 and 4), we propose to use the predicted noise z`+1in
+the construction of the diﬀused observation ~y`. Alternatively, we can replace it by a sampled noise vector
+~z`+1(the resulting algorithm then becomes very similar to the ‘mix with a noisier version of the observation’
+approach presented in Appendix A). In Figure 9, we investigate how this decision aﬀects the performance of
+DiﬀTS with diﬀusion priors trained on perfect data set Dtr. It turns out that for the two problems considered
+here, there is not clear winner between the two options. However, it seems that using only sampled noise
+produces noisier samples, which leads to signiﬁcant increase in regret in the Labeled Arms problem. We
+further conﬁrm this intuition in Appendix E.2, where we show on a toy problem that the use of predicted
+noise often leads to samples that are more consistent with the learned prior. However, this does not always
+lead to performance improvement in bandit problems as the learned prior is never perfect.
+D.2 Importance of Variance Calibration
+Throughout our work, we have highlighted multiple times the importance of equipping the diﬀusion model
+with a suitable variance estimate. We demonstrate this in Figure 8. We consider diﬀusion priors trained
+12Our implementation requires the prior covariance matrix to be positive deﬁnite.
+280 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+GTS-full
+DiffTS predicted noise
+DiffTS sampled noiseLabeled Arms ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140160Regret
+GTS-full
+DiffTS predicted noise
+DiffTS sampled noise Labeled Arms ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS predicted noise
+DiffTS sampled noise Popular & Niche ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS predicted noise
+DiffTS sampled noise Popular & Niche ^= 0:05
+Figure 7: Regret comparison for DiﬀTS with predicted or independently sampled noise in the construction of diﬀused
+observation ~y`.
+0 1000 2000 3000 4000 5000
+# Iterations0100200300400500600700Regret
+GTS-full
+DiffTS calibrated
+DiffTS non-calibrated
+DiffTS p(x0|x1) calibrated
+Labeled Arms ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations0100200300400500600700Regret
+GTS-full
+DiffTS calibrated
+DiffTS non-calibrated
+DiffTS p(x0|x1) calibrated Labeled Arms ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS calibrated
+DiffTS non-calibrated
+DiffTS p(x0|x1) calibrated Popular & Niche ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS calibrated
+DiffTS non-calibrated
+DiffTS p(x0|x1) calibrated Popular & Niche ^= 0:05
+Figure 8: Regret comparison for DiﬀTS with three diﬀerent types of reverse variance schedules.
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+GTS-full
+DiffTS perfect data
+DiffTS λ=0
+DiffTS λ=0.1
+DiffTS λ=0.5
+Labeled Arms ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS perfect data
+DiffTS λ=0
+DiffTS λ=0.1
+DiffTS λ=0.5 Labeled Arms ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140160Regret
+GTS-full
+DiffTS perfect data
+DiffTS λ=0
+DiffTS λ=0.1
+DiffTS λ=0.5 Popular & Niche ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS perfect data
+DiffTS λ=0
+DiffTS λ=0.1
+DiffTS λ=0.5 Popular & Niche ^= 0:05
+Figure 9: Regret comparison for DiﬀTS trained on noisy data with diﬀerent regularization weight .
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM
+Labeled Arms ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM Labeled Arms ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140160Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM Popular & Niche ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM Popular & Niche ^= 0:05
+Figure 10: Regret comparison for DiﬀTS trained on incomplete data with or without EM.
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM
+DiffTS EM without SURE
+Labeled Arms ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140160Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM
+DiffTS EM without SURE Labeled Arms ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations0255075100125150175Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM
+DiffTS EM without SURE Popular & Niche ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140Regret
+GTS-full
+DiffTS perfect data
+DiffTS without EM
+DiffTS EM
+DiffTS EM without SURE Popular & Niche ^= 0:05
+Figure 11: Regret comparison for DiﬀTS trained on noisy and incomplete data with or without EM / SURE-based
+regularization.
+29on the perfect data set Dtralong with three diﬀerent reverse variance schedules: ( i) calibrated, i.e., Eq. (2);
+(ii) non-calibrated, i.e., Eq. (1); ( iii) partially calibrated– precisely, only the variance of X0jx1is calibrated.
+We see clearly that a non-calibrated reverse variance schedule leads catastrophic regret performance. This is
+because the sampling process relies too much on the learned model; in particular, the variance of p(X0jx1)
+is ﬁxed at zero. Instead, calibrating X0jx1itself already leads to signiﬁcant decrease in regret, making it
+as competitive as (and sometimes even better than) the fully calibrated alternative. This suggests that the
+trade-oﬀ between the learned model and the observations mainly occurs at the last reverse step, whereas
+enlarging the variance of the remaining reverse steps has little to no eﬀect. [Yet, it is also clear from the
+experiment on the Popular and Niche problem with presumed noise standard deviation 0:5that calibrating
+the variance of all the reverse steps may still be beneﬁcial in some situation.]
+D.3 Ablation Study for Training from Imperfect Data
+Our algorithm for training from imperfect data (Algorithm 5) makes two important modiﬁcations to the
+original training scheme: the Expectation Maximization-like procedure (abbreviated as EM hereinafter) and
+the use of SURE-based regularization. Below we discuss their eﬀects for three types of data: noisy data,
+incomplete data, and noisy and incomplete data. We ﬁx all the hyper-parameters to the ones used in the
+main experiment unless otherwise speciﬁed. In particular, we set the noise standard deviation to 0:1for noisy
+data and the missing rate to 0:5for incomplete data.
+For comparison, we also plot the regrets for the full covariance Gaussian prior baseline. The means and
+the covariance of the prior are ﬁtted with the three types of imperfect data that are used to train and calibrate
+the diﬀusion models, following the procedure detailed in Appendix C.4.
+Training from Noisy Data. To cope with noisy data, we add SURE-based regularization with weight
+to our training objective (7). In this part, we focus on how the choice of aﬀects the regret when the
+data are noisy. For the sake of simplicity, we only complete the warm-up phase of the algorithm, that is,
+the models are only trained for 15000steps with loss function Landx`sampled from X`jX0=y0. In our
+experiments we note this is generally good enough for noisy data without missing entries.
+The results are shown in Figure 9. As we can see, the value of has a great inﬂuence on the regret
+achieved with the learned prior. However, ﬁnding the most appropriate for each problem is a challenging
+task. Using a larger value of helps greatly for the Labeled Arms problem when it is given the ground-truth
+standard deviation = 0:1, but is otherwise harmful for the Popular and Niche problem. We believe that
+ﬁnding a way to determine the adequate value of will be an important step to make our method more
+practically relevant.
+Training from Incomplete Data. The EM step is mainly designed to tackle missing data. In Figure 10
+we show how the induced regrets diﬀer when the models are trained with and without it and when the
+observations are missing at random but not noisy. To make a fair comparison, we also train the model for a
+total of 24000(instead of 15000) steps when EM is not employed. As we can see, in all the setups the use of
+EM results in lower regret.
+Training from Incomplete and Noisy Data. To conclude this section we investigate the eﬀects of EM
+and SURE-based regularization when the data are both noisy and incomplete, as in our main experiment.
+We either drop totally the regularization term, i.e., set = 0, or skip the EM step (but again we train the
+models for 24000 steps with the conﬁguration of the warm-up phase in this case). We plot the resulting
+regrets in Figure 11. For the models without EM, the variance calibration algorithm proposed in Section 4.2
+(Algorithm 6) does not work well so we calibrate it with a perfect calibration set Dcal.13However, even
+with this the absence of EM consistently leads to the worst performance. On the other hand, dropping the
+13Indeed, by design Algorithm 6 only gives good result when the posterior sampling step provides a reasonable approximation
+ofx0. How to calibrate the variance of a poorly performed model from imperfect data is yet another diﬃcult question to be
+addressed.
+30regularization term only causes clear performance degradation for the Labeled Arms problem. This is in line
+with our results in Figure 9.
+E Additional Experiments
+In this appendix, we ﬁrst supplement our numerical section Section 5 with results obtained under diﬀerent
+assumed noise levels. After that, we present additional experiments for the posterior sampling and the
+training algorithms.
+E.1 Experimental Results with Diﬀerent Assumed Noise Levels
+To further validate the beneﬁt of diﬀusion priors, we conduct experiments for the four problems introduced
+in Appendix C.1 under diﬀerent assumed noise levels. The results are shown in Figure 12. We see that
+DiﬀTS achieves the smallest regret in 15out of the 18plots, conﬁrming again the advantage of using diﬀusion
+priors. Moreover, although DiﬀTS performs worse than either GMMTS or GTS-full in iPinYou Bidding and
+Labled Arms for a certain assumed noise level, the smallest regret is still achieved by DiﬀTS when taking all
+the noise levels that we have experimented with into account.
+Finally, it is clear from Figure 12 that the choice of the assumed noise level ^also has a great inﬂuence
+on the induced regret. The problem of choosing an appropriate ^is however beyond the scope of our work.
+E.2 Comparison of Posterior Sampling Strategies on a Toy Problem
+In this part, we demonstrate on a toy problem that using predicted noise z`+1to construct the diﬀused
+observation ~y`leads to more consistent examples compared to using independently sampled noise vectors.
+Data Set and Diﬀusion Model Training. We consider a simple data distribution over R200. The 200
+features are grouped into 20groups. For each sample, we randomly select up to 6groups and set the values of
+the corresponding features to 1. The remaining features take the value 0. Some samples from this distribution
+are illustrated in Figure 13a. As for the diﬀusion model, the model architecture, hyper-parameters, and
+training procedure are taken to be the same as those for the Popular and Niche problem (Appendix C). In
+Figure 13b we see that the data distribution is perfectly learned.
+Posterior Sampling. We proceed to investigate the performance of our posterior sampling algorithm
+on this example. For this, we form a test set of 100samples drawn from the same distribution and drop
+each single feature with probability 0:5as shown in Figure 13c. We then conduct posterior sampling with
+the learned model using Algorithm 3. To deﬁne the diﬀused observation ~y`, we either follow (4)or replace
+the predicted noise z`+1by the sampled noise ~z`+1in the formula. The corresponding results are shown in
+Figures 13d and 13e. As we can see, using predicted noise clearly leads to samples that are more consistent
+with both the observations and the learned prior.
+To provide a quantitative measure, in the constructed samples we deﬁne a group to be ‘relevant’ if the
+values of all its features are greater than 0:8. We then compute the recall and precision by comparing the
+ground-truth selected groups and the ones identiﬁed as relevant. When predicted noise is used, the average
+recall and precision are both at 100%. On the other hand, when independently sampled noise is used, the
+average recall falls to around 85%(this value varies due to the randomness of the sampling procedure but
+never exceeds 90%) while the average precision remains at around 98%.
+E.3 Training from Imperfect Image Data
+To illustrate the potential of the training procedure introduced in Section 4.1, we further conduct experiments
+on the MNIST and Fashion-MNIST [Xiao et al., 2017] data sets. Both data sets are composed of gray-scale
+310 1000 2000 3000 4000 5000
+# Iterations0255075100125150175Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25Perfect data ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25 Perfect data ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations0255075100125150175Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:1
+(a)Popular and Niche
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140160Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25
+Perfect data ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25 Perfect data ^= 0:2
+0 1000 2000 3000 4000 5000
+# Iterations050100150200250Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25 Perfect data ^= 0:3
+0 1000 2000 3000 4000 5000
+# Iterations020406080100120140160Regret
+DiffTS (ours)
+UCBGTS-diag
+GTS-full
+Imperfect data ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations050100150200Regret
+DiffTS (ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:2
+0 1000 2000 3000 4000 5000
+# Iterations050100150200250Regret
+DiffTS
+UCBGTS-diag
+GTS-full Imerfect data ^= 0:3
+(b) iPinYou Bidding
+0 1000 2000 3000 4000 5000
+# Iterations0200400600800100012001400Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25
+Perfect data ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations020040060080010001200Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25 Perfect data ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations020040060080010001200Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations020040060080010001200Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:1
+(c)2D Maze
+0 1000 2000 3000 4000 5000
+# Iterations050100150200250Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25
+Perfect data ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations050100150200250300350Regret
+DiffTS (ours)
+UCB
+GTS-diagGTS-full
+GMMTS-10
+GMMTS-25 Perfect data ^= 0:1
+0 1000 2000 3000 4000 5000
+# Iterations050100150200250Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:05
+0 1000 2000 3000 4000 5000
+# Iterations050100150200250300350Regret
+DiffTS (Ours)
+UCBGTS-diag
+GTS-full Imperfect data ^= 0:1
+(d) Labeled Arms
+Figure 12: Regret performances on four diﬀerent problems with priors ﬁtted/trained on either exact expected
+rewards (perfect data) or partially observed noisy rewards (imperfect data) and with diﬀerent assumed noise levels ^.
+The results are averaged over tasks of a test set and shaded areas represent standard errors.
+32(a)30samples from the training set.
+(b)30feature vectors generated by the learned diﬀusion model.
+(c)30samples from the test set. Red squares indicate missing values.
+(d)Feature vectors reconstructed with learned diﬀusion model and Algorithm 3 using predicted noise vectors z`. The
+inputs are the ones shown in 13c.
+(e)Feature vectors reconstructed with learned diﬀusion model and Algorithm 3 using independently sampled noise
+vectors ~z`. The inputs are the ones shown in 13c.
+Figure 13: Feature vectors of the toy problems presented in Appendix E.2. Rows and columns correspond respectively
+to features and samples. For visualization purpose, the features are ordered in a way that those of the same group are
+put together. The darker the color the higher the value, with white and black representing respectively 0and1.
+33(a)Original images
+ (b)Corrupted images
+ (c)Model origgenerated
+ (d)Model origreconstructed
+(e)Model cor14generated
+ (f)Model cor14reconstructed
+ (g)Model cor16generated
+ (h)Model cor16reconstructed
+Figure 14: Various images related to the MNIST data set. The three models Model orig, Model cor14, and Model cor16
+are respectively trained on the original data set, on the corrupted data set for 14000steps, and on the corrupted data
+set for 16000steps (Model cor16is trained on top of Model cor14for another 2000steps; see the text for more details).
+‘Generated’ means unconditional sampling while ‘reconstructed’ means posterior sampling with Algorithm 3 applied
+to the corrupted images shown in (b).
+images of size 2828. MNIST contains hand-written digits whereas Fashion-MNIST contain fashion items
+taken from Zalando shopping catalog. Some images of the two data sets are shown in Figures 14a and 15a.
+Data Corruption and Experimental Setup. For our experiments, we scale the images to range [0;1]
+and corrupt the resulting data with missing rate 0:5(i.e., each pixel is dropped with 50%) and noise of
+standard deviation 0:1. As we only use training images, this results in 60000corrupted images for each of
+the two data sets. We further separate 1000images from the 60000to form the calibration sets. We then
+train the diﬀusion models from these corrupted images following Algorithm 5, with S= 5000warm-up steps,
+J= 3repeats of the EM procedure, and S0= 3000inner steps for each repeat (the total number of training
+steps is thus 14000). The learning rate and the batch size are respectively ﬁxed at 10 4and128.
+For the regularization term, we take = 0:2for MNIST and = 0:1for Fashion-MNIST. The constant "
+is set to 10 5as before. As in Ho et al. [2020], Song et al. [2021], we note that the use of exponential moving
+average (EMA) can lead to better performance. Therefore, we use the EMA model for the posterior sampling
+step. The EMA rate is 0:995with an update every 10training steps. For comparison, we also train diﬀusion
+models on the original data sets with the aforementioned learning rate and batch size for 10000steps. Finally,
+to examine the inﬂuence of the regularization weight on the generated images, we consider a third model
+for MNIST trained on top of the 14000-step model with corrupted data. For this model, we perform an
+additional posterior sampling step and then train for another 2000steps with= 1. The remaining details,
+including the model architecture, are the same as those for the 2D Maze experiment.
+Results. In Figures 14 and 15, we show images from the original data set, from the corrupted data set, and
+produced by the trained models either by unconditional sampling or data reconstruction with Algorithm 3.
+Overall, our models manage to generate images that resemble the ones from the original data set without
+overly sacriﬁcing the diversity.
+34(a)Original images
+ (b)Corrupted images
+ (c)Model origgenerated
+(d)Model origreconstructed
+ (e)Model corgenerated
+ (f)Model correconstructed
+Figure 15: Various images related to the Fashion-MNIST data set. The two models Model origand Model corare
+respectively trained on the original data set and the corrupted data set. ‘Generated’ means unconditional sampling
+while ‘reconstructed’ means posterior sampling with Algorithm 3 applied to the corrupted images shown in (b).
+Nonetheless, looking at the samples for Fashion-MNIST we clearly see that a lot of details are lost in the
+images generated by or reconstructed with diﬀusion models. In the case of training from perfect data, this can
+clearly be improved with various modiﬁcations to the model including change in model architecture, number
+of diﬀusion steps, and/or sampling algorithms [Karras et al., 2022]. This would become more challenging in
+the case of training from imperfect data as the image details can be heavily deteriorated by noise or missing
+pixels.
+On the other hand, the eﬀect of the regularization parameter can be clearly seen in the MNIST
+experiment from Figure 14. Larger enables the model to produce digits that are more ‘connected’ but could
+cause other artifacts. As in any data generation task, the deﬁnition of a good model, and accordingly the
+appropriate choice of , varies according to the context.
+To summarize, we believe that the proposed training procedure has a great potential to be applied in
+various areas, including training from noisy and/or incomplete image data, as demonstrated in Figures 14
+and 15. However, there is still some way to go in making the algorithm being capable of producing high-equality
+samples for complex data distribution.
+F Expected Reward Visualization
+In Figures 16 to 21 we provide various visualizations of the bandit mean reward vectors either of the training
+sets or generated by the learned priors.
+35(a)40samples from the perfect training set Dtr.
+(b)40samples from the perfect training set Dtr, reordered to put the arms of the same group together. The
+popular arms are on the right side of the ﬁgure.
+(c)40mean reward vectors generated the diﬀusion model trained on perfect data, reordered to put the arms of
+the same group together. The popular arms are on the right side of the ﬁgure.
+(d)50mean reward vectors generated by the 25-component GMM ﬁtted on perfect data, reordered to put the
+arms of the same group together. The popular arms are on the right side of the ﬁgure.
+Figure 16: Visualization of the mean reward vectors of the Popular and Niche problem. Rows and columns
+correspond to tasks and arms. The darker the color the higher the value, with white and black representing respectively
+0and1. Diﬀusion models manage to learn the underlying patterns that become recognizable by humans only when
+the arms are grouped in a speciﬁc way.
+36(a)100samples from the perfect training set Dtr.
+(b)60samples from the perfect training set Dtr, grouped by labels and showing only 5labels. Note that each
+arm has multiple labels and thus appears in multiple groups.
+(c)60mean reward vectors generated by the diﬀusion model trained on perfect data, grouped by labels and
+showing only 5labels. Note that each arm has multiple labels and thus appears in multiple groups.
+(d)60mean reward vectors generated by the 25-component GMM ﬁtted on perfect data, grouped by labels and
+showing only 5labels. Note that each arm has multiple labels and thus appears in multiple groups.
+Figure 17: Visualization of the mean reward vectors of the Labeled Arms problem. Rows and columns correspond
+to tasks and arms. The darker the color the higher the value, with white and black representing respectively 0and1.
+While human eyes can barely recognize any pattern in the constructed vectors, diﬀusion models manage to learn the
+underlying patterns that become recognizable by humans only when the arms are grouped in a speciﬁc way.
+37(a)40samples from the imperfect training set Dtr. Red squares indicate missing values.
+(b)40mean reward vectors generated by the diﬀusion model trained on imperfect data.
+Figure 18: Mean reward vectors of the Popular and Niche problem. Rows and columns correspond to tasks and
+arms. For ease of visualization, the arms are reordered so that arms of the same group are put together and popular
+arms are on the right of the ﬁgures. The darker the color the higher the value, with white and black representing
+respectively 0and1.
+(a)60samples from the imperfect training set Dtr. Red squares indicate missing values.
+(b)60mean reward vectors generated by the diﬀusion model trained on imperfect data.
+Figure 19: Mean reward vectors of the Labeled Arms problem. Rows and columns correspond to tasks and arms.
+For ease of visualization, the arms are grouped by labels and only arms that are associated to 5labels are shown. The
+darker the color the higher the value, with white and black representing respectively 0and1.
+38(a)50samples from the perfect training set Dtr.
+(b)50mean reward vectors generated by the diﬀusion model trained on perfect data.
+(c)50mean reward vectors generated by the 25-component GMM ﬁtted on perfect data.
+(d)50samples from the imperfect training set Dtr. Red squares indicate missing values.
+(e)50mean reward vectors generated by the diﬀusion model trained on imperfect data.
+Figure 20: Mean reward vectors of the iPinYou Bidding problem. Rows and columns correspond respectively to
+tasks and arms. For visualization purpose, we order the tasks by the position of their optimal arm. The darker the
+color the higher the value, with white and black representing respectively 0and1.
+39(a)Sample from the perfect training set Dtr.
+(b)Sample generated by the diﬀusion model trained on
+perfect data.
+(c)Sample generated by the 25-component GMM ﬁtted
+on prefect data.
+(d)Sample from the imperfect training set Dtr. Red
+squares and edges indicate missing values.
+(e)Sample generated by the diﬀusion model trained on
+imperfect data.
+Figure 21: The weighted grid graphs and the corresponding 2D maze representations of the 2D Maze problem. For
+visualization, the weights (mean rewards) are ﬁrst clipped to [ 1;0]. Then, for the grid graphs darker the color higher
+the mean reward (i.e., closer to 0) while for the maze representations it is the opposite. Also note that for the maze
+representations only a part of the pixels correspond the the edges of the grid graphs, while the remaining pixels are
+ﬁlled with default colors (black or white). The red paths indicate the optimal (super-)arms.
+40

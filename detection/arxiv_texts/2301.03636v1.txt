@@ -1,0 +1,1205 @@
+OpenMP Advisor
+Alok Mishra
+Computer Science
+Stony Brook University
+Stony Brook, NY, USA
+almishra@cs.stonybrook.eduAbid M. Malik
+Computer Science Initiative
+Brookhaven National Laboratory
+Upton, NY, USA
+amalik@bnl.gov
+Meifeng Lin
+Computer Science Initiative
+Brookhaven National Laboratory
+Upton, New York, USA
+mlin@bnl.govBarbara Chapman
+Computer Science
+Stony Brook University
+Stony Brook, New York, USA
+barbara.chapman@stonybrook.edu
+Abstract
+With the increasing diversity of heterogeneous architecture
+in the HPC industry, porting a legacy application to run on
+different architectures is a tough challenge. In this paper, we
+present OpenMP Advisor, a first of its kind compiler tool
+that enables code offloading to a GPU with OpenMP using
+Machine Learning. Although the tool is currently limited to
+GPUs, it can be extended to support other OpenMP-capable
+devices. The tool has two modes: Training mode and Predic-
+tion mode. The training mode must be executed on the target
+hardware. It takes benchmark codes as input, generates and
+executes every variant of the code that could possibly run
+on the target device, and then collects data from all of the
+executed codes to train an ML-based cost model for use in
+prediction mode. However, in prediction mode the tool does
+not need any interaction with the target device. It accepts a
+C code as input and returns the best code variant that can
+be used to offload the code to the specified device. The tool
+can determine the kernels that are best suited for offloading
+by predicting their runtime using a machine learning-based
+cost model. The main objective behind this tool is to main-
+tain the portability aspect of OpenMP. Using our Advisor,
+we were able to generate code of multiple applications for
+seven different architectures, and correctly predict the top
+ten best variants for each application on every architecture.
+Preliminary findings indicate that this tool can assist com-
+piler developers and HPC application researchers in porting
+their legacy HPC codes to the upcoming heterogeneous com-
+puting environment.
+Keywords: openmp, gpu, machine learning, cost model, clang
+1 Introduction
+Over two decades have passed since what has been referred
+to as “ the death of Moore’s law ” [38] and the transition to
+multi-core processors from ever-faster single chips. However,
+Jan, 2023, arxiv
+2023. ACM ISBN 978-x-xxxx-xxxx-x/YY/MM. . . $15.00
+https://doi.org/10.1145/nnnnnnn.nnnnnnngiven the increasing number of transistors on a chip, one
+could argue that Moore’s law has not yet been completely
+broken; rather, it is no longer possible to run these transis-
+tors at ever-increasing speeds. This is a result of Dennard
+scaling [7], a related effect that occurred at the same time as
+the reduction in transistor size. The main outcome of Den-
+nard scaling was that power density remained constant as
+transistor size decreased. Dennard had found that because
+voltage and current scale proportionally with feature size
+and power scales proportionally with area, performance per
+watt doubles roughly every two years. Consequently, what
+went wrong was not the ability to etch smaller transistors,
+but rather the capacity to reduce the voltage and current
+they require to function properly.
+Developers in the HPC industry have started looking be-
+yond Moore’s law and hardware developers have improved
+chip performance by configuring a growing number of com-
+pute cores. This rapid change in architecture hardware ne-
+cessitates programming language updates and modification
+of application code to exploit the cores, e.g. by inserting
+pthreads or OpenMP [ 6] constructs into the source code.
+The HPC community was quick to embraced this multi-core
+processor technology.
+In the last decade, General Purpose Graphics Processing
+Units (GPGPUs) have been attached to the multi-core proces-
+sors on many HPC platforms in order to benefit from their
+ability to handle large amounts of data parallelism with low
+power consumption. Initially intended for graphics opera-
+tions, they are now being used extensively by HPC clusters
+and for general-purpose computing on graphics processing
+units. Although there are some notable exceptions, the most
+recent TOP500 list [ 37] clearly demonstrates the trend to-
+ward heterogeneous HPC platforms, particularly those using
+GPUs. A significant portion of the systems are heteroge-
+neous, with AMD or NVIDIA GPUs typically providing high
+performance per watt.
+1arXiv:2301.03636v1  [cs.DC]  9 Jan 2023Jan, 2023, arxiv Mishra et al.
+#pragma omp target
+for(int i=0; i<N_i; i++) {
+for(int j=0; j<N_j; j++) {
+for(int k=0; k<N_k; k++) {
+for(int l=0; l<N_l; l++) {
+/* ... COMPUTE ... */
+}
+}
+}
+}
+Code 1. Loops of Wilson Dslash Operator
+1.1 The Challenge
+Many programmers are adapting their code to take advan-
+tage of GPUs. Unfortunately, optimizing the computational
+power of a GPU while minimizing overheads is a laborious
+process that may necessitate re-engineering large sections
+of code and data structures. The development of code for
+systems with extreme heterogeneity and numerous devices
+will be much more challenging. Therefore, it is essential to
+create tools that will relieve the application scientists of the
+burden of such development.
+Despite the variety of programming models available, it
+is still quite challenging to optimize large scale applications
+consisting of tens-to-hundreds of thousands lines of code.
+Even when using a directive based programming model such
+as OpenMP, pragmatizing each kernel is a repetitive and
+complex task. OpenMP offers a variety of options for of-
+floading a kernel to GPUs. However, the application scientist
+must still figure out all the intricate GPU configurations. To
+demonstrate the complexity of porting a kernel to emerging
+exascale hardwares, we use a kernel from the Lattice Quan-
+tum Chromodynamics (LQCD) [ 2] application, which is a
+computer-friendly numerical framework for QCD. One of
+LQCD’s key computational kernels is the Wilson Dslash op-
+erator [ 19], which is essentially a finite difference operator,
+to describe the interaction of quarks with gluons.
+The Wilson Dslash operator, 𝐷, in four space-time dimen-
+sions is defined by Equation 1.
+𝐷𝑖 𝑗
+𝛼𝛽(𝑥,𝑦)=4∑︁
+𝜇=1[((1−𝛾𝜇))𝛼𝛽𝑈𝑖 𝑗
+𝜇(𝑥)𝛿𝑥+^𝜇,𝑦
++(1+𝛾𝜇)𝛼𝛽𝑈†𝑖 𝑗
+𝜇(𝑥+ˆ𝜇)𝛿𝑥−^𝜇,𝑦)](1)
+Here𝑥and𝑦are the coordinates of the lattice sites, 𝛼,𝛽are
+spin indices, and 𝑖,𝑗are color indices. 𝑈𝜇(𝑥)is the gluon field
+variable and is an 𝑆𝑈(3)matrix.𝛾𝜇’s are 4×4Dirac matrices
+that are fixed. The complex fermion fields are represented as
+one-dimensional arrays of size 𝐿𝑋×𝐿𝑌×𝐿𝑍×𝐿𝑇×𝑆𝑃𝐼𝑁𝑆×
+𝐶𝑂𝐿𝑂𝑅𝑆×2for the unpreconditioned Dirac operator, where
+𝐿𝑋,𝐿𝑌,𝐿𝑍and𝐿𝑇are the numbers of lattice sites in the 𝑥,𝑦,𝑧
+and𝑡directions, respectively. The spin and color degrees of
+freedom, which are commonly 4 and 3, are denoted by the
+variables𝑆𝑃𝐼𝑁𝑆 and𝐶𝑂𝐿𝑂𝑅𝑆 .When we express Equation 1 in C++, it has four nested for
+loops iterating over 𝐿𝑇,𝐿𝑍,𝐿𝑌,and𝐿𝑋, as shown in Code 1.
+When we keep the values of 𝐿𝑇,𝐿𝑍,𝐿𝑌,and𝐿𝑋at16each, the
+COMPUTE section of the code has over 5 million variable
+definitions, 1.2 billion variable references, over 150 million
+addition/subtraction, 163 million multiplication, and so on.
+Additionally, this function is called several times throughout
+the LQCD application.
+It is a herculean task for an application scientist to un-
+derstand the physics, transform it into computer program,
+analyze the offloadable kernel, and then consider how to par-
+allelize it to execute efficiently on an HPC cluster. To get the
+best performance out of a GPU, an application scientist needs
+a thorough understanding of the underlying architecture,
+algorithm, and interface programming model. Alternately,
+they could test out various GPU transformations until they
+find the most effective one. However, none of these strategies
+is very efficient.
+1.2 Our Contribution
+This paper presents OpenMP Advisor , a first-of-its-kind
+compiler tool that advises application scientists on various
+OpenMP code offloading strategies. This tool performs the
+following tasks to successfully address the challenges of
+effectively transforming an OpenMP code:
+1. detect potentially offloadable kernel;
+2. identify data access and modification in kernel;
+3.recommend several potential OpenMP variants for offload-
+ing that kernel to the GPU;
+4.evaluate the profitability of each kernel variant via an
+adaptive cost model;
+5.insert pertinent OpenMP directives to perform offloading.
+Although the tool is currently limited to GPUs, it can be
+extended to support other OpenMP-capable devices. In the
+rest of the paper, we first discuss state of the art work that is
+related to and precedes our work in Section 2. Then we define
+our OpenMP Advisor in Section 3, and its implementation
+in Section 4. Section 5 covers the experiments carried out in
+this paper and the analysis of the result. Finally, we conclude
+our work with discussions of future plans in Section 6.
+2 Related Work
+Many studies have looked into how to best manage GPU
+memory when data movement must be explicitly managed.
+A fully automatic system for managing and optimizing CPU-
+GPU communication for CUDA programs is provided by
+Jablin et.al. [13]. Gelado et.al. [9] present a heterogeneous
+computing programming model to simplify and optimize
+GPU data management. OMPSan [ 1] performs static analy-
+sis on explicit data transfers that have already been inserted
+into an OpenMP code. However, these studies do not pro-
+vide insight into how data must be transferred and how data
+reusability on GPU can be used for implicitly managed data
+2OpenMP Advisor Jan, 2023, arxiv
+between multiple kernels. Mishra et.al. [ 26] proposed a tech-
+nique for statically identifying data used by each kernel and
+automatically recognizing data reuse opportunities across
+kernels. In our work, we use this technique to manage data
+between the CPU and the GPU.
+Recently, Roy et.al. [31] developed BLISS, a novel approach
+for auto-tuning parallel applications without the need for
+instrumentation, domain-specific knowledge, or prior knowl-
+edge of the applications. With the help of Bayesian optimiza-
+tion, this auto-tuner creates a collection of various light-
+weight models that can rival the output quality of a com-
+plex, heavyweight Machine Learning (ML) model. Other
+autotuners like BOHB[ 8], HiPerBOt [ 23], GPTune [ 20] and
+ytopt [ 40] frequently use Bayesian optimization in this con-
+text. However, due to their expensive evaluation functions,
+tuning large-scale applications remains a challenge. Besides,
+the need to optimize HPC programs on heterogeneous hard-
+ware (such as GPUs) and software configurations prevents
+the widespread use of these auto-tuning techniques in the
+Exascale era. HPC applications are getting extremely hetero-
+geneous, complicated, and increasingly expensive to analyze.
+There is a need for a tool like ours that assists application
+scientists to offload their code to GPUs. Other related re-
+search on automatic GPU offloading by Mendonça et.al. [22]
+and Poesia et.al. [30] can benefit from our tool by including
+our technique of data optimization and cost model in their
+framework, further reducing the challenges of using GPUs
+for scientific computing. However, developing a cost model
+is time-consuming, and practically all contemporary com-
+pilers, such as LLVM/Clang [ 21], adopt a straightforward
+“one-size-fits-all” cost function that does not perform opti-
+mally in the situation of extreme heterogeneous architecture.
+With the use of a neural network model, COMPOFF [ 24]
+offers a new portable cost model that statically estimates the
+cost of OpenMP offloading on different architectures. We
+extend the techniques defined in COMPOFF to develop a
+portable static cost model to be used in our OpenMP Advisor
+tool.
+3 OpenMP Advisor
+We design and develop the OpenMP Advisor, a compiler tool
+which transforms an OpenMP code to effectively offload to a
+GPU. This tool identifies OpenMP kernels, suggest a number
+of possible OpenMP variants for offloading that kernel to the
+GPU, and predict the cost of running each of these kernels
+separately using a static neural network-based compile time
+cost model. The OpenMP Advisor’s first version aids the
+application scientists in writing code for accelerators like
+GPUs. This Adviser, however, can be extended to support all
+OpenMP-enabled devices.
+The tool has two modes: Training mode and Prediction
+mode. The training mode must be executed on the targethardware. It takes all benchmark codes as input and gen-
+erates all possible variants of the code to run on the target
+device. Then it collects data from all generated codes to train
+an ML-based cost model for use in prediction mode. In pre-
+diction mode the tool does not need any interaction with the
+target device. It accepts C/C++ code as input and returns the
+best code variant that can be used to offload the code to the
+specified device. The tool can determine the kernels that are
+best suited for offloading by predicting their runtime using a
+machine learning-based cost model as defined in Section 4.2.
+3.1 Attribubtes
+The following are the key attributes of the OpenMP Advisor.
+1.Static – Access to GPUs is a significant challenge when
+analyzing an application using GPU offloading. During
+development, many application scientists may not have
+easy access to GPUs. As a result, it is critical that in the
+prediction mode our Advisor performs all its analysis at
+compile time and does not require runtime profiling. Even
+in the training mode, sometimes it is impractical to predict
+certain values during code generation. In order to help
+the advisor in such circumstances, we provide a json file
+for input where users can provide these values.
+2.Minimalistic – The Advisor makes no changes to the
+kernel’s body. It simply identifies the application’s omp
+target regions and adds various OpenMP directives and
+clauses to generate multiple kernel variants.
+3.Correctness – The Advisor verifies the correctness of the
+generated code to keep in line with OpenMP programming
+model. Currently, the advisor does not modify the kernel
+body and does not guarantee the correctness of its content.
+Consequently, despite its ability to predict the optimal
+scenario for GPU offloading, it generates the top N (N
+provided by the user) code variants and lets the application
+scientist select which code to utilize.
+4.Portability – The Advisor is portable to multiple com-
+piler and HPC clusters. In our work we worked on four
+different compilers: LLVM/clang (nvptx), LLVM/clang
+(rocm), GNU/gcc and NVIDIA HPC/nvc. The advisor also
+works for a variety of HPC clusters with different GPUs:
+such as Summit [ 28], Ookami [ 3], Wombat [ 29] and Sea-
+wulf [ 39] clusters using NVIDIA GPUs and Corona [ 17]
+using AMD GPUs. Limited work was also done on the
+Intel Devclouds [12] with Intel GPU and icpx compiler.
+5.Adaptability – The advisor is adaptable enough to accept
+new applications. When attempting to predict for a new
+application where real-time data collection is difficult or
+impractical, the application scientist could create a proxy
+application similar to the target application and train the
+model using data collected on the proxy application.
+3.2 Design
+Before proceeding with the implementation, there were a
+few design challenges that needed to be addressed. The first
+3Jan, 2023, arxiv Mishra et al.
+concern was which toolkit or compiler to employ in the de-
+velopment of our framework. This was a straightforward
+question since we used the most popular library at the time
+– the LLVM compiler project. LLVM is a library for building,
+optimizing, and producing intermediate and/or binary ma-
+chine code. Like most modern compilers, LLVM divides the
+compilation process into three levels:
+•Front-end translates high-level language (like C/C++, for-
+tran) to LLVM-IR.
+•Middle-end performs several optimization passes on the
+LLVM-IR.
+•Back-end converts the optimized LLVM-IR into the as-
+sembly language of the corresponding platform.
+We chose the Clang compiler (ver 14.0.0) because our
+target applications are written in C/C++. Clang is a tool
+development platform as well as the front-end for the C
+language family in the LLVM project. Because of its library-
+based architecture, it is easier and more flexible to reuse and
+integrate new features into other projects.
+We then had to decide at what level we should implement
+our framework. Despite the fact that LLVM’s strength lies
+in the LLVM-IRs, our requirement is to generate and return
+C/C++ code to the scientist. We require the accurate source
+location from a C/C++ file in order to insert OpenMP di-
+rectives into that file. Although the LLVM-IR can contain
+source code information in source level debugging, the ac-
+curacy of the source location cannot be guaranteed. On the
+other hand Clang’s AST closely resembles both the written
+C++ code and the C++ standard. Clang has a one-to-one
+mapping of each token to the AST node and an excellent
+INPUT
+Benchmark Codes
+cluster
+ gpu_arch
+KERNEL ANALYSIS
+kernel.cpp
+ AST
+ Identification
+ Analysis
+CODE TRANSFORMATION
+Source Location
+ Code Generation
+ Code Insertion
+TRANSFORMED CODES
+kernel_1.cpp
+ kernel_2.cpp ....
+ kernel_84.cpp
+COST MODEL
+Feature Extraction
+Dimension Reduction
+DatasetTrained
+Cost
+Model
+model_cluster_gpu
+ANN
+Figure 1. High level flow of the Training modesource location retention for all AST nodes. The AST is the
+best place to get accurate source code information. Hence
+we implemented our Advisor in Clang. The Advisor follows
+the design depicted in Figure 1 in the training mode, and Fig-
+ure 2 in the prediction mode. Both modes have three major
+modules, which are explained in the following subsections
+-Kernel Analysis (Section 4.1), Cost Model (Section 4.2) and
+Code Transformation (Section 4.3).
+4 Implementation
+A preprocessed AST is much easier to work with than source-
+level C/C++ code, and we can always easily refer to the
+original code by using Clang’s Plugins [ 5] interface. Clang
+Plugins enable the execution of additional user-defined ac-
+tions during compilation. The compiler loads a plugin from
+a dynamic library at runtime. The FrontendAction inter-
+face, which enables user-specific actions to be executed as
+part of the compilation, is the typical entry point to a Clang
+Plugin. To run the tools over the AST, Clang provides the
+ASTFrontendAction interface, that handles action execu-
+tion. We define and register PluginOMPAdvisor , a plugin
+that implements the CreateASTConsumer method, which re-
+turns an OMPAdvisorASTConsumer that consumes (or reads)
+the Clang AST. We can create generic actions on an AST
+using this ASTConsumer interface. This interface provides
+theHandleTranslationUnit function, which is only called
+after the entire source file has been parsed. In this case, a
+INPUT
+N
+ kernel.cpp
+ cluster
+ gpu_arch
+KERNEL ANALYSIS
+AST
+Identification
+Data Analysisparse AST
+var_1
+ var_2 ...
+ var_84analyze and suggest variants
+cost1
+ cost2 ...
+ cost84
+Sort codes based
+on cost and
+select top N codessortCOST MODEL
+Trained
+Cost
+Model
+Feature
+Extraction
+Dimension
+Reduction
+Predicted Runtime
+CODE TRANSFORMATION
+Source Location
+Code Generation
+Code Insertion
+OUTPUT N CODES
+kernel_1.cpp
+ kernel_2.cpp ...
+ kernel_N.cpp
+Figure 2. High level flow of the Prediction mode
+4OpenMP Advisor Jan, 2023, arxiv
+translation unit effectively represents an entire source file,
+and an ASTContext object represents the AST for that source
+file.
+Clang also provides a RecursiveASTVisitor class, which
+traverses the entire Clang AST in preorder or postorder
+depth-first order, visiting each node. In our Advisor we de-
+fine an OMPAdvisorVisitor , which is an instance of the
+RecursiveASTVisitor , to visit any type of AST node, such
+asFunctionDecl andStmt , by simply overriding their visit
+function, such as VisitStmt orVisitFunctionDecl . Rather
+than directly calling any of the Visit* functions, we use the
+TraverseDecl function, which calls the appropriate Visit*
+function in the background. To continue traversing the AST
+(to investigate additional nodes), we return true from such
+Visit* functions, and false to stop the traversal and effec-
+tively terminate the Clang compilation process.
+4.1 Kernel Analysis
+This is the first module which the HandleTranslationUnit
+method calls in both the Prediction and Training mode. As
+the name implies, this module analyzes an OpenMP kernel.
+Overall, this module takes as input a C/C++ source file, an-
+alyzes it, and outputs all possible GPU offloading variants.
+This module is responsible for three tasks: Identifying Kernels,
+Data Analysis andVariant Generation .
+4.1.1 Identifying Kernels. User’s input is utilized to help
+us identify a target region since the scope of this project is
+not to automatically parallelize the code. An application
+scientist only needs to use the “ omp target directive” to
+mark the region. We parse the clang AST to search for
+theOMPTargetDirective node, which is a subclass of the
+OMPExecutableDirective class and an instance of the Stmt
+class. We override the OMPAdvisorVisitor class’s VisitStmt
+method and check each visited Stmt to see if they are the
+OMPTargetDirective node. Once a kernel is identified, we
+assign it a unique id and create an instance of the class "Ker-
+nelInformation." In that object we store information like,
+unique_id, start and end locations of the kernel, function
+from which the kernel is called, whether the kernel is called
+from within a loop and the number of nested forloops. All
+of this information will further be used to identify variables
+accessed within kernels.
+4.1.2 Data Analysis. The next step is to determine what
+data the kernel uses. Due to the high cost of data transfers
+both to and from the GPU, careful data management and
+mapping between host and device are required for the use of
+accelerators in HPC. OpenMP does not specify how the data
+should be handled by the compiler in implicit data transfer.
+Application scientists are deterred from GPU utilization due
+to the complexities in achieving effective data management.
+Automatically identifying and utilizing GPU data in an ap-
+plication can reduce the burden on application scientists and
+improve overall execution time. We expanded on Mishra etal’s work [ 26] on Data Transfer and Reuse Analysis , which
+describes how to determine which variables are being used
+by a kernel. We use the Clang AST to implement live vari-
+able analysis for each kernel, concentrating only on variables
+used within a kernel. One limitation of this work is that it
+cannot determine the range of an array during compilation.
+In our implementation, we extended the analysis to deter-
+mine the array’s range as declared in the code. However,
+such an analysis is not always possible, particularly when
+dealing with global variables or pointer manipulation. To
+overcome this obstacle we expect the user to specify the
+array’s range in the data map clause. If the user does not
+specify the range of an array to map to the GPU, we as-
+sume that all arrays used within the kernel are declared in or
+passed to the kernel-defining function. We continue to per-
+form live variable analysis to determine which variables to
+synchronize between the CPU and GPU and calculate their
+sizes. Our approach has a limitation in that we currently
+map data between the CPU and GPU only before and after
+the kernel. Managing data transfer during kernel execution
+is a task for the future.
+Before the variables are stored in the KernelInformation
+object, we classify them into five groups, based on how they
+are accessed before, during, or after the kernel:
+•alloc : These are the variables that are being assigned within
+the kernel for the first time and no data transfer to the
+GPU is required.
+•to: These are variables that were assigned before but were
+only accessed and not modified within the kernel. This
+data must be transferred to the device but does not have
+to be transferred back to the host.
+•from : These are variables that are updated within the ker-
+nel and accessed after the kernel call. This category does
+not require data transfer to the device, but it does necessi-
+tate data transfer from the device to the host.
+•tofrom : These are variables that are assigned before ,up-
+dated within andaccessed after the kernel definition. This
+type of data must be transferred in both directions between
+the host and the device.
+•private : Finally, these are variables that are defined and
+used only within the kernel, and does not need to be trans-
+ferred between the host and the device.
+Data labeled alloc ,to, and tofrom are mapped in “ omp
+target enter data ” directives before the kernel, while
+data labeled from andtofrom are mapped in “ omp target
+exit data ” directives after the kernel.
+4.1.3 Variant Generation. Finally, we generate a number
+of different kernel variants that can be used to offload the
+kernel to the GPU. We’ll start by counting how many nested
+collapsible for loops are there. In the current implementation,
+we can check up to four levels of collapsing the for loops.
+We chose four nested loops because, as shown in Code 1, the
+Wilson Dslash kernel has four for loops. Each of these for
+5Jan, 2023, arxiv Mishra et al.
+#pragma omp target teams distribute collapse(1)
+for (int i = 0; i < N_i; i++) { <= Loop 0
+#pragma omp parallel for collapse(3) schedule(static)
+for (int j = 0; j < N_j; j++) { <= Loop 1
+for (int k = 0; k < N_k; k++) { <= Loop 2
+for (int l = 0; l < N_l; l++) { <= Loop 3
+...
+}
+}
+}
+}
+Code 2. Four nested “ for” loops, with “ teams distribute ”
+in Loop 0and “ parallel for collapse(3) ” in Loop 1.
+loops is given a unique Loop number ranging from 0−3. Loop
+0 is always expected to be distributed across all teams on the
+GPU. The variants are generated based on five parameter:
+•Value of collapse used in distribute directive
+•Value of collapse used in parallel for directive
+•Position of the parallel for directive
+•Scheduling type of the loop iterations
+•Data transfer between the host and the device
+The total number of forloops and the position of the
+parallel for directive determine the maximum value of
+collapse that can be used in the teams distribute and
+parallel for directive. Suppose there are four forloops,
+as shown in Code 2. If the parallel for directive is at
+Loop 0, the “ teams distribute parallel for " directive
+will be combined and thus the collapse clause for teams
+distribute directive does not exist. If the parallel for di-
+rective is located on Loop 𝑥(where 1≤𝑥≤3), then the max-
+imum possible value of collapse for the teams distribute
+directive is𝑥. Whereas for the parallel for directive, the
+maximum possible value of collapse is(𝑁𝑈𝑀−𝑥), where
+𝑁𝑈𝑀 is the total number of for loops.
+The scheduling type of the loop iteration could be one of
+static ,dynamic orguided . Using different permutations
+of these parameters, we could generate a variety of GPU
+offloading code variants. Once all of the variants have been
+generated, we use our static cost model to predict the runtime
+of each of these generated kernels. The total number of
+# for loops # Variants
+1 6
+2 18
+3 42
+4 84
+Table 1. Number of Variants expected to be generated for
+each number of for loopsvariants that can be produced for a particular number of
+for loops is shown in Table 1.
+4.2 Cost Model
+A compile-time cost model is required to select the best
+option from all the variants generated by the Kernel Analysis
+module. Most modern compilers employ analytical models to
+calculate the cost of executing the original code as well as the
+various offloading code variants. Building such an analytical
+model for compilers is a difficult task that necessitates a
+lot of effort on the part of a compiler engineer. Recently,
+machine learning techniques have been successfully applied
+to build cost models for a variety of compiler optimization
+problems. For our tool we extended COMPOFF [ 24] to be
+used as our cost model. COMPOFF is a machine learning
+based compiler cost model that statically estimates the cost of
+OpenMP offloading using an artificial neural network model.
+Their results show that this model can predict offloading
+costs with an average accuracy greater than 95%. The major
+limitation of COMPOFF was that they had to train a separate
+model for each variant. In our work, we add more training
+data and extend it to train a single cost model for all variants.
+As soon as we know the prediction for the generated vari-
+ant, we store it in the instance of the KernelInformation
+class so that the Kernel Transformation module can use it.
+But the biggest challenge in implementing an ML based cost
+model is the lack of available training data. To overcome
+this problem, we wrote additional benchmark applications
+and adopted some benchmarks from the Rodinia benchmark
+suite [ 4]. The goal is to include a broader class of benchmarks
+that would cover the spectrum of statistical simulation, linear
+algebra, data mining, etc. For this we developed applications
+tabulated in Table 2. More applications from various other
+domains will be added to this repository in the future.
+4.3 Kernel Transformation
+In the Kernel Transformation module we need to actually
+transform the original source code based on the analysis and
+predictions from the previous modules. For the given kernel,
+we generate every possible code variation in the Training
+mode. However, before we can generate code in Prediction
+mode, we must first address another crucial question. Which
+code should we generate? Should we only generated code
+for the fastest kernel? Regrettably, once the directives are in
+place, neither the Advisor nor OpenMP validate the kernel’s
+correctness. This is inline with the OpenMP philosophy as
+well. As a result, we can only guarantee the correctness of
+the generated OpenMP directive in our framework.
+So how can we overcome this problem? We could generate
+code for every possible variation, as we do during training,
+and let the user choose which one to use. But this means that
+users will be overwhelmed with information. Alternatively,
+we could ask the user to provide a number for the maximum
+number of codes to generate. The predicted runtime can
+6OpenMP Advisor Jan, 2023, arxiv
+Application Domain Description
+Breadth First
+Search (bfs) [34]†Graph
+AlgorithmsBFS is a graph traversal algorithm frequently employed in a variety of academic and
+professional fields.
+Correlation
+Coefficient
+(correlation) [32]StatisticsThe Pearson’s Correlation Coefficient is a measurement of the linear correlation between
+two sets of data.
+Covariance
+(covariance)Probability
+TheoryThe sample covariance are statistics calculated from a sample of data on one or more
+random variables.
+Gaussian
+Elimination
+(gauss) [33]†Linear AlgebraGaussian Elimination computes result row by row, solving for all of the variables in a linear
+system.
+K-nearest
+neighbors
+(knn) [35]†Data MiningThe k-nearest neighbors technique utilizes proximity to classify or predict how a single
+data point will be grouped. It is a non-parametric, supervised learning classifier.
+Laplace’s Equation
+(laplace) [15]Numerical
+AnalysisIn physics, Laplace’s equation is a second-order partial differential equation.
+Matrix-Matrix
+Multiplication (mm)Linear AlgebraThe most significant matrix operation is arguably matrix multiplication, extensively
+utilized in a variety of fields, including the solution of linear systems of equations,
+translation of coordinate systems, etc.
+Matrix Vector
+Multiplication (mv)Linear Algebra A simple matrix-vector multiplication.
+Matrix Transpose
+(mt)Linear Algebra The transpose of a matrix is simply a flipped version of the original matrix.
+Particle Filter
+(particle) [36]† Medical ImagingThe particle filter is a statistical estimator of a target item’s location given noisy
+measurements of the target’s location and an idea of the object’s movement in a Bayesian
+framework.
+Proxy App
+(proxy_app)-NA-This is a proxy app that has same number of loops and performs similar computation to
+our target app, the Wilson Dslash operator. Whenever it is difficult to collect data on real
+applications, proxy apps help us collect more data.
+Table 2. Benchmark Applications. Apps marked†are adopted from the Rodinia Benchmark Suite [4].
+be put as a comment before the kernel in every piece of
+code. The application scientist will then have more power
+to accept or reject the generated code. We will be able to
+produce a single code and provide it to the user once the issue
+of validating an OpenMP code for correctness is resolved.
+Until then, our Advisor will be able to generate the top best
+variants as specified by the application scientist.
+Regardless, we need to write a module to modify the exist-
+ing source code and generate a new code. Clang provides the
+Rewriter interface, whose primary function is to route high-
+level requests to the involved low-level RewriteBuffers . A
+Rewriter assists us in managing the code rewriting task.
+In the Rewriter interface we can set the SourceManager
+object which handles loading and caching of source files
+into memory. This object assigns distinct FileIDs to each dis-
+tinct #include chain and is the owner of the MemoryBuffer
+objects for all of the loaded files. The SourceManager can
+be queried to obtain information about SourceLocation ob-
+jects, which can then be converted into spelling or expansion
+locations. Spelling locations represent the bytes that corre-
+spond to a token, while expansion locations represent the
+location in the source file of the code. For example, in the
+case of a macro expansion, the spelling location indicateswhere the expanded token originated, while the expansion
+location specifies where it was expanded.
+TheRewriter is a critical component of our plugin’s ker-
+nel transformation module. The strategy used here is to
+meticulously alter the original code at crucial locations to
+0: // Predicted Runtime: 1.2 s
+1: #pragma omp target enter data map(...)
+2: #pragma omp target teams distribute collapse(2)
+for (int i = 0; i < N_i; i++) {
+3:
+for (int j = 0; j < N_j; j++) {
+4: #pragma omp parallel for schedule(dynamic)
+for (int k = 0; k < N_k; k++) {
+5:
+for (int l = 0; l < N_l; l++) {
+...
+}
+}
+}
+}
+6: #pragma omp target exit data map(...)
+Code 3. Location of the seven generated code.
+7Jan, 2023, arxiv Mishra et al.
+carry out the transformation rather than handling every pos-
+sible AST node to spit back code from the AST. For this, the
+Rewriter interface is essential. It is an advanced buffer man-
+ager that effectively slices and dices the source using a rope
+data structure. For each SourceManager , the Rewriter also
+stores the low-level RewriteBuffer . Together with Clang’s
+excellent retention of source location for all AST nodes,
+Rewriter makes it possible to remove and insert code very
+precisely in the RewriteBuffer . When the update is fin-
+ished, we can dump the RewriteBuffer into a file to obtain
+the updated source code.
+In the Kernel Transformation module, we create a vector of
+seven strings. The location of these seven strings are shown
+in Code 3. The first string (at #0) is always the comment
+that maintains the text −“Predicted Runtime: ## s ”.
+As the text suggests ##is the predicted runtime for this
+particular kernel variant. This string is always placed before
+the kernel’s start location. Then comes the target enter
+data construct (at #1). This directive handles what memory
+on the GPU needs to be created for the kernel and what
+data needs to be sent to the GPU before execution. This
+string is always placed right after the comments string. The
+next string (at #2) contains the OpenMP directive which
+specifies that this is the kernel to offload to the target. To gain
+maximum performance out of the GPU, we should always
+distribute the kernel across all the teams available in the GPU.
+Hence this string always contain the directive −“#pragma
+omp target teams distribute ”. The variant determines
+whether this directive contains any other clauses such as
+collapse ormap, and what will be the values of the clause.
+This string is always placed immediately before the kernel’s
+start location, but after the target enter data string. The
+remaining strings ( #3,#4and#5if required by the variant)
+are placed just before the start location of their nested for
+loop. If these strings are not needed by a variant, they are
+Cluster GPU Compiler Version
+Summit LLVM/clang (nvptx) 13.0.0
+[28]NVIDIA
+Tesla V100 GNU/gcc (nvptx-none) 9.1.0
+Corona
+[17]AMD Radeon
+Instinct MI50LLVM/clang (rocm-5.3) 15.0.0
+Ookami
+[3]NVIDIA Tesla
+V100LLVM/clang (nvptx) 14.0.0
+Wombat
+[29]NVIDIA Tesla
+A100LLVM/clang (nvptx) 15.0.0
+Seawulf LLVM/clang (nvptx) 12.0.0
+[39]NVIDIA
+Tesla K80 NVIDIA/NVC 21.7
+Intel De-
+vCloud
+[12]Intel Xeon
+E-2176 P630Intel/icpx 2021.1.2
+ExxactNVIDIA
+GeForce RTX
+2080LLVM/clang (nvptx) 14.0.0
+Table 3. Cluster and Compilers used in experimentleft empty and no code is inserted in their location. The last
+string (at #6) is the target exit data construct, which
+identifies the data that must be released from the GPU or
+returned to the CPU. If not empty, each of these strings is
+always terminated by a new line. Once these seven strings
+are in their proper location, the code is dumped into a new
+C++ file and returned to the application scientists, who can
+choose the best code based on the kernel runtime provided
+in the comment. They could choose whether to accept or
+reject the transformations, and then choose which file to
+build and link with their code.
+5 Experiments and Evaluations
+We used several clusters and compilers, as shown in Table 3,
+to test and evaluate our tool. For the purposes of this study,
+we only use one GPU per node on the cluster. The manage-
+ment of multiple GPUs is left for future research. The three
+modules explained in Section 4 need different experiments.
+5.1 Experiment 1 - Data Analysis
+First, we test our Advisor against all benchmark applications
+to determine whether or not data is correctly identified and
+generated. In order to conduct this experiment, we made use
+of our advisor to generate code that used the correct data
+between the host and the device. Additionally, we manually
+altered each benchmark algorithm to map all data to and
+from the GPU. We executed all the codes on each cluster,
+as shown in Table 3, and gathered data about the volume
+and the duration of the data transfer. We found that the
+Advisor improved the data management in all cases. Figure 3
+shows the amount of data transferred (in GB) between the
+CPU and the GPU before and after transformation for all
+benchmark applications. After applying our transformation,
+we can clearly see that the amount of data transfer has indeed
+been considerably reduced. Reduced data transfer has an
+0 1 2 3 4 5 6 7
+Data Transfer (GB)After Transform
+0 1 2 3 4 5 6 7bfscorrelationcovariancegausslaplaceknnmmmvmtparticleproxy_appwilson_dslash
+Before Transform
+Figure 3. Total Data transfer for all Benchmarks Before and
+After Data Analysis
+8OpenMP Advisor Jan, 2023, arxiv
+Summit Corona Ookami Wombat Seawulf Intel ExxactData Transfer Time (ms)Before Transform
+0200400600
+After Transform
+Figure 4. Data Transfer time (ms) for Wilson Dslash Op-
+erator on different Clusters for Before (1.5GB) and After
+(0.75GB) transformation
+impact on all applications’ data transfer times. On all the
+available clusters, we ran these applications and collected
+the data transfer times. Figure 4 shows the data transfer time
+for the Wilson Dslash Operator across different clusters.
+5.2 Experiment 2 - Code Generation
+In the first experiment, the code generation for data anal-
+ysis has already been tested. But that experiment does not
+generate different variants of code. In the second experi-
+ment, we use our Advisor to generate every possible code
+combination using each of the Benchmark applications, as
+discussed in Section 4.1.3. Table 4 shows the result of this ex-
+periment, which matches with the expected result in Table 1.
+We compiled all of these codes for various clusters using the
+compilers shown in Table 3. Some compilers (NVIDIA/nvc
+on Seawulf and LLVM/Clang 15 on Wombat) do not support
+dynamic or guided scheduling on a GPU, resulting in compi-
+lation failure. Apart from that, all of the codes successfully
+compiled and ran on their respective clusters. We collected
+the runtime of each of the kernels in this experiment, to be
+used by our cost model.
+We collected the data for the Intel architecture a while
+ago, and we don’t currently have access to the cluster to con-
+duct new experiments. As a result we had very limited data
+for Wilson Dslash Operator and no data for our proxy_app
+on the Intel architecture. We were unable to gather many
+data points for the Exxact machine (with NVIDIA GeForce
+GPUs) due to the unavailability of compute nodes. Both these
+clusters has only around 2,000data points each.
+Seawulf has NVIDIA K80 GPUs, which is the slowest of
+the GPUs we’re using in our experiment. So each kernel runs
+longer on Seawulf than it would on any other cluster. On
+the other hand, most variants of kernels failed to compile
+on Wombat due to their compilers not supporting dynamic
+and guided scheduling on GPUs. Due to these reasons, we
+could only collect around 3,000data points on Seawulf and
+Wombat. All our kernels compiled and ran successfully on
+Summit, Corona and Ookami and we were able to collect
+over10,000data points on each of these architectures.Application Kernel # LoopsVariants
+Generated
+kernel1 1 6bfskernel2 1 6
+correlation kernel1 1 6
+kernel1 1 6covariancekernel2 1 6
+gauss kernel1 2 18
+kernel1 2 18laplacekernel2 2 18
+knn kernel1 1 6
+mm kernel1 2 18
+mv kernel1 1 6
+mt kernel1 2 18
+kernel1 1 6
+kernel2 1 6
+kernel3 1 6
+kernel4 1 6
+kernel5 1 6
+kernel6 1 6particle
+kernel7 1 6
+Proxy App kernel1 4 84
+Wilson Dslash kernel1 4 84
+Table 4. Number of variants generated for all applications
+5.3 Experiment 3 - Cost Model
+To build our cost model, we extended the COMPOFF model
+from six variants to all 84 variants. We build our cost model
+in the testing mode and then use it to predict the runtime in
+the prediction mode. Our cost model utilizes an MLP model
+with six layers: one input layer, four hidden layers, and one
+output layer. We set the number of neurons on multiples of
+the number of input features rather than choosing a random
+number of neurons in each hidden layer or conducting an
+exhaustive grid search (number of neurons in the first layer).
+As a result, the first, second, third, and fourth hidden layers,
+with 33 input features, have 66, 132, 66, and 33 neurons,
+respectively.
+The weights of linear layers are set using the glorot initial-
+ization method, which is described in [ 10]. The bias is set to
+0, and the batch size for training data is set to 16 in all runs.
+As the underlying optimization algorithm, we evaluate SGD
+(Stochastic Gradient Descent), Adam [ 16] and RMSprop [ 11].
+Since it provides optimal performance on transformations
+for both HPC clusters, we chose the RMSprop optimization
+algorithm with an initial learning rate of 0.01 that is stepped
+down by a factor of 0.1 every 30 epochs and weight decay of
+0.0001 for 150 epochs. The Root Mean Square Error (RMSE)
+loss function is used to train all models, as defined by Equa-
+tion 2, where ¯𝑦𝑖and𝑦𝑖represent the predicted and ground
+truth runtimes, respectively.
+𝑅𝑀𝑆𝐸(¯𝑦,𝑦)=vut
+1
+𝑁𝑁∑︁
+𝑖=0(¯𝑦𝑖−𝑦𝑖)2 (2)
+9Jan, 2023, arxiv Mishra et al.
+0 20 40 60 80 100 120 140 160 180 200 220 240050100150200250
+Actual (sec)Predicted (sec)RMSE (sec)
+Summit : 0.998
+Corona : 0.453
+Ookami : 0.588
+Wombat : 3.837
+Seawulf : 2.753
+Intel : 17.699
+Exxact : 6.725
+Figure 5. Validation of Cost Model on different clusters
+We split the dataset used by all benchmark applications
+into two parts: training (80%) and validation(20%). The valida-
+tion set do not occur in any learning for the model. The only
+augmentation applied to the training and validation data is
+Z-score standardization. The model is trained using the train-
+ing set, and after that, testing data are given to the model
+to test its performance. In order to determine the standard
+deviation of the prediction errors, we compute the RMSE.
+The lower this value, the better our model. However, what
+constitutes a good RMSE is determined by the range of data
+on which we are computing RMSE. One way to determine
+whether an RMSE value is “good” is to normalize it using
+the following formula:
+𝑁𝑅𝑀𝑆𝐸(¯𝑦,𝑦)=𝑅𝑀𝑆𝐸(¯𝑦,𝑦)
+(𝑦𝑚𝑎𝑥−𝑦𝑚𝑖𝑛)(3)
+This yields a value between 0 and 1, with values closer to
+0 indicating better fitting models. Having a model with a
+normalized RMSE of less than 0.1 is considered successful in
+this study.
+We can see that a simple MLP performs admirably in all
+of our applications, as evidenced by the strong correlation
+between actual and predicted data in Figure 5. It was an-
+ticipated that Intel and Exxact’s model would perform the
+worst because of the lack of data. However, the model for
+Exxact performed much better (and also showed signs of
+convergence) than that on Intel because we were able to
+collect some data for our proxy app on the Exxact system.
+Both Wombat and Seawulf performed moderately well when
+compared to other models trained on a larger dataset. It is
+still an open question that how much data is enough data to
+train an ML model. We have observed from Figure 5, how-
+ever, that if we have more than 10,000data points for our
+model, we will be able to train a model that is much more
+acceptable.
+5.4 Experiment 4 - Prediction
+Finally, for our final set of experiments we use our Advisor to
+predict the top 10 best variants for the Wilson Dslash Oper-
+ator. Once the top 10 variants are identified we use the Code
+Transformation module to generate those 10 code variants
+and return them back to the user. The Advisor takes as inputthe base Wilson Dslash kernel, and generates the top 10 best
+kernels as predicted by the cost model. As shown in Figure 6,
+we plot the actual and predicted runtimes of all the 84 gener-
+ated variants (sorted by actual runtime) of one such kernel
+when run on the Summit supercomputer. We can clearly
+see a strong correlation between the actual and predicted
+runtime for all the variants. The same correlation can be
+found in almost all kernels across all clusters. In Figure 7, we
+display the Wilson Dslash operator’s RMSE and normalized
+RMSE for each cluster. The range of runtimes (in seconds) for
+each cluster is mentioned below their name in the plot. We
+currently do not have access to the Intel cluster to conduct
+new experiments, and the Intel dataset contained very few
+data from the targeted Wilson Dslash kernel and none from
+our proxy_app. So, even if we make a prediction using this
+model, there is no way to validate it. Consequently, we did
+not conduct this experiment on the Intel architecture and
+the result is marked as −𝑁𝐴−. As expected on Exxact, the
+target kernel’s RMSE increased significantly (11.153s) due
+to less data in its dataset. Even with a normalized RMSE of
+0.279, it fell short of our expectation of 0.1. Nonetheless, this
+model demonstrated some correlation between the actual
+and predicted data. In contrast, Wombat and Seawulf per-
+formed reasonably well and were able to predict the top 10
+kernel variants despite having an RMSE of 4.273s and 3.375s,
+respectively. However, with 0.033 and 0.066, respectively,
+their normalized RMSE was well within our expectation. As
+per our observation, their RMSE can also be improved by
+adding more data for these clusters. Finally, as shown in Fig-
+ure 7, the RMSE rates for Summit, Corona, and Ookami are
+less than one second each, and they were able to accurately
+predict the top ten kernel variants.
+6 Conclusion and Future Work
+In this paper, we introduced the OpenMP Advisor, a compiler
+tool that advises application scientists on various OpenMP
+code offloading strategies. Although the tool is currently
+restricted to GPUs, it can be extended to support other
+OpenMP-capable devices. Using our Advisor, we were able
+to generate code of multiple applications for seven different
+4555
+Max error for kernels >45s = 3.04sRuntime (sec)"Actual"
+"Predicted"
+0 20 40 60 80024
+Variant numberMax error for kernels <2s = 0.76s
+Figure 6. Wilson Dslash operator’s Actual and Predicted
+Runtimes (in sec) on Summit for all variants sorted by run-
+time, where 𝐿𝑋,𝐿𝑌,𝐿𝑍and𝐿𝑇are set to 32,32,32and16.
+10OpenMP Advisor Jan, 2023, arxiv
+0
+0.2
+0.4Normalized
+RMSE
+Summit
+[0 - 49s]Corona
+[0 - 23s]Ookami
+[0 - 53s]Wombat
+[0 - 65s]Seawulf
+[0 - 103s]Intel Exxact
+[0 - 40s]369
+RMSE(s)(0.020) (0.008) (0.008)(0.033) (0.066)(-NA- )
+(0.279)
+0.9980.190 0.4474.2733.375
+-NA-11.153
+Figure 7. RMSE and Normalized RMSE for predicting the
+runtime of all variants of Wilson Dslash operator on different
+clusters for𝐿𝑋,𝐿𝑌,𝐿𝑍,𝐿𝑇set at 32,32,32,16each. The range
+of runtimes for each cluster is mentioned below their name.
+architectures, and correctly predict the top ten best variants
+for each application including a real world application (the
+Wilson Dslash operator) on every architecture. Preliminary
+findings indicate that this tool can assist compiler developers
+and HPC application scientists in porting their legacy HPC
+codes to the upcoming heterogeneous computing environ-
+ment. As a next step, we will extend our tool to include the
+following tasks:
+•Data synchronization between host and device during
+kernel execution.
+•Offload computation to multiple GPUs [14] via tasks.
+•Expand benchmarks to include more kernels to cover a
+wider range of applications.
+•Collect more data for all architectures and expand our
+research to include new GPUs and compilers.
+•Our cost model can currently predict the runtime of ker-
+nels whose data size and level of parallelism are known at
+compile time. We could extend our model to predict the
+best variants for a variety of data sizes, and then use the
+OpenMP metadirective [ 27] directive to generate multiple
+directive variants for each range.
+•According to previous studies [ 18,25], OpenMP GPU of-
+floading performance can be enhanced by using unified
+memory between the CPU and GPU and such analysis
+should be a part of our Advisor.
+•Support OpenMP Advisor for all OpenMP directives, not
+just target offloading.
+•Extend the Advisor to other directive-based models, such
+as OpenACC.
+This tool is a first-of-its-kind attempt to build a framework
+for automatic GPU offloading using OpenMP and machine
+learning; as a result, there is plenty of room for improvement.
+Acknowledgement
+This research was supported by the Exascale Computing
+Project (17-SC-20-SC), a collaborative effort of the U.S. De-
+partment of Energy Office of Science and the National Nu-
+clear Security Administration. This material is also based
+upon work supported by the National Science Foundationunder grant no. CCF-2113996. This research used resources
+of the Oak Ridge Leadership Computing Facility at the Oak
+Ridge National Laboratory, which is supported by the Office
+of Science of the U.S. Department of Energy under Contract
+No. DE-AC05-00OR22725. The authors would like to thank
+Stony Brook Research Computing and Cyberinfrastructure,
+and the Institute for Advanced Computational Science at
+Stony Brook University for access to the SeaWulf comput-
+ing system, which was made possible by a $1.4M National
+Science Foundation grant (#1531492).
+References
+[1]Prithayan Barua, Jun Shirako, Whitney Tsang, Jeeva Paudel, Wang
+Chen, and Vivek Sarkar. 2019. OMPSan: static verification of openmp’s
+data mapping constructs. In International Workshop on OpenMP .
+Springer, Auckland, New Zealand, 3–18.
+[2]Brower, Richard, Christ, Norman, DeTar, Carleton, Edwards, Robert,
+and Mackenzie, Paul. 2018. Lattice QCD Application Development
+within the US DOE Exascale Computing Project. EPJ Web Conf. 175
+(2018), 09010. https://doi.org/10.1051/epjconf/201817509010
+[3]Andrew Burford, Alan Calder, David Carlson, Barbara Chapman, Fi-
+rat Coskun, Tony Curtis, Catherine Feldman, Robert Harrison, Yan
+Kang, Benjamin Michalowicz, et al .2021. Ookami: Deployment and
+Initial Experiences. In Practice and Experience in Advanced Research
+Computing . ACM, New York, 1–8.
+[4]Shuai Che, Michael Boyer, Jiayuan Meng, David Tarjan, Jeremy W
+Sheaffer, Sang-Ha Lee, and Kevin Skadron. 2009. Rodinia: A bench-
+mark suite for heterogeneous computing. In 2009 IEEE international
+symposium on workload characterization (IISWC) . Ieee, 44–54.
+[5]Clang, Plugins 2022. Clang Plugins. Retrieved Apr 20, 2022 from
+https://clang.llvm.org/docs/ClangPlugins.html
+[6]Leonardo Dagum and Ramesh Menon. 1998. OpenMP: an industry
+standard API for shared-memory programming. IEEE computational
+science and engineering 5, 1 (1998), 46–55.
+[7]Robert H Dennard, Fritz H Gaensslen, Hwa-Nien Yu, V Leo Rideout,
+Ernest Bassous, and Andre R LeBlanc. 1974. Design of ion-implanted
+MOSFET’s with very small physical dimensions. IEEE Journal of solid-
+state circuits 9, 5 (1974), 256–268.
+[8]Stefan Falkner, Aaron Klein, and Frank Hutter. 2018. BOHB: Robust
+and efficient hyperparameter optimization at scale. In International
+Conference on Machine Learning . PMLR, 1437–1446.
+[9]Isaac Gelado, John E Stone, Javier Cabezas, Sanjay Patel, Nacho
+Navarro, and Wen-mei W Hwu. 2010. An asymmetric distributed
+shared memory model for heterogeneous parallel systems. In Proceed-
+ings of the fifteenth International Conference on Architectural support
+for programming languages and operating systems . 347–358.
+[10] Xavier Glorot and Yoshua Bengio. 2010. Understanding the difficulty
+of training deep feedforward neural networks. In Proceedings of the
+thirteenth international conference on artificial intelligence and statistics .
+JMLR Workshop and Conference Proceedings, 249–256.
+[11] Geoffrey Hinton, Nitish Srivastava, and Kevin Swersky. 2012. Neural
+networks for machine learning lecture 6a overview of mini-batch
+gradient descent. Cited on 14, 8 (2012), 2.
+[12] Intel. 2021. Intel Developer Cloud. Retrieved October
+25, 2022 from https://www.intel.com/content/www/us/en/developer/
+tools/devcloud/overview.html
+[13] Thomas B Jablin, Prakash Prabhu, James A Jablin, Nick P Johnson,
+Stephen R Beard, and David I August. 2011. Automatic CPU-GPU
+communication management and optimization. In Proceedings of the
+32nd ACM SIGPLAN conference on Programming language design and
+implementation . 142–151.
+11Jan, 2023, arxiv Mishra et al.
+[14] Vivek Kale, Wenbin Lu, Anthony Curtis, Abid M Malik, Barbara Chap-
+man, and Oscar Hernandez. 2020. Toward supporting multi-GPU
+targets via taskloop and user-defined schedules. In International Work-
+shop on OpenMP . Springer, 295–309.
+[15] Kushal Kedia. 2009. Hybrid programming with openmp and mpi . Tech-
+nical Report. Technical Report 18.337 J, Massachusetts Institute of
+Technology.
+[16] Diederik P. Kingma and Jimmy Ba. 2015. Adam: A Method for
+Stochastic Optimization. In 3rd International Conference on Learn-
+ing Representations, ICLR 2015, San Diego, CA, USA, May 7-9, 2015,
+Conference Track Proceedings , Yoshua Bengio and Yann LeCun (Eds.).
+http://arxiv.org/abs/1412.6980
+[17] Lawrence Livermore National Laboratory. 2019. LLNL - Corona. Re-
+trieved October 25, 2022 from https://hpc.llnl.gov/hardware/compute-
+platforms/corona
+[18] Lingda Li, Hal Finkel, Martin Kong, and Barbara Chapman. 2018. Man-
+age openmp GPU data environment under unified address space. In
+International Workshop on OpenMP . Springer, 69–81.
+[19] M Lin. 2016. Optimization of the Domain Wall Dslash Kernel in
+Columbia Physics System. (2016), 269.
+[20] Yang Liu, Wissam M Sid-Lakhdar, Osni Marques, Xinran Zhu, Chang
+Meng, James W Demmel, and Xiaoye S Li. 2021. GPTune: multitask
+learning for autotuning exascale applications. In Proceedings of the
+26th ACM SIGPLAN Symposium on Principles and Practice of Parallel
+Programming . 234–246.
+[21] LLVM. 2021. LLVM Cost Model .https://llvm.org/doxygen/CostModel_
+8cpp.html
+[22] Gleison Mendonça, Breno Guimarães, Péricles Alves, Márcio Pereira,
+Guido Araújo, and Fernando Magno Quintão Pereira. 2017. DawnCC:
+automatic annotation for data parallelism and offloading. ACM Trans-
+actions on Architecture and Code Optimization (TACO) 14, 2 (2017),
+13.
+[23] Harshitha Menon, Abhinav Bhatele, and Todd Gamblin. 2020. Auto-
+tuning parameter choices in HPC applications using Bayesian opti-
+mization. In 2020 IEEE International Parallel and Distributed Processing
+Symposium (IPDPS) . IEEE, 831–840.
+[24] Alok Mishra, Smeet Chheda, Carlos Soto, Abid M. Malik, Meifeng
+Lin, and Barbara Chapman. 2022. COMPOFF: A Compiler Cost model
+using Machine Learning to predict the Cost of OpenMP Offloading. In
+2022 IEEE International Parallel and Distributed Processing Symposium
+Workshops (IPDPSW), May 30-June 3, 2022 . IEEE.
+[25] Alok Mishra, Lingda Li, Martin Kong, Hal Finkel, and Barbara Chap-
+man. 2017. Benchmarking and evaluating unified memory for OpenMP
+GPU offloading. In Proceedings of the Fourth Workshop on the LLVM
+Compiler Infrastructure in HPC . 1–10.
+[26] Alok Mishra, Abid M Malik, and Barbara Chapman. 2020. Data Trans-
+fer and Reuse Analysis Tool for GPU-Offloading Using OpenMP. In
+International Workshop on OpenMP . Springer, 280–294.
+[27] Alok Mishra, Abid M Malik, and Barbara Chapman. 2020. Extending
+the LLVM/Clang Framework for OpenMP Metadirective Support. In
+2020 IEEE/ACM 6th Workshop on the LLVM Compiler Infrastructure
+in HPC (LLVM-HPC) and Workshop on Hierarchical Parallelism for
+Exascale Computing (HiPar) . IEEE, 33–44.
+[28] ORNL. 2017. Oak Ridge Leadership Computing Facility - Summit
+Supercomputing cluster. Retrieved October 25, 2022 from https:
+//www.olcf.ornl.gov/summit/
+[29] ORNL. 2020. Oak Ridge Leadership Computing Facility - Wombat
+cluster. Retrieved October 25, 2022 from https://www.olcf.ornl.gov/
+olcf-resources/compute-systems/wombat/
+[30] Gabriel Poesia, Breno Guimarães, Fabricio Ferracioli, and Fernando
+Magno Quintão Pereira. 2017. Static placement of computation on
+heterogeneous devices. Proceedings of the ACM on Programming Lan-
+guages 1, OOPSLA (2017), 1–28.
+[31] Rohan Basu Roy, Tirthak Patel, Vijay Gadepally, and Devesh Tiwari.2021. Bliss: auto-tuning complex applications using a pool of diverse
+lightweight learning models. In Proceedings of the 42nd ACM SIGPLAN
+International Conference on Programming Language Design and Imple-
+mentation . 1280–1295.
+[32] Patrick Schober, Christa Boer, and Lothar A Schwarte. 2018. Corre-
+lation coefficients: appropriate use and interpretation. Anesthesia &
+Analgesia 126, 5 (2018), 1763–1768.
+[33] Rodinia Benchmark Suite. 2018. Gaussian Elimination .https://www.
+cs.virginia.edu/rodinia/doku.php?id=gaussian_elimination
+[34] Rodinia Benchmark Suite. 2018. Graph Traversal - Breadth First Search .
+https://www.cs.virginia.edu/rodinia/doku.php?id=graph_traversal
+[35] Rodinia Benchmark Suite. 2018. K-nearest Neighbors .https://www.cs.
+virginia.edu/rodinia/doku.php?id=k-nearest_neighbors
+[36] Rodinia Benchmark Suite. 2018. Particle Filter .https://www.cs.virginia.
+edu/rodinia/doku.php?id=particle_filter
+[37] Top500. 2021. Top500 supercomputer sites. https://www.top500.org/
+lists/top500/2022/06/
+[38] Ilkka Tuomi. 2002. The lives and death of Moore’s Law. First Monday
+(2002).
+[39] Stony Brook University. 2019. SeaWulf, computational cluster at
+Stony Brook University. Retrieved October 25, 2022 from https:
+//it.stonybrook.edu/help/kb/understanding-seawulf
+[40] Xingfu Wu, Michael Kruse, Prasanna Balaprakash, Hal Finkel, Paul
+Hovland, Valerie Taylor, and Mary Hall. 2022. Autotuning PolyBench
+Benchmarks with LLVM Clang/Polly loop optimization pragmas using
+Bayesian optimization. Concurrency and Computation: Practice and
+Experience 34, 20 (2022), e6683.
+12

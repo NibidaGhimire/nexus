@@ -1,0 +1,1458 @@
+Learning Diverse Risk Preferences in Population-based Self-play
+Yuhua Jiang*, Qihan Liu*, Xiaoteng Ma, Chenghao Li, Yiqin Yang,
+Jun Yang†, Bin Liang, Qianchuan Zhao†
+Department of Automation, Tsinghua University
+{jiangyh22, lqh20, ma-xt17, lch18, yangyiqi19 }@mails.tsinghua.edu.cn
+{yangjun603, bliang, zhaoqc }@tsinghua.edu.cn
+Abstract
+Among the remarkable successes of Reinforcement Learning
+(RL), self-play algorithms have played a crucial role in solv-
+ing competitive games. However, current self-play RL meth-
+ods commonly optimize the agent to maximize the expected
+win-rates against its current or historical copies, resulting in a
+limited strategy style and a tendency to get stuck in local op-
+tima. To address this limitation, it is important to improve the
+diversity of policies, allowing the agent to break stalemates
+and enhance its robustness when facing with different oppo-
+nents. In this paper, we present a novel perspective to pro-
+mote diversity by considering that agents could have diverse
+risk preferences in the face of uncertainty. To achieve this,
+we introduce a novel reinforcement learning algorithm called
+Risk-sensitive Proximal Policy Optimization (RPPO), which
+smoothly interpolates between worst-case and best-case pol-
+icy learning, enabling policy learning with desired risk pref-
+erences. Furthermore, by seamlessly integrating RPPO with
+population-based self-play, agents in the population optimize
+dynamic risk-sensitive objectives using experiences gained
+from playing against diverse opponents. Our empirical results
+demonstrate that our method achieves comparable or superior
+performance in competitive games and, importantly, leads to
+the emergence of diverse behavioral modes. Code is available
+at https://github.com/Jackory/RPBT.
+1 Introduction
+Reinforcement Learning (RL) has witnessed significant ad-
+vancements in solving challenging decision problems, par-
+ticularly in competitive games such as Go (Silver et al.
+2016), Dota (OpenAI 2018), and StarCraft (Vinyals et al.
+2019). One of the key factors contributing to these successes
+is self-play, where an agent improves its policy by play-
+ing against itself or its previous policies. However, building
+expert-level AI solely through model-free self-play remains
+challenging, as it requires no access to a dynamic model or
+the prior knowledge of a human expert. One of the difficul-
+ties is that agents trained in self-play only compete against
+themselves, leading to policies that often become stuck in
+local optima and struggle to generalize to different oppo-
+nents (Bansal et al. 2018).
+*These authors contributed equally.
+†Corresponding authors.
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.In this study, we focus on the problem of training agents
+that are both robust and high-performing against any type
+of opponent. We argue that the key to addressing this prob-
+lem lies in producing a diverse set of training opponents,
+or in other words, learning diverse strategies in self-play. A
+promising paradigm to address this problem is population-
+based approaches (Vinyals et al. 2019; Jaderberg et al.
+2019), where a collection of agents is gathered and trained
+against each other. However, the diversity achieved in such
+methods mainly stems from various hyperparameter setups
+and falls short. Recent research has increasingly focused
+on enhancing population diversity (Lupu et al. 2021; Zhao
+et al. 2022; Parker-Holder et al. 2020; Wu et al. 2023; Liu
+et al. 2021). These methods introduce diversity as a learn-
+ing objective and incorporate additional auxiliary losses on
+a population-wide scale. Nonetheless, this population-wide
+objective increases implementation complexity and necessi-
+tates careful hyperparameter tuning to strike a balance be-
+tween diversity and performance.
+Here, we propose a novel perspective on introducing di-
+versity within the population: agents should possess diverse
+risk preferences. In this context, risk refers to the uncer-
+tainty arising from stochastic transitions within the environ-
+ment, while risk preference encompasses the agent’s sensi-
+tivity to such uncertainty, typically including risk-seeking,
+risk-neutral, and risk-averse tendencies. Taking inspiration
+from the fact that humans are risk-sensitive (Tversky and
+Kahneman 1992), we argue that the lack of diversity in
+self-play arises from agents solely optimizing their expected
+winning rate against opponents without considering other
+optimization goals that go beyond the expectation, such as
+higher-order moments of the winning rate distribution. Intu-
+itively, the population of agents should be diverse, includ-
+ing conservative (risk-averse) agents that aim to enhance
+their worst performance against others, as well as aggres-
+sive (risk-seeking) agents that focus on improving their best
+winning record.
+To achieve risk-sensitive learning with minimal modifica-
+tions, we introduce the expectile Bellman operator , which
+smoothly interpolates between the worst-case and best-case
+Bellman operators. Building upon this operator, we propose
+Risk-sensitive Proximal Policy Optimization (RPPO), which
+utilizes a risk level hyperparameter to control the risk pref-
+erence during policy learning. To strike a balance betweenarXiv:2305.11476v2  [cs.LG]  15 Dec 2023bias and variance in policy learning, we extend the expectile
+Bellman operator to its multi-step form and adapt the Gener-
+alized Advantage Estimation (GAE) (Schulman et al. 2018).
+It is important to highlight that this extension is non-trivial
+due to the nonlinearity of the expectile Bellman operator.
+RPPO offers a simple and practical approach that can
+be easily integrated into existing population-based self-play
+frameworks. We provide an implementation called RPBT,
+where a population of agents is trained using RPPO with di-
+verse risk preference settings, without introducing additional
+population-level optimization objectives. The risk prefer-
+ences of the agents are automatically tuned using exploita-
+tion and exploration techniques drawn from Population-
+based Training (PBT) (Jaderberg et al. 2017). By gathering
+the experience of agents competing against each other in the
+diverse population, RPBT effectively addresses the issue of
+overfitting to specific types of opponents.
+2 Related Work
+Self-play RL Training agents in multi-agent games re-
+quires instantiations of opponents the in environment. A so-
+lution could be self-play RL, where an agent is trained by
+playing against its own policy or its past versions. Self-
+play variants have proven effective in some multi-agent
+games (Tesauro et al. 1995; Silver et al. 2016; OpenAI 2018;
+Vinyals et al. 2019; Jaderberg et al. 2019). A key advantage
+of self-play is that the competitive multi-agent environment
+provides the agents with an appropriate curriculum (Bansal
+et al. 2018; Liu et al. 2019; Baker et al. 2020), which facili-
+tates the emergence of complex and interesting behaviors.
+However, real-world games often involve non-transitivity
+and strategic cycles(Czarnecki et al. 2020), and thus self-
+play cannot produce agents that generalize well to different
+types of opponents. Population-based self-play (Jaderberg
+et al. 2019; Garnelo et al. 2021; Yu et al. 2023; Strouse et al.
+2021) improves self-play by training a population of agents,
+all of whom compete against each other. While population-
+based self-play is able to gather a substantial amount of
+match experience to alleviate the problem of overfitting to
+specific opponents, it still requires techniques to introduce
+diversity among agents to stabilize training and facilitate ro-
+bustness (Jaderberg et al. 2019).
+Population-based Diversity Population-based methods
+demonstrate a strong connection with evolutionary algo-
+rithms (Mouret and Clune 2015). These population-based
+approaches have effectively addressed black-box optimiza-
+tion challenges (Loshchilov and Hutter 2016). Their primary
+advantages encompass the ability to obtain high-performing
+hyperparameter schedules in a single training run, which
+leads to great performance across various environments (Liu
+et al. 2019; Li et al. 2019; Espeholt et al. 2018). Recently, di-
+versity across the population has drawn great interests (Shen
+et al. 2020; Khadka et al. 2019; Liu et al. 2021, 2022;
+Wu et al. 2023). Reward randomizations (Tang et al. 2021;
+Yu et al. 2023) were employed to discover diverse poli-
+cies in multi-agent games. Other representative works for-
+mulated individual rewards and diversity among agents into
+a multi-objective optimization problem. More specifically,DvD (Parker-Holder et al. 2020) utilizes the determinant of
+the kernel matrix of action embedding as a population di-
+versity metric. TrajeDi (Lupu et al. 2021) introduces trajec-
+tory diversity by approximating Jensen-Shannon divergence
+with action discounting kernel. MEP (Zhao et al. 2022) max-
+imizes a lower bound of the average KL divergence within
+the population. Instead of introducing additional diversity-
+driven objectives across the entire population, our RPBT
+approach trains a population of agents with different risk
+preferences. Each individual agent maximizes its own re-
+turns based on its specific risk level, making our method
+both easy to implement and adaptable for integration into
+a population-based self-play framework.
+Game theory Fictitious play (Brown 1951) and double or-
+acle(McMahan, Gordon, and Blum 2003) have been studied
+to achieve approximate Nash equilibrium in normal-form
+games. Fictitious self-play (FSP)(Heinrich, Lanctot, and Sil-
+ver 2015) extends fictitious play to extensive-form games.
+Policy-space response oracle (PSRO) (Lanctot et al. 2017) is
+a natural generalization of double oracle, where the choices
+become the policies in meta-games rather than the actions
+in games. PSRO is a general framework for solving games,
+maintaining a policy pool and continuously adds the best re-
+sponses. Our methods fall under PSRO framework at this
+level. However, in practice, PSRO necessitates the computa-
+tion of the meta-payoff matrix between policies in the pol-
+icy pool, which is computationally intensive (McAleer et al.
+2020) in real-world games since the policy pool is pretty
+large. Various improvements (Balduzzi et al. 2019; Perez-
+Nieves et al. 2021; Liu et al. 2021) have been made upon
+PSRO by using different metrics based on the meta-payoffs
+to promote diversity. However, most of these works have
+confined their experiments to normal-form games or meta-
+games.
+Risk-sensitive RL Our risk-sensitive methods draw from
+risk-sensitive and distributional RL, with comprehensive
+surveys (Bellemare, Dabney, and Rowland 2023) avail-
+able. Key distributional RL studies (Bellemare, Dabney, and
+Munos 2017) highlight the value of learning return distribu-
+tions over expected returns, enabling approximation of value
+functions under various risk measures like Wang (M ¨uller
+1997) and CVaR (Rockafellar, Uryasev et al. 2000; Chow
+and Ghavamzadeh 2014; Qiu et al. 2021) for generating
+risk-averse or risk-seeking policies. However, these meth-
+ods’ reliance on discrete samples for risk and gradient esti-
+mation increases computational complexity. Sampling-free
+methods (Tang, Zhang, and Salakhutdinov 2019; Yang et al.
+2021; Ying et al. 2022) have been explored for CVaR com-
+putation, but CVaR focuses solely on risk aversion, neglect-
+ing best-case scenarios, which may not align with compe-
+tition objectives. A risk-sensitive RL algorithm (Del ´etang
+et al. 2021) balances risk aversion and seeking, but assumes
+gaussian data generation. In contrast, our RPPO algorithm
+requires no data assumptions and minimal code modifica-
+tions on PPO to learn diverse risk-sensitive policies.3 Preliminary
+Problem Definition We consider fully competitive games,
+which can be regarded as Markov games (Littman 1994). A
+Markov game for Nagents is a partially observable Markov
+decision process (POMDP), which can be defined by: a set
+of states S, a set of observations O1,···,ONof each agent,
+a set of actions of each agent A1,···,AN, a transition func-
+tionp(s′|s, a1,···, an):S × A1× ···AN→∆(S)deter-
+mining distribution over next states, and a reward function
+for each agent ri:S × Ai× A−i× S → R. Each agent
+chooses its actions based on a stochastic policy πθi:Oi→
+∆(A), where θiis the policy parameter of agent i.
+In the self-play setting, we have control over a single
+agent known as the main agent, while the remaining agents
+act as opponents. These opponents are selected from the
+main agent’s checkpoints. The main agent’s primary objec-
+tive is to maximize its expected returns, also referred to as
+discounted cumulative rewards, denoted as E[PT
+t=0γtri
+t],
+where γrepresents the discount factor, and Tsignifies the
+time horizon. By considering the opponents as part of the en-
+vironmental dynamics, we can view the multi-agent environ-
+ment as a single-agent stochastic environment from the main
+agent’s perspective. Consequently, we can employ single-
+agent RL methods such as PPO to approximate the best re-
+sponse against all opponents. However, it should be noted
+that the opponents are sampled from the main agent, which
+itself lacks diversity as it is generated by single-agent RL
+methods. In this study, we aim to construct a strong and ro-
+bust policy, and generating diverse policies serves this goal.
+4 Risk-sensitive PPO
+In this section, we present our novel RL algorithm, Risk-
+sensitive Proximal Policy Optimization (RPPO), which in-
+volves minimal modifications to PPO. The algorithm is
+shown in Algorithm 1. RPPO utilizes an expectile Bellman
+operator that interpolates between a worst-case Bellman op-
+erator and a best-case Bellman operator. This allows learn-
+ing to occur with a specific risk preference, ranging from
+risk-averse to risk-seeking. Additionally, we extend the ex-
+pectile Bellman operator into a multi-step form to balance
+bias and variance in RPPO. The theoretical analysis of the
+expectile Bellman operator and its multi-step form, as well
+as a toy example demonstrating the potential of RPPO to
+learn risk preferences, are presented in the following sub-
+sections.
+4.1 Expectile Bellman operator
+Given a policy πand a risk level hyperparamemter τ∈
+(0,1), we consider expectile Bellman operator defined as
+follows:
+Tπ
+τV(s) :=V(s) + 2αEaEs′[τ[δ]++ (1−τ)[δ]−],(1)
+where αis the step size which we set to1
+2 max{τ,1−τ},
+δrefers to δ(s, a, s′) = r(s, a, s′) +γV(s′)−V(s)
+which is one-step TD error, [·]+= max( ·,0)and[·]−=
+min(·,0). This operator draws inspiration from expectile
+statistics (Newey and Powell 1987; Rowland et al. 2019; Maet al. 2022), and thus the name. We can see that the stan-
+dard Bellman operator is a special case of expectile Bellman
+operator when τ= 1/2. We have the following theoreti-
+cal properties to guide the application of expectile Bellman
+operator in practice. Please refer to the Appendix A for the
+proof.
+Proposition 1. For any τ∈(0,1),Tπ
+τis aγτ-contraction,
+where γτ= 1−2α(1−γ) min{τ,1−τ}.
+Proposition 1 guarantees the convergence of the value
+function in the policy evaluation phase.
+Proposition 2. LetV∗
+τdenotes the fixed point of Tπ
+τ. For
+anyτ, τ′∈(0,1), ifτ′≥τ, we have V∗
+τ′(s)≥V∗
+τ(s),∀s∈
+S.
+Proposition 2 guarantees the fixed point of expectile Bell-
+man operator is monotonic with respect to τ.
+Proposition 3. LetV∗
+τ,V∗
+best, and V∗
+worst respectively de-
+note the fixed point of expectile Bellman operator, best-
+case Bellman operator and worst-case Bellman operator. We
+have
+V∗
+τ=V∗
+worst ifτ→0
+V∗
+best ifτ→1.(2)
+The worst-case Bellman operator and best-case Bellman
+operator are defined by:
+TbestV(s) := max
+a,s′[R(s, a, s′) +γV(s′)],
+TworstV(s) = min
+a,s′[R(s, a, s′) +γV(s′)].(3)
+It is important to highlight the difference between best-case
+Bellman operator and Bellman optimal operator ( TV(s) :=
+max a[P
+s′(R(s, a, s′) +γV(s′)]). Best-case Bellman oper-
+ator takes stochastic transitions into account, which is the
+main source of risk in competitive games when confronting
+unknown actions of different opponents.
+Proposition 3 guarantees expectile Bellman operator ap-
+proaches best-case Bellman operator as risk level τap-
+proaches 1, and approaches worst-case Bellman operator as
+τapproaches 0.
+Combing Propostion 2 and Proposition 3, we observe that
+expectile Bellman operator can be used to design an op-
+timization algorithm whose objective is the interpolation
+between the best-case and the worst-case objective. When
+τ= 1/2, the objective is equivalent to expected returns,
+which is the scenario of risk-neutral. And risk level τ <1/2
+andτ > 1/2represent the risk-averse and risk-seeking
+cases, respectively. As τvaries, the learning objective varies,
+and hence diverse risk perferences arise.
+We can see the potential of using the expectile Bellman
+operator for designing risk-sensitive RL algorithms. PPO,
+widely utilized in self-play, is favored for its ease of use, sta-
+ble performance, and parallel scalability. By extending PPO
+with the expectile Bellman operator, we introduce the RPPO
+algorithm. Moreover, generalizing this operator to other RL
+algorithms is not difficult. In practice, we define the advan-
+tage function as
+Aπ
+τ(s, a) := 2 αEs′
+τ[δ]++ (1−τ)[δ]−
+, (4)Algorithm 1: Risk-sensitive PPO (RPPO)
+Input : initial network parameter θ,ϕ, horizon T, update
+epochs K, risk level τ.
+1:fori= 1,2,···do
+2: Collect trajectories by running policy πθoldin the en-
+vironment for Ttime steps.
+3: Compute λ-variant returns ˆVτ,λaccording to Eq.10
+4: Compute advantages ˆAτ,λaccording to Eq.11
+5: fork= 1,2,···, Kdo
+6: Update the θby maximizing the surrogate function
+with Eq.5 via some gradient algorithms.
+7: Update the ϕby minimizing mean-squared error
+with Eq.6 via some gradient algorithms.
+8: end for
+9: θold=θ
+10:end for
+With a batch of data {(st, at, rt, st+1)}T−1
+t=0collected by
+π, we train the policy with the clip variant PPO loss,
+LCLIP
+π(θ) =1
+TT−1X
+t=0h
+min
+ωt(θ)ˆAτ(st, at),
+clip(ωt(θ),1−ε,1 +ε)ˆAτ(st, at)i
+,
+(5)
+where ωt(θ) =πθ(at|st)
+π(at|st)is the importance sampling ratio.
+Meanwhile, we train the value network with mean squared
+loss,
+LV(ϕ) =1
+2TT−1X
+t=0(Vϕ(st)−ˆVτ,t)2, (6)
+where ϕis the parameter of the value network, and ˆVτ,t:=
+Vϕ(st) +ˆAτ(st, at)is the target value.
+4.2 Multi-step expectile Bellman operator
+While RPPO is sufficient for providing decent risk prefer-
+ences, we still require some techniques to balance the bias
+and variance when estimating the advantage function. The
+original PPO uses the Generalized Advantage Estimation
+(GAE) technique (Schulman et al. 2018) to reduce variance
+by using an exponentially-weighted estimator of the advan-
+tage function, at the cost of introducing some bias. In this
+section, we extend GAE to RPPO along this line of work.
+However, it is non-trivial for direct incorporation of GAE
+into RPPO due to the non-linearity of the expectile Bellman
+operator. To address this issue, we define the multi-step ex-
+pectile Bellman operator as:
+Tπ
+τ,λV(s) := (1 −λ)∞X
+n=1λn−1(Tπ
+τ)nV(s). (7)
+We can derive that multi-step expectile Bellman operator
+still remains the contraction and risk-sensitivity properties.
+Please refer to Appendix A for the proof.
+Proposition 4. For any τ∈(0,1),Tπ
+τ,λis a γτ,λ-
+contraction, where γτ,λ=(1−λ)γτ
+1−λγτ.Proposition 5. LetV∗
+τ,λdenote the fixed point of Tπ
+τ,λ.
+For any τ, τ′∈(0,1), ifτ′≥τ, we have V∗
+τ′,λ(s)≥
+V∗
+τ,λ(s),∀s∈S.
+Proposition 6. LetV∗
+τ,λdenote the fixed point of Tπ
+τ,λ, we
+have
+lim
+τV∗
+τ,λ=V∗
+worst ifτ→0
+V∗
+best ifτ→1. (8)
+Despite the fact that Tπ
+τ,λhas the property of contraction,
+it is hard to be estimated with trajectories. Hence, we intro-
+duce another sample form operator
+ˆTπ,ˆV
+τV(s) :=V(s) + 2αh
+τ[ˆδ]++ (1−τ)[ˆδ]−i
+,(9)
+where ˆδ:=r(s, a, s′) +γˆV(s′)−V(s). Here ˆVis
+an estimate of target value. When we choose ˆV=
+Vand take the expectation, we recover the Tπ
+τ(s) =
+Ea∼π(·|s),s′∼p(·|s,a)ˆTπ,V
+τV(s). Furthermore, The multi-step
+sample form operator is
+ˆVπ
+τ,λ(s) = (1 −λ)∞X
+n=1λn−1ˆTπ,ˆVn
+τV(s). (10)
+where ˆVn(s) = ˆTπ,ˆVn−1τ V(s)andˆV0(s) =V(s). Finally,
+we estimate the advantage as
+ˆAπ
+τ,λ(s, a) =ˆVπ
+τ,λ(s)−V(s). (11)
+When τ= 1/2, we recover the original form of GAE. How-
+ever, if τ̸= 1/2, we introduce extra bias1. The details of
+computing multi-step expectile Bellman operator in practice
+are provided in Appendix D.
+With sample form multi-step expectile Bellman operator
+in place, we propose the whole RPPO algorithm, as shown
+in Algorithm 1. The implementation of RPPO requires only
+a few lines of code modifications based on PPO.
+4.3 Toy example
+We use a grid world (Del ´etang et al. 2021) shown in Fig. 1(a)
+to illustrate the ability of RPPO to learn diverse risk prefer-
+ences with different risk levels τ. The grid world consists
+of an agent, a flag, water, and strong wind. The agent’s goal
+is to reach the flag position within 25 steps while avoiding
+stepping into the water. When reaching the flag, the agent
+receives a +1 bonus and is done, but each step spent in the
+water results in a -1 penalty. In addition, the strong wind
+randomly pushes the agent in one direction with 50% proba-
+bility. In this world, risk (uncertainty) comes from the strong
+wind.
+We train 9 RPPO agents with τ∈ {0.1,0.2, ...,0.9}to
+investigate how risk level τaffects the behaviors of poli-
+cies. We illustrate the state-visitation frequencies computed
+from the 1,000 rollouts, as shown in Fig. 1. Three modes
+1The fixed points of Tπ
+τ,λandTπ
+τare the same one. However,
+the sample form operator introduces extra bias for value estimation,
+which means the fixed points of ˆTπ
+τ,λandTπ
+τ,λare not the same one.
+It is caused by the non-linearity of the operator with respect to the
+noise.(a)
+0 1 2 30 1 2 3
+0.020.040.060.080.100.12
+ (b)τ= 0.2
+0 1 2 30 1 2 3
+ 0.020.040.060.080.100.120.14
+ (c)τ= 0.5
+0 1 2 30 1 2 3
+0.0250.0500.0750.1000.1250.1500.175
+ (d)τ= 0.8
+Figure 1: Experiments of the toy example. (a) Illustration of the toy example. The task is to pick up the bonus located at the
+flag while avoiding the penalty of stepping into water in a 4×4grid world. A strong wind pushes the agent into a random
+direction 50% of the time. (b), (c) and (d) States visitation frequencies for the three policies that have different risk preferences.
+The black arrow indicates the deterministic policy when there is no wind.
+Figure 2: The framework of RPBT. We train a population of agents with different initialization of risk levels. During a training
+round, each agent spawns a number of subprocesses to collect data against randomly selected opponents from the policy pool.
+We use RPPO to update models under the specific risk level. The policies updated are added to the policy pool. If an agent
+in the population is under-performing, it will exploit (copy) the model parameters and the risk level τof a better-performing
+agent, and it will explore a new risk level by adding a perturbation to the better-performing agent’s risk level for the following
+training.
+of policies emerge here: risk-averse ( τ∈ {0.2,0.3,0.4}),
+taking the longest path away from the water; risk-neutral
+(τ∈ {0.5,0.6,0.7}), taking the middle path, and risk-
+seeking ( τ∈ {0.8,0.9}), taking the shortest route along the
+water. Interestingly, agents with τ= 0.1are too conserva-
+tive and do not always reach the flag, which is consistent
+with risk-averse behavior styles.
+5 RPBT
+In this section, we present our population-based self-play
+method based on RPPO, which we refer to as RPBT, as il-
+lustrated in Fig. 2. Our proposed RPBT stabilizes the learn-
+ing process by concurrently training a diverse population
+of agents who learn by playing with each other. Moreover,
+different agents in the population have varying risk prefer-
+ences in order to promote the learned policies to be diverse
+and not homogeneous. In contrast to previous work (Parker-
+Holder et al. 2020; Lupu et al. 2021; Zhao et al. 2022),
+RPBT does not include population-level diversity objectives.
+Instead, each agent acts and learns to maximize its individ-
+ual rewards under the specific risk preference settings. This
+makes RPBT more easier to implement and scale.
+In our RPBT, the value of the risk level τ∈(0,1)controlsthe agent’s risk preference. Since it is impossible to cover
+all possible risk levels within the population, we dynami-
+cally adjust the risk levels during training, particularly for
+those with poor performance. We adopt the exploitation and
+exploration steps in PBT (Jaderberg et al. 2017) to achieve
+this auto-tuning goal. In the exploitation step, a poorly per-
+forming agent can directly copy the model parameters and
+risk level τfrom a well-performing agent to achieve equal
+performance. Then in the exploration step, the newly copied
+risk level is randomly perturbed by noise to produce a new
+risk level. In our practice, we introduce a simple technique:
+•Exploitation . We rank all agents in the population accord-
+ing to ELO score, indicating performance. If an agent’s
+ELO score falls below a certain threshold, it is considered
+an underperforming agent, and its model parameters and
+risk level will be replaced by those from a superior agent.
+•Exploration . The risk level of the underperforming agent
+is further updated by adding a noise term varying be-
+tween -0.2 and 0.2.
+We find that this technique allows RPBT to explore almost
+all possible values of τduring training. At the later stage
+of training, the values of τwill converge to an interval with
+better performance while maintaining diversity and avoidingFigure 3: Illustration of diverse risk preferences in Slimevolley. Risk-seeking agent (left) stands farther from the fence and hit
+the ball at a lower angle while risk-averse agent (right) does the opposite.
+Figure 4: Illustration of diverse risk preferences in Sumoants. The risk-seeking agent (red) constantly attacks, while the risk-
+averse agent (green) assumes a defensive stance.
+harmful values.
+Additionally, we treat all agents of the population and
+their historical copies as a policy pool from which oppo-
+nents are uniformly sampled for self-play. Actually, this
+approach of sampling opponents is commonly referred to
+as FSP (Vinyals et al. 2019), which ensures that an agent
+must be able to defeat random old versions of any other
+agent in the population in order to continue learning adap-
+tively (Bansal et al. 2018). Since any approach of sampling
+opponents can be adapted to our method, we do not dwell on
+more complicated opponent sampling techniques (Vinyals
+et al. 2019; OpenAI 2018). Moreover, we utilize FSP for all
+our experiments to ensure fair comparisons.
+Fig. 2 illustrated one training round of RPBT. Each train-
+ing round consists of uniformly sampling opponents from
+the policy pool, collecting game experience, updating mod-
+els using RPPO, and performing exploitation and explo-
+ration on risk levels. After training is ended, we select the
+agent with the highest ELO score from the population to
+serve as the evaluation agent.
+6 Experiments
+In our experiments, we aim to answer the following ques-
+tions: Q1, can RPPO generate policies with diverse risk pref-
+erences in competitive games? Q2, how does RPBT perform
+compared to other methods in competitive games? Some re-
+sults of the ablation experiments on RPBT are presented in
+the Appendix E. All the experiments are conducted with one
+64-core CPU and one GeForce RTX 3090 GPU.
+6.1 Environment setup
+We consider two competitive multi-agent benchmarks:
+Slimevolley (Ha 2020) and Sumoants (Al-Shedivat et al.
+2018). Slimevolley is a two-agent volleyball game where
+the action space is discrete. The goal of each agent is to
+land the ball on the opponent’s field, causing the opponent to
+lose lives. Sumoants is a two-agent game based on MuJoCo
+where the action space is continuous. Two ants compete in
+a square area, aiming to knock the other agent to the groundor push it out of the ring. More details about the two bench-
+marks are given in Appendix C.
+6.2 Diverse Risk Preferences Illustration
+We trained RPPO agents via self-play, using various risk lev-
+els. As for Slimevolley, we pit the risk-seeking agent with
+τ= 0.9against the risk-averse agent with τ= 0.1, as shown
+in Fig. 3. We observe that the risk-seeking agent prefers to
+adjust its position to spike the ball so that the height of the
+ball is lower, while the risk-averse agent takes a more con-
+servative strategy and just focuses on catching the ball. To
+further quantify this phenomenon, we pit the three agents
+τ∈ {0.1,0.5,0.9}versus the τ= 0.5agent and com-
+pute two metrics average over 200 rollouts: the distance to
+the fences (denoted as d) and hitting angle (denoted as β).
+Asτincreases, βshows a monotonically decreasing trend,
+anddshows a monotonically increasing trend. Because the
+physics engine of the volleyball game is a bit ”dodgy”, the
+agent can hit the ball with a low height only when standing
+far away from the fence.
+As for Sumoants, a typical play between a risk-seeking
+agent with τ= 0.7and a risk-averse agent with τ= 0.3is
+illustrated in Fig. 4. We observed that the risk-averse agent
+tends to maintain a defensive stance: four legs spread out,
+lowering its center of gravity and holding the floor tightly
+to keep it as still as possible. In contrast, the risk-seeking
+agent frequently attempts to attack. We also provide multiple
+videos for further observation on our code website.
+(a) Slimevolley
+Play APlay BRPBT PP SP
+RPBT(ours) - 56% 64%
+PP 44% - 56%
+SP 36% 44% -(b) Sumoants
+Play APlay BRPBT PP SP
+RPBT(ours) - 63% 67%
+PP 37% - 53%
+SP 33% 47% -
+Table 1: RPBT performing against basic baselines.(a) Slimevolley
+Play APlay BRPBT MEP TrajeDi DvD RR PSRO
+RPBT(ours) - 64% 59% 48% 60% 53%
+MEP 36% - 46% 32% 39% 32%
+TrajeDi 41% 53% - 38% 38% 45%
+DvD 52% 63% 61% - 58% 63%
+RR 37% 52% 63% 42% - 54%
+PSRO 48% 68% 55% 37% 46% -(b) Sumoants
+Play APlay BRPBT MEP TrajeDi DvD RR PSRO
+RPBT - 58% 63% 54% 56% 53%
+MEP 42% - 54% 53% 51% 50%
+TrajeDi 37% 46% - 44% 48% 37%
+DvD 46% 47% 56% - 52% 43%
+RR 44% 49% 52% 48% - 43%
+PSRO 47% 50% 63% 57% 57% -
+Table 2: RPBT performing against different methods.
+RPBT
+ MEP
+ TrajeDi
+ DvD
+ RR
+agent1
+agent2
+agent3
+agent4
+agent5
+Figure 5: Comparing diversity of different methods with a population size of 5.
+6.3 Results Compared with other methods
+We trained RPBT with population size 5 and set initial risk
+levels to {0.1,0.4,0.5,0.6,0.9}for all the experiments. To
+ensure fairness in our comparison, all the baselines were in-
+tegrated with PPO and set to the same population size if nec-
+essary. See Appendix D for more implementation details.
+The baseline methods includes:
+• Basic baselines: self-play ( SP), where agents learn solely
+through competing with themselves, and population-
+based self-play ( PP), where a population of agents are
+co-trained through randomly competing against one an-
+other.
+• Population-based methods: MEP (Zhao et al. 2022),
+TrajeDi (Lupu et al. 2021), DvD (Parker-Holder et al.
+2020), and RR(Reward Randomization, similar ideas
+with (Tang et al. 2021)).
+• Game-theoretic method: PSRO (Lanctot et al. 2017).
+For each method, we trained 3 runs using different ran-
+dom seeds and selected the one with the highest ELO score
+for evaluation. Then, we calculated the win rate matrix be-
+tween the methods, recording the average win rate corre-
+sponding to 200 plays. Tab.1 shows the results among RPBT
+and basic methods. We observe that RPBT exhibits supe-
+rior performance compared to the baselines. Therefore, it is
+crucial to integrate diversity-oriented methods like RPBT in
+self-play. Tab.2 shows the results among RPBT, population-
+based methods, and game-theoretic methods. We observed
+that RPBT outperforms MEP, TrajeDi, and RR. Moreover,
+RPBT achieves performance comparable to that of DvD
+in Slimevolley but better in Sumoants. Furthermore, RPBT
+performs slightly better than PSRO. However, PSRO is more
+computationally intensive (While PSRO requires 34 hours
+for a single run, other methods only require almost 12
+hours).
+In order to further compare the diversity in population-
+based methods, we let each agent in the population playagainst itself. We then extract the first 100 states from the
+game trajectories and use t-SNE (Van der Maaten and Hin-
+ton 2008) to reduce the states to 2 dimensions for visualiz-
+ing. Fig.5 shows the results. We observed that the trajecto-
+ries of agents in the RPBT population are distinct from each
+other. In comparison, TrajeDi and RR exhibit a certain level
+of diversity, whereas MEP and DvD show no indications of
+diversity. Notably, these population-based methods require
+the introduction of an additional diversity objective at the
+population level. This causes higher complexity to imple-
+mentation as well as hyperparameter tuning due to the trade-
+off between diversity and performance. Overall, RPBT is a
+favorable approach for both learning diverse behaviors and
+enhancing performance.
+7 Conclusion
+Observing that learning to be diverse is essential for ad-
+dressing the overfitting problem in self-play, we propose that
+diversity could be introduced in terms of risk preferences
+from different agents. Specifically, we propose a novel Risk-
+sensitive PPO (RPPO) approach to learn policies that align
+with desired risk preferences. Furthermore, we incorporate
+RPPO into a population-based self-play framework, which is
+easy to implement, thereby introducing the RPBT approach.
+In this approach, a population of agents, with diverse and
+dynamically adjusted risk preferences, compete with one
+another. We showed that our method can generate diverse
+modes of policies and achieve comparable or superior per-
+formance over existing methods. To the best of our knowl-
+edge, this is the first work that uses a risk-oriented approach
+to train a diverse population of agents. Future directions in-
+clude developing a meta-policy that can adaptively select the
+optimal risk level according to the opponent’s strategy and
+exploring the applicability of RPPO to safe reinforcement
+learning scenarios.8 Acknowledgments
+This work was supported by National Natural Science Foun-
+dation of China under Grant No. 62192751, in part by the
+National Science and Technology Innovation 2030 - Ma-
+jor Project (Grant No. 2022ZD0208804), in part by Key
+R&D Project of China under Grant No. 2017YFC0704100,
+the 111 International Collaboration Program of China under
+Grant No. BP2018006, and in part by the BNRist Program
+under Grant No. BNR2019TD01009, the National Innova-
+tion Center of High Speed Train R&D project (CX/KJ-2020-
+0006), in part by the InnoHK Initiative, The Government of
+HKSAR; and in part by the Laboratory for AI-Powered Fi-
+nancial Technologies.
+References
+Al-Shedivat, M.; Bansal, T.; Burda, Y .; Sutskever, I.; Mor-
+datch, I.; and Abbeel, P. 2018. Continuous Adaptation via
+Meta-Learning in Nonstationary and Competitive Environ-
+ments. In International Conference on Learning Represen-
+tations .
+Baker, B.; Kanitscheider, I.; Markov, T.; Wu, Y .; Powell, G.;
+McGrew, B.; and Mordatch, I. 2020. Emergent Tool Use
+From Multi-Agent Autocurricula. In International Confer-
+ence on Learning Representations .
+Balduzzi, D.; Garnelo, M.; Bachrach, Y .; Czarnecki, W.;
+Perolat, J.; Jaderberg, M.; and Graepel, T. 2019. Open-
+ended learning in symmetric zero-sum games. In Interna-
+tional Conference on Machine Learning , 434–443. PMLR.
+Bansal, T.; Pachocki, J.; Sidor, S.; Sutskever, I.; and Mor-
+datch, I. 2018. Emergent Complexity via Multi-Agent Com-
+petition. In International Conference on Learning Represen-
+tations .
+Bellemare, M. G.; Dabney, W.; and Munos, R. 2017. A dis-
+tributional perspective on reinforcement learning. In Inter-
+national conference on machine learning , 449–458. PMLR.
+Bellemare, M. G.; Dabney, W.; and Rowland, M. 2023. Dis-
+tributional Reinforcement Learning . MIT Press.
+Brown, G. W. 1951. Iterative Solution of Games by Fic-
+titious Play. In Koopmans, T. C., ed., Activity Analysis of
+Production and Allocation . New York: Wiley.
+Chow, Y .; and Ghavamzadeh, M. 2014. Algorithms for
+CVaR optimization in MDPs. Advances in neural informa-
+tion processing systems , 27.
+Czarnecki, W. M.; Gidel, G.; Tracey, B.; Tuyls, K.; Omid-
+shafiei, S.; Balduzzi, D.; and Jaderberg, M. 2020. Real world
+games look like spinning tops. Advances in Neural Informa-
+tion Processing Systems , 33: 17443–17454.
+Del´etang, G.; Grau-Moya, J.; Kunesch, M.; Genewein, T.;
+Brekelmans, R.; Legg, S.; and Ortega, P. A. 2021. Model-
+free risk-sensitive reinforcement learning. arXiv preprint
+arXiv:2111.02907 .
+Espeholt, L.; Soyer, H.; Munos, R.; Simonyan, K.; Mnih, V .;
+Ward, T.; Doron, Y .; Firoiu, V .; Harley, T.; Dunning, I.; et al.
+2018. Impala: Scalable distributed deep-rl with importance
+weighted actor-learner architectures. In International con-
+ference on machine learning , 1407–1416. PMLR.Garnelo, M.; Czarnecki, W. M.; Liu, S.; Tirumala, D.; Oh, J.;
+Gidel, G.; van Hasselt, H.; and Balduzzi, D. 2021. Pick your
+battles: Interaction graphs as population-level objectives for
+strategic diversity. arXiv preprint arXiv:2110.04041 .
+Ha, D. 2020. Slime V olleyball Gym Environment.
+Heinrich, J.; Lanctot, M.; and Silver, D. 2015. Fictitious
+Self-Play in Extensive-Form Games. In Bach, F.; and Blei,
+D., eds., Proceedings of the 32nd International Conference
+on Machine Learning , volume 37 of Proceedings of Ma-
+chine Learning Research , 805–813. Lille, France: PMLR.
+Huang, S.; Dossa, R. F. J.; Ye, C.; Braga, J.; Chakraborty, D.;
+Mehta, K.; and Ara ´ujo, J. G. 2022. CleanRL: High-quality
+Single-File Implementations of Deep Reinforcement Learn-
+ing Algorithms. Journal of Machine Learning Research ,
+23(274): 1–18.
+Jaderberg, M.; Czarnecki, W. M.; Dunning, I.; Marris, L.;
+Lever, G.; Casta ˜neda, A. G.; Beattie, C.; Rabinowitz, N. C.;
+Morcos, A. S.; Ruderman, A.; Sonnerat, N.; Green, T.; Dea-
+son, L.; Leibo, J. Z.; Silver, D.; Hassabis, D.; Kavukcuoglu,
+K.; and Graepel, T. 2019. Human-level performance in
+3D multiplayer games with population-based reinforcement
+learning. Science , 364(6443): 859–865.
+Jaderberg, M.; Dalibard, V .; Osindero, S.; Czarnecki, W. M.;
+Donahue, J.; Razavi, A.; Vinyals, O.; Green, T.; Dunning,
+I.; Simonyan, K.; et al. 2017. Population based training of
+neural networks. arXiv preprint arXiv:1711.09846 .
+Khadka, S.; Majumdar, S.; Nassar, T.; Dwiel, Z.; Tumer, E.;
+Miret, S.; Liu, Y .; and Tumer, K. 2019. Collaborative evolu-
+tionary reinforcement learning. In International conference
+on machine learning , 3341–3350. PMLR.
+Lanctot, M.; Zambaldi, V .; Gruslys, A.; Lazaridou, A.;
+Tuyls, K.; P ´erolat, J.; Silver, D.; and Graepel, T. 2017. A uni-
+fied game-theoretic approach to multiagent reinforcement
+learning. Advances in neural information processing sys-
+tems, 30.
+Li, A.; Spyra, O.; Perel, S.; Dalibard, V .; Jaderberg, M.; Gu,
+C.; Budden, D.; Harley, T.; and Gupta, P. 2019. A general-
+ized framework for population based training. In Proceed-
+ings of the 25th ACM SIGKDD International Conference on
+Knowledge Discovery & Data Mining , 1791–1799.
+Littman, M. L. 1994. Markov Games as a Framework for
+Multi-Agent Reinforcement Learning. In Machine Learning
+Proceedings 1994 , 157–163. Elsevier. ISBN 978-1-55860-
+335-6.
+Liu, S.; Lever, G.; Heess, N.; Merel, J.; Tunyasuvunakool,
+S.; and Graepel, T. 2019. Emergent Coordination Through
+Competition. In International Conference on Learning Rep-
+resentations .
+Liu, X.; Jia, H.; Wen, Y .; Hu, Y .; Chen, Y .; Fan, C.; Hu,
+Z.; and Yang, Y . 2021. Towards unifying behavioral and re-
+sponse diversity for open-ended learning in zero-sum games.
+Advances in Neural Information Processing Systems , 34:
+941–952.
+Liu, Z.; Yu, C.; Yang, Y .; Wu, Z.; Li, Y .; et al. 2022. A Uni-
+fied Diversity Measure for Multiagent Reinforcement Learn-
+ing. Advances in Neural Information Processing Systems ,
+35: 10339–10352.Loshchilov, I.; and Hutter, F. 2016. CMA-ES for hyper-
+parameter optimization of deep neural networks. arXiv
+preprint arXiv:1604.07269 .
+Lupu, A.; Cui, B.; Hu, H.; and Foerster, J. 2021. Trajectory
+Diversity for Zero-Shot Coordination. In Proceedings of the
+38th International Conference on Machine Learning , 7204–
+7213. PMLR.
+Ma, X.; Yang, Y .; Hu, H.; Yang, J.; Zhang, C.; Zhao, Q.;
+Liang, B.; and Liu, Q. 2022. Offline Reinforcement Learn-
+ing with Value-based Episodic Memory. In International
+Conference on Learning Representations .
+McAleer, S.; Lanier, J. B.; Fox, R.; and Baldi, P. 2020.
+Pipeline psro: A scalable approach for finding approximate
+nash equilibria in large games. Advances in neural informa-
+tion processing systems , 33: 20238–20248.
+McMahan, H. B.; Gordon, G. J.; and Blum, A. 2003. Plan-
+ning in the Presence of Cost Functions Controlled by an Ad-
+versary. In Proceedings of the Twentieth International Con-
+ference on International Conference on Machine Learning ,
+ICML’03, 536–543. AAAI Press. ISBN 1577351894.
+Moritz, P.; Nishihara, R.; Wang, S.; Tumanov, A.; Liaw, R.;
+Liang, E.; Elibol, M.; Yang, Z.; Paul, W.; Jordan, M. I.; and
+Stoica, I. 2018. Ray: A Distributed Framework for Emerging
+AI Applications. arxiv:1712.05889.
+Mouret, J.-B.; and Clune, J. 2015. Illuminating search
+spaces by mapping elites. arXiv preprint arXiv:1504.04909 .
+M¨uller, A. 1997. Integral Probability Metrics and Their Gen-
+erating Classes of Functions. Advances in Applied Probabil-
+ity, 29(2): 429–443.
+Newey, W. K.; and Powell, J. L. 1987. Asymmetric least
+squares estimation and testing. Econometrica: Journal of
+the Econometric Society , 819–847.
+OpenAI. 2018. OpenAI Five.
+Parker-Holder, J.; Pacchiano, A.; Choromanski, K. M.; and
+Roberts, S. J. 2020. Effective diversity in population based
+reinforcement learning. Advances in Neural Information
+Processing Systems , 33: 18050–18062.
+Perez-Nieves, N.; Yang, Y .; Slumbers, O.; Mguni, D. H.;
+Wen, Y .; and Wang, J. 2021. Modelling behavioural diver-
+sity for learning in open-ended games. In International Con-
+ference on Machine Learning , 8514–8524. PMLR.
+Qiu, W.; Wang, X.; Yu, R.; Wang, R.; He, X.; An, B.;
+Obraztsova, S.; and Rabinovich, Z. 2021. RMIX: Learning
+risk-sensitive policies for cooperative reinforcement learn-
+ing agents. Advances in Neural Information Processing Sys-
+tems, 34: 23049–23062.
+Rockafellar, R. T.; Uryasev, S.; et al. 2000. Optimization of
+conditional value-at-risk. Journal of risk , 2: 21–42.
+Rowland, M.; Dadashi, R.; Kumar, S.; Munos, R.; Belle-
+mare, M. G.; and Dabney, W. 2019. Statistics and Samples
+in Distributional Reinforcement Learning. In International
+Conference on Machine Learning , 5528–5536. PMLR.
+Schulman, J.; Moritz, P.; Levine, S.; Jordan, M.; and Abbeel,
+P. 2018. High-Dimensional Continuous Control Using Gen-
+eralized Advantage Estimation. arXiv:1506.02438 [cs] .Shen, R.; Zheng, Y .; Hao, J.; Meng, Z.; Chen, Y .; Fan,
+C.; and Liu, Y . 2020. Generating Behavior-Diverse Game
+AIs with Evolutionary Multi-Objective Deep Reinforcement
+Learning. In Twenty-Ninth International Joint Conference
+on Artificial Intelligence , volume 4, 3371–3377.
+Silver, D.; Huang, A.; Maddison, C. J.; Guez, A.; Sifre, L.;
+Van Den Driessche, G.; Schrittwieser, J.; Antonoglou, I.;
+Panneershelvam, V .; and Lanctot, M. 2016. Mastering the
+Game of Go with Deep Neural Networks and Tree Search.
+nature , 529(7587): 484–489.
+Strouse, D.; McKee, K.; Botvinick, M.; Hughes, E.; and Ev-
+erett, R. 2021. Collaborating with humans without human
+data. Advances in Neural Information Processing Systems ,
+34: 14502–14515.
+Tang, Y . C.; Zhang, J.; and Salakhutdinov, R. 2019. Worst
+cases policy gradients. arXiv preprint arXiv:1911.03618 .
+Tang, Z.; Yu, C.; Chen, B.; Xu, H.; Wang, X.; Fang, F.; Du,
+S. S.; Wang, Y .; and Wu, Y . 2021. Discovering Diverse
+Multi-Agent Strategic Behavior via Reward Randomization.
+InInternational Conference on Learning Representations .
+Tesauro, G.; et al. 1995. Temporal difference learning and
+TD-Gammon. Communications of the ACM , 38(3): 58–68.
+Tversky, A.; and Kahneman, D. 1992. Advances in prospect
+theory: Cumulative representation of uncertainty. Journal of
+Risk and uncertainty , 5: 297–323.
+Van der Maaten, L.; and Hinton, G. 2008. Visualizing data
+using t-SNE. Journal of machine learning research , 9(11).
+Vinyals, O.; Babuschkin, I.; Czarnecki, W. M.; Mathieu, M.;
+Dudzik, A.; Chung, J.; Choi, D. H.; Powell, R.; Ewalds,
+T.; Georgiev, P.; et al. 2019. Grandmaster level in Star-
+Craft II using multi-agent reinforcement learning. Nature ,
+575(7782): 350–354.
+Wu, S.; Yao, J.; Fu, H.; Tian, Y .; Qian, C.; Yang, Y .; FU, Q.;
+and Wei, Y . 2023. Quality-Similar Diversity via Population
+Based Reinforcement Learning. In The Eleventh Interna-
+tional Conference on Learning Representations .
+Yang, Q.; Sim ˜ao, T. D.; Tindemans, S. H.; and Spaan, M. T.
+2021. WCSAC: Worst-case soft actor critic for safety-
+constrained reinforcement learning. In Proceedings of
+the AAAI Conference on Artificial Intelligence , volume 35,
+10639–10646.
+Ying, C.; Zhou, X.; Su, H.; Yan, D.; Chen, N.; and Zhu, J.
+2022. Towards safe reinforcement learning via constraining
+conditional value-at-risk. arXiv preprint arXiv:2206.04436 .
+Yu, C.; Gao, J.; Liu, W.; Xu, B.; Tang, H.; Yang, J.; Wang,
+Y .; and Wu, Y . 2023. Learning Zero-Shot Cooperation with
+Humans, Assuming Humans Are Biased. In The Eleventh
+International Conference on Learning Representations .
+Yu, C.; Velu, A.; Vinitsky, E.; Gao, J.; Wang, Y .; Bayen,
+A.; and Wu, Y . 2022. The Surprising Effectiveness of PPO
+in Cooperative Multi-Agent Games. In Thirty-sixth Con-
+ference on Neural Information Processing Systems Datasets
+and Benchmarks Track .
+Zhao, R.; Song, J.; Yuan, Y .; Haifeng, H.; Gao, Y .; Wu, Y .;
+Sun, Z.; and Wei, Y . 2022. Maximum Entropy Population-
+Based Training for Zero-Shot Human-AI Coordination.
+arxiv:2112.11701.A Missing Proofs
+Our expectile Bellman operator shares similarities with the operator proposed in (Ma et al. 2022), which offers a smooth
+interpolation between the Bellman expectation operator and the optimality operator, ensuring appropriate conservatism in offline
+RL. However, their operator assumes deterministic dynamics, while ours does not, enabling us to use it for risk-sensitive
+learning where the risk arises from stochastic dynamics. The proof of Proposition 1 and 2 shares same ideas with (Ma et al.
+2022).
+A.1 Proof of Proposition 1
+Proposition 1 For any τ∈(0,1),Tπ
+τis aγτ-contraction, where γτ= 1−2α(1−γ) min{τ,1−τ}.
+Proof. We introduce two operators to simplify the proof:
+Tπ
++V(s) =V(s) +EaEs′[δ(s, a, s′)]+, (12)
+Tπ
+−V(s) =V(s) +EaEs′[δ(s, a, s′)]−. (13)
+We first show that the two operators are non-expansion (i.e. ||Tπ
++V1− Tπ
++V2)||∞≤ ||V1−V2||∞). For any V1, V2, we have
+Tπ
++V1(s)− Tπ
++V2(s) =EaEs′[[δ1(s, a, s′)]++V1(s)−([δ2(s, a, s′)]++V2(s))]. (14)
+In terms of ([δ1(s, a, s′)]++V1(s)−([δ2(s, a, s′)]++V2(s)), we can discuss into four cases:
+•δ1≥0, δ2≥0, then [δ1(s, a, s′)]++V1(s)−([δ2(s, a, s′)]++V2(s)) =γ[V1(s′)−V2(s′)].
+•δ1<0, δ2<0, then [δ1(s, a, s′)]++V1(s)−([δ2(s, a, s′)]++V2(s)) =V1(s)−V2(s).
+•δ1≥0, δ2<0, then
+[δ1(s, a, s′)]++V1(s)−([δ2(s, a, s′)]++V2(s))
+= [r(s, a, s′) +γV1(s′)]−V2(s)
+<[r(s, a, s′) +γV1(s′)]−[r(s, a, s′) +γV2(s′)]
+=γ[V1(s′)−V2(s′)],(15)
+where the inequality comes from δ2<0.
+•δ1<0, δ2≥0, then
+[δ1(s, a, s′)]++V1(s)−([δ2(s, a, s′)]++V2(s))
+=V1(s)−[r(s, a, s′) +γV2(s′)]
+≤V1(s)−V2(s),(16)
+where the inequality comes from δ2≥0.
+Therefore, we have Tπ
++V1− Tπ
++V2≤ ||V1−V2||∞. The proof for Tπ
+−is similar. With Tπ
++andTπ
+−, we can rewrite Tπ
+τas:
+Tπ
+τV(s) =V(s) + 2αEaEs′[τ[δ(s, a, s′)]++ (1−τ)[δ(s, a, s′)]−]
+= (1−2α)V(s) + 2ατ(V(s) +EaEs′[δ(s, a, s′)]+) + 2α(1−τ) (V(s) +EaEs′[δ(s, a, s′)]−)
+= (1−2α)V(s) + 2απTπ
++V(s) + 2α(1−τ)Tπ
+−V(s).(17)
+Ifτ= 1/2, we have
+Tπ
+1/2V(s) = (1 −2α)V(s) +α 
+Tπ
++V(s) +Tπ
+−V(s)
+. (18)
+Then, we derive the contraction property of Tπ
+1/2
+Tπ
+1/2V1(s)− Tπ
+1/2V2(s)
+=V1(s) +αEaEs′[δ1(s, a, s′)]−(V2(s) +αEaEs′[δ2(s, a, s′)])
+= (1−α) (V1(s)−V2(s)) +αγEaEs′[V1(s′)−V2(s′)]
+≤(1−α)∥V1−V2∥∞+αγ∥V1−V2∥∞
+= (1−α(1−γ))∥V1−V2∥∞.(19)
+Note that we recover the standard Bellman operator when α= 1. Then, we consider the case of τ <1/2,
+Tπ
+τV1(s)− Tπ
+τV2(s)
+= (1−2α) (V1(s)−V2(s)) + 2 ατ 
+Tπ
++V1(s)− Tπ
++V2(s)
++ 2α(1−τ) 
+Tπ
+−V1(s)− Tπ
+−V2(s)
+= (1−2α−2τ(1−2α)) (V1(s)−V2(s)) + 2 τ
+Tπ
+1/2V1(s)− Tπ
+1/2V2(s)
++ 2α(1−2τ) 
+Tπ
+−V1(s)− Tπ
+−V2(s)
+≤(1−2α−2τ(1−2α))∥V1−V2∥∞+ 2τ(1−α(1−γ))∥V1−V2∥∞+ 2α(1−2τ)∥V1−V2∥∞
+= (1−2ατ(1−γ))∥V1−V2∥∞.(20)Similarly, when τ >1/2, we have Tπ
+τV1(s)− Tπ
+τV2(s)≤(1−2α(1−τ)(1−γ))||V1−V2||∞. Gather them together, we
+haveTπ
+τV1(s)− Tπ
+τV2(s)≤(1−2α(1−γ) min{τ,1−τ})||V1−V2||∞. The proof is completed.
+We further discuss the value of step size α. We want a larger step size in general, but αmust satisfy that V(s) +
+2ατδ(s, a, s′)≤max{r(s, a, s′) +γV(s′), V(s)}andV(s) + 2 α(1−τ)δ(s, a, s′)≥min{r(s, a, s′) +γV(s′), V(s)},
+otherwise the V-value will be overestimated. Therefore, we can derive α≤1
+2 max{τ,1−τ}, and we set α=1
+2 max{τ,1−τ}.
+A.2 Proof of Proposition 2
+Proposition 2 LetV∗
+τdenote the fixed point of Tπ
+τ. For any τ, τ′∈(0,1), ifτ′≥τ, we have V∗
+τ′(s)≥V∗
+τ(s),∀s∈S.
+Proof. Based on equation 17, we have
+Tπ
+τ′V(s)− Tπ
+τV(s)
+=(1−2α)V(s) + 2ατ′Tπ
++V(s) + 2α(1−τ′)Tπ
+−V(s)− 
+(1−2α)V(s) + 2ατTπ
++V(s) + 2α(1−τ)Tπ
+−V(s)
+=2α(τ′−τ) 
+Tπ
++V(s)− Tπ
+−V(s)
+=2α(τ′−τ)Ea,s′[[δ(s, a, s′)]+−[δ(s, a, s′)]−]≥0,(21)
+which means Tµ
+τ′≥ Tµ
+τifτ′≥τ. Then we have Tπ
+τ′V∗
+τ≥ Tπ
+τV∗
+τ. Since V∗
+τis the fixed point of Tπ
+τ, we have Tπ
+τV∗
+τ=V∗
+τ.
+Thus, we obtain V∗
+τ=Tπ
+τV∗
+τ≤ Tπ
+τ′V∗
+τ. Repeatedly applying Tπ
+τ′and using its monotonicity, we have V∗
+τ≤ Tπ
+τ′V∗
+τ≤
+(Tπ
+τ′)∞V∗
+τ=V∗
+τ′.
+A.3 Proof of Proposition 3
+Proposition 3 LetV∗
+τ,V∗
+best, andV∗
+worst respectively denote the fixed point of expectile Bellman operator, best-case Bellman
+operator and worst-case Bellman operator. We have
+V∗
+τ=V∗
+worst ifτ→0
+V∗
+best ifτ→1.(22)
+Proof. We give the proof of τ→0, the case of τ→1is similar. We first show that V∗
+worst is also a fixed point of Tπ
+−. Based on
+the definition of Tworst , we have V∗
+worst = min a,s′[R(s, a, s′) +γV∗
+worst(s′)], which infers that δ(s, a, s′)≥0,∀s∈ S, a∈A.
+Therefore, we have Tπ
+−V∗
+worst(s) =V∗
+worst(s) +Ea∼π[δ(s, a, s′)]−=V∗
+worst(s). By setting τ→0, we eliminate the item of
+Tπ
++. Further, we use the the contractive property of Tπ
+τto obtain the uniqueness of V∗
+τ.
+A.4 Proof of Proposition 4
+Proposition 4 For any τ∈(0,1),Tπ
+τ,λis aγτ,λ-contraction, where γτ,λ=(1−λ)γτ
+1−λγτ.
+Proof. We first show that for h∈N,(Tπ
+τ)nis aγn
+τ-contraction. For any V1, V2, we have
+(Tπ
+τ)nV1(s)−(Tπ
+τ)nV2(s)
+=Tπ
+τ((Tπ
+τ)n−1V1)(s)− Tπ
+τ((Tπ
+τ)n−1V2)(s)
+≤γτ∥(Tπ
+τ)n−1V1−(Tπ
+τ)n−1V2∥∞
+≤γn
+τ∥V1−V2∥∞.(23)
+Then, we have
+Tπ
+τ,λV1(s)− Tπ
+τ,λV2(s)
+= (1−λ)∞X
+n=1λn−1(Tπ
+τ)nV1(s)−(1−λ)∞X
+n=1λn−1(Tπ
+τ)nV2(s)
+≤(1−λ)∞X
+n=1λn−1γn
+τ∥V1−V2∥∞
+≤(1−λ)γτ
+1−λγτ∥V1−V2∥∞.(24)A.5 Proof of Proposition 5
+Proposition 5 LetV∗
+τ,λdenote the fixed point of Tπ
+τ,λ. For any τ, τ′∈(0,1), ifτ′≥τ, we have V∗
+τ′,λ(s)≥V∗
+τ,λ(s),∀s∈S.
+Proof. Based on Proposition 2, we have Tπ
+τ′≥ Tπ
+τ, by recursively applying this, we have:
+Tπ
+τ′,λV(s)− Tπ
+τ,λV(s)
+= (1−λ)∞X
+n=1λn−1[(Tπ
+τ′)nV(s)−(Tπ
+τ)nV(s)]
+= (1−λ)∞X
+n=1λn−1h
+Tπ
+τ′(Tπ
+τ′)n−1V(s)−(Tπ
+τ)nV(s)i
+⩾(1−λ)∞X
+n=1λn−1h
+Tπ
+τ(Tπ
+τ′)n−1V(s)−(Tπ
+τ)nV(s)i
+⩾(1−λ)∞X
+n=1λn−1h
+(Tπ
+τ)2(Tπ
+τ′)n−2V(s)−(Tπ
+τ)nV(s)i
+...
+⩾(1−λ)∞X
+n=1λn−1[(Tπ
+τ)nV(s)−(Tπ
+τ)nV(s)]
+= 0,(25)
+which means Tπ
+τ′,λV(s)≥ Tπ
+τ,λV(s)ifτ′≥τ. Then, we have Tπ
+τ′,λV∗
+τ,λ≥ Tπ
+τ,λV∗
+τ,λ. Since V∗
+τ,λis the fixed point of Tπ
+τ,λ, we
+haveTπ
+τ,λV∗
+τ,λ=V∗
+τ,λ. Thus, we obtain V∗
+τ,λ=Tπ
+τ,λV∗
+τ,λ≤ Tπ
+τ′,λV∗
+τ,λ. Repeatedly applying Tπ
+τ′,λand using its monotonicity,
+we have V∗
+τ,λ≤ Tπ
+τ′,λV∗
+τ,λ≤
+Tπ
+τ′,λ∞
+V∗
+τ,λ=V∗
+τ′,λ.
+A.6 Proof of Proposition 6
+Proposition 6 LetV∗
+τ,λas the fixed point of Tπ
+τ,λ, we have
+lim
+τV∗
+τ,λ=V∗
+worst ifτ→0
+V∗
+best ifτ→1. (26)
+Proof. LetV∗
+τdenote the fixed point of of Tπ
+τ. As for Tπ
+τ,λ, we have:
+V∗
+τ,λ= (1−λ)∞X
+n=1λn−1(Tπ
+τ)nV∗
+τ(s)
+= (1−λ)∞X
+n=1λn−1V∗
+τ(s)
+=V∗
+τ(s)(27)
+Proof is completed by making use of Proposition 3.
+B Multi-step Expectile Bellman Operator
+We first demonstrate the relationship between the standard multi-step Bellman operator and GAE, and then explain why GAE
+cannot be directly applied to the multi-step expectile Bellman operator. Finally, we show how to compute the multi-step expec-
+tile Bellman operator in practice.
+A sample form standard Bellman operator is defined as follows:
+ˆTπV(st) =rt+γV(st+1). (28)
+The two-step Bellman operator can be derived as:
+(ˆTπ)2V(st) =rt+γˆTπV(st+1) =rt+γrt+1+γ2V(st+2). (29)And so on, we can derive the general formula of n-step Bellman operator:
+(ˆTπ)nV(st) =n−1X
+l=0γlrt+l+γnV(st+n). (30)
+As the standard multi-step Bellman operator is an exponentially weighted sum of one-step to ∞-step, we can derive its relation
+to GAE:
+ˆTπ
+λV(st) = (1 −λ)∞X
+n=1λn−1
+ˆTπn
+V(st)
+= (1−λ)∞X
+n=1λn−1 n−1X
+l=0γlrt+l+γnV(st+n)!
+=∞X
+n=1n−1X
+l=0(1−λ)λn−1γlrt+1+∞X
+n=1(1−λ)λn−1γnV(st+n)
+=∞X
+l=0∞X
+n=l+1(1−λ)λn−1γlrt+l+∞X
+l=0(1−λ)λlγl+1(st+l+1)
+=∞X
+l=0(λγ)l∞X
+n=t+1(1−λ)λn−l−1rt+l+∞X
+l=0(λγ)lγV(st+l+1)−∞X
+l=0(λr)l+1V(st+l+1)
+=∞X
+l=0(λγ)l[rt+l+γV(st+l+1)]−∞X
+l=0(λγ)l+1V(st+l+1)
+=∞X
+l=0(λr)l[rt+l+γV(st+l+1)]−∞X
+l=0(λγ)lV(st+l) +V(st)
+=∞X
+l=0(λr)l[rt+1+γV(st+l+1)−V(st+l)] +V(st)
+=∞X
+l=0(λr)lδV
+t+l+V(st).(31)
+This establishes that standard multi-step Bellman operator is equivalent to GAE plus the value function itself, which makes it
+easy for us to compute in practice.
+However, when it comes to the multi-step Bellman expectile operator, this relationship no longer holds. Taking two-step
+operator for example, we can only derive to this point:
+
+ˆTπ
+τ2
+V(st) =ˆTπ
+τ 
+V(st) + 2α
+τ[rt+γV(st+1)−V(st)]++ (1−τ) [rt+γV(st+1)−V(st)]−
+(32)
+Due to the nonlinear operations [·]+and[·]−, it is no longer possible to derive the general formula of the n-step operator, and
+only the recurrence relation between the n-step operator and the (n-1)-step operator can be determined.
+Therefore, in practice, we need to maintain a table, as shown in Tab. 3, to record the operator value for each step. The nonzero
+values of the table form a triangle because of the terminated state. Let dtdenotes the time length between stand the terminated
+state, after normalizing the exponential coefficients to sum to one, we can derive the value of multi-step operator:
+ˆTπ
+τ,λV(st) =1−λ
+1−λdtdtX
+h=1λh−1(ˆTπ
+τ,λ)hV(st). (33)
+The disadvantage of keeping such a table is that it increases storage and computation complexity. However, as λnapproaches
+0 for a large n, we can alleviate this problem by restricting the amount of rows nin the table, i.e. n= min {50, Tmax}, where
+Tmaxdenotes the maximum possible length of an episode. Empirically, training a RPPO agent takes 10 hours with the task
+of training 1e8 steps via self-play in Sumoants, while training a PPO agent requires 7 hours. We believe that this level of
+computational complexity is acceptable.Coefficient s0 s1 s2 . . . sT−3 sT−2 sT−1 sT
+1 ˆTπ
+τV(s0) ˆTπ
+τV(s1) ˆTπ
+τV(s2)... ˆTπ
+τV(sT−3) ˆTπ
+τV(sT−2) ˆTπ
+τV(sT−1)
+λ (ˆTπ
+τ)2V(s0) (ˆTπ
+τ)2V(s1) (ˆTπ
+τ)2V(s2)...(ˆTπ
+τ)2V(sT−3)(ˆTπ
+τ)2V(sT−2) 0
+λ2(ˆTπ
+τ)3V(s0) (ˆTπ
+τ)3V(s1) (ˆTπ
+τ)3V(s2)...(ˆTπ
+τ)3V(sT−3) 0 0
+........................
+........................
+λT−3 (ˆTπ
+τ)T−2V(s0)(ˆTπ
+τ)TV(s1)(ˆTπ
+τ)T−2V(s2)... 0 0 0
+λT−2(ˆTπ
+τ)T−1V(s0)(ˆTπ
+τ)T−1V(s1) 0... 0 0 0
+λT−1(ˆTπ
+τ)TV(s0) 0 0... 0 0 0
+Exponential sum ˆTπ
+τ,λV(s0) ˆTπ
+τ,λV(s1) ˆTπ
+τ,λV(s2)... ˆTπ
+τ,λV(sT−3) ˆTπ
+τ,λV(sT−2) ˆTπ
+τ,λV(sT−1)
+Table 3: The table that needs to be kept for computing the multi-step Expectile Bellman operator ˆTπ
+τ,λin practice. Assuming
+we have collected one episode data, and sTis the terminated state.
+C Environment Setup
+Slimevolley Slimevolley (Ha 2020) is a two-agent competitive volleyball game where the action space is discrete. The goal
+of each agent is to land the ball on the opponent’s field, causing the opponent to lose one life. When the opponent loses a life,
+the agent gains +1 bonus. If the agent loses a life, -1 penalty will be given. Each agent starts with five lives, and the game ends
+when any agent loses all the five lives or after 3000 time steps. As the game ends, the agent with more lives wins.
+SumoAnts SumoAnts (Al-Shedivat et al. 2018) is a two-agent competitive game based on MuJoCo where the action space
+is continuous. Two agents (ants) compete in a square area, aiming to knock the other agent to the ground or push it out of the
+ring. The winner receives +2000 reward, and the loser gets -2000 reward. If there is a draw, both agents gets -1000 reward. In
+addition, there are also dense exploration rewards, which is used to promote training. We remain consistent with the original
+paper.
+D Implementation Details
+We provide a single file implementation of RPPO and a lightweight, scalable implementation of RPBT based on Ray (Moritz
+et al. 2018), which refers to CleanRL (Huang et al. 2022) and MAPPO (Yu et al. 2022) respectively.
+D.1 Toy Example
+The experiment of toy example based on our single file implementation of RPPO. The network of RPPO agents consists of 2
+linear layers with 128 units and a logit layer with four actions(4 possible walking directions). The discount factor γis set to
+0.95, and λfor computing advantages is 0.95. The inputs to the network are the one-hot encoding of the number of grids. Each
+agent was trained for 1000K steps with a batch size of 200, using Adam optimizer with learning rate 1e-4.
+D.2 Slimevolley & Sumoants
+We use PPO with policy and value networks as the algorithm backbone of RPPO in all experiments. Both policy and value
+networks consist of a multi-layer perceptrons (MLP) with 2 linear layers, a GRU layer with same hidden size of 128. As the
+action space for Slimevolley is discrete, and for Sumoants is continuous. We use Categorical logits for Slimevolley and Gaussian
+logits for Sumoants. Specially for Gaussian logits, the mean of Gaussian policy is the output of the networks and the entries
+of a diagonal covariance matrix are also as trainable parameters. The policy outputs are clipped to lie within the control range.
+The PPO hyperparameters we use for each experiment is shown in Tab.4.
+For all the experiments, we use population size 5 for RPBT and set the initial risk level hyperparameter τas
+{0.1,0.4,0.5,0.6,0.9}. We use ELO score to measure the performance of the player in the population. An agent is under-
+performing when the difference of ELO between it and a well-performing agent is greater than a certain threshold (250 for
+Sumoants, 500 for Slimevolley). We set ELO update interval to one training round. Let A, B denote the two players respec-
+tively. We start from the perspective of player A, the update process of ELO is divided into three steps:
+• Before the match, compute the expected score of A:
+EA=1
+1 + 10(RB−RA)/400, (34)
+where EAis the expected score, RA,RBrefers to current ELO of A and B respectively,Hyperparamters Slimevolley Sumoants
+Total training steps 1e8 1e8
+Hidden size 128 128
+Learning rate 3e-4 3e-4
+Batch size 96000 96000
+Minibatch size 24000 24000
+Optimizer Adam Adam
+Learning rate 3e-4 3e-4
+Discount factor γ 0.995 0.995
+Total training steps 1e8 1e8
+GRU horizontal length 8 8
+PPO update epochs 4 4
+PPO clipping parameter 0.2 0.2
+Bonus entropy coefficient 0.01 0.01
+Table 4: Hyperparameter sheet of PPO
+• After the match, computed the actual score SA: Generally Win=1, Lose=0, Tie=0.5.
+• Update ELO
+RA←RA+K(SA−EA), (35)
+where Kcan be considered as the learning rate.
+We set the initial ELO score to 1000, and use K= 32 for all the experiments.
+D.3 Baselines
+All baseline methods are integrated with PPO and utilize the same hyperparameters as presented in Tab.4. More over, all
+baselines except SP and PSRO set the population size to 5.
+SP Agents trained by self-play, there is no population.
+PP Agents trained by population-based self-play, each agent has a different random seed.
+DvD DvD (Parker-Holder et al. 2020) utilizes the determinant of the kernel matrix of action embedding as an auxiliary loss.
+We use RPBF kernel matrix and embedding mini-batch size 512. The coefficient of DvD loss is set to 0.01 after searching in
+{0.01, 0.1, 0.5 }.
+TrajeDi TrajeDi (Lupu et al. 2021) utilizes the approximate Jensen-Shannon divergence with action discounting kernel as an
+auxiliary loss. We set the coefficient of trajectory diversity loss to 0.1 and action discount factor to 0.5.
+MEP MEP (Zhao et al. 2022) maximizes a lower bound of the average KL divergence and then assigns each agent an auxiliary
+reward to achieve diversity. The auxiliary reward form in each time step tis˜r=r(st, at)−αlog (¯π(at|st)), where ¯π(at|st)
+refers to the mean of the probability over agents. Our αset to{0.1,0.01,0.001,0.0001,0.00001}in the population.
+RR RR shares similar ideas with reward randomization (Tang et al. 2021). The intuition behind our reward randomization is
+that the reward consists of a bonus and a penalty. Typically, the absolute value of the bonus and penalty is equal. However, if
+we set the bonus higher and the penalty lower, The trained agent will be more risk-seeking and vice versa. Let parameter βto
+control the reward-shaping, the bonus is BONUS ∗β, the penalty is PENALTY /β. Our βset to{0.25,0.5,1.0,2.0,4.0}in the
+population.
+PSRO PSRO involves calculating the payoff matrix among all policies in the policy pool, then determining the Nash equilib-
+rium of this matrix for opponent sampling. Next, PPO is used to update the policy, and the updated policy is added to the policy
+pool. We use fictitious play with 1000 iterations to approximate the Nash equilibrium.
+E Additional Results
+E.1 Win-rates matrix among different risk preferences
+We trained 9 RPPO agents via self-play, using τ∈ {0.1,0.2, ...0.9}respectively, and the opponents were uniformly sampled
+from the agent’s historical versions. The larger τmeans the more risk-seeking the agent. We pit the 9 agents against each other
+and compute the expected win-rate over 200 rollouts for each play. The results for both Slimevolley and SumoAnts are shown
+in the Fig.6./uni00000013/uni00000011/uni00000014 /uni00000013/uni00000011/uni00000015 /uni00000013/uni00000011/uni00000016 /uni00000013/uni00000011/uni00000017 /uni00000013/uni00000011/uni00000018 /uni00000013/uni00000011/uni00000019 /uni00000013/uni00000011/uni0000001a /uni00000013/uni00000011/uni0000001b /uni00000013/uni00000011/uni0000001c
+/uni00000052/uni00000053/uni00000053/uni00000052/uni00000051/uni00000048/uni00000051/uni00000057/uni00000013/uni00000011/uni00000014 /uni00000013/uni00000011/uni00000015 /uni00000013/uni00000011/uni00000016 /uni00000013/uni00000011/uni00000017 /uni00000013/uni00000011/uni00000018 /uni00000013/uni00000011/uni00000019 /uni00000013/uni00000011/uni0000001a /uni00000013/uni00000011/uni0000001b /uni00000013/uni00000011/uni0000001c/uni00000044/uni0000004a/uni00000048/uni00000051/uni00000057/uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000017/uni00000016 /uni00000013/uni00000011/uni00000017/uni00000017 /uni00000013/uni00000011/uni00000018/uni00000014 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000017/uni00000014 /uni00000013/uni00000011/uni00000018/uni0000001a
+/uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000015/uni00000019 /uni00000013/uni00000011/uni00000013/uni00000016 /uni00000013/uni00000011/uni00000015/uni0000001c /uni00000013/uni00000011/uni00000017/uni0000001b /uni00000013/uni00000011/uni00000014/uni0000001b /uni00000013/uni00000011/uni00000016/uni00000015 /uni00000013/uni00000011/uni00000017/uni00000017
+/uni00000013/uni00000011/uni00000018/uni0000001a /uni00000013/uni00000011/uni0000001a/uni00000017 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000017/uni0000001b /uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000019 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni0000001a /uni00000013/uni00000011/uni00000019/uni0000001b
+/uni00000013/uni00000011/uni00000018/uni00000019 /uni00000013/uni00000011/uni0000001c/uni0000001a /uni00000013/uni00000011/uni00000018/uni00000015 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000017/uni0000001b /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni0000001a/uni00000019
+/uni00000013/uni00000011/uni00000017/uni0000001c /uni00000013/uni00000011/uni0000001a/uni00000014 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000015 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000019/uni00000014 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000019/uni00000019 /uni00000013/uni00000011/uni0000001a/uni0000001a
+/uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000015 /uni00000013/uni00000011/uni00000017/uni00000017 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000016/uni0000001c /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000017/uni00000015 /uni00000013/uni00000011/uni00000017/uni00000017 /uni00000013/uni00000011/uni00000019/uni00000019
+/uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni0000001b/uni00000015 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni0000001b /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000015/uni0000001c /uni00000013/uni00000011/uni00000019/uni00000019
+/uni00000013/uni00000011/uni00000018/uni0000001c /uni00000013/uni00000011/uni00000019/uni0000001b /uni00000013/uni00000011/uni00000017/uni00000016 /uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000016/uni00000017 /uni00000013/uni00000011/uni00000018/uni00000019 /uni00000013/uni00000011/uni0000001a/uni00000014 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni0000001b/uni00000017
+/uni00000013/uni00000011/uni00000017/uni00000016 /uni00000013/uni00000011/uni00000018/uni00000019 /uni00000013/uni00000011/uni00000016/uni00000015 /uni00000013/uni00000011/uni00000015/uni00000017 /uni00000013/uni00000011/uni00000015/uni00000016 /uni00000013/uni00000011/uni00000016/uni00000017 /uni00000013/uni00000011/uni00000016/uni00000017 /uni00000013/uni00000011/uni00000014/uni00000019 /uni00000013/uni00000011/uni00000018/uni00000013
+/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000015/uni00000013/uni00000011/uni00000017/uni00000013/uni00000011/uni00000019/uni00000013/uni00000011/uni0000001b/uni00000014/uni00000011/uni00000013
+(a)
+/uni00000013/uni00000011/uni00000014 /uni00000013/uni00000011/uni00000015 /uni00000013/uni00000011/uni00000016 /uni00000013/uni00000011/uni00000017 /uni00000013/uni00000011/uni00000018 /uni00000013/uni00000011/uni00000019 /uni00000013/uni00000011/uni0000001a /uni00000013/uni00000011/uni0000001b /uni00000013/uni00000011/uni0000001c
+/uni00000052/uni00000053/uni00000053/uni00000052/uni00000051/uni00000048/uni00000051/uni00000057/uni00000013/uni00000011/uni00000014 /uni00000013/uni00000011/uni00000015 /uni00000013/uni00000011/uni00000016 /uni00000013/uni00000011/uni00000017 /uni00000013/uni00000011/uni00000018 /uni00000013/uni00000011/uni00000019 /uni00000013/uni00000011/uni0000001a /uni00000013/uni00000011/uni0000001b /uni00000013/uni00000011/uni0000001c/uni00000044/uni0000004a/uni00000048/uni00000051/uni00000057/uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000015 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni00000019/uni00000017 /uni00000013/uni00000011/uni00000019/uni00000017 /uni00000013/uni00000011/uni00000019/uni0000001a /uni00000013/uni00000011/uni00000019/uni00000019 /uni00000013/uni00000011/uni0000001a/uni0000001b /uni00000013/uni00000011/uni0000001c/uni00000016
+/uni00000013/uni00000011/uni00000017/uni0000001b /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni0000001a /uni00000013/uni00000011/uni00000019/uni00000015 /uni00000013/uni00000011/uni00000018/uni0000001c /uni00000013/uni00000011/uni00000018/uni0000001c /uni00000013/uni00000011/uni0000001a/uni0000001b /uni00000013/uni00000011/uni0000001b/uni0000001b
+/uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni00000019/uni00000013 /uni00000013/uni00000011/uni00000019/uni00000015 /uni00000013/uni00000011/uni00000019/uni00000019 /uni00000013/uni00000011/uni0000001b/uni00000013 /uni00000013/uni00000011/uni0000001b/uni0000001a
+/uni00000013/uni00000011/uni00000016/uni00000019 /uni00000013/uni00000011/uni00000017/uni00000016 /uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000017 /uni00000013/uni00000011/uni0000001a/uni00000018 /uni00000013/uni00000011/uni0000001b/uni00000015
+/uni00000013/uni00000011/uni00000016/uni00000019 /uni00000013/uni00000011/uni00000016/uni0000001b /uni00000013/uni00000011/uni00000017/uni00000013 /uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000019/uni00000014 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000019/uni0000001c /uni00000013/uni00000011/uni0000001b/uni00000014
+/uni00000013/uni00000011/uni00000016/uni00000016 /uni00000013/uni00000011/uni00000017/uni00000014 /uni00000013/uni00000011/uni00000016/uni0000001b /uni00000013/uni00000011/uni00000017/uni00000018 /uni00000013/uni00000011/uni00000016/uni0000001c /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000017/uni00000019 /uni00000013/uni00000011/uni00000019/uni00000016 /uni00000013/uni00000011/uni0000001a/uni00000019
+/uni00000013/uni00000011/uni00000016/uni00000017 /uni00000013/uni00000011/uni00000017/uni00000014 /uni00000013/uni00000011/uni00000016/uni00000017 /uni00000013/uni00000011/uni00000017/uni00000019 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000018/uni00000017 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000019/uni00000018 /uni00000013/uni00000011/uni0000001b/uni00000017
+/uni00000013/uni00000011/uni00000015/uni00000015 /uni00000013/uni00000011/uni00000015/uni00000015 /uni00000013/uni00000011/uni00000015/uni00000013 /uni00000013/uni00000011/uni00000015/uni00000018 /uni00000013/uni00000011/uni00000016/uni00000014 /uni00000013/uni00000011/uni00000016/uni0000001a /uni00000013/uni00000011/uni00000016/uni00000018 /uni00000013/uni00000011/uni00000018/uni00000013 /uni00000013/uni00000011/uni00000019/uni00000017
+/uni00000013/uni00000011/uni00000013/uni0000001a /uni00000013/uni00000011/uni00000014/uni00000015 /uni00000013/uni00000011/uni00000014/uni00000016 /uni00000013/uni00000011/uni00000014/uni0000001b /uni00000013/uni00000011/uni00000014/uni0000001c /uni00000013/uni00000011/uni00000015/uni00000017 /uni00000013/uni00000011/uni00000014/uni00000019 /uni00000013/uni00000011/uni00000016/uni00000019 /uni00000013/uni00000011/uni00000018/uni00000013
+/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000015/uni00000013/uni00000011/uni00000017/uni00000013/uni00000011/uni00000019/uni00000013/uni00000011/uni0000001b/uni00000014/uni00000011/uni00000013
+ (b)
+Figure 6: (a) Win-rates matrix among RPPO agents with different risk levels from row players perspective in Slimevolley. A
+cycle exists among τ= 0.2,0.4,0.6, where τ= 0.4completely outperforms τ= 0.2, butτ= 0.2can make a tie with τ= 0.6
+andτ= 0.6can make a tie with τ= 0.4. (b) Win-rates matrix among RPPO agents with different risk levels from row players
+perspective in Sumoants. Risk-averse agents outperform risk-seeking agents.
+The results for Slimevolley reveal that there is not a consistent winner. Some cycles exist, for example, the win-lose relation-
+ship among τ= 0.2,0.4,0.6. Specifically, Agent τ= 0.4against agent τ= 0.2achieved an amazing win-rate of 0.97, which
+has not occurred in any other plays of τ= 0.4. That means τ= 0.2 get stuck into a local optimum, where τ= 0.4finds its
+weakness and completely restrains it. However, τ= 0.2is not weak, it can make a tie with τ= 0.6, And τ= 0.6is not inferior
+to the τ= 0.4. The existing circles demonstrate the ability of our RPPO method to learn diverse policies in self-play.
+As for SumoAnts, we observe a distinct separation if we choose the diagonal as the boundary. It means τ <0.5outperforms
+the policy generated by τ > 0.5. In addition, agent performance grows monotonically as τdecreases, implying that more
+risk-averse agent will perform better in this game. The diverse performance of different risk levels reflects the ability of RPPO
+to learn diversity.
+E.2 Ablations
+(a) Slimevolley
+Play APlay BRPBT RPBT static RPPO 0.1RPPO 0.2RPPO 0.3RPPO 0.4RPPO 0.5RPPO 0.6RPPO 0.7RPPO 0.8RPPO 0.9
+RPBT - 53% 53% 63% 60% 68% 59% 89% 70% 96% 96%
+RPBT static 47% - 78% 92% 75% 67% 78% 91% 67% 36% 99%
+(b) Sumoants
+Player APlayer BRPBT RPBT static RPPO 0.1RPPO 0.2RPPO 0.3RPPO 0.4RPPO 0.5RPPO 0.6RPPO 0.7RPPO 0.8RPPO 0.9
+RPBT - 49% 50% 51% 56% 58% 73% 75% 82% 72% 97%
+RPBT static 51% - 49% 50% 58% 58% 69% 79% 72% 78% 96%
+Table 5: Ablation study on risk levels. RPBT with auto-tuning risk levels performs more robust.
+To further study how the auto-tuning risk level takes effect, we compare RPBT with RPBT static , which freezes the risk level
+of each agent throughout the training, and with RPPO τ, which uses a fixed risk level ranging from 0.1 to 0.9. Tab. 5 shows
+the results of matching different agents playing against each other. In Slimevolley, we observe that RPBT outperforms all
+opponents, while RPBT static is defeated by RPPO 0.8. This indicates that auto-tuning risk levels can promote the robustness of
+agents, while static risk levels might lead to suboptimal performance. In Sumoants, RPBT performs comparably to RPBT static .
+This is due to the fact that Sumoants has fewer strategy cycles, auto-tuning risk levels can only brings little improvement.
+Moreover, we illustrate how risk levels adapt throughout the RPBT training process, shown in Fig.7. We observe that RPBT
+explores a wide range of risk levels in the early stage of training, allowing for diverse strategies to emerge. In the late stage of
+training, RPBT converges to a stable interval of risk levels (0.3, 0.7) for Slimevolley and (0.2, 0,4) for Sumoants), maintaining(a) Slimevolley
+ (b) Sumoants
+Figure 7: The dynamics of risk level τthroughout the RPBT training.
+diversity while avoiding extreme values that might harm performance. This indicates that RPBT can effectively balance the
+exploration and exploitation of risk levels in the training.

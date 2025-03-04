@@ -1,0 +1,1116 @@
+Less Can Be More: Unsupervised Graph Pruning for Large-scale
+Dynamic Graphs
+Jintang Li∗
+Sun Yat-sen University
+lijt55@mail2.sysu.edu.cnSheng Tian∗
+Ant Group
+tiansheng.ts@antgroup.comRuofan Wu
+Ant Group
+ruofan.wrf@antgroup.com
+Liang Zhu
+Ant Group
+tailiang.zl@antgroup.comWenlong Zhao
+Ant Group
+chicheng.zwl@antgroup.comChanghua Meng
+Ant Group
+changhua.mch@antgroup.com
+Liang Chen
+Sun Yat-sen University
+chenliang6@mail.sysu.edu.cnZibin Zheng
+Sun Yat-sen University
+zhzibin@mail.sysu.edu.cnHongzhi Yin
+The University of Queensland
+db.hongzhi@gmail.com
+ABSTRACT
+The prevalence of large-scale graphs poses great challenges in
+time and storage for training and deploying graph neural networks
+(GNNs). Several recent works have explored solutions for pruning
+the large original graph into a small and highly-informative one,
+such that training and inference on the pruned and large graphs
+have comparable performance. Although empirically effective, cur-
+rent researches focus on static or non-temporal graphs, which are
+not directly applicable to dynamic scenarios. In addition, they re-
+quire labels as ground truth to learn the informative structure,
+limiting their applicability to new problem domains where labels
+are hard to obtain. To solve the dilemma, we propose and study
+the problem of unsupervised graph pruning on dynamic graphs. We
+approach the problem by our proposed STEP, a self-supervised
+temporal pruning framework that learns to remove potentially re-
+dundant edges from input dynamic graphs. From a technical and
+industrial viewpoint, our method overcomes the trade-offs between
+the performance and the time & memory overheads. Our results on
+three real-world datasets demonstrate the advantages on improving
+the efficacy, robustness, and efficiency of GNNs on dynamic node
+classification tasks. Most notably, STEP is able to prune more than
+50% of edges on a million-scale industrial graph Alipay (7M nodes,
+21M edges) while approximating up to 98% of the original perfor-
+mance. Code is available at https://github.com/EdisonLeeeee/STEP.
+CCS CONCEPTS
+•Computer systems organization →Embedded systems ;Re-
+dundancy ; Robotics; •Networks→Network reliability.
+∗Both authors contributed equally to this research.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+©2018 Association for Computing Machinery.
+ACM ISBN 978-1-4503-XXXX-X/18/06. . . $15.00
+https://doi.org/XXXXXXX.XXXXXXXKEYWORDS
+dynamic graph representation learning, unsupervised graph prun-
+ing, graph self-supervised learning
+ACM Reference Format:
+Jintang Li, Sheng Tian, Ruofan Wu, Liang Zhu, Wenlong Zhao, Changhua
+Meng, Liang Chen, Zibin Zheng, and Hongzhi Yin. 2018. Less Can Be More:
+Unsupervised Graph Pruning for Large-scale Dynamic Graphs. In Proceed-
+ings of Make sure to enter the correct conference title from your rights confir-
+mation emai (Conference acronym ’XX). ACM, New York, NY, USA, 12 pages.
+https://doi.org/XXXXXXX.XXXXXXX
+1 INTRODUCTION
+Graphs are fundamental data structures that represent pairwise
+relationships between entities in various scientific and commercial
+fields [ 4,12]. As a generalization of deep neural networks, graph
+neural networks (GNNs) have emerged as demonstrably powerful
+models for learning on graph-structured data. The past few years
+have witnessed the success of GNNs in a variety of graph-based
+applications, such as recommender systems [ 6,30], biomedical
+discovery [5], and social network analysis [19].
+Despite the progress, building and deploying GNNs to handle
+real-world graph data poses several fundamental challenges. The
+first and most prominent challenge is to scale GNNs to deal with
+large-scale graphs since canonical message passing in GNNs per-
+formed over the whole graph would lead to expensive computation
+and memory costs. However, industry problems of real-world in-
+terest often involve giant graphs with billions of nodes and tens of
+billions of edges. For example, the financial graph in Alipay1has
+enormous transfer transactions carried out between users, in which
+billions of cases of embezzlement, fraud, money laundering, and
+gambling occur dynamically every day. Their massive size requires
+heavy floating point operations and large memory footprints, mak-
+ing them infeasible to be stored in the memory of a single machine
+and posing challenges to deploying GNNs on cheap devices.
+In literature, considerable research efforts have been devoted to
+improving the scalability and efficiency of GNNs in dealing with
+large-scale graphs [ 33,36,38]. As the main drawback that makes
+GNNs suffer from scalability issues is the need to operate on the
+1https://global.alipay.com/platform/site/ihomearXiv:2305.10673v1  [cs.LG]  18 May 2023Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Li and Tian, et al.
+Graph 
+Subsampling
+(2-hop)Graph
+Pruning
+Memory 
+Usage≈300GB/Graph ≈30MB/Subgraph≈10MB /Subgraph
+Class 1
+Class 2Class 3
+Class 4… …AUC 92%AUC 91% AUC 92%
+≈10,000s/Graph ≈1s/Subgraph ≈0.1s/ SubgraphInference
+Time
+Root node
+Figure 1: An illustrative example on graph subsampling
+and graph pruning. For each training node (dashed circle),
+graph subsampling samples a fixed-size set of neighbors
+as the computation graph, while graph pruning further re-
+moves redundant edges to improve inference and storage
+efficiency without significantly sacrificing the downstream
+performance.
+entire graph, one practical approach is to sample smaller subgraphs
+and fed them to GNNs via mini-batched manner, also known as
+graph subsampling . One prominent example is PinSAGE [ 30], a web-
+scale recommender system based on GNN architectures, which is
+successfully applied to Pinterest data with billions of nodes and
+tens of billions of edges. However, there still exist some limita-
+tions for graph subsampling. First, it mainly solves the scalability
+problem during training, but additionally leads to more memory
+overheads for offline storage of the sampled subgraphs. Second, sub-
+sampling can make some nodes appear multiple times, which would
+potentially introduce a lot of redundant information (or even bias)
+covering the sampled subgraphs. Third, a “clean” structure of the
+sampled subgraph is not guaranteed in most cases. If task-irrelevant
+information (e.g., noise [ 3,15] or adversarial perturbations [ 1,2])
+is mixed into nodes’ neighborhood, it may also “dilute” the truly
+useful signals from a small set of close neighbors.
+One way to rectify the aforementioned issues is graph prun-
+ing [14,20,37], a new yet promising technology that has paved the
+way to meet the challenges of reliable graph learning at scale. By
+properly removing redundant or even noisy edges from the input
+graphs, graph pruning can not only boost the performance of graph
+algorithms (e.g., GNNs), but also facilitate storage, training, and in-
+ference efficiency for graph-based analysis tasks. In addition, graph
+pruning can also work with graph subsampling to further address
+its limitations. We provide sketched plots for visual illustration in
+Figure 1. Graph pruning is critical for large-scale graph applica-
+tions. However, current approaches suffer from two fundamental
+challenges when dealing with industrial problems.
+(i) Tackling dynamic graphs. Real-life industrial applications
+often involve graphs that are inherently dynamic, with changes
+in the existence of nodes and edges over time. While temporal
+changes (dynamics) play an essential role in capturing evolutionary
+patterns of topology structures, most of the research in the field isTable 1: Comparison of STEP and other pruning methods.
+Method Dynamic Unsupervised Graph-less Learnable
+DropEdge [20] ✗ ✓ ✓ ✗
+NeuralSparse [37] ✗ ✗ ✗ ✓
+PGExplainer [14] ✗ ✗ ✗ ✓
+STEP (ours) ✓ ✓ ✓ ✓
+designed for static graphs and uses static computation strategies.
+New methods are needed that can handle streaming graph events
+and prune new arriving edges in a dynamically evolving graph.
+(ii) Tackling unsupervised problem. Previous work on graph
+pruning typically requires access to abundant labels to remove
+edges which would potentially hinder the downstream performance.
+In many situations, however, label annotations can be prohibitively
+expensive or even impossible to collect, making them less applicable
+for these problems. The challenge here is to learn the pruning
+algorithm without relying on label annotations and feedback signals
+from a specific downstream task.
+To our best knowledge, little effort has done to fully address
+above serious problems of graph pruning. In light of the challenges,
+we propose a Self-supervised TEmporal Pruning (STEP for abbre-
+viation) framework, for pruning large-scale dynamic graphs of
+potentially redundant edges. As listed in Table 1, our proposed
+framework enjoy several advantages over other widely-adopted
+pruning methods: (i) STEP is capable of managing streaming events
+on dynamic graphs timely and inductively ( dynamic ). (ii) STEP
+additionally introduces a compact network that takes each indi-
+vidual edge as input for pruning without explicit message passing
+atinference (graph-less ). (iii) Instead of learning by feedback sig-
+nals from specific downstream supervisions, STEP is able to learn
+node/edge representations and adaptively discover the underlying
+graph structure with the aid of self-supervised contrastive learning
+(unsupervised and learnable ).
+We highlight the key contributions of this work as follows:
+•We propose STEP, a simple yet effective pruning framework
+for dynamic graphs, which handles the problem of pruning
+dynamic graphs represented with streaming events timely
+and unsupervisedly.
+•Our proposed STEP is an entirely unsupervised framework,
+which learns the underlying dynamic graph structure with-
+out need of task-specific feedback signals (e.g., labels).
+•We present numerical results to demonstrate the superiority
+of the proposed framework over several pruning baselines.
+STEP is beneficial for GNN alternatives in terms of efficacy,
+robustness, and efficiency on large-scale dynamic graphs.
+2 RELATED WORK
+2.1 Dynamic Graph Representation Learning
+Over the past few years, learning representations for dynamic
+graphs has attracted considerable research effort, where most works
+are limited to the setting of discrete-time dynamic graphs (DTDG)
+represented as a sequence of snapshots [ 17,22]. Such approaches are
+often insufficient for real-world systems as graphs in most cases are
+represented with a sequence of continuous events (i.e., nodes andLess Can Be More: Unsupervised Graph Pruning for Large-scale Dynamic Graphs Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+edges can appear and disappear at any time). Until recently, several
+architectures for continuous-time dynamic graphs (CTDG) have
+been proposed [ 9]. JODIE [ 10] uses a recurrent architecture to learn
+embedding trajectories of each node. DyREP [ 23] utilizes a parame-
+terized temporal point process model to capture evolution patterns
+over historical structure. TGAT [ 29] proposes to use self-attention
+mechanisms to handle the streaming graph events inductively and
+has reported state-of-the-art performances in graph-based learning
+tasks. We refer readers to [ 9] and the references therein for more
+thorough reviews of dynamic representation learning on graphs.
+2.2 Graph Self-supervised Learning
+Recently, graph self-supervised learning has become a new trend in
+deep graph learning and attracted considerable attention from both
+academics and the industry. In self-supervised learning, models
+are learned by solving a series of well-designed auxiliary tasks, in
+which the supervision signals are acquired from the data itself auto-
+matically without the need for manual annotations [ 12,13]. Among
+contemporary approaches, contrast learning is one of the most suc-
+cessful self-supervised learning paradigms on graph data [ 25,28,32].
+The primary goal of contrastive learning is to encourage two aug-
+mentation views of graphs to have more similar representations
+(typically via mutual information maximization [24]). Contrastive
+learning applied to self-supervised graph representation learning
+has led to state-of-the-art performance in a wide range of graph-
+based analysis tasks. Nevertheless, relatively little effort has been
+made toward graph pruning in dynamic settings.
+2.3 Graph Pruning & Sparsification
+Graph pruning (a.k.a. graph sparsification) aims to reduce graph
+storage and accelerate GNNs by constructing an underlying graph
+with far fewer edges. Such a graph usually preserves important
+structural information while retaining less noise, which would even
+benefit GNNs in downstream tasks. The simplest method to prune
+the graph is DropEdge [ 20], which randomly removes edges from
+graphs, following a specific distribution. It has been proved that
+a pruned graph would also help mitigate the over-smoothing is-
+sue in the training of deep GNNs. Subsequently, NeuralSparse [ 37]
+uses a sparsification network that learns to preserve task-relevant
+edges by feedback signals from downstream tasks. Furthermore,
+importance-based edge sampling has also been studied in a scenario
+where we could predefine edge importance based on explainability
+methods. For example, GNNExplainer [ 31] generates customized
+explanations by maximizing the mutual information between the
+distribution of possible subgraphs and the GNN’s predictions. PG-
+Explainer [ 14] learns a probabilistic graph generative model to
+provide explanations or importance on each edge. However, most
+methods described in the literature mainly focus on the static graph
+and require access to abundant labels, which are not feasible in a
+practical setting.
+3 PRELIMINARIES
+3.1 Notations and Problem Formulation
+3.1.1 Notations . We consider a continuous-time dynamic graph
+(CTDG) streaming scenario, where new observations are streamed
+immediately and continuously. Typically, a CTDG is constructedbased on plenty of temporal events 𝛿(𝑡)=(𝑣𝑖,𝑣𝑗,𝑥𝑖𝑗,𝑡)ordered by
+timestamp𝑡, each event represents an interaction occurred between
+source node 𝑣𝑖to target node 𝑣𝑗at timestamp 𝑡;x𝑖𝑗∈R𝑑is the
+associated edge feature, where 𝑑is the dimensionality. We denote
+byE={𝛿(𝑡1),𝛿(𝑡2),...,𝛿(𝑡𝑚)}consists of all temporal events in
+a CTDG where 𝑚is the number of observed events. We denote
+a CTDG byG(𝑡)=(V,E), whereV={𝑣𝑖}is the set of nodes
+involved in all temporal events. For the sake of notation simplic-
+ity, we omit the timestamp 𝑡fromG(𝑡)hereafter. Note that there
+might be more than one edge between a pair of nodes at different
+timestamps, so technically a CTDG is a multi-graph with numerous
+redundant or even noisy edges (usually pruning is necessary).
+3.1.2 Graph pruning. Given an input graph G, the main focus of
+graph pruning is to learn a function P:G→G𝑠, whereG𝑠⊂G is
+an underling graph which preserves as much informative structure
+ofGas possible. Typically, one can define a pruning ratio 𝑝(0<
+𝑝<1)to flexibly control the number of removed edges such that
+G𝑠preserves𝑝% of the edges. In practice, we can manually tune
+the threshold of the pruning network to obtain the desired pruning
+ratio as well. In the context of dynamic graphs, a pruning algorithm
+has to take into consideration both structural topology and time
+information simultaneously. Since our work focuses on the problem
+ofunsupervised graph pruning , no task-relevant supervision (e.g.,
+node labels) would be provided to train the pruning network.
+4 PRESENT WORK: STEP
+In this section, we aim to solve the unsupervised graph pruning prob-
+lem on dynamic graphs with our proposed STEP, a self-supervised
+temporal graph pruning framework. As shown in Figure 2, STEP
+on the highest level consists of three components: a graph em-
+bedding network that produces informative node and edge repre-
+sentations (Section 4.2), a differentiable graph sampling network
+to automatically generate the underlying structure drawn from a
+learned distribution (Section 4.3), and a pruning network that can
+process each incoming event inductively and timely (Section 4.4).
+We also detail several function losses to train the pruning network
+in a self-supervised fashion (Section 4.5).
+4.1 The Learning Objective
+We follow the graph pruning setup in [ 14,37] and adapt it to the
+dynamic graph modeling context. Essentially, the learning objective
+of graph pruning is to find the underlying graph G𝑠that preserves
+as many desired properties of the dynamic graph as possible, while
+retaining less redundant or noisy information. We approach this
+problem by maximizing the mutual information between the origin
+graphGand the underlying structure G𝑠:
+max
+G𝑠MI(Z,Z𝑠)=𝐻(Z)−𝐻(Z𝑠|G𝑠), (1)
+where ZandZ𝑠are the node representations encoded from Gand
+G𝑠, respectively. There exist many alternatives for mapping an
+input dynamic graph to low dimensional representations, such as
+dynamic GNNs [ 10,21,23,29]. However, it is non-trivial to directly
+optimize Eq. (1) as there are 2𝑚candidates forG𝑠.
+To efficiently solve the objective in Eq. (1), we consider each
+edge in the sampled discrete graph G𝑠to be drawn from a BernoulliConference acronym ’XX, June 03–05, 2018, Woodstock, NY Li and Tian, et al.
+Probability12𝑡!13𝑡"42𝑡#41𝑡$52𝑡%1213𝑡"424152𝑡%𝒆𝟏𝟐𝒆𝟏𝟑𝒆𝟒𝟐𝒆𝟒𝟏𝒆𝟓𝟐𝟏
+Underlying GraphInput Graph≈Bernoulli(𝑞)Preserve?Seenevents
+(a) Training(b) InferenceContrastingGraph Embedding NetworkGraph Sampling Network
+Edge Embedding
+UnseeneventsSample𝟎DistillationGraph-less Pruning Network
+0.80.30.40.90.212𝑡!13𝑡"42𝑡#46𝑡$67𝑡%Graph-less Pruning NetworkGNN
+Figure 2: The overall framework of STEP. STEP consists of three main components: the graph embedding network, the graph
+sampling network, and the graph-less pruning network. (a) In the training stage, a graph embedding network is adopted to
+obtain edge embeddings of an input dynamic graph represented as a series of timed events. Then, a graph sampling network
+learns to produce the underlying graph as self-supervision to guide the training of the graph-less pruning network. (b) In the
+inference stage, the graph-less pruning network can directly deal with input temporal events and determines which edges to
+preserve efficiently and timely.
+distribution parameterized by a graph sampling network. We relax
+the concrete edge distribution by a deterministic one and com-
+pute its latent variables with a parameterized embedding network.
+With relaxations, the sampling network is differentiable and can be
+optimized with gradient methods guided by self-supervisions.
+4.2 Graph Embedding Network
+We first introduce a graph embedding network to learn the latent
+variables of the edge distribution. The embedding network 𝑓𝜃(·)is
+designed as an asymmetric encoder-decoder pair, where an encoder
+is a function that maps from a dynamic graph to low dimensional
+space, followed by a decoder takes as input and produces edge
+embeddings of the edge e𝑖𝑗for all observed events 𝛿(𝑡).
+4.2.1 Node embedding. Since the representation of an edge de-
+pends on the embeddings of ending nodes connected together, we
+devise a graph encoder as a node embedding module to learn global
+topology information by mapping nodes to low-dimensional rep-
+resentations. The graph encoder takes Gconstructed at time 𝑡as
+input to extract node representations 𝑧𝑖(𝑡)for all𝑣𝑖inG. Formally,
+the forward propagation at 𝑘-th layer is described as the following:
+a(𝑘)
+𝑖(𝑡)=AGG(𝑘)n
+h(𝑘−1)
+𝑗(𝑡):𝑣𝑗∈N(𝑣𝑖,𝑡)o
+,
+h(𝑘)
+𝑖(𝑡)=COMBINE(𝑘)
+h(𝑘−1)
+𝑖(𝑡),a(𝑘)
+𝑖(𝑡)
+,(2)
+where h(𝑘)
+𝑖(𝑡)is the intermediate representations of node 𝑣𝑖at the
+𝑘-th layer.𝑣𝑗∈N(𝑣𝑖;𝑡)denotes the adjacent node with an obser-
+vation(𝑣𝑖,𝑣𝑗,x𝑖𝑗,𝑡𝑗)occurred prior to 𝑡.AGG(·)is a differentiable
+aggregation function that propagates and aggregates messages from
+neighborhoods, such as mean or sum, followed by a COMBINE(·)
+function that combines representations from neighbors and the
+node itself at ( 𝑘-1)-th layer. Note that our framework allows var-
+ious choices of the encoder architecture by properly designing
+AGG(·)andCOMBINE(·)functions, without any constraints. We
+opt for simplicity and follow the practice in GraphSAGE [ 7]. Finally,
+we obtain the node representations z𝑖(𝑡)=h(𝐾)
+𝑖(𝑡)(assume that
+the depth of graph encoder is 𝐾).4.2.2 Edge embedding. We proceed by introducing the edge de-
+coder to learn informative edge representations that preserve the
+underlying structure. It is designed to capture both structural and
+temporal information of a dynamic graph. Given an observed event
+𝛿(𝑡)=(𝑣𝑖,𝑣𝑗,𝑥𝑖𝑗,𝑡𝑗)∈E , we generate the temporal edge embed-
+ding m𝑖𝑗by combining node representations associated with edge
+(𝑣𝑖,𝑣𝑗), edge feature x𝑖𝑗, and the relative time representation as
+follows:
+m𝑖𝑗=W𝑒· z𝑖∥z𝑗∥x𝑖𝑗∥Φ(Δ𝑡)+b𝑒, (3)
+where W𝑒andb𝑒are learnable parameters for the edge decoder
+network and∥denotes the concatenation operator. For simplicity,
+in our notations, we omit time information 𝑡, which is assumed
+implicitly to be attached to m𝑖𝑗and𝑧𝑖.Δ𝑡=𝑡−𝑡𝑗represents the rel-
+ative timespan of two timestamps for functional encodings. We use
+relative timespan instead of its absolute value as the former usually
+reveals more critical temporal information, such as the duration
+of an event. Correspondingly, Φ(·)is a relative time encoder (RTE)
+that achieves a functional time projection from the time domain to
+a continuous space:
+Φ(Δ𝑡)=Cos(W𝑡·Δ𝑡+b𝑡), (4)
+where W𝑡andb𝑡are learnable parameters of RTE. This version of
+the time projection method follows the practice in [29].
+4.3 Graph Sampling Network
+Literature [ 20] has shown that randomly removing edges from the
+input graph would benefit the performance of GNNs on down-
+stream tasks. However, such a simple method does not allow for
+adaptively learning the edge importance and discovering the under-
+lying structure. In this subsection, we hereby introduce a learnable
+graph sampling network 𝑆𝜔(·)that computes the edge importance
+as sampling probability, and then samples sparsified subgraphs to
+optimize Eq. (1).
+4.3.1 Measuring edge importance. We believe there are two main
+factors to consider when measuring the importance or contributions
+of an edge: (i) the redundancy of edges in the original graph. (ii) the
+relevance of edges to the overall graph representation. Firstly, edgeLess Can Be More: Unsupervised Graph Pruning for Large-scale Dynamic Graphs Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+redundancy refers to the level of information redundancy of an
+edge compared to other edges in the graph. Given an edge (𝑣𝑖,𝑣𝑗),
+we calculate its correlation coefficients with other edges from the
+perspective of the attention mechanism:
+s𝑟𝑑
+𝑖𝑗=∑︁
+(𝑣𝑖,𝑣𝑗)≠(𝑣𝑖′,𝑣𝑗′)exp(m𝑖𝑗·m⊤
+𝑖′𝑗′)
+Í
+(𝑣𝑖′,𝑣𝑗′)exp(m𝑖𝑗·m⊤
+𝑖′𝑗′), (5)
+where s𝑟𝑑
+𝑖𝑗represents the redundancy score of edge (𝑣𝑖,𝑣𝑗), rang-
+ing from 0 to 1. A larger s𝑟𝑑
+𝑖𝑗indicates high redundancy and less
+information encoded by the learned representation e𝑖𝑗, and there-
+fore the edge(𝑣𝑖,𝑣𝑗)should be removed. We also introduce the
+edge relevance score, which refers to the amount of correlation
+between edge representations and downstream tasks. For example,
+we can maximize the cross-entropy loss of edge representations
+and associated labels for link classification tasks [ 21,29]. However,
+the downstream tasks are usually unaware of a pruning model
+and we cannot directly maximize their relevance with correspond-
+ing supervision. Moreover, training on a single downstream task
+may also lead to task-specific representations with poor general-
+ization. These dilemmas motivate us to discover self-supervisions
+from the graph itself. Given that the performance on downstream
+tasks highly relies on the graph representations summarized from
+node representations [ 27], we introduce graph pooling techniques
+to obtain the graph representations as downstream supervision
+signals:
+zG=SUM{z𝑖}orMEAN{z𝑖}, 𝑣𝑖∈V. (6)
+Where SUM andMEAN are graph pooling operations that take the
+sum or average sum over all node embeddings. In most cases, we
+can also adopt a specific node embedding z𝑐as the graph represen-
+tation zG, where𝑣𝑐is called the “central node”. Then, we instead
+maximize the relevance between edge representation m𝑖𝑗and graph
+representation zG:
+s𝑟𝑙
+𝑖𝑗=W𝑟𝑙·m𝑖𝑗·z⊤
+G
+∥W𝑟𝑙·m𝑖𝑗∥∥zG∥, (7)
+where W𝑟𝑙is a projection matrix that encodes the edge represen-
+tations to match the central node representation. Here the cosine
+distance is used to measure the difference between edge repre-
+sentations and the central node representation. Finally, the edge
+importance is calculated by:
+𝜌𝑖𝑗=W𝑠·
+s𝑟𝑑
+𝑖𝑗∥s𝑟𝑙
+𝑖𝑗∥m𝑖𝑗
+, (8)
+where W𝑠is learnable parameters. 𝜌𝑖𝑗can be also regarded as the
+estimated sampling probability that an edge is selected. Then a dis-
+crete sampling function Γ(·)is implemented such that 𝑦𝑖𝑗=Γ(𝜌𝑖,𝑗),
+to discover the underlying graph G𝑠that preserves useful edges
+while filtering potentially redundant edges. The binary variable
+𝑦𝑖𝑗=1indicates that the edge (𝑣𝑖,𝑣𝑗)belongs to the underlying
+graphG𝑠, and 0 otherwise.
+4.3.2 Making samples differentiable. Although several sampling
+methods implement discrete sampling, they are not differentiable
+such that it is difficult to optimize the model parameters with gradi-
+ent methods. To make the sampling process differentiable for train-
+ing, we adopt the Gumbel-Softmax [ 8] based reparameterization
+trick and relax the value 𝑦𝑖𝑗from a binary variable to a continuousone. The relaxation is established by assuming the graph struc-
+ture follows the Bernoulli distribution, where sampling of edges
+fromGare conditionally independent to each other. Following the
+practice in [ 14,16,37], we utilize the binary concrete distribution
+to approximate the sampling process and obtain the sampled sub-
+grapheG𝑠≈G𝑠. In this way, the binarized value 𝑦𝑖𝑗is approximated
+according to:
+𝑦𝑖𝑗=Γ(𝜌𝑖𝑗)=𝜎 (log𝜖−log(1−𝜖)+𝜌𝑖𝑗)/𝜏, (9)
+where𝜖∼Uniform(0,1)and𝜎(·)is the sigmoid activation. 𝜏is the
+temperature that controls the interpolation between the discrete
+distribution and continuous categorical densities. When 𝜏→0,𝜌𝑖𝑗
+is binarized and the Gumbel-Softmax distribution resembles the
+discrete distribution, such that lim𝜏→0eG𝑠=G𝑠.
+4.4 Graph-less Pruning Network
+Although the graph sampling network is able to produce the pruned
+subgraphG𝑠drawn from a learned distribution, it cannot flexibly
+tackle instant message flows (e.g., a newly incoming edge) par-
+ticularly when the associated nodes are unseen before. Inspired
+by the success of knowledge distillation [ 26,35], we circumvent
+the limitation by replacing the over-parameterized graph sampling
+network with a compact one, graph-less pruning network, which
+is able to achieve high flexibility and low deployment costs.
+The goal of graph-less pruning network is to filter out poten-
+tially redundant edges from a dynamic graph, similar to the graph
+sampling network. The key difference between them is that the
+graph-less pruning network requires only edge features and time
+information as inputs rather than the graph structure. To minimize
+the computational overheads and improve efficiency, we directly
+take a single message 𝛿(𝑡)as input to determine whether this mes-
+sage would be involved in future events. Specifically, we use a
+simple feed-forward neural network 𝑔𝜙(·)as the pruning network:
+𝑃𝑖𝑗=𝑔𝜙(𝛿(𝑡))=W2·ReLU W1· e𝑖𝑗∥Φ(Δ𝑡), (10)
+where W1andW2are learnable parameters of the pruning network.
+The pruning network directly takes an edge and related information
+as inputs without explicitly message passing. Compared to GNN-
+based alternatives, such a network is computationally efficient and
+is also friendly to parallel computation for large-scale processing.
+4.5 Training
+Since the ground-truth labels are not provided during training, we
+cannot directly train the model with supervised loss such as cross-
+entropy loss. Here we instead introduce three functional losses to
+optimize the pruning network in a self-supervised way.
+4.5.1 Contrastive loss. Inspired by the recent success of contrastive
+learning, we adopt InfoNCE [ 24] as our main learning objective to
+maximize the representation of mutual information between the
+origin graphGand the approximated graph eG𝑠:
+L𝑐=−logexp(zeG·zG)
+Í
+G−exp(zeG·zG−)(11)
+where zGandzeGare graph-level representations of GandeG, re-
+spectively. zG−is the graph representation of negative sample G−,
+generated by randomly removing a portion of edges from G.Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Li and Tian, et al.
+4.5.2 Self-distillation loss. Another functional loss is derived to
+train the graph-less pruning network 𝑔𝜙(·). One major barrier is
+how to design proper optimization that transfers knowledge from a
+large “teacher” network (i.e., graph sampling network) to a smaller
+“student” network (i.e., graph-less pruning network). In traditional
+distillation, it is typically implemented in two steps, that is first, to
+train a large teacher model, and second, to distill the knowledge
+from it to the student model [ 34]. To further improve the training
+efficiency, we adopt self-distillation technique to train the graph-
+less pruning network by distilling knowledge within the network
+itself:
+L𝑠=1
+𝑚∑︁
+(𝑣𝑖,𝑣𝑗)∈E− 𝑦𝑖𝑗log(𝑃𝑖𝑗)+(1−𝑦𝑖𝑗)log(1−𝑃𝑖𝑗),(12)
+where𝑃𝑖𝑗is the prediction of graph-less pruning network, as cal-
+culated by Eq. (10). Here we use the approximated graph eG𝑠as
+the self-supervision (i.e., soft label) and the output of graph-less
+pruning network is fed into the self-distillation loss for knowledge
+distillation.
+4.5.3 Regularization. Although we assume the graph structure
+follows the Bernoulli distribution and utilizes a concrete distribu-
+tion to approximate the sampling process, such a constraint is not
+always guaranteed during training. The resulting distribution may
+deviate from the desired Bernoulli distribution, with numerous am-
+biguous values of 𝑦𝑖𝑗lying in the middle of 0 and 1. Based upon
+this intuition, we further incorporate an auxiliary constraint into
+the overall loss to enhance model training. Specifically, we pro-
+pose Bernoulli Moment Matching to fit the distribution of sampled
+edges by matching the distribution mean and variance with discrete
+probability distribution Bernoulli (𝑞):
+L𝑏=|E[𝜌]−𝑞|+|E[𝜌2]−E[𝜌]2−𝑞(1−𝑞)|, (13)
+where𝑞is a prior sampling probability and E(·)is the mathematical
+expectation. Recall that the mean and variance of Bernoulli (𝑞)are𝑞
+and𝑞(1−𝑞), respectively. Technically, 𝑞also controls the sparsity of
+pruned graph, similar to the pruning ratio 𝑝. We further justify that
+suitable choices of 𝑞and𝑝for pruning do not degrade performance
+a lot in Section 5.6.
+4.5.4 Overall loss. Putting them all together, the overall loss func-
+tion at the training step is:
+L=L𝑐+𝜆1L𝑠+𝜆2L𝑏, (14)
+where𝜆1and𝜆2are trade-offs for balancing the contributions of
+three losses. Note that the proposed framework is not confined to
+dynamic scenarios and is also applicable to static graphs without
+time information.
+4.6 STEP: A Real-time Pruning Framework
+As an inductive pruning framework, STEP is able to solve the prob-
+lem of real-time message explosion in database storage and online
+inference flexibly. Specifically, we can learn the pruning network
+locally and do both offline and online pruning when deployed on a
+GNN-based system. As shown in Figure 3(a), an initial GNN-based
+Message 
+FlowStore Construct
+(a) w/o graph pruning (b) w/ graph pruning
+GNNsMessage 
+FlowPruneConstruct Store
+AUC: 91%
+Time: 300msAUC: 92%
+Time: 100msGNNsPruneOffline Offline
+Online Online
+Inference InferenceFigure 3: A typical workflow deployed on a GNN-based sys-
+tem to tackle streaming graph events. STEP can be incorpo-
+rated into the workflow to reduce the offline graph storage
+and accelerates the inference of online GNNs.
+system has to store the entire messages whenever received, result-
+ing in massive data storage and high computational costs for mes-
+sage aggregation in GNNs. By contrast, STEP can significantly re-
+duce offline storage by directly conducting pruning pre-processing
+on the received messages in an inductive way (Figure 3(b)). In addi-
+tion, the inference time and performance have also been improved
+as a larger number of potentially redundant messages are pruned.
+5 EXPERIMENTS
+In this section, we report empirical evaluation results on two bench-
+marks (i.e., Wikipedia and Reddit) and one large-scale industrial
+dataset (i.e., Alipay) to validate the effectiveness and robustness of
+STEP framework on the dynamic node classification. More detailed
+descriptions about datasets, baselines, and experimental settings
+can be found in Appendix C. Code to reproduce our experiments is
+available at https://anonymous.4open.science/r/PyTorch-STEP.
+5.1 Overall Performance
+Table 2 summarizes the dynamic node classification results on
+different datasets. To thoroughly evaluate the benefit of different
+graph pruning methods, we vary the pruning rate, i.e., the ratio of
+the pruned/removed edges, from 0.1 to 0.9 with a step of 0.2.
+As shown in Table 2, STEP achieves state-of-the-art performance
+in all cases across three datasets. Despite the fact that no label
+information is provided for training, STEP still outperforms the
+comparison baselines. As the graph scale enlarges, STEP can gain
+more advantages over baselines. Noticeably, we observe that STEP
+improves the performance of classification models on three datasets
+when the pruning ratio is set as 0.1. As the pruning ratio increases,
+STEP generally yields positive benefits particularly on the two
+relatively dense datasets Wikipedia and Reddit. The results illustrate
+that current graph datasets are noisy and thus removing the noisy
+neighbors can help nodes learn better representations. For Alipay, a
+large-scale industrial dataset, we observe a performance drop in all
+methods when the pruning ratio is larger than 0.3. This is reasonable
+as it is a very sparse graph and a high pruning ratio would possibly
+disrupt network connectivity, thus hindering the message passing
+scheme of GNNs. Nevertheless, STEP still outperforms all baselines
+by large margins on Alipay, and the downstream performance is not
+significantly sacrificed even for a particular large pruning ratio (e.g.,
+0.7). This indicates that even with a very sparse graph, STEP could
+still learn the informative structure and preserve useful connections
+between nodes for downstream tasks.Less Can Be More: Unsupervised Graph Pruning for Large-scale Dynamic Graphs Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Dynamic node classification task results, where the reported metric is the AUC score (%). The best results on each
+dataset under different pruning ratios are boldfaced. We refer Backbone to the standard TGN and TGAT models w/o pruning.
+Pruning Ratio 𝑝MethodsTGN TGAT
+Wikipedia Reddit Alipay Wikipedia Reddit Alipay
+0 Backbone 85.86±0.37 65.63±0.63 91.54±0.71 84.27±0.72 68.22±0.52 93.40±0.39
+0.1+DropEdge 85.50±0.49 65.35±0.27 90.49±0.42 84.33±0.35 68.05±0.25 91.64±0.28
++NeuralSparse 85.78±0.26 65.62±0.36 91.27±0.36 84.63±0.19 68.11±0.31 92.48±0.27
++PGExplainer 85.51±0.31 65.72±0.19 91.89±0.29 84.61±0.21 68.41±0.17 92.63±0.21
++STEP 86.06±0.25 65.90±0.21 92.39±0.23 84.90±0.23 69.16±0.47 93.84±0.19
+0.3+DropEdge 85.25±0.38 65.45±0.22 90.68±0.51 84.51±0.25 67.13±0.21 90.17±0.30
++NeuralSparse 86.32±0.31 65.47±0.27 91.47±0.40 85.39±0.23 67.46±0.24 91.07±0.26
++PGExplainer 86.96±0.37 65.35±0.23 91.28±0.35 85.78±0.18 67.55±0.19 91.41±0.24
++STEP 87.27±0.23 65.62±0.32 92.18±0.27 86.05±0.29 68.80±0.24 93.23±0.28
+0.5+DropEdge 85.36±0.42 65.83±0.30 86.21±0.46 84.63±0.52 66.18±0.34 87.11±0.32
++NeuralSparse 86.31±0.28 66.06±0.35 88.35±0.44 85.73±0.18 66.50±0.19 89.86±0.36
++PGExplainer 86.40±0.36 66.29±0.29 89.10±0.34 86.01±0.30 66.69±0.25 90.04±0.25
++STEP 86.73±0.28 66.63±0.34 89.88±0.31 86.75±0.36 68.30±0.39 91.42±0.26
+0.7+DropEdge 85.28±0.41 62.65±0.42 83.85±0.48 84.15±0.42 63.88±0.93 83.20±0.38
++NeuralSparse 86.02±0.22 63.37±0.39 84.79±0.43 85.44±0.41 63.84±0.40 85.34±0.41
++PGExplainer 86.24±0.29 63.11±0.27 85.49±0.38 85.75±0.27 62.28±0.32 85.10±0.39
++STEP 86.35±0.31 64.42±0.33 87.51±0.29 86.22±0.27 64.84±0.47 89.17±0.32
+0.9+DropEdge 84.44±0.47 51.20±0.43 72.18±0.53 83.53±0.40 51.63±0.78 74.94±0.47
++NeuralSparse 84.74±0.29 52.89±0.42 80.56±0.48 84.13±0.28 52.13±0.73 81.03±0.44
++PGExplainer 85.19±0.30 54.48±0.23 80.98±0.41 84.75±0.34 51.82±0.20 80.29±0.37
++STEP 85.21±0.30 54.83±0.32 84.32±0.34 85.40±0.37 53.44±0.63 86.08±0.41
+(a) Wikipedia
+ (b) Reddit
+ (c) Alipay
+Figure 4: AUC score on three datasets with various levels of noise.
+Although there exists a set of noisy connections in each dataset
+on the dynamic node classification task, DropEdge reports slightly
+worse performance than the original backbones. This demonstrates
+that removing edges randomly cannot prune the noise edges from
+the graph effectively. NeuralSparse utilizes a parameterized method
+to actively remove potentially redundant edges according to the su-
+pervised signals. However, it constrains the sparsification network
+to extracted subgraphs with limited neighbors, which in return hin-
+ders its learning power and may lead to suboptimal performance
+in generalization [ 3]. PGExplainer is a strong baseline that out-
+performs others in most cases, which indicates the effectivenessof graph explainability methods in discovering underlying graph
+structure. Nevertheless, the explanations generated by PGExplainer
+are less accurate for tailed edges of lower importance, as evidenced
+by increasing 𝑝would lead to poor performance and even under-
+performs NeuralSparse.
+We can also observe that graph pruning brings more improve-
+ments for TGN than TGAT, this is because TGAT adopts self-
+attention mechanisms to assign different attention weights for the
+temporal interactions between nodes. In this way, it provides use-
+ful guidance for model training on noisy graphs. However, as the
+pruning ratio increase and the graph becomes more sparse, TGNConference acronym ’XX, June 03–05, 2018, Woodstock, NY Li and Tian, et al.
+(a) Wikipedia
+ (b) Reddit
+ (c) Alipay
+Figure 5: AUC score and inference time (ms) per batch of TGAT on three datasets. We omit the result of full graph on Alipay
+due to “out of memory” error.
+combined with long-term information can lead to better perfor-
+mance on Wikipedia and Reddit.
+5.2 Robustness Evaluation
+Extensive studies have demonstrated that GNNs are not robust to
+noise in graph data, including inherent noise [ 11,15] or adversarial
+noise (i.e., adversarial examples [ 1]). Typically, noise is injected into
+the graph structure in a way that creates an additional set of noisy
+connections between nodes [ 2]. Therefore, graph pruning would
+be beneficial to alleviate the negative effects of noise by removing
+such edges from the graphs.
+In this subsection, we investigate the effectiveness of graph prun-
+ing on real-world graphs corrupted by different levels of noise. We
+generate noisy graphs by injecting noise edges into the original
+graph. The source and destination nodes of injected noisy edges
+are randomly selected from the node set in the original graph, and
+random features and timestamps (between the minimum and maxi-
+mum timestamp) will be attached to each noisy edge. We use the
+ratio of the number of injected noise edges to the number of true
+edges as the independent variable for this experiment and vary the
+noise ratio𝑟from 0 to 1.0. The corresponding pruning ratio 𝑝is set
+to𝑝=𝑟
+1+𝑟, in order to keep the total number of edges unchanged.
+We report the averaged results on three datasets with TGAT as a
+backbone classifier in Figure 4. Each experiment is run 10 times.
+From the figure, we have the following observations: (i) By in-
+creasing the noise ratio, the classification performance of TGAT
+can significantly drop, which validates the vulnerability of GNNs
+against noise. (ii) Graph pruning is an effective way to alleviate
+the effects of noise and also benefit the prediction. Even by simply
+dropping the edge at random (i.e., DropEdge), the robustness of
+TGAT against different ratios of noise is improved. (iii) Our pro-
+posed STEP consistently outperforms baselines on three datasets.
+With the growth of the noise ratio, the gap between our method and
+the baselines becomes larger. Overall, our method is stable to yield
+consistent robustness improvements compared with baselines.
+5.3 Analysis of Efficiency and Scalability
+In this section, we further analyze the benefits of STEP on inference-
+time speed-up and storage reduction. Specifically, we conduct ex-
+periments on the full graph, a full two-hop subgraph, a sampledtwo-hop subgraph (20 nodes per hop), and five sampled two-hop
+subgraphs with different pruning ratios for each dataset. Here we
+omit the results of on full graph for Alipay due to computation and
+memory overheads.
+The results are shown in Figure 5. We report the overall AUC
+score and inference time with respect to the full graph or each
+batched computation graph. The results show that: (i) Operating on
+a full two-hop subgraph can somehow alleviate the scalability prob-
+lem of GNNs on large-scale graphs without performance sacrifices.
+Nevertheless, the computational overheads are still large since the
+localized subgraph of a node usually consists of a high number of
+neighboring nodes on a dynamic graph. (ii) Graph subsampling
+with a fixed neighborhood size can improve the model performance
+as well as the inference efficiency. However, the sampled subgraphs
+are still at scale and would additionally introduce redundancy that
+requires proper handling. (iii) STEP addresses the above issues by
+introducing a graph-less pruning network to remove redundant
+computation and storage of GNNs over sampled subgraphs. As a re-
+sult, it further boosts the model performance, accelerates inference,
+and reduces the storage given a proper pruning ratio. (iv) STEP ef-
+fectively trades off performance and efficiency, which gains higher
+speedups on larger graphs. As the pruning ratio increases, STEP
+greatly reduces the complexity and memory overheads with negli-
+gible performance loss. For an extreme case, e.g., inference on tiny
+edge devices that have tough resource constraints, STEP can prune
+90% of edges without significantly sacrificing the performance.
+5.4 Analysis of Training-time Pruning
+Overfitting and training instability are two major obstacles for
+GNNs and cannot be effectively solved by existing regularization
+techniques. As shown in Section 5.2, our proposed STEP helps
+improve the robustness of GNNs against noise at test-time, we show
+that training-time pruning can also benefit the learning process of
+GNNs by properly removing potentially redundant edges from the
+noise graph.
+Figure 6 shows the validation AUC versus training epochs on
+Wikipedia and Alipay datasets and corresponding TGAT with var-
+ious pruning ratios. Since we have similar observations between
+Wikipedia and Reddit, we only report the results on Wikipedia
+and Alipay. We carefully examine STEP’s effects on the training
+phase by varying the pruning ratio from 0.1 to 0.9 with a step ofLess Can Be More: Unsupervised Graph Pruning for Large-scale Dynamic Graphs Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+(a) Wikipedia
+ (b) Alipay
+Figure 6: Validation AUC convergence curve of TGAT (with
+STEP) on (a) Wikipedia and (b) Alipay datasets. Curves only
+represents the process of training phase.
+0.2. As shown, TGAT without graph pruning is fast to be saturated
+on the validation set and converged to suboptimal performance
+on two datasets. By contrast, we utilize STEP to facilitate TGAT
+training and successfully boost generalization, where a consistent
+improvement is evident, particularly on Wikipedia. Although a
+large pruning ratio decreases the model performance on Alipay,
+it stabilizes the learning process as well. In addition, we observe
+that the overfitting phenomenon is alleviated as the pruning ratio
+increases. Overall, STEP is able to stabilize the learning process and
+help GNNs achieve competitive generalization performance with
+sparsified graph data.
+5.5 Ablation Study
+In this part, we perform ablation studies to investigate the contri-
+bution of the key components in STEP, including the edge redun-
+dancy and relevance score for calculating edge sampling proba-
+bility and the Bernoulli Moment Matching regularization. We ob-
+tain corresponding variants by removing functional ones from the
+complete STEP framework, detailed as follows: (i) STEP\(RED)
+removes the part related to the redundancy score of edge sam-
+pling probability (Eq. (5));(ii) STEP\(REL) removes the part re-
+lated to relevance score of edge sampling probability (Eq. (7));(iii)
+STEP\(RED&REL) removes both edge redundancy and relevance
+parts; (iv) STEP\(B)replaces the Bernoulli Moment Matching reg-
+ularization with a low-rank constraint L𝑏=Í
+(𝑣𝑖,𝑣𝑗∈E|𝜌𝑖𝑗|.
+All the hyperparameters of these variants are tuned following
+the process described in Appendix C. The pruning ratio is set as
+0.5. The results of 10 runs are reported in Table 3. Accordingly,
+we have the following observations: (i)It is clearly observed that
+STEP\(RED&REL) performs worst on Wikipedia and Reddit, which
+is in line with our point that edge redundancy and relevance are
+two important factors in measuring the importance of edges (ii)
+STEP\(RED) and STEP\(REL) perform very closely on three datasets
+as expected. This indicates that both the redundancy score and rel-
+evance score of edges help in increasing the quality of the pruned
+graph almost equally. (iii) Notice that STEP\(B) performs quite
+well in most experiments. However, it underperforms all other vari-
+ants on Alipay, an extremely large and sparse industrial graph. A
+reasonable explanation is that incorporating helpful regularization
+can preserve the structural information and avoid the impact ofTable 3: Comparisons between STEP and its variants on the
+dynamic node classification task.
+Method Wikipedia Reddit Alipay
+TGAT 84.27±0.72 68.22±0.52 93.40±0.39
++STEP\(RED) 85.52±0.33 67.76±0.36 90.87±0.28
++STEP\(REL) 85.47±0.35 67.32±0.37 90.69±0.27
++STEP\(RED&REL) 85.04±0.33 67.05±0.39 90.05±0.27
++STEP\(B) 85.67±0.41 67.75±0.45 89.47±0.32
++STEP 86.75±0.36 68.30±0.39 91.42±0.26
+(a)𝑝and𝑞
+ (b)𝜆1and𝜆2
+Figure 7: Parameter analysis w.r.t. (a) 𝑝and𝑞, (b)𝜆1and𝜆2.
+We report the averaged results on Wikipedia across 10 runs.
+sampling bias, particularly on large and sparse graphs. (iv)The com-
+plete STEP achieves the highest AUC score on all datasets, which
+is obviously better than other variants. These results illustrate all
+the components are important in our pruning framework.
+5.6 Hyperparameter Sensitivity Analysis
+In this subsection, we first investigate how the hyperparameters
+𝑝and𝑞affect the performance of STEP. Specifically, 𝑝controls
+how many edges are pruned from the initial graph, and 𝑞controls
+the distribution of sampled edges. Both of which correspond to
+the sparsity of the underlying graph. To comprehensively explore
+the parameter sensitivity, we vary 𝑝and𝑞as {0.1, 0.2, 0.3, 0.4, 0.5,
+0.6, 0.7, 0.8, 0.9} and {0.1, 0.3, 0.5, 0.7, 0.9}, respectively. The experi-
+ments are conducted 10 times and the average results are shown
+in Figure 7(a). We make the following observations: (i) Generally,
+the performance of STEP tends to first increase and then slightly
+decrease for all 𝑞as we go up to higher 𝑝. The performance is rela-
+tively good and stable when 𝑝ranges between 0.2 and 0.8, which
+eases the hyperparameter selection for STEP. (ii) A similar trend
+can be observed on 𝑞, where the performance increase firstly and
+then decreases with the increase of 𝑞. We conjecture that too small
+𝑞would lead to a sparse graph while too large 𝑞may preserve most
+of the noisy edges. When 𝑞reaches a critical value, e.g., 0.5, the
+best performance is achieved in most cases.
+We further study the effects of 𝜆1and𝜆2, two trade-off hyper-
+parameters to balance the self-distillation loss and regularization
+term, respectively. As observed from Figure 7(b), it is clear that
+the pruning performance is consistently improved when 𝜆1>0
+and𝜆2>0, which means that the two terms are important for
+training. We can observe that STEP is sensitive to 𝜆1. When𝜆2isConference acronym ’XX, June 03–05, 2018, Woodstock, NY Li and Tian, et al.
+larger we exert a stronger regularization on the learned graphs and
+the graphs become more sparse, which further reduces the noise in-
+formation and improves the classification performance. We observe
+that increasing 𝜆2improves the performance until the default value
+of𝜆2=0.01is reached. After which, the performance deteriorates.
+Taking together, we set 𝜆1=𝜆2=0.01as optimal values.
+6 CONCLUSION AND FUTURE WORK
+In this work, we study the problem of unsupervised graph prun-
+ing and present a novel framework (called STEP), which aims at
+pruning redundant and noisy edges from a large-scale dynamic
+graph. By learning self-supervised signals from the input graph
+itself, STEP is able to discover the underlying graph that preserves
+the most informative structure without the feedback of task-specific
+supervision. Experimental results on real-world datasets show the
+effectiveness of the proposed framework. STEP is flexible, and can
+be easily incorporated into any graph-based learning pipeline. We
+empirically show that the pruned graphs take much less space for
+offline storage and accelerate the online inference of GNNs, which
+are attractive to energy-efficient devices like mobile processors.
+Unsupervised graph pruning is an important step toward scalable
+machine learning in real-world applications. In future work, we
+would like to extend STEP to tackle other complicated graphs, such
+as heterogeneous or multi-modal graphs.
+REFERENCES
+[1]Liang Chen, Jintang Li, Jiaying Peng, Tao Xie, Zengxu Cao, Kun Xu, Xiangnan
+He, Zibin Zheng, and Bingzhe Wu. 2020. A Survey of Adversarial Learning on
+Graph. arXiv preprint arXiv:2003.05730 (2020).
+[2]Liang Chen, Jintang Li, Qibiao Peng, Yang Liu, Zibin Zheng, and Carl Yang. 2021.
+Understanding Structural Vulnerability in Graph Convolutional Networks. In
+IJCAI . IJCAI, 2249–2255. https://doi.org/10.24963/ijcai.2021/310 Main Track.
+[3]Enyan Dai, Charu Aggarwal, and Suhang Wang. 2021. NRGNN: Learning a Label
+Noise Resistant Graph Neural Network on Sparsely and Noisily Labeled Graphs.
+InKDD . ACM, 227–236.
+[4]Enyan Dai, Tianxiang Zhao, Huaisheng Zhu, Junjie Xu, Zhimeng Guo, Hui Liu,
+Jiliang Tang, and Suhang Wang. 2022. A Comprehensive Survey on Trustworthy
+Graph Neural Networks: Privacy, Robustness, Fairness, and Explainability. CoRR
+abs/2204.08570 (2022).
+[5]Hanjun Dai, Chengtao Li, Connor W. Coley, Bo Dai, and Le Song. 2019. Retrosyn-
+thesis Prediction with Conditional Graph Logic Network. In NeurIPS . 8870–8880.
+[6]Chen Gao, Xiang Wang, Xiangnan He, and Yong Li. 2022. Graph Neural Networks
+for Recommender System. In WSDM . ACM, 1623–1625.
+[7]William L. Hamilton, Zhitao Ying, and Jure Leskovec. 2017. Inductive Represen-
+tation Learning on Large Graphs. In NIPS . 1024–1034.
+[8]Eric Jang, Shixiang Gu, and Ben Poole. 2017. Categorical Reparameterization
+with Gumbel-Softmax. In ICLR (Poster) . OpenReview.net.
+[9]Seyed Mehran Kazemi, Rishab Goel, Kshitij Jain, Ivan Kobyzev, Akshay Sethi,
+Peter Forsyth, and Pascal Poupart. 2020. Representation Learning for Dynamic
+Graphs: A Survey. J. Mach. Learn. Res. 21 (2020), 70:1–70:73.
+[10] Srijan Kumar, Xikun Zhang, and Jure Leskovec. 2019. Predicting Dynamic Em-
+bedding Trajectory in Temporal Interaction Networks. In KDD . ACM, 1269–1278.
+[11] Jintang Li, Bingzhe Wu, Chengbin Hou, Guoji Fu, Yatao Bian, Liang Chen, and
+Junzhou Huang. 2022. Recent Advances in Reliable Deep Graph Learning: In-
+herent Noise, Distribution Shift, and Adversarial Attack. CoRR abs/2202.07114
+(2022).
+[12] Jintang Li, Ruofan Wu, Wangbin Sun, Liang Chen, Sheng Tian, Liang Zhu,
+Changhua Meng, Zibin Zheng, and Weiqiang Wang. 2022. MaskGAE: Masked
+Graph Modeling Meets Graph Autoencoders. CoRR abs/2205.10053 (2022).
+[13] Yixin Liu, Shirui Pan, Ming Jin, Chuan Zhou, Feng Xia, and Philip S. Yu. 2021.
+Graph Self-Supervised Learning: A Survey. CoRR abs/2103.00111 (2021).
+[14] Dongsheng Luo, Wei Cheng, Dongkuan Xu, Wenchao Yu, Bo Zong, Haifeng Chen,
+and Xiang Zhang. 2020. Parameterized Explainer for Graph Neural Network. In
+NeurIPS .
+[15] Dongsheng Luo, Wei Cheng, Wenchao Yu, Bo Zong, Jingchao Ni, Haifeng Chen,
+and Xiang Zhang. 2021. Learning to Drop: Robust Graph Neural Network via
+Topological Denoising. In WSDM , Liane Lewin-Eytan, David Carmel, Elad Yom-
+Tov, Eugene Agichtein, and Evgeniy Gabrilovich (Eds.). ACM, 779–787.[16] Chris J. Maddison, Andriy Mnih, and Yee Whye Teh. 2017. The Concrete Distri-
+bution: A Continuous Relaxation of Discrete Random Variables. In ICLR .
+[17] Aldo Pareja, Giacomo Domeniconi, Jie Chen, Tengfei Ma, Toyotaro Suzumura,
+Hiroki Kanezashi, Tim Kaler, Tao B. Schardl, and Charles E. Leiserson. 2020.
+EvolveGCN: Evolving Graph Convolutional Networks for Dynamic Graphs. In
+AAAI . AAAI Press, 5363–5370.
+[18] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory
+Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban
+Desmaison, Andreas Köpf, Edward Z. Yang, Zachary DeVito, Martin Raison,
+Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and
+Soumith Chintala. 2019. PyTorch: An Imperative Style, High-Performance Deep
+Learning Library. In NeurIPS . 8024–8035.
+[19] Jiezhong Qiu, Jian Tang, Hao Ma, Yuxiao Dong, Kuansan Wang, and Jie Tang.
+2018. Deepinf: Modeling influence locality in large social networks. In KDD .
+[20] Yu Rong, Wenbing Huang, Tingyang Xu, and Junzhou Huang. 2020. DropEdge:
+Towards Deep Graph Convolutional Networks on Node Classification. In ICLR .
+OpenReview.net.
+[21] Emanuele Rossi, Ben Chamberlain, Fabrizio Frasca, Davide Eynard, Federico
+Monti, and Michael Bronstein. 2020. Temporal Graph Networks for Deep Learning
+on Dynamic Graphs. In ICML 2020 Workshop on Graph Representation Learning .
+[22] Uriel Singer, Ido Guy, and Kira Radinsky. 2019. Node Embedding over Temporal
+Graphs. In IJCAI . ijcai.org, 4605–4612.
+[23] Rakshit Trivedi, Mehrdad Farajtabar, Prasenjeet Biswal, and Hongyuan Zha. 2019.
+DyRep: Learning Representations over Dynamic Graphs. In International Confer-
+ence on Learning Representations . https://openreview.net/forum?id=HyePrhR5KX
+[24] Aäron van den Oord, Yazhe Li, and Oriol Vinyals. 2018. Representation
+Learning with Contrastive Predictive Coding. CoRR abs/1807.03748 (2018).
+arXiv:1807.03748 http://arxiv.org/abs/1807.03748
+[25] Petar Velickovic, William Fedus, William L Hamilton, Pietro Liò, Yoshua Bengio,
+and R Devon Hjelm. 2019. Deep Graph Infomax. ICLR (Poster) 2, 3 (2019), 4.
+[26] Lin Wang and Kuk-Jin Yoon. 2022. Knowledge Distillation and Student-Teacher
+Learning for Visual Intelligence: A Review and New Outlooks. IEEE Trans. Pattern
+Anal. Mach. Intell. 44, 6 (2022), 3048–3068.
+[27] Zhengyang Wang and Shuiwang Ji. 2020. Second-Order Pooling for Graph Neural
+Networks. IEEE Transactions on Pattern Analysis and Machine Intelligence (2020),
+1–1. https://doi.org/10.1109/TPAMI.2020.2999032
+[28] Dongkuan Xu, Wei Cheng, Dongsheng Luo, Haifeng Chen, and Xiang Zhang.
+2021. InfoGCL: Information-Aware Graph Contrastive Learning. In NeurIPS .
+30414–30425.
+[29] Da Xu, Chuanwei Ruan, Evren Körpeoglu, Sushant Kumar, and Kannan Achan.
+2020. Inductive representation learning on temporal graphs. In ICLR . OpenRe-
+view.net.
+[30] Rex Ying, Ruining He, Kaifeng Chen, Pong Eksombatchai, William L. Hamilton,
+and Jure Leskovec. 2018. Graph Convolutional Neural Networks for Web-Scale
+Recommender Systems. In KDD . ACM, 974–983.
+[31] Zhitao Ying, Dylan Bourgeois, Jiaxuan You, Marinka Zitnik, and Jure Leskovec.
+2019. GNNExplainer: Generating Explanations for Graph Neural Networks. In
+NeurIPS . 9240–9251.
+[32] Jiaqi Zeng and Pengtao Xie. 2021. Contrastive Self-supervised Learning for Graph
+Classification. In AAAI . AAAI Press, 10824–10832.
+[33] Dalong Zhang, Xin Huang, Ziqi Liu, Jun Zhou, Zhiyang Hu, Xianzheng Song,
+Zhibang Ge, Lin Wang, Zhiqiang Zhang, and Yuan Qi. 2020. AGL: A Scalable
+System for Industrial-purpose Graph Machine Learning. Proc. VLDB Endow. 13,
+12 (2020), 3125–3137.
+[34] Linfeng Zhang, Jiebo Song, Anni Gao, Jingwei Chen, Chenglong Bao, and
+Kaisheng Ma. 2019. Be Your Own Teacher: Improve the Performance of Con-
+volutional Neural Networks via Self Distillation. In 2019 IEEE/CVF International
+Conference on Computer Vision, ICCV 2019, Seoul, Korea (South), October 27 -
+November 2, 2019 . IEEE, 3712–3721. https://doi.org/10.1109/ICCV.2019.00381
+[35] Shichang Zhang, Yozen Liu, Yizhou Sun, and Neil Shah. 2022. Graph-less Neural
+Networks: Teaching Old MLPs New Tricks Via Distillation. In International
+Conference on Learning Representations . https://openreview.net/forum?id=4p6_
+5HBWPCw
+[36] Wentao Zhang, Zhi Yang, Yexin Wang, Yu Shen, Yang Li, Liang Wang, and Bin Cui.
+2021. Grain: Improving Data Efficiency of Graph Neural Networks via Diversified
+Influence Maximization. Proc. VLDB Endow. 14, 11 (2021), 2473–2482.
+[37] Cheng Zheng, Bo Zong, Wei Cheng, Dongjin Song, Jingchao Ni, Wenchao Yu,
+Haifeng Chen, and Wei Wang. 2020. Robust Graph Representation Learning
+via Neural Sparsification. In ICML (Proceedings of Machine Learning Research,
+Vol. 119) . PMLR, 11458–11468.
+[38] Hongkuan Zhou, Ajitesh Srivastava, Hanqing Zeng, Rajgopal Kannan, and Vik-
+tor K. Prasanna. 2021. Accelerating Large Scale Real-Time GNN Inference using
+Channel Pruning. Proc. VLDB Endow. 14, 9 (2021), 1597–1605.Less Can Be More: Unsupervised Graph Pruning for Large-scale Dynamic Graphs Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Algorithm 1 Training of STEP framework.
+Input: GraphG=(V,E), embedding network 𝑓𝜃(·), sampling
+network𝑆𝜔(·), pruning network 𝑔𝜙(·), hyperparameter 𝜆1,𝜆2;
+Output: Learned pruning network 𝑔𝜙(·);
+1:while not converged do;
+2: z𝑖,m𝑖𝑗←Calculate node & edge emb.; ⊲Eq. (2) & (3)
+3: s𝑟𝑑
+𝑖𝑗,s𝑟𝑙
+𝑖𝑗←Calculate edge red. & rel. score; ⊲Eq. (5) & (7)
+4:𝜌𝑖𝑗←Calculate edge sampling probability; ⊲Eq. (8)
+5:𝑦𝑖𝑗←Sample edges drawn from 𝜌𝑖𝑗; ⊲Eq. (9)
+6:𝑃𝑖𝑗←Calculate edge pruning probability; ⊲Eq. (10)
+7: CalculateL𝑠according to Eq. (11);
+8: CalculateL𝑝according to Eq. (12);
+9: CalculateL𝑏according to Eq. (13);
+10:L←L𝑐+𝜆1L𝑠+𝜆2L𝑏; ⊲Eq. (14)
+11: Update parameters by gradient descent;
+12:end while ;
+13:return𝑔𝜙(·);
+A ALGORITHM
+B DISCUSSIONS
+B.1 Extension to Mini-batch Training
+As like many GNN alternatives, our framework is available to per-
+form mini-batch training for large-scale graphs. Given a set of
+batch nodes (root nodes), we take inspiration from graph subsam-
+pling and sample their 𝐾-hop neighborhoods from the dynamic
+graph. Specifically, for a node 𝑣0at time𝑡0, we recursively sample
+its neighborhoods N(𝑣0;𝑡0)up to depth 𝐾to form the subgraph
+G(𝐾)(𝑣0,𝑡0). Then, the node and edge embeddings are produced
+by performing message aggregation on G(𝐾)(𝑣0,𝑡0). This matches
+the paradigm of current GNNs [ 7,29] on large-scale graphs while
+alleviating the need to operate on the entire graph during training.
+As theG(𝐾)(𝑣0,𝑡0)is induced from the central node 𝑣0, we thereby
+usez𝑣0as the graph representation in Eq. (6), rather than taking
+the average or sum over all node embeddings as the graph repre-
+sentation. Accordingly, we can simplify the negative sampling in
+Eq.(11)by randomly sampling nodes from other subgraphs as neg-
+ative examples. As each node selects its edges independently from
+its neighborhood during subsampling, we can also utilize parallel
+computation on each batched subgraph to speed up the learning.
+B.2 Time and Space Complexity Analysis
+Here we briefly discuss the time and space complexity of our pro-
+posed framework in terms of training and inference phases. For
+simplicity, we assume that the node feature, edge feature, time en-
+coding feature, and hidden representations are 𝐷-dimensional. As
+graph sampling network and graph-less pruning network are simple
+feed-forward networks involved with dense matrix computation,
+the major computational complexity occurs in message aggregation
+of graph embedding network during training. Particularly, for a
+𝐾layer embedding network, the time complexity is related to the
+graph size and the dimension of features/hidden representations,
+aboutO(|E|𝐾𝐷+|V|𝐾𝐷2). We can further incorporate mini-batch
+training and the time complexity for each sampled subgraph isTable 4: Dataset statistics.
+Wikipedia Reddit Alipay
+#Nodes 9,227 10,984 7,481,538
+#Edges 157,474 672,447 21,691,814
+#Edge features 172 172 79
+#Labeled nodes 217 366 18,330
+Density 0.19 0.56 3.87 ×10−7
+Timespan 30 days 30 days 21 days
+Positive label meaning posting banned editing banned fraudster
+Chronological Split 70%/15%/15% 70%/15%/15% 14d/3d/4d
+reduced toO(|V|𝑆𝐾𝐷2), where𝑆is the neighborhood size shared
+by each hop. As for the space complexity, the major bottleneck is
+also the graph embedding network, which is O(|V|𝐾𝐷+𝐾𝐷2)and
+O(𝐵𝑆𝐾𝐷+𝐾𝐷2)for full-batch and mini-batch training, respectively.
+𝐵is the batch size.
+At the inference stage, STEP only requires the edge feature and
+time information as input to compute the pruning probability 𝑃,
+the resulting time complexity is O(2𝐿𝐷2)where𝐿is the number
+of layers in graph-less pruning network. Note that 𝑃’ computation
+can be trivially parallelized. STEP does not introduce additional
+parameters besides graph-less pruning network and we do not
+need to store intermediate embeddings in the GPU, hence the space
+complexity isO(𝐿𝐷2)for storing the network parameters. In a
+word, the proposed STEP is an efficient graph pruning framework
+available for massive graphs.
+C EXPERIMENTAL SETUP
+Datasets. We perform experiments on three real-world dynamic
+graph datasets, including two public datasets and one large-scale
+industrial dataset to validate the effectiveness and robustness of
+STEP framework. Datasets statistics are summarized in Table 4.
+•Wikipedia [29]. Wikipedia is a bipartite dynamic graph
+with∼9300 nodes and∼160,000 temporal edges during one
+month, where its nodes are users and wiki pages, and inter-
+action edges represent a user editing a page. There are only
+217positive labels among 157,474transactions ( =0.14%),
+indicating whether a user is banned from posting.
+•Reddit [29]. Reddit is also a bipartite dynamic graph contain-
+ing users and interactions during one month, which contains
+∼11,000 nodes and∼700,000 temporal edges. An interaction
+represents posts made by users on subreddits. Dynamic la-
+bels mean whether a user is banned from posting under a
+subreddit. There are only 366positive labels among 672,447
+transactions ( =0.05%) in the Reddit dataset.
+•Alipay . Alipay is a financial transaction network collected
+from Alipay platform2, which consists of ∼7,500,000 nodes
+and∼22,000,000 temporal transaction edges. Dynamic labels
+indicate whether a user is a fraudster. There are only 18,330
+positive labels among 21,691,814transactions ( =0.08%) in
+the Alipay dataset. Note that the Alipay dataset has under-
+gone a series of data-possessing operations, so it cannot
+represent real business information.
+2https://www.alipay.com/Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Li and Tian, et al.
+For Wikipedia and Reddit datasets, we follow the standard chrono-
+logical split with 70%-15%-15% according to the node interaction
+timestamps [ 29]. For Alipay, we adopt 14days/3days/4days split for
+train/val/test. Datasets statistics are summarized in Table 4.
+Baselines. As the first work to study unsupervised graph pruning
+on dynamic graphs, we compare against three baselines adapted
+from the work on static graphs: (i) DropEdge [ 20] is a heuristic
+method that randomly drops edges from the graphs without consid-
+ering the time information. Note that DropEdge has no learnable
+parameters and thus no training is required. (ii) NeuralSparse [ 37]
+utilizes downstream supervision signals to remove potentially re-
+dundant edges in an inductive manner. (iii) PGExplainer [ 14] is the
+state-of-the-art technique that uncovers the underlying structures
+as the explanations and removes edges that contribute less to the
+downstream predictions. Both NeuralSparse and PGExplainer are
+supervised methods and we adapt them to the unsupervised setting
+by optimizing the learning objective in Eq. (1). For a fair compari-
+son, we use TGN [ 21] and TGAT [ 29] as the backbone classifiers
+for all methods.Implementation details. For all experiments, the hidden dimen-
+sion of TGN and TGAT is set as 128. We report the average results
+with standard deviations of 10 different runs for all experiments. For
+the proposed STEP framework, we fix the following configuration
+across all experiments without further tuning: we adopt mini-batch
+training for STEP and sample two-hop subgraphs with 20 nodes
+per hop. The node and edge embedding dimensions are both fixed
+as 128. For the prior sampling probability parameter in Eq (13), we
+tune𝑞over the range [0.1, 0.9], and we found that picking 𝑞=0.5
+performs well across all datasets. We also set 𝜆1=𝜆2=0.01in
+Eq.(14). We use Adam as the optimizer with an initial learning rate
+of 0.001, and a batch size of 128 for the training. All parameters are
+carefully tuned according to the validation set performance.
+Software and hardware Specifications. We coded our framework
+and the baselines in PyTorch [ 18]. For Wikipedia and Reddit datasets,
+our experiments were conducted on a Linux machine with one
+NVIDIA Tesla V100 GPU, each with 32GB memory. While for the
+industrial dataset Alipay, due to high concurrent processing, we ran
+the experiments on distributed Linux services with 12 Intel Xeon
+Platinum 8163 CPUs, each with 64GB memory.

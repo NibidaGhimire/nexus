@@ -1,0 +1,677 @@
+LNO: Laplace Neural Operator for Solving Differential Equations
+Qianying Caoa,b, Somdatta Goswamib, George Em Karniadakisb,c,∗
+aState Key Lab of Coastal and Offshore Engineering, Dalian University of Technology
+bDivision of Applied Mathematics, Brown University
+cSchool of Engineering, Brown University
+Abstract
+We introduce the Laplace neural operator (LNO), which leverages the Laplace transform to decom-
+pose the input space. Unlike the Fourier Neural Operator (FNO), LNO can handle non-periodic
+signals, account for transient responses, and exhibit exponential convergence. LNO incorporates the
+pole-residue relationship between the input and the output space, enabling greater interpretability
+and improved generalization ability. Herein, we demonstrate the superior approximation accuracy
+of a single Laplace layer in LNO over four Fourier modules in FNO in approximating the solutions
+of three ODEs (Duffing oscillator, driven gravity pendulum, and Lorenz system) and three PDEs
+(Euler-Bernoulli beam, diffusion equation, and reaction-diffusion system). Notably, LNO outper-
+forms FNO in capturing transient responses in undamped scenarios. For the linear Euler-Bernoulli
+beam and diffusion equation, LNO’s exact representation of the pole-residue formulation yields
+significantly better results than FNO. For the nonlinear reaction-diffusion system, LNO’s errors are
+smaller than those of FNO, demonstrating the effectiveness of using system poles and residues as net-
+work parameters for operator learning. Overall, our results suggest that LNO represents a promising
+new approach for learning neural operators that map functions between infinite-dimensional spaces.
+Keywords: Operator Learning, neural operators, Laplace transformation, transient response, pole,
+residue
+1. Introduction
+Real-world problems in computational science and engineering that lack closed-form solutions
+often require the use of expensive numerical solvers taxing CPU/GPU resources substantially both
+in processing and memory. Even minor changes to the problem’s parameters frequently require
+running the numerical solver again, adding to the computational expense and time. However, the
+recent advancements in scientific machine learning, particularly the development of deep neural op-
+erators, offer a promising approach to solving parametrized ordinary/partial differential equations
+(ODEs/PDEs) using data-driven supervised learning. This approach offers an alternative and of-
+ten advantageous alternative to traditional numerical solvers. By training a deep neural operator
+on a sufficiently large and diverse dataset offline, it is possible to approximate the solution of an
+ODE/PDE over a wide range of parameter values very fast online without further training.
+Two neural operators that have shown promising results in approximating complex physical pro-
+cesses are the deep operator network introduced in 2019 [1] and the Fourier neural operator (FNO)
+∗Corresponding author.
+Email addresses: qianying_cao@brown.edu (Qianying Cao), somdatta_goswami@brown.edu
+(Somdatta Goswami), george_karniadakis@brown.edu (George Em Karniadakis)
+Preprint submitted to Elsevier May 31, 2023arXiv:2303.10528v2  [cs.LG]  30 May 2023introduced in 2020 [2]. In this work, we are particularly interested in developing a new neural oper-
+ator, which addresses a specific bottleneck of FNO. Let us first recall that FNO is based on replacing
+the kernel integral operator with a convolution operator defined in Fourier space by employing a fast
+Fourier transform on the input space. The Fourier transform converts a physical system from the
+time domain to the frequency domain. From the definition of the Fourier transform, we have that
+the Fourier transform of a time-domain function x(t)is a continuous sum of exponential functions
+of the form e−iωt, which means it adds the waves of positive and negative frequencies, where ωis
+the frequency. However, there are functions for which the Fourier transform does not exist such as
+|x(t)|because it is not absolutely integrable. Also, if we are interested in analyzing unstable sys-
+tems then the Fourier transform cannot be used. The Laplace transform, on the other hand, redefines
+the Fourier transform and includes an exponential convergence factor σalong with iω. Therefore,
+using the Laplace transform, the time-domain signal x(t)can be represented as a sum of complex
+exponential functions of the form e−st, where s=σ+iω.
+The Fourier transform, Fofx(t), and its first and second derivatives can be defined as:
+F{x(t)}=Z∞
+t=−∞x(t)e−iωtdt,F(˙x(t)) =iωF{x(t)},F(¨x(t)) =−ω2F{x(t)},(1)
+which shows that the Fourier transform is not a suitable candidate for learning solutions for different
+initial conditions, as the transformation has no term to take the initial value into account. On the
+other hand, the Laplace transform, Lofx(t)can be defined as:
+L{x(t)}=Z∞
+t=0x(t)e−stdt, (2)
+which is precisely motivated by the property that the differentiation of the time-dependent function
+with respect to time corresponds to the multiplication of the transform L(s)bys[3]. More precisely,
+L(˙x) =L{x(t)} −x(0), (3)
+L(¨x) =s2L{x(t)} −sx(0)−˙x(0), (4)
+which clearly depicts that the transformation takes into account the initial conditions (displacement
+and velocity), hence making it an appropriate candidate for learning neural operators with transient
+responses caused by zero initial conditions.
+Motivated by the limitations of FNO, especially for capturing the transient responses and non-
+period signals, and in order to exploit the advantages of the Laplace transformation, we propose
+the Laplace neural operator (LNO), that considers the decomposition of the input space employing
+the Laplace transform. The main idea behind this work is to employ a Laplace layer to replace the
+multiple Fourier layers of FNO so that the network parameters (including the system poles µnand
+residues βn) are learned in the Laplace domain. The Laplace layer learns transient and steady-state
+responses simultaneously, as opposed to the Fourier layer which is more suited to learn the steady-
+periodic response. It is important to note that this work is not a trivial extension of replacing the
+Fourier modules of FNO with a Laplace layer but the approach also provides a more meaningful
+and physically interpretable mapping between the input and the output space on the Laplace domain
+by employing the poles and residue formulation. A schematic of the proposed neural operator is
+presented in Fig. 1.
+The main contributions of this work can be summarized as follows:
+• A novel framework to perform operator learning in the Laplace domain is proposed for solving
+ordinary and partial differential equations.
+2• The physically meaningful pole-residue relationship between the functions in the input space
+and the system response is introduced into the network, which makes the operator more inter-
+pretable and endows it with good generalization ability.
+• The proposed framework can learn both transient and steady-periodic responses and, therefore,
+can be especially employed for systems without damping.
+The remainder of the paper is organized as follows. In Section 2, we introduce the Laplace neural
+operator. In Section 3, we compare the accuracy of the proposed LNO with FNO and gated recurrent
+units (GRU) [4] for three time-dependent ODEs with transient responses. Finally, we summarize our
+observations and provide concluding remarks in Section 4.
+Pole-Residue
+Method
+𝐟(𝑡) 𝐱(𝑡)  𝑣(𝑡) ∈ ℝௗ೥ 
+ 𝑉(𝑠)
+ 𝑈(𝑠)
+ 𝐾థ(𝑠)Laplace layer(a)
+(b)  𝑊
+𝑢(𝑡) ∈ ℝௗ೥
+ 𝑈(𝑠)
+ 𝑊ୱ୲(𝑠) 𝑊୲௥(𝑠)
+ 𝜆ℓ 𝛾௡
+ 𝐾థ(𝑠)  𝛼ℓ 𝑉(𝑠)  𝛽௡Laplace layer
+Fig. 1: (a) Schematic representation of the full architecture of Laplace neural operator (LNO). We start from an input
+function f(t)and follow the following steps. 1.Lift the input function to a higher dimension by a shallow neural network
+P.2.Apply a Laplace layer and a local linear transform W.3.Project the output, u(t), back to the target dimension
+employing a shallow neural network, Q.(b)Laplace layer: start from input V(s). Top row: apply the pole-residue
+method to compute the transient response residues γnbased on system poles µnand residues βn; express the transient
+response in the Laplace domain. Bottom row: apply the pole-residue method to compute the steady-state response
+residues λℓbased on input poles iωℓand residues αℓ; express the steady-state response in Laplace domain.
+2. Neural Operators
+Neural operators are powerful machine learning models that can learn nonlinear mappings be-
+tween infinite-dimensional functional spaces on bounded domains. They offer a unique simulation
+framework for predicting multi-dimensional complex dynamics in real-time. Once trained, the neu-
+ral operators are discretization invariant, meaning they can be applied across different parameteriza-
+tions of the underlying functional data without requiring retraining. This makes them highly versatile
+3tools for being employed as an efficient surrogate model for learning parametrized ODEs/PDEs that
+govern physical systems. Inspired by the universal approximation theorem of operators proposed
+by Chen & Chen [5], the first neural operator, deep operator network (DeepONet) was proposed
+in2019 [1]. DeepONet is represented by a summation of the products of two or more deep neural
+networks (DNNs), corresponding to the branch NN/s for the input function/s and the trunk NN for
+the output function. All the NNs have general architectures, e.g., the branch NN can be replaced
+with a CNN or a ResNet, and the trunk NN can be a fully connected NN or could be a network
+with proper orthogonal modes etc. Motivated by the idea of neural operators, the Fourier neural
+operator (FNO) was proposed in 2020 , which employs the Green’s function as its backbone and the
+convolution integral kernel in the Green’s function is parameterized directly in the Fourier space [2].
+As discussed in Section 1, herein we introduce the Laplace neural operator (LNO), which could
+improve the approximation capacity of FNO in cases of transient responses and no damping con-
+ditions for time-dependent ODEs/PDEs. Let Ωbe a bounded open set in RD, and let XandYbe
+separable Banach spaces defined on Ωwith dimensions dxanddy, respectively. Suppose that a non-
+linear map G:X → Y arises from the solution of a time-dependent PDE. The goal is to approximate
+this non-linear operator by a parametric mapping as Gθ:X → Y , where θare the network param-
+eters that are learned through backpropagation, while training of the neural operator, based on the
+labeled input-output pairs {fj,uj}N
+j=1generated on a discretized domain Ω, where fj∼ujis an i.i.d
+sequence from the probability measure usupported on X.
+2.1. Laplace neural operator
+To implement the proposed LNO, the input function f(t)∈Rdxis first transformed into a higher
+dimensional representation v(t)∈Rdzusing a lifting layer, denoted by P. This layer is typically
+realized by a shallow neural network or a linear transformation. Next, a nonlinear operator is applied
+to this representation using the sum of the Laplace layer and a bias function in a neural network
+architecture as:
+u(t) =σ((κ(f;ϕ)∗v)(t) +Wv(t));x∈D, (5)
+where σis a nonlinear activation function, Wis a linear transformation, and κis a kernel integral
+transformation. Lastly, the output x(t)is obtained by projecting u(t)through a local transformation
+layer,Q. In Eq. 5, the kernel integral operator mapping is denoted as:
+(κ(f;ϕ)∗v)(t) =Z
+Dκϕ(t, τ,f(t),f(τ);ϕ)v(τ)dτ, (6)
+where κϕis a neural network parameterized by ϕ. If we remove the dependence on the function f
+and impose κϕ(t, τ) =κϕ(t−τ), Eq. 5 becomes a convolution operator:
+(κ(f;ϕ)∗v)(t) =Z
+Dκϕ(t−τ)v(τ)dτ. (7)
+Now in the next section, we build the relationship between the Laplace transform of the input func-
+tion and the Laplace transform of the output function employing the Pole-residue formulation in the
+Laplace layer.
+2.2. Pole-residue formulation in Laplace layer
+We propose to replace the kernel integral operator in Eq. 7 with an operator defined in the Laplace
+domain. By taking the Laplace transform of Eq. 7, we get
+U(s) =L{(κ(f;ϕ)∗v)(t)}=Kϕ(s)V(s), (8)
+4whereL{.}andL−1{.}are operators of the Laplace transform and inverse Laplace transform,
+respectively; Kϕ(s) =L{κϕ(t)}andV(s) =L{v(t)}. We express Kϕ(s)in the pole-residue
+form:
+Kϕ(s) =NX
+n=1βn
+s−µn. (9)
+Here, we propose to choose Kϕto be a neural network directly parameterized by: θ= (µ1,···, µN, β1,···, βN)
+in the Laplace domain, where µnandβnare the trainable system poles and residues, respectively.
+An irregular excitation signal v(t)with period Tcan be decomposed into its Fourier series:
+v(t) =∞X
+ℓ=−∞αℓexp(iωℓt),0≤t < T, (10)
+where ωℓ=ℓω1,ω1is the fundamental frequency in rad /s, and αℓis the complex Fourier coefficient.
+Taking the Laplace transform of Eq. (10) yields:
+V(s) =∞X
+ℓ=−∞αℓ
+s−iωℓ. (11)
+From U(s) =Kϕ(s)V(s), using Eqs. 9 and 11, one writes
+U(s) = NX
+n=1βn
+s−µn! ∞X
+ℓ=−∞αℓ
+s−iωℓ!
+. (12)
+Expressing Eq. 12 in a pole-residue form yields [6, 7]
+U(s) =NX
+n=1γn
+s−µn+∞X
+ℓ=−∞λℓ
+s−iωℓ. (13)
+From Eqs. 12 and 13, the response residues corresponding to the first Nresponse poles (i.e., at the
+system poles, µn) can be obtained by the residue theorem [3]:
+γn= lim
+s→µn(s−µn)U(s) =βnV(µn), (14)
+where
+V(µn) =∞X
+ℓ=−∞αℓ
+µn−iωℓ. (15)
+Similarly, the response residues corresponding to the last response poles ( i.e., at the excitation poles,
+iωℓ) are
+λℓ= lim
+s→iωℓ(s−iωℓ)U(s) =αℓKϕ(iωℓ), (16)
+where
+Kϕ(iωℓ) =NX
+n=1βn
+iωℓ−µn. (17)
+5Once γnandλℓare obtained, by taking the inverse Laplace transform of Eq. 13, we obtain:
+u1(t) =NX
+n=1γnexp(µnt) +∞X
+ℓ=−∞λℓexp(iωℓt). (18)
+In Eq. 18, the first summation term of the right-hand side is the transient response related to the
+system poles. The second summation term of the right-hand side is the familiar steady-state response
+operated in the frequency domain.
+Next, we summarize the primary differences between FNO and LNO:
+1. FNO chooses Kϕto be a neural network parameterized by θ= (Kϕ(iω1),···, Kϕ(iωL))in
+the frequency domain. However, LNO chooses Kϕto be a neural network parameterized by
+θ= (µ1,···, µN, β1,···, βN)in the Laplace domain, where µnandβnare the trainable sys-
+tem poles and residues, respectively.
+2. FNO computes the steady-state response in the frequency domain. However, LNO computes
+both the transient response and the steady-state response by the Laplace domain method.
+3. Results
+In this section, we investigate the performance of the proposed Laplace neural operator (LNO)
+in comparison with the Fourier neural operator (FNO) and the gated recurrent unit (GRU), which
+is a promising recurrent neural network for studying three time-dependent non-linear ODEs that
+exhibit transient behavior and three PDEs. As GRU is suitable for sequential data, we exclude it
+from the PDE problems. A visual description of the different benchmarks considered in this section
+is presented in Fig. 2. For each experiment, slightly different input functions are considered for the
+training and testing samples to investigate the generalization ability of the neural operators. The
+architectures of LNO, FNO, and GRU considered in each case are shown in Appendix Tables A.1
+and A.2. The neural operators, LNO and FNO have been implemented using the PyTorch [8], and
+GRU has been implemented using Tensorflow [9]. To evaluate the performance of the neural
+operators and GRU, we compute the relative L2error of the predictions of the test samples and
+report the mean and standard deviation of this metric based on five independent training trials. A
+summary of the error metric of all the experiments for all five problems is shown in Fig. 3.
+3.1. Duffing oscillator
+The Duffing equation is a non-linear second-order differential equation used to model certain
+damped and driven oscillators. The Duffing oscillator is an example of a forced oscillator with
+nonlinear elasticity, and can be written as:
+m¨x+c˙x+k1x+k3x3=f(t), (19)
+where f(t)is the externally applied force, m,care the mass, damping coefficients, k1andk3stiffness
+of the system, and x(t),˙x(t)and¨x(t)are the displacement, velocity, and acceleration of the dynamic
+response, respectively. Eq. 19 is subjected to zero initial conditions x(0) = 0 and˙x(0) = 0 , and
+the damping coefficient, c≥0. The Duffing oscillator is one of the prototype systems of nonlinear
+dynamics, which has been successfully utilized to model many processes, such as beam buckling,
+stiffening springs, and ionization waves in plasmas.
+In this example, for simplicity we have considered m= 1,k1= 1, and k3= 1, and have studied
+two scenarios:
+6Domain 
+visualization
+Model Output Input 
+functionApplication
+Target Source
+Duffing 
+oscillator 
+Driven 
+pendulum 
+Lorenz
+system𝑓௧௥௔௜௡𝑡 = 𝐴𝑠𝑖𝑛(𝜔𝑡)
+𝑓௧௘௦௧𝑡
+= 𝐴𝑒ି଴.଴ହ௧𝑠𝑖𝑛(𝜔𝑡)𝐴 ∈ [0.05 ∶ 0.05:10]
+𝐴 ∈ [0.14 ∶ 0.05:9.09]c=0
+c=0.5
+c=0
+c=0.5
+𝜌 = 10
+𝜌 = 15𝑥̈+𝑐𝑥̇+𝑥 +𝑥ଷ= 𝑓𝑡
+𝑥0 = 0, 𝑥 ̇0 = 0
+𝐺ఏ: 𝑓(𝑡) → 𝑥(𝑡)
+𝑥̈+𝑐𝑥̇+sin (𝑥) = 𝑓𝑡
+𝑥0 = 0, 𝑥 ̇0 = 0
+𝐺ఏ: 𝑓(𝑡) → 𝑥(𝑡)
+𝑥̇= 10(𝑦−𝑥)
+𝑦̇= 𝑥𝜌−𝑧 −𝑦
+𝑧̇= 𝑥𝑦 −8
+3𝑧−𝑓(𝑡)
+𝑥0 = 1,𝑦 0 = 0, ,𝑧0 = 0
+𝐺ఏ: 𝑓(𝑡) → 𝑥(𝑡)
+Diffusion 
+equationEuler-Bernoulli 
+beam
+𝑓௧௥௔௜௡𝑥,𝑡 = 𝐴𝑒ି଴.଴ହ௧
+1−𝜋ଶ𝑠𝑖𝑛𝜋𝑥
++𝐴ଶ𝑒ି଴.ଵ௧sin (𝜋𝑥)ଶ
+𝐴 ∈ [0.05 ∶ 0.05:10]
+𝐴∈[0.14∶0.05:9.09]𝑓௧௥௔௜௡𝑥,𝑡 = 𝐴𝑒ି଴.଴ହ௫
+(1−𝜔ଶ)𝑠𝑖𝑛(𝜔𝑡)
+𝐴 ∈ [0.05 ∶ 0.05:10]
+𝑓௧௘௦௧𝑥,𝑡 = 𝐴𝑒ି௫
+(1−𝜔ଶ)𝑠𝑖𝑛(𝜔𝑡)
+𝐴 ∈ [1.24 ∶ 0.05:10.19]
+𝐷𝜕ଶ𝑦
+𝜕𝑥ଶ+𝑘𝑦ଶ−𝜕𝑦
+𝜕𝑡= 𝑓𝑥,𝑡
+𝐺ఏ: 𝑓(𝑥,𝑡) → 𝑦(𝑥,𝑡)𝐸𝐼𝜕ସ𝑦
+𝜕𝑥ସ+𝜌𝐴𝜕ଶ𝑦
+𝜕𝑡ଶ= 𝑓𝑥,𝑡
+𝐺ఏ: 𝑓𝑥,𝑡 → 𝑦(𝑥,𝑡)
+Reaction-
+Diffusion system𝑓௧௥௔௜௡𝑥,𝑡 = 𝐴𝑒ି଴.଴ହ௧
+(1−𝜋ଶ)𝑠𝑖𝑛(𝜋𝑥)
+𝐴 ∈ [0.05 ∶ 0.05:10]
+𝑓௧௘௦௧𝑥,𝑡 = 𝐴𝑒ି௧
+(1−𝜋ଶ)𝑠𝑖𝑛(𝜋𝑥)𝐷𝜕ଶ𝑦
+𝜕𝑥ଶ−𝜕𝑦
+𝜕𝑡= 𝑓𝑥,𝑡
+𝐺ఏ: 𝑓(𝑥,𝑡) → 𝑦(𝑥,𝑡)
+𝐴 ∈ [1.24 ∶ 0.05:10.19]
+𝑓௧௘௦௧𝑥,𝑡 = 𝐴𝑒ି௧
+1−𝜋ଶ𝑠𝑖𝑛𝜋𝑥
++𝐴ଶ𝑒ିଶ௧sin (𝜋𝑥)ଶ
+Fig. 2: A schematic representation of the examples and the subsequent experiment scenarios under consideration in this
+work. Shown are representative plots of the input/output functions.7• Scenario 1: A Duffing oscillator that does not include damping, i.e.,c= 0.
+• Scenario 2: A Duffing oscillator that includes a damping term with the coefficient c= 0.5.
+Here, our goal is to learn the non-linear operator of the system in Eq. 19, which maps the forcing
+function, f(t)(considered as input) to the system response denoted by x(t); that is, Gθ:f(t)→x(t).
+To generate Ntrain samples to train LNO, we consider a sinusoidal forcing function, ftrain(t) =
+Asin (5t), where the amplitude A∈[0.05,10]with an interval δA= 0.05, therefore Ntrain= 200 .
+Each sample is discretized into 2048 temporal points and the time interval is ∆t= 0.01seconds.
+The response is calculated by a versatile ODE solver— ode45 on MATLAB. For validating and
+testing the neural operator, we generated datasets considering a decaying sinusoidal forcing function,
+ftest(t) =Ae−0.05tsin(5t), where the amplitude A∈[0.14,9.09]andNvali= 50 andNtest= 130 .
+The results presented in Fig. 3 demonstrate that LNO approximates the test cases of scenarios 1
+and2with overall high accuracy. The improvement of the prediction of LNO over FNO is more
+pronounced for oscillators without damping (Scenario 1: the first column of Fig. 3). If the damping
+of a system is zero, there will always exist a transient response. The approximation accuracy of LNO
+is better than FNO because it can capture both steady-state and transient responses, although it has
+a higher standard deviation. LNO is more accurate than GRU when there is no damping, but GRU
+is more accurate than LNO when the damping term is introduced, c= 0.5. The batch size used for
+LNO affects its results, so choosing an appropriate value is essential. Fig. 4 (first and second rows)
+presents the error plots of two representative test samples for each of the neural models. Additionally,
+a visual representation of the prediction of the solution obtained from the two neural operators for
+both scenarios is shown in Fig. 5. Figs. 5 (a) and (c) illustrate that the generalization gap of FNO
+(the difference between a model’s performance on training data and its performance on unseen data)
+is significantly higher than that of LNO.
+Duffing 
+ (c=0)Duffing 
+(c=0.5)Pendulum 
+(c=0)Pendulum 
+(c=0.5)Lorenz 
+(=5)Lorenz 
+(=10)Beam Diffusion Reaction
+-Diffusion00.10.20.30.40.50.60.70.8
+LNO
+FNO
+GRU
+Fig. 3: Relative L2error in the test cases for all the ODE and PDE cases and for different scenarios considered in
+each example. The plot shows the mean and the standard deviation of the error that has been computed based on five
+independent training trials.
+8LNO FNO LNO FNO GRU GRUSample 1 Sample 2Duffing
+𝑐=0 𝑐=0.5Pendulum
+𝑐=0 𝑐=0.5Lorenz
+𝜌=5 𝜌=10
+Time (seconds) Time (seconds)Point-wise prediction error Magnitude (meters) Magnitude (meters) Magnitude (meters)
+Error (meters) Error (meters) Error (meters)
+Error (meters) Error (meters) Error (meters)Magnitude (meters) Magnitude (meters) Magnitude (meters)Ground truth Ground truthFig. 4: Pointwise error plots of responses for two representative test samples drawn from three ODE experiments. The
+ground truth is plotted by red curves and the pointwise error for LNO, FNO, and GRU are presented by blue curves.
+90 200 400 600 800 1000
+epoch10-210-1100101
+Train error of LNO
+Test error of LNOTrain error of FNO
+Test error of FNO0 200 400 600 800 1000
+epoch10-1100
+Train error of LNO
+Test error of LNOTrain error of FNO
+Test error of FNO
+-202
+Case 25True
+LNOFNO
+-202
+Case 50
+-101
+Case 75
+0 5 10 15 20
+Time (seconds)-0.200.2
+Case 100
+-0.100.10.2
+Case 25True
+LNOFNO
+-0.200.20.4
+Case 50
+-0.100.10.2
+Case 75
+0 5 10 15 20
+Time (seconds)00.51
+Case 100(a) (b)
+(c) (d)Learning curve for c=0
+Learning curve for c=0.5Samples for c=0 
+Samples for c=0.5 Fig. 5: Duffing oscillator: Comparison of training and testing losses and responses obtained using LNO and FNO: (a)
+learning curve of the system without damping, (b)representative response obtained from the system without damping,
+for test cases, (c)learning curve of the system with damping c= 0.5,(d)representative response obtained from the
+system with damping c= 0.5, for test cases.
+103.2. Driven gravity pendulum
+In the next example, we consider a gravity pendulum subjected to an external force, f(t). The
+equation which describes the motion of the pendulum is written as:
+¨x+c˙x+g
+lsin(x) =f(t), (20)
+subject to x(0) = 0 ,˙x(0) = 0 , (21)
+where gis the magnitude of the gravitational field, lis the length of the rod; cis the damping
+due to friction; xis the angle from the vertical to the pendulum; and f(t)is the external force.
+For simplicity, we have chosen g/l= 1 in this example, and the following two scenarios are also
+considered:
+• Scenario 1: the pendulum does not include damping, i.e.,c= 0.
+• Scenario 2: the pendulum includes a damping term with the coefficient c= 0.5.
+For the driven gravity pendulum model, we consider the same forcing functions for training, ftrain,
+and testing, ftestas used in Section 3.1. Thus, Ntrain= 200 ,Nvali= 50 , and Ntest= 130 . The
+corresponding responses, x(t)are also computed by ode45 . We aim to learn the mapping from
+the external force to the motion of the pendulum, that is, Gθ:f(t)→x(t). The third and the
+fourth columns of Fig. 3 show the relative L2errors of the predictions computed by the LNO, FNO,
+and GRU for both scenarios. As observed in the previous example, LNO can predict the results
+more accurately than FNO and GRU for the systems without damping. Fig. 4 (third and fourth rows)
+presents the error plots of two representative test samples for each of the neural models. Additionally,
+a visual representation of the prediction of the solution obtained from the two neural operators for
+both scenarios is shown in Fig. 6.
+3.3. Forced Lorenz system
+This example is the last ODE considered in this work. The Lorentz system is a mathematical
+model that simplifies many practical problems, including electric circuits, atmospheric convection,
+and forward osmosis. In this case, we are studying a forced Lorenz system, which has a forcing
+term and may be more practical. For instance, climate studies can use this system to model the
+temperature of the atmosphere and oceans as forcing terms [10]. The forced Lorenz system includes
+three ODEs defined as:
+˙x=σ(y−x),
+˙y=x(ρ−z)−y,
+˙z=xy−βz−f(t),, (22)
+where xis proportional to the rate of convection, yis proportional to the horizontal temperature vari-
+ation; zis proportional to the vertical temperature variation. The terms σ,ρ, and βare three constant
+parameters related to the Prandtl number, Rayleigh number, and specific physical dimensions of the
+layer, respectively. Even though the equations are simple, the Lorenz system has chaotic and unpre-
+dictable behavior, so it is highly sensitive to initial conditions. The initial conditions in this example
+are chosen slightly away from the state of no convection, that is x(0) = 1 ,y(0) = 0 ,z(0) = 0 . The
+σ= 10 andβ= 8/3are chosen in this example. We consider the following two scenarios:
+• Scenario 1: Rayleigh number ρ= 5.
+• Scenario 2: Rayleigh number ρ= 10 .
+11(a) (b)
+(c) (d)Learning curve for c=0
+Learning curve for c=0.5Samples for c=0 
+Samples for c=0.5 0200 400 600 800 1000 1200
+epoch10-1100
+Train error of LNO
+Test error of LNOTrain error of FNO
+Test error of FNO
+-0.400.4ResponseCase 25True
+LNOFNO
+-101ResponseCase 50
+-0.500.5ResponseCase 75
+0 5 10 15 20
+Time (seconds)-101ResponseCase 100
+0200 400 600 800 1000 1200
+epoch10-210-1100101
+Train error of LNO
+Test error of LNOTrain error of FNO
+Test error of FNO
+-0.500.51ResponseCase 25
+True
+LNOFNO
+-0.500.51ResponseCase 50
+-0.20.20.6ResponseCase 75
+0 5 10 15 20
+Time (seconds)-0.100.10.2ResponseCase 100Fig. 6: Driven gravity pendulum: Comparison of training and testing losses and responses obtained using LNO and
+FNO: (a)learning curve of the system without damping, (b)representative response obtained from the system without
+damping, for test cases, (c)learning curve of the system with damping c= 0.5,(d)representative response obtained
+from the system with damping c= 0.5, for test cases.
+12The number of samples for training, testing, and validation is kept the same as in the previous two
+examples. We aim to learn the mapping from the source term, f(t)to the system response, x(t). The
+results presented in Fig. 3 (last two columns) demonstrate that LNO approximates the test cases of
+scenarios 1and2with overall high accuracy. The improvement of the accuracy is more pronounced
+in the case of ρ= 10 , as we observe that the response has two patterns, which are shown in the
+ground truth of the last row of Fig. 4. Figs. 7 (a) and (c) illustrate that the generalization gap of
+FNO is significantly higher than that of LNO. Fig. 4 (last two rows) presents the error plots of two
+representative test samples for each of the neural models. Additionally, a visual representation of
+the prediction of the solution obtained from the two neural operators for both scenarios is shown in
+Fig. 7.
+3.4. Euler-Bernoulli beam
+For a dynamic 1DEuler-Bernoulli beam, the Euler-Lagrange equation is written as:
+EI∂4y
+∂x4+ρA∂2y
+∂t2=f(x, t), (23)
+where y(x, t)is the deflection of the beam at the location xand time t;f(x, t)is the source term;
+EandIare the elastic modulus and the second moment of area of the cross-section of the beam,
+respectively; ρandAare the material density and the area of the cross-section of the beam, respec-
+tively.
+Here, our goal is to learn the operator of the system in Eq. 23, which maps the source, f(x, t), to
+the steady-state response y(x, t); that is, Gθ:f(x, t)→y(x, t). To generate Ntrain samples to train
+LNO, we consider a function, ftrain(x, t) =Ae−0.05x(1−102)sin(10t), where the amplitude A∈
+[0.05,10]with an interval δA= 0.05, therefore Ntrain= 200 . Each sample is discretized into 51×17
+temporal-spatial grid points such that the time interval, ∆t= 0.02seconds, and the spatial interval,
+∆x= 0.1meters. For validating and testing the neural operator, a function, ftest(x, t) =Ae−x(1−
+102)sin(10t), is considered, where the amplitude A∈[1.24,10.19]andNvali= 50 andNtest= 130 .
+While the analytical particular solution of Eq. 23 to ftrain isytrain(x, t) =Ae−0.05xsin(10t), the
+analytical particular solution to ftestisytest(x, t) =Ae−xsin(10t).
+The third column from the end in Fig. 3 illustrates that the results predicted by LNO have an
+overall high accuracy than FNO. Fig. 8 (first and second rows) presents the error plots of two repre-
+sentative test samples for each of the neural models. The errors of LNO are more than an order of
+magnitude smaller than those of FNO.
+3.5. Diffusion equation
+The diffusion equation is a PDE that is applied in many fields, such as information theory, material
+science, and biophysics. It is a special case of the convection-diffusion equation, which describes
+the macroscopic behavior of lots of micro-particles in Brownian motion. The equation is usually
+written as:
+D∂2y
+∂x2−∂y
+∂t=f(x, t), (24)
+where y(x, t)describes the density of the diffusing material at location xand time t;f(x, t)is the
+source term; Dis the collective diffusion coefficient for density yat location x. In this case, D= 1
+is chosen. Thus, Eq. 24 is identical to the heat equation.
+For learning the operator of the system in Eq. 24, we consider a function, ftrain(x, t) =Ae−0.05t(1−
+π2)sin(πx), where the amplitude A∈[0.05,10]with an interval δA= 0.05, therefore Ntrain= 200 .
+Each sample is discretized into 25×80temporal-spatial grid points such that the time interval,
+130510
+Case 25 True
+LNOFNO
+-10010
+Case 50
+0510
+Case 75
+0 5 10 15 20
+Time (seconds)0510
+Case 100
+0 200 400 600 800 1000
+epoch10-1100
+Train error of LNO
+Test error of LNOTrain error of FNO
+Test error of FNO05
+Case 25True
+LNOFNO
+05
+Case 50
+05
+Case 75
+0 5 10 15 20
+Time (seconds)05
+Case 100(a) (b)
+(c) (d)Learning curve for 𝜌=5
+Learning curve for 𝜌= 10Samples for 𝜌=5
+Samples for 𝜌= 100 200 400 600 800 1000
+epoch10-310-210-1100
+Train error of LNO
+Test error  of LNOTrain error of FNO
+Test error of FNOFig. 7: Lorenz system: comparison of learning rates and responses of computed by LNO and FNO: (a) learning curve of
+the system with ρ= 5, (b) response samples of the system with ρ= 5, (c) learning curve of the system with ρ= 10 , (b)
+response samples of the system with damping ρ= 10
+14LNO FNODiffusion equation Euler-Bernoulli Beam
+Time (seconds)Point-wise prediction error Location (meters) Location  (meters)Ground truth
+Time (seconds)
+Reaction-Diffusion system
+Location  (meters)
+Fig. 8: Pointwise error plots of responses for two representative test samples drawn from three PDE experiments. The
+ground truth is plotted in the left column and the point-wise errors for LNO and FNO are presented in the right section.
+15∆t= 0.02seconds, and the spatial interval, ∆x= 0.05meters. For validating and testing the neural
+operators, we generate a dataset considering the function, ftest(x, t) =Ae−t(1−π2)sin(πx), where
+the amplitude A∈[1.24,10.19]andNvali= 50 andNtest= 130 . The analytical particular solu-
+tions of Eq. 24 to ftrain andftestareytrain(x, t) =Ae−0.05tsin(πx)andytest(x, t) =Ae−tsin(πx),
+respectively.
+The penultimate column in Fig. 3 indicates that the predictions made by LNO exhibit a higher level
+of accuracy than FNO overall. Fig. 8 (rows three and four) displays error plots for two representative
+test samples for each neural model. The errors of LNO are two orders of magnitude smaller than
+those of FNO. It is worth noting that both the Euler-Bernoulli beam and the diffusion equation are
+essentially learning linear operators. By utilizing the linear system to accurately represent the pole-
+residue formulation, the results obtained with LNO in these two cases are considerably superior to
+those achieved with FNO.
+3.6. Reaction-diffusion system
+Reaction-diffusion systems describe the change in the concentration of chemical substances or
+particles in time and space, which can be found in chemistry, biology, geology, and physics. The
+diffusion-reaction equation can be represented as:
+D∂2y
+∂x2+ky2−∂y
+∂t=f(x, t), (25)
+where y(x, t)represents the concentration of chemical substances or particles at location xand time
+t,f(x, t)is the source term and Ais the amplitude of the source term. In this problem, the diffusion
+coefficient, D= 0.01, and the reaction rate, k= 0.01.
+We utilize the neural operators LNO and FNO to learn the mapping from the source term, f(x, t)
+to the steady-state response y(x, t), denoted as Gθ:f(x, t)→y(x, t). To generate Ntrain samples for
+training LNO, we consider a function ftrain(x, t) =Ae−0.05t(1−π2)sin(πx) +A2e−0.1tsin(πx)2,
+where A∈[0.05,10]with an interval of δA= 0.05, resulting in Ntrain = 200 samples. Each
+sample is discretized into 20×40temporal-spatial grid points with a time interval of ∆t= 0.0526
+seconds and a spatial interval of ∆x= 0.0513 . For validation and testing of the neural operator, we
+use a function ftest(x, t) =Ae−t(1−π2)sin(πx) +A2e−2tsin(πx)2, where A∈[0.14,9.09]with
+Nvali= 50 validation samples and Ntest= 130 testing samples. The analytical particular solution of
+ftrain for Eq. 25 is ytrain(x, t) =Ae−0.05tsin(πx), while the analytical particular solution for ftestis
+ytest(x, t) =Ae−tsin(πx).
+The final column of Fig. 3 shows that LNO produces more accurate results overall than FNO.
+Fig. 8 (last two rows) displays error plots of two typical test samples for each of the neural models.
+LNO has smaller errors than FNO, indicating that using the poles and residues of the system as
+network parameters aids in operator learning, even when dealing with the steady-state response of
+nonlinear systems.
+4. Summary
+In this work, we proposed a novel framework, called the Laplace neural operator (LNO), which
+parameterizes the integral kernel directly in the Laplace domain, and employs the poles and residue
+formulation to establish a relationship between the Laplace transforms of the functions in the input
+and the output spaces. The system poles and residues are the network parameters that are trained
+and learned in the Laplace domain, thereby making the proposed operator more interpretable. The
+16consideration of the initial conditions and the presence of an additional exponential convergence fac-
+tor in the formulation of the Laplace transformation addresses the challenges encountered by FNO
+when trying to approximate initial value problems, transient responses, or multiple patterns in the
+solution. By investigating three ODEs (Duffing oscillator, driven gravity pendulum, and Lorenz sys-
+tem) and three PDEs (Euler-Bernoulli beam, Diffusion equation, and Reaction-Diffusion system),
+we demonstrate that the new operator, LNO, with a single module of Laplace transform predicts
+the response of a time-dependent system with better accuracy compared to FNO in all cases, where
+the FNO was architectured with four Fourier modules. Furthermore, compared to a commonly used
+recurrent neural network— gated recurrent unit (GRU), LNO is more accurate in scenarios specifi-
+cally considering no damping as well as systems with two or more types of patterns in the responses.
+From three PDE experiments, we found that expressing the neural network by trainable system poles
+and residues is very helpful for operator learning even though the steady-state response of nonlinear
+systems is considered. Overall, LNO represents a promising new approach for learning operators
+that map functions between infinite-dimensional functional spaces, especially when different forms
+of the input functions for training and testing are considered.
+• Setting up different input function forms is used to investigate and demonstrate the general-
+ization ability of LNO. If the input function forms are same, the prediction accuracy of LNO
+and FNO are very similar.
+• Our derivation of LNO begins from the convolution integral. By using the pole-residue for-
+mulation, the analytical solution is obtained. When the input v(t)is the source term, the
+convolution integral is physically meaningful, and the relationship among the source term,
+system and response exactly satisfies the pole-residue formulation. However, if the input v(t)
+is the initial conditions, the convolution integral does not have the physical meaning. Thus,
+the pole-residue formulation does not work significantly better than FNO. We will try to make
+the improvement for solving this problem.
+Acknowledgement
+This work was supported by the U.S. Department of Energy, Advanced Scientific Computing Re-
+search program, under the Scalable, Efficient and Accelerated Causal Reasoning Operators, Graphs
+and Spikes for Earth and Embedded Systems (SEA-CROGS) project, DE- SC0023191. The au-
+thors would like to acknowledge the computing support provided by the computational resources
+and services at the Center for Computation and Visualization (CCV), Brown University where all
+experiments were carried out.
+17Appendix A. Network Architectures
+Table A.1: Hyperparameters used in the LNO and FNO for training an operator to approximate the response
+Application Layer Width Mode 1 Mode 2 Learning rate Batch size Activation function Epochs
+Duffing oscillatorc= 0LNO 1 4 16 / 0.002 20 sin 1000
+FNO 4 128 1025 / 0.002 20 sin 1000
+c= 0.5LNO 1 4 16 / 0.002 20 sin 1000
+FNO 4 32 1025 / 0.002 20 sin 1000
+Driven pendulumc= 0LNO 1 4 20 / 0.005 40 sin 1200
+FNO 4 32 1025 / 0.002 40 sin 1200
+c= 0.5LNO 1 4 8 / 0.002 40 sin 1200
+FNO 4 32 1025 / 0.002 40 sin 1200
+Lorenz systemρ= 5LNO 1 4 16 / 0.005 20 tanh 1000
+FNO 4 32 1025 / 0.002 20 tanh 1000
+ρ= 10LNO 1 4 84 / 0.002 10 tanh 1000
+FNO 4 32 1025 / 0.002 20 tanh 1000
+Beam /LNO 1 16 4 4 0.002 50 sin 1000
+FNO 4 64 9 26 0.002 50 sin 1000
+Diffusion equation /LNO 1 16 4 4 0.002 50 sin 1000
+FNO 4 64 41 13 0.002 50 sin 1000
+Reaction-Diffusion system /LNO 1 48 4 4 0.002 50 sin 1000
+FNO 4 32 40 11 0.002 50 sin 1000
+Table A.2: Hyperparameters of the GRU with zero initial conditions
+Application NO. of hidden layer Width NO. of dense layer Learning rate Batch size Iterations
+Duffing oscillator c= 0 1 10 1 0.001 128 20000
+Duffing oscillator c= 0.5 1 10 1 0.001 128 30000
+Pendulum c= 0 1 10 1 0.001 128 20000
+Pendulum c= 0.5 1 10 1 0.001 128 30000
+Lorenz system ρ= 5 1 10 1 0.001 128 30000
+Lorenz system ρ= 10 1 20 1 0.001 128 30000
+References
+[1] L. Lu, P. Jin, G. Pang, Z. Zhang, G. Karniadakis, Learning nonlinear operators via DeepONet
+based on the universal approximation theorem of operators, Nature Machine Intelligence 3 (3)
+(2021) 218–229.
+[2] Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stuart, A. Anandku-
+mar, Fourier Neural Operator for Parametric Partial Differential Equations, arXiv preprint
+arXiv:2010.08895 (2020).
+[3] E. Kreyszig, Advanced engineering mathematics, John Wiley & Sons, 2010.
+[4] P. R. Vlachas, J. Pathak, B. R. Hunt, T. P. Sapsis, M. Girvan, E. Ott, P. Koumoutsakos, Forecast-
+ing of spatio-temporal chaotic dynamics with recurrent neural networks: A comparative study
+of reservoir computing and backpropagation algorithms, arXiv preprint arXiv:1910.05266
+(2019) 42.
+[5] T. Chen, H. Chen, Universal approximation to nonlinear operators by neural networks with
+arbitrary activation functions and its application to dynamical systems, IEEE Transactions on
+Neural Networks 6 (4) (1995) 911–917.
+[6] Q. Cao, S.-L. James Hu, H. Li, Laplace-and frequency-domain methods on computing transient
+responses of oscillators with hysteretic dampings to deterministic loading, Journal of Engineer-
+ing Mechanics 149 (3) (2023) 04023005.
+18[7] S.-L. J. Hu, F. Liu, B. Gao, H. Li, Pole-residue method for numerical dynamic analysis, Journal
+of Engineering Mechanics 142 (8) (2016) 04016045.
+[8] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin,
+N. Gimelshein, L. Antiga, et al., PyTorch: An Imperative Style, High-Performance Deep
+Learning Library, Advances in neural information processing systems 32 (2019).
+[9] A. Agarwal, P. Barham, E. Brevdo, Z. Chen, C. Citro, Tensorflow: A system for large-scale
+machine learning, in: Proceedings of the 12th USENIX Conference on Operating Systems
+Design and Implementation, USENIX Association, 2016.
+[10] Y . Shi, Analysis on averaging Lorenz system and its application to climate, Ph.D. thesis, Uni-
+versity of Minnesota (2021).
+19

@@ -1,0 +1,1247 @@
+Scheduling Inference Workloads on Distributed Edge Clusters with
+Reinforcement Learning
+Gabriele Castellanoy, Juan-Jos ´e Nietozx, Jordi Luquez, Ferr ´an Diegoz, Carlos Seguraz
+Diego Perinoz, Flavio Espositoy, Fulvio Risso, Aravindh Ramanz
+yComputer Science, Saint Louis University, USA
+Computer and Control Engineering, Politecnico di Torino, Italy
+xUniversitat Polit `ecnica de Catalunya, Spain
+zTelef ´onica Research, Spain
+Email:yfgabriele.castellanog@slu.edu,zfjordi.luqueg@telefonica.com
+Abstract —Many real-time applications (e.g., Augmented/Vir-
+tual Reality, cognitive assistance) rely on Deep Neural Networks
+(DNNs) to process inference tasks. Edge computing is considered
+a key infrastructure to deploy such applications, as moving
+computation close to the data sources enables us to meet stringent
+latency and throughput requirements. However, the constrained
+nature of edge networks poses several additional challenges to
+the management of inference workloads: edge clusters can not
+provide unlimited processing power to DNN models, and often
+a trade-off between network and processing time should be
+considered when it comes to end-to-end delay requirements. In
+this paper, we focus on the problem of scheduling inference
+queries on DNN models in edge networks at short timescales
+(i.e., few milliseconds). By means of simulations, we analyze
+several policies in the realistic network settings and workloads
+of a large ISP, highlighting the need for a dynamic scheduling
+policy that can adapt to network conditions and workloads.
+We therefore design ASET, a Reinforcement Learning based
+scheduling algorithm able to adapt its decisions according to
+the system conditions. Our results show that ASET effectively
+provides the best performance compared to static policies when
+scheduling over a distributed pool of edge resources.
+I. I NTRODUCTION
+In the last years, we have witnessed the growing popularity
+of applications leveraging Deep Neural Networks (DNNs),
+from Augmented/Virtual Reality (AR/VR) to cognitive assis-
+tance or video surveillance. The DNN model training process
+typically does not have strict latency constraints and it is
+performed ofﬂine in well-provisioned centralized data-centers
+or in a distributed fashion via, e.g., federated learning [1].
+Differently, the DNN inference task is usually performed
+online with constraints in terms of accuracy, throughput, and
+latency, which may signiﬁcantly differ across applications. For
+instance, services like cognitive assistance require high accu-
+racy but may tolerate few hundreds of milliseconds latency,
+while others, like self-driving cars, have more stringent latency
+needs (i.e., tens of milliseconds).
+Providing an inference service requires to address several
+challenges to meet this diverse set of application constraints,
+e.g., the selection of the appropriate variant of the model
+to be used (programming framework, compiler optimization,
+batching size, etc.), the processing unit to leverage for the
+* Gabriele Castellano and Juan-Jos ´e Nieto contributed equally to this work
+during his internship at the Telef ´onica Research team, in Spring 2020.inference (e.g., GPU, CPU, TPU), and the nodes and resources
+(e.g., memory, computing) to be allocated to every application.
+This requires management at different timescale. On a short
+timescale (i.e, milliseconds), a scheduler is in charge of
+selecting the appropriate computing instance for every new
+incoming request to meet its application requirements. This in-
+cludes not only the selection of the computation node but also
+the appropriate model variant and computation technology. On
+a longer timescale (i.e., seconds, minutes), an orchestrator
+selects the proper model variants to deploy, optimizes their
+placement across the nodes, and allocates the appropriate
+resources to them. Recent work [2]–[5] focused on data cen-
+ters and proposed DNN inference workload management for
+such environments. Further, commercial solutions have been
+deployed in recent years [6]–[8] by major cloud providers.
+Edge computing is considered a key enabler to deploy
+DNN-based applications with stringent delay or bandwidth
+requirements, as it moves computation capabilities closer to
+end-users with respect to centralized cloud platforms. This
+is especially the case for users connected via mobile access
+(e.g. 5G). However, realizing DNN inference at the edge
+poses several additional challenges. Edge infrastructures are
+indeed complex networks composed of several layers with
+heterogeneous limited resources and different latencies to end
+users [9]. Due to the less availability of resources at edge,
+multiple inference models of different capacities should be
+considered, and end-to-end delay requirements may lead to
+considering a trade-off between network delay and processing
+time. This differs from centralized cloud platforms, which
+usually feature large pools of uniform hardware available
+in a single location where DNN models can be scaled up
+almost indeﬁnitely. For these reasons, the optimal selection
+of inference models while scheduling real-time requests at
+Edge is still a challenging task. Recent work combined edge
+computing and deep learning [10], with a focus on scheduling
+requests to minimize end-to-end delay [11] or maximize
+accuracy [12]. However, none of the existing work analyzes
+inference workload optimization taking into account different
+application constraints in realistic edge network settings.
+In this paper, we focus on the problem of scheduling DNN
+inference requests taking into account not only accuracy (i.e.,
+model selection) but also throughput and latency constraintsarXiv:2301.13618v1  [cs.LG]  31 Jan 2023under realistic edge deployment settings. First, we model our
+distributed edge inference system and provide a deﬁnition of
+the scheduling problem (Section III), also proposing several
+baseline static scheduling policies both original and from
+literature. From evaluating static policies on a realistic network
+topology, we observe that a policy that always performs better
+does not exist, as different applications may beneﬁt differently
+from each scheduling strategy. Based on the insights derived
+by this analysis we propose ASET1(Adaptive Scheduling
+of Edge Tasks), an adaptive scheduling algorithm based on
+Reinforcement Learning (Section IV), which dynamically fol-
+lows system conditions and apps requirements optimizing its
+decisions accordingly. We evaluate ASET simulating three
+topologies based on the realistic network of a large ISP
+and using a pool of reference edge applications (Section V).
+Our ﬁndings show that, while some static policies are well
+suited to optimize workloads on cloud-based topologies, ASET
+improves performance over any static policy when resources
+are distributed across the edge network, effectively increasing
+the percentage of successfully handled queries.
+II. R ELATED WORK
+The provisioning of on-demand inference services has been
+investigated in several recent works.
+Inference scheduling in data centers . Most of the existing so-
+lutions address the common scenario where inference queries
+have to be scheduled over the resources of a Data Center. Some
+of the main production systems are Tensorﬂow Serving [6],
+Azure ML [7], and Cloud ML [8]. Most scientiﬁc works
+focused on proposing algorithms and strategies to improve
+the performance and ease of use of such cloud inference sys-
+tems. [2] and [3] address the problem of scheduling Directed
+Acyclic Graph (DAGs) tasks with the objective of improving
+the throughput; GrandSLAm [2] relies on a prediction model
+that estimates job duration, while [3] proposes an efﬁcient
+RL approach to select the number of servers to allocate
+for a given job. Being oriented to a Cloud infrastructure,
+none of them takes into account network latency between
+the servers and their heterogeneity. In [13] a Model Master
+manages the dynamic allocation of DNN models across the
+servers of a heterogeneous data center based on Azure ML,
+and proposes a protocol among servers to forward queries to
+the correct destination. Clipper [4] provides a generalization
+of TensorFlow Serving [6] to enable the usage of different
+frameworks. One of the most complete solutions is provided
+by INFaaS [5], which focuses on ease of use, providing
+transparent scheduling of incoming queries over available
+model variants, and autoscaling of deployed models based
+on load thresholds. However, all the previous works address
+the scheduling problem only from the boundaries of a data
+center, considering neither (i)network latency, thus becoming
+no suitable in scenarios with real-time constraints, nor (ii)
+resource constrained clusters, thus failing to address situations
+where workers cannot be indeﬁnitely scaled up/out.
+1In ancient Egyptian mythology, Aset was a major goddess said to have
+power over fate itself.Inference ofﬂoading . Another related set of works concerns
+ofﬂoading, with a focus on the end-devices. While ofﬂoading
+has been widely studied in the literature [14], [15], the speciﬁc
+use case of DNN workload introduces additional degrees of
+freedom (e.g., model variant selection and conﬁguration) that
+can be exploited for improving optimization over the mere
+selection of the task placement. Some recent works [16]–
+[18] provides intelligent ofﬂoading techniques for DNN tasks.
+DeepDecision [17] addresses the problem in the particular case
+of a single device running a single application; queries are
+scheduled among a series of local small models providing
+different performance/requirements trade-off, and one remote
+model, which provides the best performance. On the other
+hand, LinkShare [18] focuses on the orthogonal problem of
+ordering the ofﬂoaded requests from multiple apps on the
+same device, with the main constraint of network bandwidth.
+MCDNN [16] proposes a scheduler to handle queries from
+multiple applications on the same device, deciding (i)the
+model variant to be used and (ii)whether to ofﬂoad the
+inference task or not, seeking average accuracy maximization.
+Such decisions are taken considering constraints such as
+latency requirements, device energy, cloud monetary budget.
+Inference and edge computing . Fewer and more recent are
+the trends that combine DNN with edge computing [10], with
+the aim of overcoming scalability and latency limitations of
+cloud computing. The use of edge computing brings additional
+challenges deriving from the high resource requirements of
+DNN based tasks on less powerful edge compute resources.
+Despite some issues have been addressed in recent works [11],
+[12], [19], [20], edge-oriented solutions for inference systems
+are still largely embryonic compared to data center solutions,
+with many open challenges. CloudPath [19] focuses on the
+problem of data distribution on a hierarchical continuum of
+computing resources between edge and cloud. In [20], authors
+propose an approach to schedule DAGs across multiple edge
+servers, seeking minimization of end-to-end latency. However,
+the proposed algorithm assumes the possibility to indeﬁnitely
+allocate new edge servers when needed, with no geographical
+restrictions, thus not addressing the problem of constrained
+resources at the edge. Other works [11], [12] study the problem
+of processing data streams from scattered devices, exploiting
+the geographically distributed edge/cloud clusters. In particu-
+lar, VideoEdge [12] assumes a deployment of cameras gener-
+ating a known set of video streams, on which various DNN
+tasks should be performed. The proposed approach decides
+globally the cluster where each stream should be processed,
+as well as the model variant to employ and its conﬁguration,
+considering computation and network bandwidth as constraints
+and seeking accuracy maximization. However, neither pro-
+cessing nor network latencies are taken as constraints, thus
+making this approach not suitable for interactive or critical
+scenarios (e.g., virtual reality, autonomous driving, and more).
+A similar use case is analyzed in [11], which focuses on
+minimizing the end-to-end latency processing data ﬂowing
+from the edge to the cloud. However, it only considers the
+problem of task allocation, missing the possibility to optimizeproperly selecting model variants and their conﬁgurations.
+To the best of our knowledge, none of the existing works
+on inference serving systems addresses the problem simul-
+taneously considering (i)end-to-end latency, accuracy, and
+throughput constraints, (ii)edge-cloud computing and multi-
+cluster deployment, (iii) real-time job dispatching, (iv)opti-
+mization on model variant selection.
+III. S CHEDULING IN EDGE -CLOUD INFRASTRUCTURE
+In this section, we formally deﬁne the problem of schedul-
+ing inference tasks on a distributed edge-cloud infrastructure.
+Additionally, we describe a set of static scheduling policies
+(both original and from literature), that we then use in Sec-
+tion IV as a baseline for our dynamic scheduling approach.
+A. System modeling
+Applications and data-streaming sources. We consider a set
+of sources (e.g., end users, IoT devices, vehicles) running
+a variety of applications (e.g., virtual reality, autonomous
+driving) each relying on one or more DNN inference tasks.
+Every application generates queries to be processed, i.e., each
+query represents the request to perform a speciﬁc inference
+taskj2J(e.g., object detection, speech recognition) on
+a given input (e.g., a video frame), where Jis the set of
+inference tasks supported by the system. Since applications
+often require more than one query to be processed, we treat
+sequential queries as streams (e.g., all the frames captured by
+an AR headset). Therefore, each query qbelongs to a stream
+i2I, beingIthe entire set of streams currently served by
+the system. Every query of a stream has a set of requirements
+such as a maximum end-to-end delay Di, and a minimum
+required accuracy Ai. Additionally, every stream ihas a data
+ratei, that is the number of queries submitted each second
+(e.g., frame rate), and every query of stream ihas an input of
+sizei(e.g., frame size). Note that all queries of a stream are
+for the same task j2Jwith the same requirements.
+DNN Models and Variants. Every inference task jcan be
+served using a Deep Neural Network model mamong the
+set ofMjmodels that are trained for task j. Therefore, the
+system provides a total of Nm=P
+j2JjMjjDNN models.
+Take object detection as an example application. A model m
+represents a particular Neural Network architecture with pre-
+trained weights (e.g., yolo-v3, ssd-mobilenet-v1), and features
+a given accuracy Am(mean average precision - mAP). A
+modelmcan be deployed and run through different setups
+and underlying hardware (e.g., SSD Mobilenet v1 on (i)
+Tensorﬂow-GPU with batch size 8, or on (ii)Opencv-CPU
+batch size 1 and 2 replicas, and more), thus obtaining a set
+Vmof different model variants . A model variant vfeatures
+a given processing delay Dv, throughput capacityCv(i.e.,
+the maximum number of queries it can process per second),
+andresource usage rv2Rk
++(e.g., in terms of CPU, system
+memory and GPU memory). Note that the processing delay
+may vary based on the size i2R+of the input data, thus it
+is a function Dv:R+!R+; withDvwe refer to the time
+____
+____
+____
+____
+__
+____
+____
+____
+____
+__
+____
+____
+____
+____
+__
+Tasks Scheduler
+____
+____
+____
+____
+__
+____
+____
+____
+____
+__
+____
+____
+____
+____
+__
+___
+___
+QueriesTask: Obj. det.
+Constraints:
+•Latency
+•Accuracy
+Stream :
+•Size
+•Rate
+Tasks Scheduler
+____
+____
+____
+____
+__
+____
+____
+____
+____
+__
+Model -Variant
+Task: obj. det. 
+Specs:
+•mAP
+•Processing Time
+•Load Capacity
+Load: current QPSFig. 1: The scheduler dispatches streams of queries on available model variants
+based on their constraints and geographical position of clusters.
+needed to process the maximum input size supported by the
+model (analogous considerations hold for the capacity Cv).
+Network topology and computing clusters. We consider a
+geographically distributed cloud-edge infrastructure composed
+byNcomputing clusters (e.g., a centralized data center, a
+telco regional cloud, an eNodeB) typically organized in a
+hierarchical topology. Each cluster potentially provides dif-
+ferent resources. We denote cn2Rk
++the overall capacity of
+clustern, withcnkrepresenting the amount of resource k2N
+available on cluster n. Examples of resources include CPU,
+system memory and GPU memory.
+Model variants are deployed at different computing clus-
+ters consuming a different amount of resources. On a long
+timescale (i.e., seconds, minutes), an orchestrator selects the
+appropriate set of model variants to deploy, optimizes their
+placement across the clusters, and allocates the appropriate
+resources. Finally, stream sources are connected to a small
+cluster at the lower layer of the hierarchy. This can be either
+the antenna/eNodeB in case of cellular communication or the
+home gateway in the ﬁxed access case. Queries need to be
+scheduled for processing across model variants available at
+different computing clusters to meet application requirements
+on a short timescale (i.e., tens of milliseconds). In the fol-
+lowing, we provide a deﬁnition of the scheduling problem we
+tackle in this paper.
+B. Scheduling problem deﬁnition
+We assume a scheduler is located at the nearest compute
+cluster available to existing stream sources, i.e., antenna/eN-
+odeB or the home gateway/central ofﬁce in the ﬁxed access
+case. It follows every stream source is served by a scheduler
+samongNsdifferent ones (one per each lower layer cluster).
+Each scheduler shas a given average network delay ds
+n
+towards each cluster n; we also model the associated delay
+deviation as s
+n. Note that an additional access delay from the
+stream source to the scheduler has to be taken into account
+(e.g, the radio latency between a device and the nearest 5G
+antenna). We denote ithe additional access delay that affects
+streami. Every scheduler is aware of each model variant v
+currently available on each cluster n, each with its current
+loadLvn(t)(measured in terms of incoming queries per
+second2). Based on the current conditions of the available
+2Each stream icontributes to the total load as a fraction i
+vof its data
+ratei(named fractional load) , based on the stream data size i.model variants, for every stream iit serves, a scheduler s
+decides which model variant von which cluster nshould be
+used to process stream i.
+When scheduling a stream ito the proper model variant/-
+cluster, the scheduler takes into account application require-
+ments. Speciﬁcally, it considers the stream data size i, its
+data ratei, its bit rate bi, the maximum tolerated end-to-end
+delayDiand the minimum required accuracy Ai, satisfying
+the following constraints:
+(i)the selected model variant vis a valid implementation of
+taskjrequired by i,
+v2Vm^m2Mj; (1)
+(ii)the load capacity of the chosen model variant is not
+exceeded,
+Lvn(t) +i
+viCv; (2)
+beingi
+vthe fractional load of stream ifor model variant v;
+(iii) the sum of expected network delay and processing time
+does not exceed the maximum tolerated delay,
+2(i+ds
+n+ 2s
+n) +bii+Dv(i)Di; (3)
+where the ﬁrst addendum is the round-trip propagation time,
+the second is the transmission delay for one query and the
+third is the time needed to process the query;
+(iv)the selected model provides an adequate accuracy
+AmAi: (4)
+A graphical representation of the scheduling problem is
+depicted in Figure 1, while a scheduling policy can be formally
+deﬁned as follows.
+Deﬁnition 1. (scheduling policy). Let us consider a stream ito
+be processed through a task jon an edge-cloud infrastructure
+that features a set of Vmcompatible model variants over N
+clusters (jNj=N). A scheduling policy is any function
+:I!Vm;N (5)
+that binds stream ito a feasible model variant v2Vmde-
+ployed on cluster n2N, so that constraints at Equations (1),
+(2), (3), and (4) are satisﬁed.
+Note that, as requests are handled in real-time, scheduler
+decisions should be taken in an amount of time that is
+negligible compared to the stream latency requirements.
+Scheduling performance metrics and objectives. Based on
+the scheduling decisions, in a given time instant tthe stream
+iwill feature a reject ratio qR
+i(t)2[0;1], i.e., the fraction
+of queries from stream ithat have not been processed by the
+system because of resource unavailability, and a failure ratio
+qF
+i(t)2[0;1], i.e. the fraction of queries that have been served
+violating one or more application requirements (i.e., delivered
+out of maximum tolerated delay).
+The goal of the scheduler is typically to maximize, over
+time, the fraction of queries that are served successfully, i.e.,
+to minimize the sum of reject ratio and failure ratio.C. Static scheduling policies
+Several policies have been proposed for static scheduling
+of inference tasks on edge clusters [9], [21]. In this work we
+consider the following ones (both original and from literature):
+1) closest: bind stream ito any feasible model variant vlo-
+cated on the cluster nthat features the lower network latency
+to serving scheduler s, i.e.,n= arg minn2N(ds
+n+ 2s
+n).
+This policy may lead to the early saturation of smaller clusters
+at the very edge, as they are always preferred [22].
+2) load balancing: bind the input stream to model variant v
+on clusternsuch that (v;n) = arg minv;n2VmNLvn(t).
+This policy can bring huge performance gains compared to
+closest [22]; however, it may lead to unfair allocation when
+latency-sensitive applications are in the minority.
+3) farthest: bind stream ito any feasible model variant v
+located on the cluster nwith the highest (still feasible) net-
+work latency, i.e. n= arg max v2N(ds
+n+ 2s
+n). As opposed
+toclosest , this policy preserves smaller clusters at the very
+edge for those apps that really need them [23]; however, it is
+highly affected by the unreliability of network delay for long
+distance communications.
+4) cheaper: bind stream ito model variant von clus-
+ternsuch that the expected end-to-end delay (round-
+trip and processing time) is maximized, i.e., (v;n) =
+arg minv;n2VmN(2(ds
+n+ 2s
+n) +Dv(i)). We designed this
+policy as an improvement over farthest , as it additionally tries
+to preserve the most performing model variants.
+5) random-proportional latency: bind stream ito model
+variantvon clusternwith probability 1=(2(ds
+n+ 2s
+n) +
+Dv(i)). This guarantees that, on a large enough number of
+streams, bindings are proportionate to end-to-end delays [21].
+6) random-proportional load: bind stream ito model variant
+von clusternwith probability Cv=Lvn(t). This guarantees
+that, on a large enough number of streams, bindings are
+proportional to the capacity of each model variant.
+7) least impedance: bind stream ito model variant von
+clusternsuch that end-to-end latency to sis minimized, i.e.,
+(v;n) = arg minv;n2VmN(2(ds
+n+ 2s
+n) +Dv(i))[21].
+This greedy policy leads to the best performance when the
+overall load is low, but may suffer from a high rejection rate
+once the closest and fastest model variants are saturated.
+Our experiments (Section V) show that, for a heterogeneous
+pool of applications, a policy that always performs better
+than the others does not exists: different applications may
+beneﬁt differently from each scheduling strategy, and also the
+physical topology and the particular streams arrivals can be
+determinant. Based on these ﬁndings, in the next section we
+propose ASET, an algorithm for Adaptive Scheduling of Edge
+Tasks that leverages Reinforcement Learning to optimize its
+decisions dynamically based on the current system conditions.
+IV. ASET S CHEDULING ALGORITHM
+Our adaptive scheduling approach aims to learn the optimal
+policy depending on current system conditions, e.g, current
+applications, network topology, and stream arrivals that vary
+over time. Due to the lack of labeled data, the optimal____
+________
+____
+ACTION
+REWARD
+ASET	RL	AgentSTATE
+31Incoming	Workloads
+____
+____
+Cloud-Edge	Infrastructure
+2
+45Fig. 2: Algorithm overview. State St, sampled from the environment, is
+forwarded through the agent DNN, which outputs action At; performing At
+on the environment contributes to reward rt+1obtained at the next step.
+policy learning is formulated as a Reinforcement Learning
+(RL) problem; hence, an intelligent agent tries to learn the
+optimal policy selection strategy according to the observed
+state of the environment. This is accomplished by an RL
+policy that estimates a probability distribution of each possible
+action (policy selection) that cumulatively maximizes a reward
+(typically maximizing the fraction of queries that are served
+successfully), as shown in Figure 2.
+Let us consider a learner and decision-maker called the
+agent , and an environment that is the external world that the
+agent interacts with at discrete time steps t. GivenSt2S,
+whereSis the set of possible states of the environment, the
+agent can select an actionAt2A(St), standing for the set of
+available actions in state St. The agent receives an observation
+of the environment Stat timetand, one step later, a numerical
+reward ,rt+12RR, and it jointly determines the action
+Atto perform, which, in part, yields to next state St+1.
+Deﬁnition 2. (stochastic reinforcement learning policy). An
+RL policy, where2Rddenotes policy parameters, is
+any function or algorithm that determines and maps the next
+action to take by an agent. A stochastic RL policy, additionally,
+estimates a probability distribution over actions that an agent
+can take at a given state:
+:AxS![0;1]; (6)
+(ajs)def= =P(take actionajgiven states):
+Overall, the goal of the proposed adaptive scheduling is to
+learn an optimal sequence of static network scheduling policies
+that maximizes the percentage of successfully dispatched
+streams. At a Tseconds rate, the RL-based scheduler sam-
+ples the environment by collecting a variety of observations
+from the edge-cloud infrastructure, e.g., responses and loads,
+building up the current state Stof the environment. Then,
+the agent evaluates a discrete set Aof actions and chooses
+an actionAt2A, whereAstands in this work for the set
+of available network scheduling policies . Note that the set
+of actions does not depend on the state itself, thus the sets
+A(St) =Aare the same (Section III-C). Therefore, every time
+that the agent takes an action At, the state of the environment
+Stis observed and a reward score rt+1is used as feedback
+information to improve the policy selection, see Figure 2. In
+this work, these rewards are deﬁned as a linear combination of
+the ratio of “failed” queries and the ratio of queries that have
+0 100 200 300 400
+time (s)30405060708090100% of success queries
+RP-LOAD
+CHEAPER
+FARTHEST
+CHEAPERload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET(a) Cloud-based topology.
+0 100 200 300 400
+time (s)405060708090100% of success queries
+CHEAPER
+FARTHEST
+CHEAPER
+FARTHEST
+CHEAPERload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET (b) Edge-based topology.
+Fig. 3: The ASET RL agent infers the optimal policy sequence based on the
+system conditions, seeking an optimal binding between workloads and model
+variants that maximizes the percentage of success queries. Plots show two
+runs on a cloud-based topology and on an edge-based one (see Section V).
+been “rejected” for lack of available resources (Section IV-C).
+The particular policy t, selected by the agent at time t, is
+used to dispatch all incoming streams during the subsequent
+time window [t;t+T]. Therefore, given the corresponding
+states sequence S= [S0;ST;S2T;:::;SkT]withk2N, the re-
+sulting overall scheduling policy (S) = [0;T;2T;:::;kT]
+dynamically maps, with the corresponding baseline policies t,
+a streamito a model variant vand its deployment on cluster
+n. From now, and for the sake of simplicity, we will refer as 
+to the policy learned by the ASET agent (Deﬁnition 2), which
+leads to a particular static policy sequence (S). It corresponds
+to any function employed to estimate the optimal sequence of
+actions that the agent should perform at each time window
+[t;t+T]and given a state St,(S) = [A0;AT;A2T;:::;AkT].
+The intuition of this behavior is provided in Figure 3. Note that
+each of the static scheduling policies from Section III-C cor-
+responds to a deterministic agent that always returns the same
+action Atindependently of the system state; whereas the pol-
+icylearned by the ASET agent can be seen as a meta-policy
+(or as a policy of baseline scheduling strategies) that also
+satisﬁes the constraints from Equations (1), (2), (3), and (4).
+A. Deep Q-Learning policy optimization
+Our RL agent has to cope with a discrete set of actions, with
+AN. This is often modeled in literature as a stochastic
+process with no memory, which is a Markov Decision Pro-
+cess [24] (MDP). In this work, our MDP deﬁned by tuples
+(S;A;T;R;) represents states comprised of partial obser-
+vations from the system. Nonetheless, the model parameters
+of such MDP are unknown, i.e., the transition probabilities
+T(s0ja;s)and the rewardsR(s0ja;s)of taking the action
+At=aand moving from state St=sto stateSt+1=s0.
+Note that the ASET agent should experience each transition
+among states at least once, or even multiple times to get a
+reliable estimation of both transition and cumulative rewards.
+At each step t=kT, withk2N, the RL agent can choose
+one of several possible scheduling policy-actions, tAt.
+The transition probability T(s0ja;s)depends in part on the
+chosen action, and, additionally, from some positive or neg-
+ative reward that may be returned by every state transition,
+named return of actions. Overall, our objective is to ﬁnd a
+strategy, i.e., a policy mapping to a sequence (S), that
+maximizes the expected return G(t)of rewards over time.Thus,G(t)is deﬁned in terms of the cumulative weighted
+rewards along with states and given the corresponding optimal
+sequence of actions to take in the future:
+G(t) =HX
+=0r2[0;1]; (7)
+wherer=R(s0ja;s)is the reward at time step due to
+corresponding state transition (s;s0),is a weighting factor
+that reduces the contribution of long-term rewards, usually
+known as the discount factor, and time His the last time
+step within a training episode (see Section IV-C for further
+details). Therefore, the RL agent’s target policy is
+(ajs) = arg max
+EtfG(t)g; (8)
+which translates the scheduler state into a distribution over
+actions, see Deﬁnition 2. Note that the expectation is computed
+over the distribution of trajectories t= (s0;a0;s1;:::).
+In Q-Learning, the optimal pair values (s;a), i.e., those
+yielding to the sequence of optimal actions, are generally
+called Quality-Values (Q-Values) and noted as Q(s;a)[25].
+They correspond to the sum of weighted rewards that the RL
+agent can expect on average after performing action aon state
+s. It is also known as the expected return of actions ,
+Q(s;a) =EtfGtjSt=s;At=ag: (9)
+Bellman [24] showed that if an agent’s trajectory follows
+the highest Q-Values, then its policy is optimal and leads
+to the highest G(t)as well. Bellman also reported that an
+accurate estimate of Q-Values can be found recursively by
+using the Bellman Optimality Equation , also known as the
+Value Iteration algorithm. In fact, Q-Learning is an adaptation
+of Bellman’s value iteration algorithm, where a policy is
+implicitly, or off-line, learned by following trajectories yield-
+ing to the highest Q-Values [25]. It is usually computed by
+dynamic programming and assumes that the optimal value of
+stateSt=sis equal to the reward it will get on average,
+after taking one optimal action aand adding the expected
+optimal value of all possible next states along the future path of
+decisions, that is Q(s;a) =Efr+maxa0Q(s0;a0)js;ag.
+Equation (9) turns out into the following iteration algorithm,
+which converges to the optimal Q(s;a),
+Qk+1(s;a) X
+s0T(s;a;s0)
+r+max
+a0Qk(s0;a0)
+;(10)
+for alls02S,a02Aandk2Nas iteration step. For
+simplicity, we set the transition probability matrix Tto all
+elements equal to 1, allowing initial transitions among all seen
+states. Once Q-Values are estimated, the optimal policy 
+for the RL agent corresponds to chose the action that has the
+highest Q-Values: (ajs) = arg maxQ(s;a), for alls2S
+anda2Astatic policies in Section III-C.
+However, previous algorithm does not scale for large MDPs
+with a large number of states. A solution is to approximate
+the optimal Q(s;a)using a Deep Neural Network, namedDeep Q-Network (DQN) [26], to get an estimate Q(s;a;)
+Q(s;a), wherestands for the parameters of the DQN
+model, see line 16 in Algorithm 1. The using of a DQN for
+approximate Q-Learning is known as Deep Q-Learning.
+B. State Encoding
+We model the state in a continuous fashion, representing
+the environment in a given time tas a set of some particular
+features sampled from the system and averaged along a time
+window of size T. Features are evaluated separately for each
+available worker w2W,3and are as follows: (i)the number
+jIwjof streams currently served by worker w, beingIw=
+fi2Ij(i) = (v;n)g;(ii)the current throughput Rw(t)of
+workerw, in terms of responses delivered at the time instant
+t;(iii)the current load Lw(t), measured in terms queries per
+second normalized on input size (as deﬁned in Section III-B);
+(iv)number of incoming instant queries grouped by stream
+characteristics, e.g., queries of all streams that require end-to-
+end delay within a given range [1;2[and features a data rate
+in the interval [4;+1[, i.e.,P
+i2I1;4i, whereI1;4=fi2
+IjDi2[1;2[^i2[4;+1[g. In particular, we consider
+a partition 0 =0< 1< 2< ::: < N 1ofR+withN
+delay intervals, and a second partition 0 =0< 1< 2<
+::: < N 1ofR+withNinput-rate intervals, evaluating
+NNdifferent sum of instant queries, that is one feature
+for each combination of the two partitioning sets. The features
+deﬁned so far constitute a vector as,
+Sw;t="
+jIwj;Rw(t);Lw(t);X
+i2I0;0i;:::;X
+i2IN 1;N 1i#
+(11)
+where Sw;t2R3+NN
++ . Therefore, the complete state Sis
+modeled as a three-dimensional vector in R(3+NN)jWjT
++ ,
+that is, each feature in (11) is ﬁrst evaluated for each available
+worker (each model variant on each node), and then for
+each time instant within the considered time window. For
+instance, vector Swstores, for worker w, every features in
+(11) evaluated at every time instant t T+1,t T+2, . . . ,t
+within time window [t T+ 1;t]. From now, we refer to the
+state vector encoding as simply sorstfor a generally speaking
+state or a state referred to a time window, respectively.
+C. Training
+The proposed RL scheduling agent is trained over a series
+of episodes that resemble various scenarios. Each episode
+corresponds to a different workload execution with given
+parameters, e.g. requirements from tasks, number of clients
+per minute ( ) or the seed value ( ) for random number
+generation (RNG), and is concluded when the percentage
+of success queries, qS
+t, falls below a given threshold or
+when a timeout His reached. This allows us to speed up
+the training by terminating unsuccessful or steady episodes
+quickly. At every time step t, a rewardrtscores the rate of
+successful queries, see Algorithm 1 at lines 9-10, where qF
+t
+3A worker is a model variant instance vrunning on a particular cluster n,
+therefore we can assume index w=nv+v.Algorithm 1 ASET training procedure
+1: initialize replay buffer D=;ring of sizeNrand0DQN parameters
+2: initialize training RNG seeds 2[0;:::;P 1]
+3:forepisode k2[0;:::;M ]do
+4: sample random seed U(P)
+5: initialize k(ajs) =U() + (1 )(a= arg maxaQ(s;a;k))
+6: forstep t2[0;:::;H ]do
+7: sample atk(ajs)
+8: sample st+1state from edge-network and reward rt
+9: if'>1 (qF
+t+qR
+t)thenrt= (qF
+t+qR
+t)
+10: elsert= 
+11:D D[f(st;at;st+1;rt)gwith circular replacement
+12: ifqS
+tthent H, ends this episode
+13:k;0 k
+14: forgradient descend step g2[0;:::;G 1]do
+15: sample batch BDwithidxU(Nr)
+16: compute Ct rt+arg maxat+1Q(st+1;a(st+1);k)
+17: compute loss L=P
+i(Ci Q(si;ai;k))2
+18: update replay network k;g+1 k;g rk;gL
+19: update DQN parameters k+1 k;G
+is the ratio of “failed” queries, i.e., those delivered violating
+one or more constraints (e.g., out of tolerated delay), and qR
+t
+is the ratio of queries “rejected” by the system for lack of
+resources, normalized by corresponding time window.  is
+a penalty inverse proportional to the episode active time. It
+ensures that both short and bad action trajectories do not reach
+higher returns than optimal ones. Note that DQN network
+is used to minimize the target loss L, see lines 14-18, by
+Adam optimizer and learning rate. It takes gradient steps
+on the Bellman error objective L, see factor Cat line 16 and
+Eq. (10), concurrently with data collection from the replay
+buffer [27] for an efﬁcient off-line learning. This is a common
+hybrid approach to implement Q-Learning [25], [28], [29].
+Additionally, we employ an -greedy exploration policy, see
+line 5, with parameter dynamically updated. The architecture
+of our DQN consists of a stacking of convolutional layers
+that extracts temporal correlations from the state tensor S.
+Such feature extraction part is composed of three convolutional
+layers with 4x4 kernels along the time and feature dimensions,
+followed by Re-Lu activation and max-pooling. Finally, two
+linear layers squeeze the dimension from 256 to as many
+outputs as different static policies .
+V. P ERFORMANCE EVALUATION
+We evaluate ASET using a prototype implementation of an
+edge inference system that will be released upon acceptance
+of the paper. We ﬁrst use our prototype to run small scale
+experiments with the aim of proﬁling some representative
+models and their variants (results not shown). Then we use
+such proﬁling data to run large scale experiments on a simu-
+lated setup, comparing the performance of ASET to those of
+static scheduling policies.
+A. Evaluation settings
+System Prototype. Our prototype implements the edge in-
+ference system functionalities described in Section III. On
+each cluster, a Master deploys workers and routes streams
+between them and remote clients; each Worker runs in a
+Docker container and implements a pipeline that processesqueries in FIFO order from different streams, based on the
+model variant batch size; a Monitoring agent on each cluster
+collects stats from model variants usage and their performance,
+used (i)to build a catalog of model variants and (ii)to provide
+each Scheduler with aggregated observations on the system
+state. We use such a prototype to proﬁle variants of pre-
+trained inference models with respect to their resource usage
+and performance (see below).
+Simulation Setup. To evaluate our approach on a large
+scale, we set up a simulated environment where each worker
+simulates the inference task based on the proﬁling information
+available for its model variant. Therefore, empty responses are
+generated for each batch of queries after simulating a pro-
+cessing delay (based on a normal distribution). Additionally,
+we simulate network delay between stream sources and des-
+tination clusters (see below for considerations on the network
+topologies), as well as the transmission delay. Apart from
+simulated workers, other system components are deployed
+using their prototype implementation. Therefore, the system
+operates on a realistic timescale.
+Network topology. We leverage the network topology of a
+large ISP to assess scheduling performance under realistic
+settings. Speciﬁcally, our simulated environment is a cloud-to-
+edge topology with clusters of different sizes deployed hierar-
+chically. To preserve ISP conﬁdentiality, we only report a high-
+level summary of topology, latency, and hardware distribution
+characteristics. Similarly to the tiered topologies from [30],
+[31], our topology can provide clusters with computation
+capabilities at different layers: network access (e.g., antennas,
+home gateway), central ofﬁces (multiple payers), operator
+data center, and remote cloud (third parties). Speciﬁcally, we
+focus on three scenarios: (i) dc-cloud , where resources are
+deployed at ISP data center and remote cloud only; (ii) co-dc-
+cloud , where resources are deployed at central ofﬁces, operator
+data center and remote cloud; (iii) full-edge topology, where
+clusters are deployed at all layers previously mentioned. Note
+that we limit the simulations to the topology serving 1,000
+antennas from the full ISP topology, and appropriately scale
+resources (see below). For the evaluation, we assume a 5G
+radio access technology with antennas deployed similarly to
+LTE. Network/transmission delays range from few millisec-
+onds, to reach the eNodeBs behind the antennas, to the order
+of ten milliseconds for central ofﬁces and ISP data centers,
+and few tens of milliseconds for the remote cloud.
+Requests workload. Requests are generated following a Pois-
+son distribution. Each generator runs on average clients per
+minute querying the scheduler of a given geographical area
+(antenna). Once spawned, each client requests for processing
+a stream featuring randomized characteristics in terms of frame
+rate, required end-to-end latency, required model accuracy,
+frame sizes, stream duration. To capture realistic queries char-
+acteristics, we modeled metrics of generated streams according
+to the reference edge applications in Table I. In our settings,
+a generator with = 60 brings a load of almost 1000 queries
+per second on the serving antenna.
+Computing clusters and model variant. We assume a givenTABLE I: Characteristics of reference applications [32], [33].
+Edge app Tolerated
+delayFrame
+rateStreams
+durationRequired
+accuracy
+Pool 95 ms 5 FPS 5-10 s 10 mAP
+Workout Assistant 300 ms 2 FPS 90 s 10 mAP
+Ping-pong 150 ms 15-20 FPS 20-40 s 15 mAP
+Face Assistant 370 ms 5 FPS 1-5 s 30 mAP
+Lego/Draw/Sandwich 600 ms 10-15 FPS 60 s 25 mAP
+Gaming 20-30 ms 25 FPS 10-30 m 35 mAP
+Connected Cars 150 ms 10-15 FPS 15-30 m 40 mAP
+Tele-Robots 25-35 ms 10 FPS 5 m 40 mAP
+Remote-driving 20-30 ms 20 FPS 15-30 m 50 mAP
+Interactive AR/VR 30-50 ms 25 FPS 30-60 s 35 mAP
+pool workout pingpong face lego gaming cars robots driving a r/vr020406080100% of success queriesload-balancing
+rp-load
+least-impedance
+closestfarthest
+cheaper
+rp-latency
+ASET
+(a) Average values for clients rate = 60
+pool workout pingpong face lego gaming cars robots driving a r/vr020406080100% of success queriesload-balancing
+rp-load
+least-impedance
+closestfarthest
+cheaper
+rp-latency
+ASET
+(b) Average values for episodes with dynamic clients rates.
+Fig. 4: Success percentage for different apps on the full-edge topology.
+reference hardware distribution across clusters, with comput-
+ing capabilities increasing from the access network to the
+cloud. Speciﬁcally, the access network can be equipped with
+an 8-16 cores machine, 16 GB of memory and a small TPU,
+central ofﬁces can host in the order of tens of servers (32-
+64 CPUs, 128-256 GB, and few GPUs), ISP data centers
+can host hundreds of servers, while for the centralized cloud
+we assume unlimited resources. In our evaluation, we focus
+on DNN models for the object detection task, as it is one
+of the most challenging and computation-intensive inference
+service [34], [35]. Using our prototype we proﬁle MobileNet-
+SSD, Yolo-v3, and Tinyyolo-v2 models [36], [37], with CPU
+and GPU variants on different batch sizes, scaling on allocated
+resources and number of replicas. Such a set of results is not
+shown for lack of space. We use proﬁled information to run
+our simulations on top of the three topologies described above.
+On each cluster, workers have been scaled on the number of
+replicas up to resource saturation.
+B. Experimental Results
+We compare the performance of the baseline policies de-
+scribed in Section III-C distinguishing results for different
+applications from Table I. As a performance metric we con-
+sider the percentage of queries that are successfully processed
+by the system satisfying the application QoS requirements.
+Figure 4a shows results of multiple runs with = 60. Results
+0 100 200 300 400
+time (s)405060708090100% of success queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET(a) Time avg on dc-cloud for = 60.
+20 40 60 100
+# of streams per minute (poisson λ)30405060708090100% of success queries
+load-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET (b) Different clients rate on dc-cloud.
+0 100 200 300 400
+time (s)405060708090100% of success queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET
+(c) Time avg on co-dc-cloud for = 60.
+20 40 60 100
+# of streams per minute (poisson λ)30405060708090100% of success queries
+load-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET (d) Different clients rate on co-dc-cloud.
+Fig. 5: Performance of ASET compared with static policies for (ab) the dc-
+cloud topology and (cd) the co-dc-cloud topology.
+suggest that there is no one-size-ﬁts-all policy, as various
+applications may beneﬁt differently from each policy. Varying
+the rate of stream requests on the antenna (Figure 4b) may
+further increase the uncertainty of relying on a single policy.
+In the following, we compare the performance of the ASET RL
+scheduling approach with the performance of static policies,
+evaluating the beneﬁts it can introduce in the various scenarios.
+We trained three different versions of ASET (one for each
+topology). In particular, we sample the state using a time
+windowT= 25 seconds, and we experimentally chose an
+episode timeout of 8 minutes to avoid steady states in the
+network. Despite we evaluate on multiple clients rate, our
+agent has been trained only on episodes with = 60.
+Cloud deployment. When all the available resources are
+located in a few centralized clusters, the various static policies
+have small differences in performance and a dynamic approach
+has little room for improvement. Results for the dc-cloud
+topology are shown in Figures 5ab. In particular, Figure 5a
+plots, for every moment of the simulation (time axis), the
+percentage of queries that are handled successfully, averaging
+multiple runs with different workloads. The graph shows that,
+for this topology, ASET does not improve over static policies,
+and it even performs worse for higher lambdas (Figure 5b).
+Figures 5cd shows that moving some resources to Central
+Ofﬁces (co-dc-cloud topology) makes a huge difference: in
+general, all the policies achieve a higher success ratio on this
+conﬁguration (Figure 5c), as they can exploit the additional
+lower latency spots, and the higher level of distribution gives
+to ASET a certain margin of improvement. Figure 5d shows
+that ASET introduces some improvement over all the baselines
+for every lambda, despite being trained only for = 60.
+Edge deployment. The results so far suggest that a good
+distribution of computing resources is a key factor to improve
+against static scheduling policies. As shown in Figure 6, the
+beneﬁts of using a dynamic scheduling approach become more0 100 200 300 400
+time (s)405060708090100% of success queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET(a) Queries handled successfully.
+20 40 60 100
+# of streams per minute (poisson λ)020406080100% of success queries
+load-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET (b) Different clients rate on full-edge.
+0 100 200 300 400
+time (s)05101520253035% of failed queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET
+(c) Queries delivered with QoS violations.
+0 100 200 300 400
+time (s)051015202530% of rejected queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET (d) Queries rejected for lack of resources.
+Fig. 6: Performance of ASET compared with static policies for the full-edge
+topology. (a) (c) and (d) show averages of multiple runs with = 60.
+concrete in a full-edge topology, where resources are better
+distributed on multiple smaller clusters in different locations.
+In fact, Figure 6a shows that the dynamic approach of ASET is
+able to achieve a constant improvement over any static policy,
+with a higher success ratio over time. In particular, Figures 6cd
+show that, while maintaining the same rejection rate as the best
+static-policy, ASET effectively reduces the number of queries
+that are handled violating one or more QoS requirements.
+Moreover, Figure 6b shows that an ASET agent trained only
+for= 60 can also generalize on different requests rate, even
+supporting a load of more than 1600 queries per second ( =
+100) on a single antenna.
+Dynamic input rate. We have performed some additional
+experiments to evaluate how the system behaves in dynamic
+situations where the requests rate varies over time. For this
+purpose, we have set up some dynamic runs where the lambda
+value changes every 150 seconds: a ﬁrst pattern simulates
+a particularly fast variation with values of 20, 60, and 100
+clients per minute (Figure 7a); a different pattern simulates
+a more steady scenario where the requests rate ﬁrst moves
+from 60 to 40 clients per minute, then drops to 20, and ﬁnally
+slowly goes back to 60 (Figure 7b). Similar to previous plots,
+the outcomes for this set of experiments are shown averaging
+values over time for multiple runs (Figure 7). Results in both
+ﬁgures show that having a dynamic requests arrival even intro-
+duces a bigger margin for improvement that ASET effectively
+exploits reaching the highest percentage of queries handled
+successfully. This appears particularly evident in the case
+where the variation between client arrivals is faster and bigger
+(Figure 7a). This result suggests that, while some of the static
+policies may achieve decent performance when the system
+load is stable, they struggle on more dynamic scenarios. In
+such situations, an adaptive algorithm such as ASET is more
+suitable as it can learn how to best optimize the system under
+different conditions. Moreover, results suggest that ASET
+0 100 200 300 400
+time (s)405060708090100% of success queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET(a) Burst variation of from 20 to 100.
+0 100 200 300 400
+time (s)405060708090100% of success queriesload-balancing
+rp-load
+least-impedance
+closest
+farthestcheaper
+rp-latency
+random
+ASET (b) Steady variation of between 60 and 20.
+Fig. 7: Performance of ASET varying the requests rate over time with two
+different load variation patterns (full-edge topology).
+0 2 4 6 8
+time (s)0.00.20.40.60.81.0CDFλ = 60 λ = 80 λ = 100
+switching policy delay
+requests interval
+(a) Cumulative distribution of delay.
+0 100 200 300 400 500 600 700
+training episodes020406080100testing % of success queriestopology
+full-edge
+co-dc-cloud
+dc-cloud (b) Learning curve.
+Fig. 8: (a) Delay for switching policy compared with requests arrival intervals.
+(b) Learning curve while training ASET on different topologies.
+training generalizes enough as the algorithm performs well
+under previously unseen dynamic conditions.
+Training and applicability. Figure 8a shows the cumulative
+distribution of the time needed by ASET to infer a switching
+decision from the current policy to the one that is best suitable
+for the current system conditions (non-dashed line). The
+switching delay is compared with distributions of the intervals
+between subsequent requests for different lambdas. As shown,
+even for very large client loads (100 clients connected to
+the antenna), the time interval between two stream arrivals is
+typically in the scale of seconds or hundreds of milliseconds,
+while the delay for switching between policies is one order of
+magnitude smaller. Finally, Figure 8b shows the learning curve
+of ASET for different topologies on continuous stream request
+arrivals. The ﬁgure shows that ASET quickly reaches a certain
+level of performance in the ﬁrst training iterations (before 100
+episodes) independently from the topology complexity, leaving
+room for extra improvements to the subsequent episodes based
+on the margin left by the topology itself.
+VI. C ONCLUSIONS
+This paper proposes ASET, an adaptive algorithm based on
+Reinforcement Learning for scheduling inference workloads
+at the network edge. ASET solves the problem of exploiting
+scattered clusters of resources to serve inference queries from
+multiple edge applications (e.g., AR/VR, cognitive assistance).
+We model an edge inference system where queries from
+different access networks are processed across a multitude
+of distributed processing locations. The constrained nature
+of the edge network introduces a trade-off between network
+delay and processing time based on the various available
+DNN models. In such a scenario, ASET optimizes the binding
+between inference stream requests and available DL modelsacross the network, maximizing the throughput and ensuring
+that any requirement in terms of inference accuracy and end-
+to-end delay is satisﬁed. We evaluated our approach over the
+realistic network topology of a large ISP and considering a
+heterogeneous pool of edge applications. Our ﬁndings show
+that ASET effectively improves the performance compared to
+static policies when resources are deployed across the whole
+edge-cloud infrastructure.
+REFERENCES
+[1] J. Konecny, H. B. McMahan, F. Yu, P. Richtarik, A. Theertha Suresh,
+and D. Bacon, “Federated learning: Strategies for improving communi-
+cation efﬁciency,” in 29th Conference on Neural Information Processing
+Systems(NIPS) , 2016.
+[2] R. S. Kannan, L. Subramanian, A. Raju, J. Ahn, J. Mars, and L. Tang,
+“Grandslam: Guaranteeing slas for jobs in microservices execution
+frameworks,” in Proceedings of the Fourteenth EuroSys Conference
+2019 . ACM, 2019, p. 34.
+[3] H. Mao, M. Schwarzkopf, S. B. Venkatakrishnan, Z. Meng, and M. Al-
+izadeh, “Learning scheduling algorithms for data processing clusters,”
+inProceedings of the ACM Special Interest Group on Data Communi-
+cation , 2019, pp. 270–288.
+[4] D. Crankshaw, X. Wang, G. Zhou, M. J. Franklin, J. E. Gonzalez, and
+I. Stoica, “Clipper: A low-latency online prediction serving system,”
+in14thfUSENIXgSymposium on Networked Systems Design and
+Implementation (fNSDIg17), 2017, pp. 613–627.
+[5] F. Romero, Q. Li, N. J. Yadwadkar, and C. Kozyrakis, “Infaas: Managed
+& model-less inference serving,” arXiv preprint arXiv:1905.13348 ,
+2019.
+[6] C. Olston, N. Fiedel, K. Gorovoy, J. Harmsen, L. Lao, F. Li, V . Ra-
+jashekhar, S. Ramesh, and J. Soyke, “Tensorﬂow-serving: Flexible, high-
+performance ml serving,” arXiv preprint arXiv:1712.06139 , 2017.
+[7] D. Chappell, “Introducing azure machine learning,” A guide for technical
+professionals, sponsored by microsoft corporation , 2015.
+[8] “Ai platform of google cloud,” https://cloud.google.com/ai-platform.
+[9] P. Mach and Z. Becvar, “Mobile edge computing: A survey on archi-
+tecture and computation ofﬂoading,” IEEE Communications Surveys &
+Tutorials , vol. 19, no. 3, pp. 1628–1656, 2017.
+[10] J. Chen and X. Ran, “Deep learning with edge computing: A review,”
+Proceedings of the IEEE , vol. 107, no. 8, pp. 1655–1674, 2019.
+[11] R. Ghosh and Y . Simmhan, “Distributed scheduling of event analytics
+across edge and cloud,” ACM Transactions on Cyber-Physical Systems ,
+vol. 2, no. 4, p. 24, 2018.
+[12] C.-C. Hung, G. Ananthanarayanan, P. Bodik, L. Golubchik, M. Yu,
+P. Bahl, and M. Philipose, “Videoedge: Processing camera streams
+using hierarchical clusters,” in 2018 IEEE/ACM Symposium on Edge
+Computing (SEC) . IEEE, 2018, pp. 115–131.
+[13] J. Soifer, J. Li, M. Li, J. Zhu, Y . Li, Y . He, E. Zheng, A. Oltean,
+M. Mosyak, C. Barnes et al. , “Deep learning inference service at
+microsoft,” in 2019fUSENIXgConference on Operational Machine
+Learning (OpML 19) , 2019, pp. 15–17.
+[14] E. Cuervo, A. Balasubramanian, D.-k. Cho, A. Wolman, S. Saroiu,
+R. Chandra, and P. Bahl, “Maui: making smartphones last longer with
+code ofﬂoad,” in Proceedings of the 8th international conference on
+Mobile systems, applications, and services . ACM, 2010, pp. 49–62.
+[15] M.-R. Ra, A. Sheth, L. Mummert, P. Pillai, D. Wetherall, and R. Govin-
+dan, “Odessa: enabling interactive perception applications on mobile
+devices,” in Proceedings of the 9th international conference on Mobile
+systems, applications, and services . ACM, 2011, pp. 43–56.
+[16] S. Han, H. Shen, M. Philipose, S. Agarwal, A. Wolman, and A. Krishna-
+murthy, “Mcdnn: An approximation-based execution framework for deep
+stream processing under resource constraints,” in Proceedings of the 14th
+Annual International Conference on Mobile Systems, Applications, and
+Services . ACM, 2016, pp. 123–136.
+[17] X. Ran, H. Chen, X. Zhu, Z. Liu, and J. Chen, “Deepdecision: A mobile
+deep learning framework for edge video analytics,” in IEEE INFOCOM
+2018-IEEE Conference on Computer Communications . IEEE, 2018,
+pp. 1421–1429.
+[18] B. Hu and W. Hu, “Linkshare: device-centric control for concurrent
+and continuous mobile-cloud interactions,” in Proceedings of the 4th
+ACM/IEEE Symposium on Edge Computing , 2019, pp. 15–29.[19] S. H. Mortazavi, M. Salehe, C. S. Gomes, C. Phillips, and E. de Lara,
+“Cloudpath: a multi-tier cloud computing framework,” in Proceedings of
+the Second ACM/IEEE Symposium on Edge Computing . ACM, 2017,
+p. 20.
+[20] S. Khare, H. Sun, J. Gascon-Samson, K. Zhang, A. Gokhale, Y . Barve,
+A. Bhattacharjee, and X. Koutsoukos, “Linearize, predict and place:
+minimizing the makespan for edge-based stream processing of directed
+acyclic graphs,” in Proceedings of the 4th ACM/IEEE Symposium on
+Edge Computing , 2019, pp. 1–14.
+[21] C. Cicconetti, M. Conti, and A. Passarella, “An architectural framework
+for serverless edge computing: design and emulation tools,” in 2018
+IEEE International Conference on Cloud Computing Technology and
+Science (CloudCom) . IEEE, 2018, pp. 48–55.
+[22] M. Jia, J. Cao, and W. Liang, “Optimal cloudlet placement and user
+to cloudlet allocation in wireless metropolitan area networks,” IEEE
+Transactions on Cloud Computing , vol. 5, no. 4, pp. 725–737, 2015.
+[23] J. Long, M. Dong, K. Ota, and A. Liu, “A green tdma scheduling
+algorithm for prolonging lifetime in wireless sensor networks,” IEEE
+Systems Journal , vol. 11, no. 2, pp. 868–877, 2015.
+[24] R. Bellman, “A markovian decision process,” Journal of mathematics
+and mechanics , pp. 679–684, 1957.
+[25] S. Levine, A. Kumar, G. Tucker, and J. Fu, “Ofﬂine reinforcement
+learning: Tutorial, review, and perspectives on open problems,” arXiv
+preprint arXiv:2005.01643 , 2020.
+[26] V . Mnih, K. Kavukcuoglu, D. Silver, A. Graves, I. Antonoglou,
+D. Wierstra, and M. A. Riedmiller, “Playing atari with deep
+reinforcement learning,” CoRR , vol. abs/1312.5602, 2013. [Online].
+Available: http://arxiv.org/abs/1312.5602
+[27] L. ji Lin, “Self-improving reactive agents based on reinforcement
+learning, planning and teaching,” in Machine Learning , 1992, pp. 293–
+321.
+[28] C. J. C. H. Watkins and P. Dayan, “Q-learning,” Machine Learning ,
+vol. 8, no. 3, pp. 279–292, 1992. [Online]. Available: https:
+//doi.org/10.1007/BF00992698
+[29] V . Mnih, K. Kavukcuoglu, D. Silver, A. A. Rusu, J. Veness, M. G.
+Bellemare, A. Graves, M. Riedmiller, A. K. Fidjeland, G. Ostrovski
+et al. , “Human-level control through deep reinforcement learning,”
+nature , vol. 518, no. 7540, pp. 529–533, 2015.
+[30] L. Tong, Y . Li, and W. Gao, “A hierarchical edge cloud architecture for
+mobile computing,” in IEEE INFOCOM 2016-The 35th Annual IEEE
+International Conference on Computer Communications . IEEE, 2016,
+pp. 1–9.
+[31] A. Ceselli, M. Premoli, and S. Secci, “Mobile edge cloud network design
+optimization,” IEEE/ACM Transactions on Networking , vol. 25, no. 3,
+pp. 1818–1831, 2017.
+[32] Z. Chen, W. Hu, J. Wang, S. Zhao, B. Amos, G. Wu, K. Ha, K. Elgazzar,
+P. Pillai, R. Klatzky et al. , “An empirical study of latency in an
+emerging class of edge computing applications for wearable cognitive
+assistance,” in Proceedings of the Second ACM/IEEE Symposium on
+Edge Computing , 2017, pp. 1–14.
+[33] A. Cartas, M. Kocour, A. Raman, I. Leontiadis, J. Luque, N. Sastry,
+J. Nu ˜nez-Martinez, D. Perino, and C. Segura, “A reality check on infer-
+ence at mobile networks edge,” in Proceedings of the 2nd International
+Workshop on Edge Systems, Analytics and Networking , 2019, pp. 54–59.
+[34] L. Jiao, F. Zhang, F. Liu, S. Yang, L. Li, Z. Feng, and R. Qu, “A
+survey of deep learning-based object detection,” IEEE Access , vol. 7,
+pp. 128 837–128 868, 2019.
+[35] A. Srivastava, D. Nguyen, S. Aggarwal, A. Luckow, E. Duffy,
+K. Kennedy, M. Ziolkowski, and A. Apon, “Performance and memory
+trade-offs of deep learning object detection in fast streaming high-
+deﬁnition images,” in 2018 IEEE International Conference on Big Data
+(Big Data) . IEEE, 2018, pp. 3915–3924.
+[36] W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. Reed, C.-Y . Fu, and A. C.
+Berg, “Ssd: Single shot multibox detector,” in European conference on
+computer vision . Springer, 2016, pp. 21–37.
+[37] J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, “You only look
+once: Uniﬁed, real-time object detection,” in Proceedings of the IEEE
+conference on computer vision and pattern recognition , 2016, pp. 779–
+788.

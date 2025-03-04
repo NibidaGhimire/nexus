@@ -1,0 +1,1299 @@
+BOOSTING SEMANTIC SEGMENTATION BY CONDITIONING THE
+BACKBONE WITH SEMANTIC BOUNDARIES
+A P REPRINT
+Haruya IshikawaYoshimitsu Aoki
+Department of Electrical Engineering
+Keio University
+Yokohama, Kanagawa 223-0061
+haruyaishikawa@keio.jp
+March 16, 2023
+ABSTRACT
+In this paper, we present the Semantic Boundary Conditioned Backbone (SBCB) framework, a
+simple yet effective training framework that is model-agnostic and boosts segmentation performance,
+especially around the boundaries. Motivated by the recent development in improving semantic
+segmentation by incorporating boundaries as auxiliary tasks, we propose a multi-task framework
+that uses semantic boundary detection (SBD) as an auxiliary task. The SBCB framework utilizes
+the nature of the SBD task, which is complementary to semantic segmentation, to improve the
+backbone of the segmentation head. We apply an SBD head that exploits the multi-scale features
+from the backbone, where the model learns low-level features in the earlier stages, and high-level
+semantic understanding in the later stages. This head perfectly complements the common semantic
+segmentation architectures where the features from the later stages are used for classiﬁcation. We
+can improve semantic segmentation models without additional parameters during inference by only
+conditioning the backbone. Through extensive evaluations, we show the effectiveness of the SBCB
+framework by improving various popular segmentation heads and backbones by 0:5%3:0%IoU
+on the Cityscapes dataset and gains 1:6%4:1%in boundary Fscores. We also apply this framework
+on customized backbones and the emerging vision transformer models and show the effectiveness of
+the SBCB framework.
+1 Introduction
+Semantic segmentation is an actively studied ﬁeld in computer vision and is crucial for various challenging applications
+such as autonomous driving and virtual reality. Semantic segmentation is a pixel-wise classiﬁcation task where each
+pixel represents a category. A standard metric of quantifying segmentation quality is the intersection-over-union
+(IoU) metric, deﬁned as the ratio of the intersection of the predicted segmentation mask and the ground-truth (GT)
+segmentation mask to the union of the two masks. With most methods competing for the best IoU score, the boundary
+quality of the segmentation masks is often overlooked Cheng et al. [2021]. However, more precise object segmentation
+masks can signiﬁcantly beneﬁt various downstream applications, such as object proposal generation Bertasius et al.
+[2015], depth estimation Ramamonjisoa et al. [2020], and image localization Ramalingam et al. [2010].
+Closely related to semantic segmentation, semantic boundary detection (SBD) is also an active computer vision research
+topic. SBD is a multi-label classiﬁcation task formulation of the classical binary edge detection task, which requires the
+model to classify the edges and their category. Since boundaries are always surrounding the segmentation map, SBD is
+often considered a dual problem of semantic segmentation.
+Joint modeling of segmentation and boundary detection has recently become popular to combat the issues of poor
+boundary quality in semantic segmentation Takikawa et al. [2019], Li et al. [2020], Zhen et al. [2020], Yu et al. [2021].
+github.com/haruishi43arXiv:2304.09427v1  [cs.CV]  19 Apr 2023Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Segmentation
+HeadBackbone
+Image
+Semantic B oundary Detection Head OTF Semantic
+Boundary Gener ationSBCB Framework
+(only during tr aining)
+GT Semantic B oundary Pred.Pred.
+GT Segementation Mask
+Figure 1: A simple overview of the Semantic Boundary Conditioned Backbone (SBCB) framework. The semantic
+boundary detection (SBD) head is applied to the backbone of the semantic segmentation head during training. The
+on-the-ﬂy (OTF) semantic boundary generation module generates ground-truth (GT) semantic boundaries to train the
+SBD head. This simple framework improves the segmentation quality because the task of SBD is complementary but
+more challenging than the main task, which forces the backbone network to explicitly and jointly model boundaries and
+the relation to semantics.
+Not only do these approaches improve segmentation accuracy around the boundaries, but they also prove that explicit
+modeling of the boundaries improves the overall IoU as well. The most common approach for joint modeling is to
+propose a novel method of using the features learned in the boundary heads to improve the segmentation quality.
+Although effective, these methods require speciﬁc architectures and are not easily transferable to other segmentation
+models. The SegFix Yuan et al. [2020] method is a notable exception, an effective post-processing method that improves
+the segmentation quality by ﬁxing the segmentation errors around the boundaries. However, SegFix requires the user
+to train a separate post-processing model and adds another step during inference. We argue that we can intrinsically
+improve the segmentation quality by conditioning the backbone of the segmentation head on the semantic boundaries, a
+technique that is model-agnostic and can be applied to any hierarchical backbones.
+To this end, we present the Semantic Boundary Conditioned Backbone (SBCB) framework, a training framework aimed
+at boosting the segmentation quality of various segmentation architectures. In this framework, we add a lightweight
+SBD head on the backbone of the segmentation network during training and perform multi-task training. The SBD head
+is speciﬁcally designed so that the earlier stages of the backbones are conditioned on low-level features, and the later
+stages on higher-level semantic understanding. We can discard the SBD head during inference, retaining the beneﬁts of
+the conditioned backbone without any computational costs or an increase in network parameters. The models trained
+using our framework consistently improve signiﬁcantly in their metrics, especially around the mask boundaries. We
+show effectiveness by applying our framework to various segmentation models with varying segmentation heads and
+backbones. The contributions are as follows:
+•We propose a model-agnostic training framework aimed at conditioning the backbone for semantic segmen-
+tation called the Semantic Boundary Conditioned Backbone (SBCB) framework. This is the ﬁrst training
+framework that utilizes semantic boundaries as an auxiliary task to improve various segmentation models both
+in terms of IoU and boundary Fscore. Our framework only uses the SBD head during training and does not
+add any computational costs during inference. We provide extensive experiments to prove the effectiveness of
+the framework.
+•We propose the Binary Boundary Conditioned Backbone (BBCB) framework to compare with the SBCB
+framework and show that SBD is the perfect auxiliary task. The use of binary boundaries and edges has been
+vaguely proposed by previous works as auxiliary tasks for a speciﬁc architecture, yet it has not been made into
+a generalized framework compatible with various architectures.
+•We propose applying our framework to customized architectures such as BiSeNet, STDC, and the recent vision
+transformers.
+•We propose methods of utilizing the SBD head used in the SBCB framework for explicit feature fusion
+and show how the SBCB framework further contributes to the research in multi-task models of semantic
+segmentation and SBD.
+• The SBCB framework is open-sourced to beneﬁt the community.
+2Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+2 Related Work
+Semantic Segmentation. In computer vision, semantic segmentation is one of the most popular and challenging tasks
+and boasts a rich set of prior works. Long et al. Long et al. [2015] proposed an end-to-end trainable fully convolutional
+network adapted from image classiﬁcation models. In Chen et al. [2017], the authors introduced dilated convolution
+and atrous spatial pyramid pooling (ASPP) to capture multi-scale contextual information. Zhao et al. Zhao et al. [2017]
+proposed a pyramid pooling module (PPM) to model multi-scale contexts. Methods introduced in Fu et al. [2019a],
+Zhu et al. [2019], Pang et al. [2019], Huang et al. [2019], Fu et al. [2019b], Cao et al. [2020], Yin et al. [2020], Fu et al.
+[2021] achieved greater recognition of local and global context through the introduction of non-local operators Wang
+et al. [2018] and self-attention mechanism Vaswani et al. [2017]. Recently, the use of vision transformers Dosovitskiy
+et al. [2021], Liu et al. [2021] for semantic segmentation has become popularized due to its capability of learning
+long-range contexts Strudel et al. [2021], Xie et al. [2021]. In this paper, we do not explicitly explore new methods of
+contextual modeling for semantic segmentation. Instead, we introduce a framework that can be easily integrated with
+these models and demonstrate how our framework can improve upon these baselines.
+Meanwhile, there have been works for directly modeling boundary information for segmentation using novel loss
+functions Chen et al. [2020], Wang et al. [2022]. Our work focuses on multi-task learning of semantic segmentation and
+boundaries, which can also incorporate these loss functions.
+Edge and Semantic Boundary Detection. Similar to semantic segmentation, edge and boundary detection have been
+widely studied. Xie et al. Xie and Tu [2015] introduced a CNN model that can be trained end-to-end, which paved
+the way for various edge detection models like Liu et al. [2017], Pu et al. [2022]. Yu et al. Yu et al. [2017] extended
+the task of binary edge detection to semantic boundary detection (SBD) by formulating the problem as multi-label
+pixel-wise classiﬁcation. Hu et al. Hu et al. [2019] introduced a dynamic fusion model with adaptive weights for better
+contextual modeling. DDS Liu et al. [2022a] proposed a deep supervision framework that supervises all side outputs
+and is currently the state-of-the-art method for SBD.
+Multi-Task Learning. In this paper, we specify multi-task learning (MTL) as an explicit joint modeling of two or
+more tasks like the method introduced in Misra et al. [2016], Kokkinos [2017], Xiao et al. [2018], Xu et al. [2018].
+While most of the models in computer vision are task-speciﬁc, there is great interest in joint modeling. Solving multiple
+problems with a single model could create efﬁcient systems and improve recognition for general AI, such as embodied
+agents Xia et al. [2018], Narasimhan et al. [2020]. In MTL, it is common to use a multi-head architecture with a shared
+backbone for memory efﬁciency. The backbone is aimed to learn a shared representation between the tasks, but often
+times this fails due to the backbone being designed for a single-task, leading to worse results Kokkinos [2017], Misra
+et al. [2016]. The works of Liu et al. [2018] explores novel mechanism for obtaining features by adding task-speciﬁc
+attention modules in the backbone. Our work, however, explores the use of two-head architecture, where the auxiliary
+semantic boundary detection task is complementary to the main segmentation task.
+In semantic segmentation, edges and boundaries have been used as auxiliary tasks. Takikawa et al. Takikawa et al.
+[2019] introduced an MTL framework using binary boundary detection as an auxiliary task to improve semantic
+segmentation, especially for pixels near mask boundaries. Similarly, Li et al. Li et al. [2020] introduced a novel
+framework for explicitly modeling the body and edge features. This paper explores the joint modeling of semantic
+segmentation and semantic boundaries as an MTL framework for conditioning the backbone features.
+Zhen et al. Zhen et al. [2020] introduced the ﬁrst joint semantic segmentation and boundary detection (JSB) model and
+proposed the iterative pyramid context module and duality loss that enforces consistency between the two tasks. Yu et
+al. Yu et al. [2021] proposed a dynamic graph propagation approach to couple the two tasks and reﬁne segmentation and
+boundary maps. In this paper, we introduce a simple yet effective modular multi-headed model that does not require
+complex modeling to explicitly fuse the two tasks. We show that a shared backbone is enough to improve both tasks
+signiﬁcantly. We also show that we can develop a JSB model using the semantic boundary head used in our framework,
+which can further boost semantic segmentation performance.
+SegFix. SegFix Yuan et al. [2020] is a model-agnostic post-processing network that reﬁnes the output of a segmentation
+model with an independent network. The key idea of this method is to replace unreliable predictions in the mask
+boundaries with reliable interior labels. SegFix is similar to our approach in that we both aim to improve segmentation
+quality using boundaries in a model-agnostic way. The key difference is that our method is a training framework,
+whereas SegFix requires training another model and two-step inference. In fact, SegFix can be combined with our
+framework to boost performance, which we will show in this paper.
+3Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Backbone
+ImageSide1
+(Stem)Side2Side3Side4Side5SBD head
+Fuse
+ Side La yerSide La yer
+Side La yer
+Side La yer
+(ResNet)Aux
+Prediction
+1x1conv + BN
+Deconv1x1conv
++ BN + relu
+3x3convUpsample
+...Sliced Concatenation1x1conv
+Side La yer
+(original vs. ours)Fuse La yer
+Figure 2: Overview of the CASENet Architecture. The architecture utilizes sides 1, 2, 3, and 5 of the backbone, where
+the Side Layer is applied. The Side Layers consist of a single convolutional layer followed by a deconvolutional layer
+which upsamples the feature resolution to the size of the input image. While this Side Layer works ﬁne, the output
+prediction produces heavy artifacts. To mitigate the artifacts, we used a 11convolutional kernel followed by bilinear
+upsampling with a 33convolutional kernel. Finally, the features are concatenated into a single tensor using sliced
+concatenation and is applied to a 11grouped convolutional kernel with the number of sides (four) as the group. We
+use the output of the last Side Layer as an auxiliary output which is supervised with semantic boundaries.
+Backbone
+ImageSide1
+(Stem)Side2Side3Side4Side5SBD head
+Fuse La yer
+Side La yerSide La yer
+Side La yer
+Side La yer
+(ResNet)Aux
+PredictionAdaptiv e
+Weight Learner
+1x1conv
++ BN + relu1x1conv
++ BN + relu1x1conv
++ BN + Sigmoid
+Adaptiv e Weight Learner
+Figure 3: Overview of the DFF Architecture. The architecture adds Adaptive Weight Learner on top of the CASENet
+architecture that learns attentive weights, which are applied to the outputs of the Fuse Layer.
+3 Approach
+The overview of the Semantic Boundary Conditioned Backbone (SBCB) framework is shown in Figure 1. During
+training, we add a semantic boundary detection (SBD) head to the backbone, which receives multi-scale features from
+selected stages of the backbone. The SBD head is supervised using ground-truth (GT) semantic boundaries that are
+generated on-the-ﬂy using the GT segmentation masks. During inference, if the targeted task does not require SBD, the
+SBD head can be discarded, resulting in a semantic segmentation model with no increase in parameters.
+In Section 3.1, we will go over existing SBD architectures and introduce the SBD heads that we will use in our
+experiments. In Section 3.2, we will go into detail about the framework by applying the SBCB framework to
+DeepLabV3+ and HRNet. In Section 3.3, we will explain the OTF semantic boundary generation module, which is the
+4Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Backbone
+ImageSide1
+(Stem)Side2Side3Side4Side5SBD head
+Fuse
+ Side B lockSide B lock
+Side B lock
+Side B lock
+(ResNet)Aux
+PredictionSide B lock
+Semantic
+Binary
+Side B lockBasic
+(Res)BlockBasic
+(Res)BlockSide
+Layer
+Figure 4: Overview of the DDS Architecture. The DDS architecture is similar to CASENet with additional usage of
+Side4 features from the backbone as well as a deeper side layer called the Side Block. The Side Block consists of two
+Basic ResBlocks followed by the Side Layer used in CASENet. Instead of only using the ﬁfth Side Block as auxiliary
+loss, the architecture utilizes a deep supervision method where the four earlier outputs of the Side Blocks are supervised
+by binary boundaries as well.
+key to making this framework ﬂexible and easy to use. Finally, in Section 3.4, we will explain the loss function used for
+the framework.
+3.1 Semantic Boundary Detection Heads
+In this section, we review some major SBD models based on ConvNets that have come out over the years. This section
+will help readers understand the SBD head used in the SBCB framework as well as the experiments. We also provide
+some helpful modiﬁcations that we have found worked well during our reimplementation. Finally, we also introduce
+the “Generalized” versions of these SBD heads that we use in the SBCB framework.
+CASENet. The CASENet architecture was proposed by Yu et al. Yu et al. [2017], which suggested a novel nested
+architecture without deep supervision on ResNet. The architecture is depicted in Figure 2. The ResNet backbone is
+modiﬁed to capture features with larger resolution (explained in depth in Section 5.7). At each stage of the backbone
+except for stage 1, the features are passed into the Side Layer, which consists of 11convolutional kernel followed
+by a deconvolutional layer to increase the resolution to match the input image. Throughout the paper, we use “Stage”
+and “Side” interchangeably. Stages are based on the original papers of the backbone, oftentimes not including the
+Stem. We use “Side”, a term used in SBD-related papers, which includes Stem. The last Side Layer (Side 5) outputs an
+NcatHWtensor while the other Side Layers (Side 1 to 4) will output 1HW, whereNcatis the number of
+categories, and HandWare height and width of the image. The outputs of the Side Layers are followed by a Fuse
+layer which consists of a sliced concatenation of each feature with 11convolution kernel to output an NcatHW
+a logit, which is supervised by semantic boundaries. The output of the last Side Layer is also supervised by semantic
+boundaries, which are used as an auxiliary signal. The details for semantic boundary supervision loss LSBD for Fuse
+Layer and the last Side Layer is explained in Section 3.4.
+We noticed that the original implementation of the Side Layer produces boundaries with heavy checkerboard artifacts
+and replaced the Side Layers with bilinear upsampling followed by a 33convolutional kernel as shown in Figure 2.
+This technique was introduced for generative models using deconvolution Odena et al. [2016], and we modiﬁed it to not
+increase the number of parameters.
+DFF. The DFF architecture was proposed in Hu et al. [2019] to improve the CASENet architecture by introducing the
+Adaptive Weight Learner to reﬁne the output of the Fuse layer with attentive weights. As shown in Figure 3, the Fuse
+layer outputs the sliced concatenated features, and instead of a 11convolutional kernel, the weights obtained by the
+Adaptive Weight Learner are applied to the tensor and summed so that the output tensor is NcatHW.
+5Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+DDS. The most recent method which outperforms CASENet and DFF is called DDS, which was introduced in Liu
+et al. [2022a]. DDS introduced a deeper Side Layer, known as the Side Block, which is composed of two ResNet Basic
+Blocks followed by a Side Layer. The overview of the network is shown in Figure 4. Although CASENet avoids deep
+supervision of the earlier side outputs, DDS explicitly supervises all the Side Blocks. The last output is supervised by
+semantic boundaries, and the earlier outputs are supervised by binary boundaries.
+BackboneSide NGener alized SBD Head
+Fuse
+Side La yer N
+Side La yer 2
+Side La yer 1
+Aux
+Prediction Side La yer  Side
+Side 2
+Side 1Semantic Side Layer
+Binary Side Layer
+Binary Side Layer
+Binary Side Layer
+Figure 5: Overview of the Generalized CASENet Architecture. This architecture is a “generalized” version of the
+CASENet architecture in Figure 2. The last ( Nth) Side Layer is called the Semantic Side Layer and the input feature
+is called the Semantic Side. The 1(N 1)th Side Layer is called the Binary Side Layer since the input side
+feature (called the Binary Side) only has a single channel (like the other SBD architectures). With the generalization of
+not having a constrained number of sides and Side Layers, we can apply this SBD head to various backbones. This
+generalization can be applied to DFF and DDS architectures as well.
+Generalized SBD heads. To facilitate the SBCB framework, we generalize the SBD heads to be applied to various
+backbones and segmentation architectures. We call this SBD head the Generalized SBD head, as shown in Figure 5. In
+our framework, we generalized the architecture to have ﬂexible Side and Fuse layers to apply any previously mentioned
+SBD heads (CASENet, DFF, and DDS). The Side Layer could be the Side Layers introduced in CASENet or the Side
+Blocks in DDS. The Fuse Layer could be the Fuse Layer introduced in CASENet or the Fuse Layer with Adaptive
+Weight Learner in DFF. The number of Sides is also ﬂexible where semantic boundaries supervise the Nth side output
+with binary boundaries supervising the earlier side outputs when DDS is used.
+BackboneSide1
+(Stem)Side2Side3Side4Side5ASPP + B ot. C1 Bot.Seg. Head
+ResNetSBD headFuse Side La yerSide La yer
+Side La yer
+Side La yerAux
+Prediction
+Figure 6: Diagram showcasing how the SBCB framework is applied to DeepLabV3+ segmentation head.
+6Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+BackboneFCNSeg. Head
+SBD head
+FuseSide La yerSide La yer
+Side La yer
+Side La yerAux
+Prediction
+Stage 1
+StemStage 2Stage 3Stage 4
+HRNetResize Concat
+Resize Concat
+Resize Concat
+Resize
+Concat
+Resize Concat
+Figure 7: Diagram showcasing how the SBCB framework is applied to HRNet backbone with FCN segmentation head.
+3.2 Framework
+In this section, we will introduce how we apply the SBD heads we reviewed in Section 3.1 for the SBCB framework.
+To make the framework more comprehensive, we will provide case studies of applying the SBCB framework to popular
+architectures such as DeepLabV3+ and HRNet. The SBCB framework can be applied similarly to the other architectures,
+and we will explore this in Section 7.
+DeepLabV3+ + SBCB. To apply the SBCB framework to DeepLabV3+, we do not need to adjust the number of Side
+Layers since the backbone is ResNet as shown in Figure 6. We take the features from each side and use them for
+the SBD head. The general method of applying the SBCB framework will not change for different SBD heads. For
+example, when applying the DDS head, we take the Side 4 features and change the Side Layers to Side Blocks.
+HRNet + SBCB. The HRNet backbone is composed of four stages, as shown in Figure 7. Since the ﬁrst stage already
+reduces the resolution to 1=4, we use the features from the stem for the ﬁrst Side Layer. The HRNet differs from ResNet
+in that the feature resolutions are consistent throughout the stages while branching out into smaller resolutions in each
+stage. Because of this, we resize and concatenate the features of each stage before feeding it through the Side Layer.
+We take all the features of each stage to motivate better conditioning of the backbone.
+To apply the SBCB framework to different backbone architectures, we must consider the following,
+• Does the ﬁrst Side Layer receive features with the largest resolution?
+• Are any features not being utilized at each Side or Stage?
+• Which Side or Stage is best suited for semantic boundary supervision?
+When applying SBCB to hierarchical backbones like ResNet, the earlier stages should be applied to binary side layers,
+while the last layer is naturally suited for the semantic side layer. Fortunately, most semantic segmentation architectures
+use some sort of hierarchical backbones, which makes applying the SBCB framework simple. When we have backbones
+such as HRNet, where features are hierarchical and branching out, we must make sure to incorporate all of the features;
+i.e., concatenate. For heavily customized backbones, like the ones we will explore in Section 7, we can still apply the
+SBCB framework by considering the three key items. Some backbones that are developed for classiﬁcation tasks may
+downsample the feature resolution. It may be beneﬁcial to increase the feature resolution by changing the strides and
+dilations of the convolutional kernel, so the ﬁrst side feature has the resolution of at least a 1=2of the input image. For
+this, we can apply the “backbone trick,” which we will discuss in Section 5.7.
+3.3 On-the-ﬂy Ground Truth Generation
+For the task of SBD and edge detection, humans manually annotate the edges. Thus, the annotated image’s scales and the
+width of the edges are predetermined. Some datasets for SBD, such as the Cityscapes dataset and SBD dataset, provide
+the preprocessing of GT boundaries from semantic and instance masks to provide more training data. Nevertheless,
+the number of scales is limited since it is infeasible to generate various scales before training. On the other hand, in
+the semantic segmentation task, it is a common practice to resize and rescale the GT mask during training to remedy
+7Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Segmentation Masks
+Distance Maps Threshold DistanceSemantic Boundaries
+Figure 8: Overview of the OTFGT module. We apply the signed distance function to segmentation masks to obtain
+category-speciﬁc distance maps. We then threshold the distances by the radius of the boundaries to obtain category-
+speciﬁc boundaries. The boundaries are concatenated to form a semantic boundary tensor for supervision.
+Image
+ Mask
+Preprocessed Edge
+0481216481216
+OTF Edge
+0481216481216Rescale x2 + Crop
+(a) Data rescaled by a factor of 2.
+Image
+ Mask
+Preprocessed Edge
+04812160481216
+OTF Edge
+04812160481216Rescale x0.5 + Crop (b) Data rescaled by half.
+Figure 9: The two ﬁgures represents sample validation images, masks, and boundaries from the Cityscapes validation
+split, which we rescale and crop to 512512. In each of the ﬁgures, we compare the two methods of preprocessing.
+The one on the left uses preprocessed boundaries, and the one on the right uses OTFGT boundaries. We can see that
+OTFGT boundaries have consistent boundary widths, while preprocessed boundaries will vary depending on the rescale
+value.
+overﬁtting by increasing the variations of the dataset. This is impossible for semantic boundaries since resizing will
+result in inconsistent edge widths, as shown in Figure 9.
+To remedy this, we developed a simple semantic boundary generation algorithm that is efﬁcient enough to run in the
+preprocessing pipeline called the on-the-ﬂy (OTF) semantic boundary GT generation module (OTFGT). The OTFGT
+generates semantic boundaries from semantic segmentation masks and can create instance-sensitive boundaries when
+instance segmentation masks are available. The details of the OTFGT are explained in Appendix A.
+3.4 Loss Functions.
+Given an input image, the model generates segmentation and boundary maps with pre-deﬁned semantic categories. We
+apply cross-entropy (CE) loss, LSeg, for each pixel of the segmentation map. As for the SBD head, we apply binary
+8Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Cityscapes BDD100kImageGT
+Segmentation
+On-the-fly
+Boundaries
+Synthia
+Figure 10: The three main datasets that we used for the experiments. We show a sample input image, segmentation
+GT, and the result of OTF semantic boundary generation for each dataset. Humans annotate the Cityscapes and
+BDD100K datasets, and the segmentation masks are clean but tend to have imperfections around the boundaries and
+exhibit “polygon” masks. On the other hand, the Synthia dataset is data from a game engine, and the annotations are
+pixel-perfect, making this a challenging dataset for semantic segmentation. The segmentation mask for Synthia also
+contains instance segmentation, which is used in the OTF semantic boundary generation but not for the segmentation
+task. The BDD100K and Synthia datasets are less widely used than the Cityscapes dataset. However, the BDD100K
+and Synthia datasets contain more variations of natural noise and corruptions (weather, heavy light reﬂections, etc...)
+which will help benchmark the methods fairly. The images are best seen in color and zoomed in.
+cross entropy (BCE) loss for multi-label boundaries, LSBD following Yu et al. [2017]. While CASENet and DFF use
+only multi-label boundaries for supervision, DDS also introduces deep supervision of edges where earlier side outputs
+are supervised with binary boundary maps using BCE loss LBdry Liu et al. [2022a]. Generally, the loss function used
+is,
+L=LSeg+SSBDX
+LSBD+SBinX
+LBdry; (1)
+whereandare constants for balancing the effects losses from each task. SSBD is a set of semantic boundary
+predictions and SBinis a set of binary boundary predictions. For CASENet and DFF, SSBD =fBsideN;Bfuseg,
+whereBsideN represents the last side output and Bfuserepresents the ﬁnal fused prediction as shown in Figure 5. For
+DDS, we supervise SSBD=fBsideN;BfusegandSBin=fBsidek;:::Bside2;Bside1g.
+4 Experiment Setup
+In this section, we go over the details of our experiments, including the dataset, hyperparameters, and implementations.
+4.1 Datasets
+In our experiments, we use three datasets, namely Cityscapes, BDD100K, and Synthia datasets. We visualize and
+explain each dataset in Figure 10.
+Cityscapes. We evaluate our models on the popular Cityscapes dataset Cordts et al. [2016], which contains 2975
+training images, 500 validation images, and 1525 testing images with 19semantic categories. Following Yu et al. [2017,
+2018a], Hu et al. [2019], Liu et al. [2022a], the dataset has also been widely adopted as the standard benchmark for
+SBD. We conduct quantitative studies for both semantic segmentation and SBD on the validation set and benchmark
+our method on the test set for semantic segmentation.
+BDD100K. The BDD100K dataset Yu et al. [2018b] is a driving dataset that is aimed at multi-task learning for
+autonomous driving. This dataset is the largest driving video dataset with 100K video frames and ten tasks, and it
+contains 10K images with a resolution of 1280720for the semantic segmentation task. The dataset is split into
+7K training, 1K validation, and 2K test splits, for which we only use the training and validation split for our ablation
+experiments. The annotated labels are the same as the Cityscapes dataset.
+9Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Synthia. The Synthia dataset Ros et al. [2016] is a CG dataset generated using a simulator aimed at providing auxiliary
+datasets for Cityscapes as well as for experimenting with domain adaptation. We use the “Rand” set of the dataset, which
+contains 13.4K images with a resolution of 1280760with annotated categories that are the same as the Cityscapes
+dataset. We use Synthi as a stand-alone dataset to explore the effect of the SBCB framework under annotations with
+precise boundaries. We split the dataset into 10.4K training, 1.5K validation, and 1.5K test split.
+4.2 Evaluation Metrics
+Segmentation Metrics. We consider the mean of intersection-over-union (mIoU) for evaluating the segmentation
+performances. Following Takikawa et al. [2019], we adopt boundary F-score to evaluate the segmentation performance
+around the boundary of the masks. We use a pixel width of 3px for boundary F-score unless explicitly stated.
+Boundary Detection Metrics. We follow Yu et al. [2018a] and adopt the maximum F-score (mF) at the optimal dataset
+scale (ODS) evaluated on the instance-sensitive "thin" protocol for SBD.
+4.3 Implementation Details
+Data Loading. Unless explicitly stated, we unify the experiments’ training crop size, training iterations, and batch size
+for both tasks to 5121024 , 40k, and 8, respectively, for the Cityscapes dataset. We used the same parameters for
+Synthia and BDD100K datasets but used a crop size of 640640. We ﬁne-tuned the models evaluated in the Cityscapes
+test benchmark for an additional 40k iterations using the training and validation split, following the works of Yu et al.
+[2021]. We perform common data augmentations, notably random scaling (scale factors in [0:5;2:0]), horizontal ﬂip,
+and photo-metric distortions.
+Optimization. We employ the SGD optimizer with a momentum coefﬁcient of 0:9and a weight decay coefﬁcient of
+510 4during training. We optimize the network by using the "poly" learning rate policy where the initial learning
+rate (0:01) is multiplied by (1 iter
+max _iter)powerwithpower = 9.
+Loss. We set= 5and= 1for our loss function in Eq. 1.
+Inference. In our experiments, we conduct evaluations with single-scale whole inference for the Cityscapes dataset and
+slide inference for Synthia and BDD100K datasets. For evaluating semantic segmentation performance in Section 6.3,
+we apply multi-scale and ﬂip (MS+Flip) inference strategy with scales of [0:5;0:75;1:0;1:25;1:5;1:75;2:0].
+Software and Hardware. To conduct all of our experiments, we use PyTorch and modify the popular semantic
+segmentation framework “mmsegmentation” Contributors [2020] for our task. We reported all experimental results
+using the same software and hardware and trained all models under the same conditions. The models are trained on two
+NVIDIA A6000 GPUs and evaluated on a single NVIDIA RTX8000.
+5 Ablation Studies
+In this section, we perform ablation studies using the SBCB framework in various aspects. In Section 5.1, we compare
+the SBD heads and choose a candidate for experimenting throughout the paper. In Section 5.2, we ﬁgure out the
+optimal side conﬁguration. In Section 5.3, we look at which categories beneﬁt the most from the SBCB framework. In
+Section 5.4, we compare the SBCB framework with other auxiliary tasks. In Sections 5.6 and 5.5, we compare the
+SBCB framework with the state-of-the-art multi-task and post-processing method and show that our framework can
+complement the methods to further improving the segmentation quality. In Section 5.7, we investigate the effects of
+modifying the backbone conﬁguration in a simple yet effective way to improve segmentation and SBD. In Section 5.8,
+we show the effects of the SBCB framework on the task of SBD. Finally, in Section 5.9, we show that our framework
+improves segmentation around the boundaries.
+5.1 Which SBCB head to use?
+In this section, we explore the effects of using different semantic boundary detection (SBD) heads for the SBCB
+framework and ﬁnd the best candidate for further evaluation.
+Table 1a shows the DeepLabV3+ model trained using three different SBD heads, CASENet, DFF, and DDS, compared
+with single-task baseline models. All SBD heads for the SBCB framework improve the single-task DeepLabV3+ model.
+We also can see that the joint training helps improve the SBD metric (maximum F-score). We also included the number
+of parameters and computational costs in GFLOPs to show how much the SBD heads can introduce costs during
+training. While DDS adds high costs for training, it is also the most performant of the three heads. On the other hand,
+10Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Table 1: Ablation studies to compare SBD heads as auxiliary signals. The number of parameters and performance for
+SBCB is the model used for training. For inference, the number of parameters and performance equals the baseline.
+Unless explicitly stated, the hyperparameters for training are the same throughout the experiments (crop size of
+5121024 and ResNet-101 backbone.)
+(a) Results on the Cityscapes validation split.
+Head mIoU mF (ODS) Param. GFLOPs
+DeepLabV3+ 79.5 - 60.2M 506
+CASENet
+-63.7 42.5M 357
+DFF 65.5 42.8M 395
+DDS 73.4 243.3M 2079
+SBCB (CASENet) 80.3 74.4 60.2M 508
+SBCB (DFF) 80.2 74.6 60.5M 545
+SBCB (DDS) 80.6 75.8 261.0M 2228(b) Results on the Cityscapes validation split. The crop size is
+set to 769769.
+Head mIoU mF (ODS) Param. GFLOPs
+DeepLabV3+ 78.9 - 60.2M 506
+CASENet
+-68.6 42.5M 357
+DFF 68.9 42.8M 395
+DDS 75.5 243.3M 2079
+SBCB (CASENet) 80.3 74.0 60.2M 508
+SBCB (DFF) 80.0 74.8 60.5M 545
+SBCB (DDS) 80.4 75.6 261.0M 2228
+(c) Results using HRNet-48 (HR48) backbone on the
+Cityscapes validation split.
+Head mIoU mF (ODS) Param. GFLOPs
+FCN 80.5 - 65.9M 187
+CASENet
+-75.7 65.3M 172
+DFF 75.3 65.5M 210
+DDS 78.9 89.0M 946
+SBCB (CASENet) 82.0 78.9 65.9M 187
+SBCB (DFF) 81.5 78.8 66.0M 221
+SBCB (DDS) 81.0 79.3 89.5M 1012(d) Results on the BDD100K valida-
+tion split.
+Head mIoU mF (ODS)
+DeepLabV3+ 60.0 -
+CASENet
+-55.7
+DFF 57.3
+DDS 59.9
+SBCB (CASENet) 61.4 56.6
+SBCB (DFF) 62.0 58.1
+SBCB (DDS) 64.1 60.2(e) Results on the Synthia dataset.
+Head mIoU mF (ODS)
+DeepLabV3+ 74.5 -
+CASENet
+-61.0
+DFF 64.8
+DDS 67.6
+SBCB (CASENet) 75.9 65.2
+SBCB (DFF) 75.3 66.5
+SBCB (DDS) 75.7 67.0
+Table 2: Per-category IoU for the Cityscapes validation split.
+Method SBCB mIoU road swalk build. wall fence pole tlight sign veg terrain sky person rider car truck bus train motor bike
+PSPNet77.6 98.0 83.9 92.4 49.5 59.3 64.5 71.7 79.0 92.4 64.2 94.7 81.8 60.5 95.0 77.8 89.1 80.1 63.4 77.9
+X 78.7 98.3 85.7 92.7 52.7 60.7 66.3 72.7 80.8 92.8 64.3 94.6 82.4 62.7 95.3 79.5 88.6 81.4 66.0 78.7
++1.1 +0.3 +1.8 +0.3 +3.2 +1.4 +1.8 +1.0 +1.8 +0.4 +0.1 -0.1 +0.6 +2.2 +0.3 +1.7 -0.5 +1.3 +2.6 +0.8
+DeepLabV379.2 98.1 84.6 92.6 54.5 61.7 64.6 71.7 79.3 92.6 64.6 94.6 82.4 63.8 95.4 83.2 90.9 84.2 67.7 78.1
+X 79.9 98.4 86.4 93.0 55.3 63.7 66.8 72.9 80.4 94.9 65.4 94.9 83.3 65.9 95.5 81.9 92.3 81.3 68.2 78.9
++0.7 +0.3 +1.8 +0.4 +0.8 +2.0 +2.2 +1.2 +1.1 +2.3 +0.8 +0.3 +0.9 +2.1 +0.1 -1.3 +1.4 -2.9 +0.5 +0.8
+DeepLabV3+79.5 98.1 85.0 92.9 53.2 62.8 66.5 72.1 80.4 92.7 64.9 94.7 82.8 63.6 95.5 85.1 90.9 82.2 69.4 78.4
+X 80.3 98.3 85.9 93.4 65.7 65.6 68.5 73.0 81.4 92.8 66.1 95.3 83.3 65.6 95.5 81.3 88.3 78.1 68.7 78.8
++0.8 +0.2 +0.9 +0.5 +12.5 +2.8 +2.0 +0.9 +1.0 +0.1 +1.2 +0.6 +0.5 +2.0 0 -3.8 -2.6 -4.1 -0.7 +0.4
+CASENet only adds a few number of parameters to the original model. The trade-off of using DDS over CASENet for
+the SBCB framework might not be beneﬁcial in terms of performance gains, which will be more evident as we evaluate
+DDS on other datasets and backbones.
+In Figure 11, we show qualitative results of the CASENet head applied to DeeplabV3+ compared with the baselines.
+We can see that the additional semantic boundary supervision allows the model to detect smaller thin objects better. We
+can also see that the SBCB framework allows for better boundary detection with fewer artifacts and better perception of
+objects.
+Table 3: Results using ResNet-101 backbone with different sides on Cityscapes validation split.
+Head Sides mIoU 
+PSPNet77.6
+1 + 5 78.5 +0.9
+1 + 2 + 5 78.6 +1.0
+1 + 2 + 3 + 5 78.7 +1.1
+1 + 2 + 3 + 4 + 5 78.5 +0.9
+DeepLabV379.2
+1 + 5 79.8 +0.6
+1 + 2 + 5 79.9 +0.7
+1 + 2 + 3 + 5 79.9 +0.7
+1 + 2 + 3 + 4 + 5 79.4 +0.2
+DeepLabV3+79.5
+1 + 5 80.1 +0.6
+1 + 2 + 5 80.1 +0.6
+1 + 2 + 3 + 5 80.3 +0.8
+1 + 2 + 3 + 4 + 5 80.5 +1.0
+11Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+(a) Original image(b) Ground truth segmentation mask(c) Ground truth boundaries
+(e) CASENet(d) DeepLabV3+
+(f) DeepLabV3+ SBCB (CASENet)(g) DeepLabV3+ SBCB (CASENet)
+Figure 11: Overview of the task along with predictions of baseline methods and the model trained with the SBCB
+framework (CASENet). (a), (b), and (c) are the input image, ground-truth (GT) segmentation map, and GT semantic
+boundary map. Note that because the task of SBD is pixel-wise multi-label classiﬁcation, the visualized semantic
+boundary maps have overlapped boundaries. In (d), we show the output of DeepLabV3+, a popular semantic segmen-
+tation model. The semantic boundary detection (SBD) baseline is CASENet, which we show in (e). The output of
+DeepLabV3+ trained with the SBCB framework using the CASENet head, which we show in (f) and (g). We can see
+that small and thin objects are recognized better using the framework and smoother boundaries with fewer artifacts.
+Figure 12: Visualization of the backbone features and segmentation errors of DeepLabV3+ with and without the SBCB
+framework. From the left, each column represents the input image, last-stage features without SBCB, last-stage features
+with SBCB, segmentation errors without SBCB, and segmentation errors with SBCB. As we can see, the features
+learned using the SBCB framework exhibits boundary-aware characteristic because it is conditioned on semantic
+boundaries. Consequently, this results in better segmentation, especially around the mask boundaries. Best seen in color
+and zoomed in.
+Different crop size. In semantic segmentation, crop size is one of the most important hyperparameter, and we test the
+SBD heads on 769769, another popular crop size. The results are shown in Table 1b, where the general trend is the
+same as the results from Table 1a.
+Different backbone. We also explore the effects of using another popular backbone, namely HRNet-48 (HR48),
+and the results are shown in Table 1c. This time, we can see that the CASENet head outperforms DDS and DFF by
+signiﬁcant margins ( 1:0%and0:5%, respectively). The CASENet head also achieves mF of 78:9%, identical to the
+heavy and inefﬁcient single-task DDS model.
+12Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Table 4: Ablation studies to compare different backbone conditioning methods. We investigate the effects on three
+popular segmentation heads: PSPNet, DeepLabV3, and DeepLabV3+. Note that all of the methods use ResNet-101 as
+the backbone. The number of parameters and performance for SBCB is the model used for training. For inference, the
+number of parameters and performance equals the baseline.
+(a) Results on the Cityscapes validation split.
+Head FCN BBCB SBCB Param. mIoU 
+PSPNet65.58M 77.6
+X +2.37M 78.3 +0.7
+X +0.01M 78.1 +0.5
+X +0.05M 78.7 +1.1
+X X +2.37M 79.1 +1.5
+X X +2.41M 79.4 +1.8
+DeepLabV384.72M 79.2
+X +2.37M 79.3 +0.1
+X +0.01M 79.6 +0.4
+X +0.05M 79.9 +0.7
+X X +2.37M 80.1 +0.9
+X X +2.41M 80.1 +0.9
+DeepLabV3+60.2M 79.5
+X +2.37M 79.7 +0.2
+X +0.01M 79.9 +0.4
+X +0.05M 80.3 +0.8
+X X +2.37M 80.6 +1.1
+X X +2.41M 80.5 +1.0(b) Results on the Synthia dataset.
+Head FCN BBCB SBCB mIoU 
+PSPNet70.5
+X 70.1 -0.4
+X 70.7 +0.2
+X 71.7 +1.2
+X X 70.7 +0.2
+X X 71.6 +1.1
+DeepLabV370.9
+X 70.6 -0.3
+X 70.7 -0.2
+X 71.9 +1.0
+X X 70.5 -0.4
+X X 71.0 +0.1
+DeepLabV3+72.4
+X 72.0 -0.4
+X 72.1 -0.3
+X 73.5 +1.1
+X X 72.3 -0.1
+X X 73.5 +1.1
+Different datasets. In computer vision, the model’s performance differs depending on the dataset. We additionally
+evaluate the SBD heads on the BDD100K dataset and Synthia, as shown in Tables 1d and 1e respectively. On the
+BDD100K, the DDS head signiﬁcantly outperforms the baseline model and CASENet head. The DFF head performs
+better than the CASENet head for this dataset for the ﬁrst time. As for Synthia, the CASENet head performs better than
+DDS.
+CASENet as the candidate. While the DDS head performs better than CASENet for the most part, when we consider
+the additional parameters and computational costs, it is beneﬁcial to use the CASENet head. Besides, the SBD head in
+the SBCB framework is only used as an auxiliary signal, and the CASENet head outperforms DDS in some results. It
+can be noted that when it is dire to squeeze out higher metrics and the computational costs can be ignored, using the
+DDS head may result in better metrics. For the rest of the paper, we use the CASENet head as our main SBD head for
+the SBCB framework.
+In Figure 12, we show qualitative visualizations that compare DeepLabV3+ with and without the CASENet head. We
+can see from the feature maps obtained from the last stage of the backbone that the backbone conditioned on SBD
+exhibits boundary-aware characteristics, which reduces the segmentation errors, especially around the boundaries.
+5.2 Which sides to supervise?
+The CASENet head applied to the ResNet backbone has ﬁve sides, Sides 1, 2, 3, 4, and 5. In Table 3, we show the
+effect of using different side conﬁgurations. For consistency with performant single-task SBD models, we constrain
+Side 1 and 5 because Side 1 is required for low-level understanding and has the largest feature resolution, where Side 5
+is required for high-level understanding. We added Sides 2, 3, and 4 and compared the performance gains. Note that
+Sides 1+2+3+5 is the original conﬁguration. The table shows the original conﬁguration works best on two models
+(PSPNet and DeepLabV3). On DeepLabV3+, conﬁguration 1+2+3+4+5 outperforms the original conﬁguration by
+0:2%. We believe that the difference in performance gains is negligible, but users of the SBCB framework should know
+that each model could have an optimal side conﬁguration. Therefore, for fairness, we choose the original conﬁguration
+to evaluate other models and benchmark our methods for further evaluation.
+5.3 Does it improve all categories?
+Table 2 provides the per-category IoU comparisons for each model. We can see from the table that although most of the
+categories improve with the SBCB framework, some categories results in worse IoU. The most frequent categories
+are “truck”, “bus”, and “train”, which have relatively low samples and are easily confused with “car”. During training,
+additional measures, such as Online Hard Example Mining (OHEM), could mitigate this effect.
+13Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+5.4 Comparisons of different auxiliary signals
+Introduced in PSPNet Zhao et al. [2017], the authors added another classiﬁer to the backbone to stabilize the training
+and improve segmentation metrics. In detail, the authors added the FCN head to the fourth stage (one before the last
+stage) in the backbone. The auxiliary FCN head is trained on the same segmentation task as the main head. This
+technique is still used today and abundantly in open-source projects such as mmseg.
+Although not used often, various papers applied binary edge and boundary detection as an auxiliary task for semantic
+segmentation. Even though the task of binary boundary detection is different from semantic segmentation, the authors
+found that the learned features in the edge detection head can be fused into the segmentation head.
+In this section, we compare the SBCB framework with the mentioned auxiliary techniques, which we call “FCN”
+and “Binary Boundary Conditioned Backbone (BBCB)”. Note that BBCB is the SBCB framework but is applied to
+binary boundary detection instead. We applied FCN, BBCB, and SBCB on three popular segmentation heads (PSPNet,
+DeepLabV3, and DeepLabV3+) and used ResNet-101 as the backbone. The results for the Cityscapes validation split
+are shown in Table 4a. While all auxiliary signals improve IoU, the models trained using the SBCB framework are
+consistently the best. The improvements of SBCB compared with BBCB are around twice, proving that the task of
+SBD is crucial. FCN applied on PSPNet has the most gains of 0:7%, but FCN has minimal impact on the other models.
+The BBCB and SBCB framework can complement FCN, and the results show it can achieve higher IoU. Another
+important aspect is the additional parameters these auxiliary signals bring during training. While SBCB and BBCB
+only add thousands of parameters, FCN adds 2:37Mparameters. Considering the performance gains and the additional
+parameters, it is clear that boundary-based auxiliary signals provide more beneﬁts than FCN.
+We also evaluate the same models and auxiliary heads on the Synthia dataset as shown in Table 4b. Surprisingly, FCN
+and BBCB do not add much performance gains and even have worse metrics than the baselines. However, SBCB
+improves upon the baseline by over 1%. It is plausible that the features learned using FCN could have conﬂicted with
+the main heads. Compared with Cityscapes, Synthia contains precise segmentation masks rendered from a CG engine
+instead of human annotation. In Synthia, classes such as “human” and “bike” will have small and thin segmentation
+masks, which makes this dataset difﬁcult. Although features learned on FCN complemented the features of the main
+head in Cityscapes, it appears that the FCN learned to derive a conﬂicted segmentation map. It is possible because there
+are more layers (parameters) in the FCN head compared to SBCB or BBCB. Ostensibly, BBCB would perform well
+because of its shallow (far fewer parameters than FCN) architecture, but the results are contrary. This is because the
+BBCB focuses on low-level features without explicitly modeling high-level semantics. We believe the polarity of the
+task resulted in the main head not receiving good features for semantic segmentation for Synthia.
+The SBCB framework conditions the backbone with SBD, a challenging task focusing on low-level and requires high-
+level features. The SBCB framework improves the segmentation metrics better than using FCN or binary boundaries as
+auxiliary signals because of the hierarchical modeling of the SBD task.
+Table 5: Results obtained from the Cityscapes validation split. We compared the use of SegFix with auxiliary heads
+(SBCB and FCN) on three popular baseline models.
+Model mIoU 
+PSPNet77.6
++ SegFix 78.8 +1.2
++ SBCB 78.7 +1.1
++ SBCB + FCN 79.4 +1.8
++ SBCB + SegFix 79.7 +2.1
++ SBCB + FCN + SegFix 80.3 +2.8
+DeepLabV379.2
++ SegFix 80.3 +1.1
++ SBCB 79.9 +0.7
++ SBCB + FCN 80.1 +0.9
++ SBCB + SegFix 80.8 +1.6
++ SBCB + FCN + SegFix 81.0 +1.8
+DeepLabV3+79.5
++ SegFix 80.4 +0.9
++ SBCB 80.3 +0.8
++ SBCB + FCN 80.6 +1.1
++ SBCB + SegFix 81.0 +1.5
++ SBCB + FCN + SegFix 81.2 +1.7
+5.5 Comparisons with SegFix
+In Table 5, we compare our framework with SegFix Yuan et al. [2020], a popular post-processing method. We obtained
+the results for SegFix by using the open-source code, which reﬁnes the output prediction based on the offsets learned
+14Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+using HRNet2x. Comparing the methods side-by-side, models trained with the SBCB framework, SegFix performs
+around 0:1%0:4%better than SBCB. However, the SBCB combined with FCN (as mentioned in Section 5.4) results
+in competitive performance, signiﬁcantly outperforming SegFix on two models.
+Considering that SegFix is an independent post-processing model, our framework produces competitive results without
+any post-processing and additional parameters during inference. Whereas, SegFix adds a post-processing module
+that requires separate training. Also, motivated by the difﬁculty in prediction labels around the mask boundaries,
+SegFix is aimed to correct the predictions around the boundaries. Therefore, the base model does not actively learn
+boundary-aware features. On the other hand, our training framework conditions the backbone to be boundary-aware
+by solving SBD, as we see in Section 5.9. In other words, SegFix and our framework are complementary because
+boundary-aware predictions are easier for SegFix to correct. This is evident by the major improvements of using SBCB
+along with SegFix, as shown in the table.
+Table 6: Comparisons between DeepLabV3+ and GSCNN in the Cityscapes validation split. Note that the SBCB
+framework can be applied to train GSCNN.
+Model mIoU 
+DeepLabV3+79.5
++SBCB (CASENet) 80.2 +0.7
++SBCB (DDS) 80.6 +1.1
+GSCNN80.5 +1.0
++Canny 80.6 +1.1
+SBD 80.0 +0.5
++SBCB (CASENet) 80.9 +1.4
+Table 7: This table shows the conﬁgurations of the two common types of modiﬁcations on the ResNet backbone. Note
+that the outputs feature resolutions are in the order of Stem, Stages 1, Stage 2, Stage 3, and Stage 4.
+Task Stem Stride Strides Dilations Resolutions
+Original 2 (1, 2, 2, 2) (1, 1, 1, 1) (1/2, 1/4, 1/8, 1/16, 1/32)
+Segmentation 2 (1, 2, 1, 1) (1, 1, 2, 4) (1/2, 1/4, 1/8, 1/8, 1/8)
+Edge Det. 1 (1, 2, 2, 1) (2, 2, 2, 4) (1, 1/2, 1/4, 1/8, 1/8)
+Table 8: Ablation studies of the “Backbone Trick”. We modiﬁed the ResNet-101 backbone’s stride and dilation at each
+stage to ensure the number of parameters is the same but generates larger feature maps. The paper Xie and Tu [2015]
+introduced this technique, which we prepend “HED” for backbone that uses this trick.
+(a) Results on the Cityscapes validation split.
+Head mIoU mF (ODS) Param. GFLOPs
+DeepLabV3+ 79.8 - 60.2M 506
+CASENet
+-68.6 42.5M 417
+DFF 70.0 42.8M 455
+DDS 76.3 243.3M 2661
+SBCB (CASENet) 81.0 75.1 60.2M 508
+SBCB (DFF) 80.8 75.4 60.5M 545
+SBCB (DDS) 80.8 76.5 261.0M 2228(b) Results on the BDD100K valida-
+tion split.
+Head mIoU mF (ODS)
+DeepLabV3+ 59.8 -
+CASENet
+-56.6
+DFF 58.1
+DDS 60.1
+SBCB (CASENet) 62.4 59.3
+SBCB (DFF) 62.0 58.9
+SBCB (DDS) 63.5 60.5(c) Results on the Synthia dataset.
+Head mIoU mF (ODS)
+DeepLabV3+ 77.0 -
+CASENet
+-64.0
+DFF 65.6
+DDS 68.5
+SBCB (CASENet) 78.0 67.5
+SBCB (DFF) 77.8 68.9
+SBCB (DDS) 78.6 68.4
+5.6 Comparisons with GSCNN
+GSCNN Takikawa et al. [2019] is a popular semantic segmentation model with binary boundary detection multi-task
+architecture with a dedicated shape stream that branches out from the side layers similar to the SBD heads in the
+SBCB framework. The key difference is that the features from the shape stream are explicitly merged into the semantic
+segmentation head. GSCNN for ResNet-101 backbone is a customized DeepLabV3+ that uses an ASPP module.
+It is difﬁcult to compare apples to apples since loss functions, and we do not explicitly merge the features obtained
+in the SBD head to the segmentation head. However, we will compare how well the SBCB framework can improve
+DeepLabV3+ against some of the conﬁgurations for GSCNN in Table 6. The baseline GSCNN is GSCNN without the
+image gradient (Canny Edge). We also include the original conﬁguration with Canny Edge denoted by “+Canny”. We
+also experimented with supervising the shape stream using the SBD task denoted by “SBD” and modiﬁed the shape
+stream by increasing the channels. Finally, we used the SBCB framework on GSCNN denoted by “+SBCB,” which
+adds the SBD head on the backbone without any other modiﬁcations.
+Compared with DeepLabV3+, GSCNN signiﬁcantly improves by an additional +1:0%. Although lower than being
+supervised with binary boundaries, SBD supervision improves DeepLabV3+ by +0:5%, proving that boundary signals
+can signiﬁcantly improve semantic segmentation. The SBCB framework signiﬁcantly improves DeepLabV3+ by
+adding 0:7%and1:1%with CASENet and DDS, respectively. This also matches the improvements using the original
+15Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+GSCNN conﬁguration. Since the SBCB framework is ﬂexible, it can be easily applied to GSCNN, giving an even
+higher improvement of +1:4%.
+Table 9: Comparison with SBD models on the Cityscapes validation split using the instance-sensitive “thin” evaluation
+protocol.y: performance reported in Liu et al. [2022a].
+Method Backbone mF (ODS)
+CASENety HED ResNet-101 68.1
+SEALy HED ResNet-101 69.1
+STEALy HED ResNet-101 69.7
+DDSy HED ResNet-101 73.8
+CSELYu et al. [2021] HED ResNet-101 78.1
+DeepLabV3+ + SBCB (CASENet) ResNet-101 77.8
+DeepLabV3+ + SBCB (CASENet) HED ResNet-101 78.4
+DeepLabV3+ + SBCB (DDS) ResNet-101 78.8
+DeepLabV3+ + SBCB (DDS) HED ResNet-101 78.8
+Table 10: Results to compare the boundary Fscore, evaluated on the Cityscapes validation split, between the baseline
+models and the use of SBCB training. The models are trained using the same hyperparameters where the backbones are
+set to the ResNet-101 backbone.
+Head SBCB 12px  9px  5px  3px 
+PSPNet80.9 79.6 75.7 70.2
+X 83.3 +2.4 82.1 +2.5 78.5 +2.8 73.3 +3.1
+DeepLabV381.8 80.6 76.7 71.2
+X 83.4 +1.6 82.2 +1.6 78.7 +2.0 73.4 +2.2
+DeepLabV3+81.2 80.0 76.4 71.4
+X 83.0 +1.8 81.8 +1.8 78.5 +2.1 73.7 +2.3
+5.7 Backbone Trick
+In this section, we investigate the use of the “backbone trick”. In edge detection and SBD, we often use a modiﬁed
+backbone to increase the output resolutions of the stages without changing the number of parameters by modifying the
+strides and dilations for each stage. The increase in resolution is necessary for edge detection as the edges are often
+small, and the feature maps need to be large enough to capture the edges. Backbones such as ResNet were made for
+image classiﬁcation and produced small feature maps unsuitable for edge detection. It is also necessary not to change
+the number of parameters, as we want to use the pre-trained weights. In semantic segmentation, we apply similar tricks
+to change the strides and dilations of the last two stages to retain the ﬁnal feature resolution to 1=8of the input image
+size. We show the common modiﬁcations for the ResNet backbone in Table 7.
+In Tables 8a, 8b, and 8c, we show results of using the HED version of ResNet-101 (HED ResNet-101) on Cityscapes,
+BDD100K and Synthia respectively. Compared with the normal segmentation ResNet-101 in Table 1, the results are
+generally better for single-task as well as models trained with the SBCB framework. Higher performance gains are seen
+in the Synthia dataset, where higher-resolution feature maps may beneﬁt the detailed and precise ground truths.
+Although the “backbone trick” is common for ResNet-101, it can be applied to other backbones, such as transformer
+backbones, as seen in Section 7.4. Since the backbones are conditioned with SBD, the combination of SBD and the
+“backbone trick” can provide signiﬁcant improvements without complex modeling.
+5.8 Does SBCB also improve SBD metrics?
+Based on the previous ablations studies, it is clear that the SBCB framework improves the metrics for semantic
+segmentation. We also evaluate the models trained using the SBCB framework on semantic boundary detection (SBD)
+performance as shown in Table 9. We compare our DeepLabV3+ trained on the SBCB framework with state-of-the-art
+(SOTA) SBD models and CSEL, a SOTA joint semantic segmentation and semantic boundary detection model. The
+table shows that those models trained on the SBCB framework can signiﬁcantly outperform the SOTA single-task
+methods by 5%to over 10%. On joint modeling, our method can outperform CSEL without explicitly modeling in
+the semantic boundary detection head. We aimed to condition the backbone for semantic segmentation, but the SBCB
+framework also improves the SBD performance due to being conditioned on semantic segmentation, which proves the
+effectiveness of the SBCB framework.
+5.9 Does SBCB improve segmentation around boundaries?
+The SBCB framework improves segmentation quality around the mask boundaries. In Table 10, we show boundary
+Fscores for baseline models and models trained on the SBCB framework. The models trained using the SBCB
+16Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+framework constantly exhibit better boundary Fscores, especially when the trimap widths are smaller. This means that
+conditioned backbones produce better segmentation quality around the mask’s boundaries.
+Table 11: Effect of using SBCB for different CNN-based backbones.
+(a) Results for the Cityscapes validation split.
+Head Backbone SBCB mIoU  Fscore 
+DenseASPP ResNet-5077.5 69.0
+X 78.3 +0.8 70.6 +1.6
+DenseASPP DenseNet-16976.6 69.0
+X 78.2 +1.6 72.1 +3.1
+ASPP ResNeSt-10179.5 72.3
+X 80.3 +0.8 75.2 +2.9
+OCR HR1878.9 71.9
+X 79.7 +0.8 74.0 +2.1
+OCR HR4880.7 74.4
+X 82.0 +1.3 77.7 +3.7
+ASPP MobileNetV273.9 66.2
+X 74.4 +0.5 68.3 +2.1
+LRASPP MobileNetV364.5 58.0
+X 67.5 +3.0 62.1 +4.1(b) Results for the Synthia Datast.
+Head Backbone SBCB mIoU 
+DenseASPP ResNet-5069.6
+X 70.5 +0.9
+DenseASPP DenseNet-16971.3
+X 72.0 +0.7
+ASPP ResNeSt-10172.3
+X 73.8 +1.5
+OCR HR1870.1
+X 70.9 +0.8
+OCR HR4874.3
+X 76.0 +1.7
+ASPP MobileNetV265.3
+X 67.0 +1.7
+LRASPP MobileNetV360.8
+X 64.8 +4.0
+Table 12: Effect of using SBCB on different segmentation heads. Note that the backbones for all models are set to
+ResNet-101.
+(a) Results on the Cityscapes validation split.
+Head SBCB mIoU  Fscore 
+FCN74.6 69.3
+X 76.3 +1.7 71.6 +2.3
+PSPNet77.6 70.2
+X 78.7 +1.1 73.2 +3.0
+ANN77.4 70.1
+X 79.0 +1.6 72.8 +2.7
+GCNet77.8 70.2
+X 78.9 +1.1 73.0 +2.8
+ASPP79.2 71.2
+X 79.9 +0.7 73.4 +2.2
+DNLNet78.7 71.2
+X 79.7 +1.0 73.6 +2.4
+CCNet79.2 71.9
+X 80.1 +0.9 73.9 +2.0
+UPerNet78.1 71.9
+X 78.9 +0.8 73.9 +2.0
+OCR78.2 70.6
+X 80.2 +2.0 74.4 +3.8(b) Results on the Synthia Dataset.
+Head SBCB mIoU 
+FCN70.0
+X 70.9 +0.9
+PSPNet70.5
+X 71.7 +1.2
+ANN70.4
+X 71.8 +1.4
+GCNet70.8
+X 71.4 +0.6
+ASPP70.9
+X 71.9 +1.0
+DNLNet70.5
+X 71.9 +1.4
+CCNet70.8
+X 71.3 +0.5
+UPerNet72.4
+X 73.1 +0.7
+OCR69.7
+X 72.4 +2.7
+6 Applications of SBCB
+In this section, we focus on the applications of the SBCB framework. In Sections 6.1 and 6.2, we show the effectiveness
+of applying SBCB training on a broad range of backbones and popular segmentation heads. In Section 6.3, we
+benchmark our method of applying SBCB for DeepLabV3+ on the Cityscapes dataset and compare our results with the
+state-of-the-art (SOTA) methods.
+6.1 Different Backbones
+In Tables 11a and 11b, we show the improvements when models are trained with the SBCB framework on several
+backbones. We use two datasets with varying degrees of annotation qualities to show the robustness and consistency
+of the SBCB framework. The two tables show that the SBCB framework consistently and signiﬁcantly improves the
+IoU even when the backbones differ. Note that the backbones evaluated here are mature ConvNet architectures, but we
+will explore the effects of SBCB on customized backbones and modern methods like the ConvNeXt and SegFormer in
+Sections 7. We provide qualitative results of the SBCB framework on the Cityscapes dataset in Section B.
+6.2 Different Heads
+In Tables 12a and 12b, we show the performances of models trained using the SBCB framework for different heads.
+Note that the backbone for the models is set to ResNet-101. The tables show that the SBCB framework consistently
+17Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+improves the IoU and boundary Fscore for various segmentation heads. We provide qualitative results of the SBCB
+framework on the Cityscapes dataset in Section B.
+Table 13: Comparison of our method and state-of-the-art methods on the Cityscapes validation split. The methods are
+only trained with ﬁne-annotation data and without additional coarse training data and Mapillary Vistas pre-training.
+Method Backbone mIoU
+PSPNet Zhao et al. [2017] ResNet-101 78.8
+DeepLabV3+ Chen et al. [2018] ResNet-101 78.8
+CCNet Huang et al. [2019] ResNet-101 80.5
+DANet Fu et al. [2019b] ResNet-101 81.5
+GSCNN Takikawa et al. [2019] ResNet-38 80.8
+RPCNet Zhen et al. [2020] ResNet-101 82.1
+CSEL Yu et al. [2021] HED ResNet-101 83.7
+DeepLabV3+ SBCB ResNet-101 82.2
+DeepLabV3+ SBCB HED ResNet-101 82.6
+Table 14: Comparison of our method and state-of-the-art methods on the Cityscapes test split. The methods are only
+trained with ﬁne-annotation data and without additional coarse training data and Mapillary Vistas pre-training.
+Method Backbone mIoU
+PSPNet Zhao et al. [2017] ResNet-101 78.4
+PSANet Zhao et al. [2018] ResNet-101 80.1
+SeENet Pang et al. [2019] ResNet-101 81.2
+ANNNet Zhu et al. [2019] ResNet-101 81.3
+CCNet Huang et al. [2019] ResNet-101 81.4
+DANet Fu et al. [2019b] ResNet-101 81.5
+RPCNet Zhen et al. [2020] ResNet-101 81.8
+CSEL Yu et al. [2021] HED ResNet-101 82.1
+DeepLabV3+ SBCB ResNet-101 81.4
+DeepLabV3+ SBCB HED ResNet-101 81.0
+6.3 Cityscapes Benchmarks
+Cityscapes Validation Split. In Table 13, we show the performance of DeepLabV3+ trained with the SBCB framework
+and compare it to other SOTA models on the Cityscapes validation split. The top group is SOTA single task methods,
+the middle group is SOTA joint task methods, and the last group is our baseline models with different backbones. We
+can see that even without the recent strong heads, the SBCB framework enables these methods to outperform single-task
+methods and perform competitively with joint-task models. Our method outperforms two popular multi-task methods,
+GSCNN and RPCNet, while using off-the-shelf segmentation head and backbone.
+Cityscapes Benchmark. In Table 14, we show the performance of DeepLabV3+ trained with the SBCB framework
+and compare it to other SOTA models on the Cityscapes Benchmark. Although we could not achieve better results than
+SOTA multi-task methods, DeepLabV3+ trained with SBDB matched some SOTA methods and proved competitive.
+7 More Applications
+In this section, we present more applications for the SBCB framework. In Section 7.1, we experiment on the challenging
+ADE20k dataset. In Sections 7.2 and 7.3, we apply SBCB training on recent lightweight segmentation architectures and
+show the ﬂexibility and effectiveness of the SBCB framework. In Section 7.4, we applied SBCB training to ConvNeXt
+and Segformer. Finally, in Section 7.5, we introduce methods of explicitly fusing the two heads and compare the
+methods to the proposed SBCB framework.
+Table 15: Results using ResNet backbones on the ADE20k validation split.
+Head Backbone Batch SBCB mIoU 
+PSPNet50 8 39.9
+50 8 X 40.6 +0.7
+101 4 38.2
+101 4 X 38.7 +0.5
+DeepLabV3+50 8 41.5
+50 8 X 42.0 +0.5
+101 4 37.7
+101 4 X 38.2 +0.5
+18Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+7.1 Experiments on ADE20k
+We perform additional experiments on ADE20k which is another challenging dataset known for having 150 different
+classes Zhou et al. [2017]. We train DeepLabV3+ with ResNet-50 and ResNet-101 as the backbone and compared the
+results against ones trained using the SBCB framework. The results show that the SBCB framework improves the base
+models by around 0:5%which is shown in Table 15.
+Table 16: Results for BiSeNet and STDC on Cityscapes validation split.
+Model SBCB mIoU  Fscore 
+BiSeNetV1 R5074.3 66.0
+X 75.4 +1.1 69.9 +3.9
+BiSeNetV270.7 63.8
+X 71.6 +0.9 66.2 +2.4
+STDC V1 FCN (+Detail Head) 73.7 66.5
+STDC V1 FCN X 75.4 +1.7 67.9 +1.4
+7.2 BiSeNet
+We applied the SBCB framework to Bilateral Segmentation Network (BiSeNet) V1 and V2, which are models specialized
+for real-time semantic segmentation Yu et al. [2018c, 2020]. In both versions, the backbone is split into two paths.
+The Detail Path (or Spatial Path) is a shallow ConvNet composed of a few stages that retain large feature resolutions.
+For BiSeNetV1, the number of stages is set to four, while it is set to three in BiSeNetV2. On the other hand, the
+Semantic Path (or Context Path) is a deeper ConvNet designed to capture high-level semantics. While in BiSeNetV1,
+the Semantic Path uses off-the-shelf architectures such as ResNet-50, BiSeNetV2 uses a customized six-stage ConvNet
+where the features from the middle stages are supervised using FCN auxiliary heads.
+We applied the SBCB framework by choosing the stages (sides) of the backbone to be supervised by the SBD head. We
+take three stages from the Detail Path for the Binary Sides for the SBD head and use the last stage of the Semantic Path
+for the Semantic Side. Note that we do not modify the original model in any way; we only add the SBD head by taking
+the mid features of the backbones. See Appendix C for details.
+The SBCB framework’s results on BiSeNet (V1 and V2) are shown in Table 16. As expected, using the SBCB
+framework improves the models in both IoU and boundary Fscore. This proves the SBCB framework can apply to
+non-common architectures and expect performance gains.
+7.3 STDC
+Like BiSeNet, the STDC network is efﬁcient for real-time semantic segmentation Fan et al. [2021]. However, the STDC
+network is a single branch network that replaces the Detail Path with the Detail Head that uses the features from the
+third stage to perform “detail guidance” only during the training phase. The Detail Head is supervised with “Detail GT,”
+which is generated using a multi-scale Laplacian Convolution kernel in an on-the-ﬂy manner similar to our method.
+The detail GT contains spatial details like boundaries and corners.
+In this section, we replace the Detail Head with the SBD head and train using the SBCB framework. We take the ﬁrst
+four stages of the backbone for the Binary Sides and use the output of the FFM as the Semantic Side for the SBD
+head (see Appendix D). The results are shown in Table 16, where we compare the original STDC with STDC that
+replaced the Detail Head with our SBD head. We can see signiﬁcant improvements in using SBD as the auxiliary task
+with substantial improvements in the IoU. The Detail Head aimed at improving the segmentation quality around the
+boundaries, but our framework shows higher improvements in the boundary Fscore.
+Table 17: Results of the SBCB framework on modern backbones/architectures on the Cityscapes validation split.
+Head Backbone SBCB mIoU  Fscore 
+UPerNetConvNeXt-base81.8 74.4
+X 82.0 +0.2 75.5 +1.1
+Mod ConvNeXt-base X 82.2 +0.4 76.5 +2.1
+SegFormerMiT-b075.5 66.9
+X 76.5 +1.0 68.1 +1.2
+Mod MIT-b0 X 76.8 +1.3 69.7 +2.8
+SegFormerMiT-b280.9 73.2
+X 81.1 +0.2 74.7 +1.5
+Mod MIT-b2 X 81.6 +0.7 76.0 +2.8
+SegFormer MiT-b481.6 75.5
+X 82.2 +0.6 76.7 +1.2
+19Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+7.4 ConvNeXt and SegFormer
+In this section, we applied the SBCB framework and the “Backbone Trick” to two modern architectures. ConvNeXt is a
+backbone composed of pure ConvNet components with design elements borrowed from vision Transformers (ViT)
+Dosovitskiy et al. [2021], Liu et al. [2022b]. On the other hand, SegFormer is a full-blown segmentation architecture
+composed of a ViT-inspired backbone called the Mix Transformer (MiT), with a lightweight All-MLP segmentation
+head Xie et al. [2021] Both architectures exhibit hierarchical feature extraction, which is compatible with the SBCB
+framework. The results of applying the SBCB framework are shown in Table 17. We also compare the effects of adding
+the “Backbone Trick” denoted by “Mod” in the backbones. From the table, we can see that the SBCB framework
+can still be applied to improve these modern architectures and provide consistent performance gains in both IoU and
+boundary Fscore.
+Table 18: Results using explicit feature fusion at the heads on the Cityscapes validation split.
+Model mIoU 
+PSPNet77.6
++SBCB 78.7 +1.1
+Channel-Merge 79.1 +1.5
+DeepLabV3+79.5
++SBCB 80.2 +0.7
+Two-Stream Merge 80.5 +1.0
+Channel-Merge 80.5 +1.0
+7.5 Explicit Feature Fusion
+We provide two feature fusion techniques to utilize the features learned in the SBD head that can further be applied to
+improve segmentation. The ﬁrst technique uses simple channel concatenation with few convolutional layers to motivate
+feature fusion, called the Channel-Merge method. Another technique is a naive merge used in GSCNN, where the
+features learned in the SBD head are also used in the ASPP head for DeepLabV3+, similar to GSCNN. We call the
+latter method the Two-Stream Merge method. The two fusion architectures are explained in more detail in Appendix E.
+Table 18 shows the results of two baseline architectures with the SBCB framework and feature fusion methods applied.
+We can see that the feature fusion methods can further improve the segmentation performance. It also comes with the
+downside of making the segmentation head dependent on the SBD head, which increases computational costs. We
+believe that the SBCB framework helps boost existing segmentation models, and the SBD heads could further inspire
+exciting architectures for joint architectures like Channel-Merge and Two-Stream Merge.
+8 Conclusion
+We have proposed the SBCB framework, a simple yet effective training framework that boosts segmentation performance.
+In the framework, a semantic boundary detection (SBD) head is applied to the hierarchical features of the backbone
+which is supervised by semantic boundaries. We have explored different SBD heads for the SBCB framework and
+showed that the CASENet architecture signiﬁcantly improves segmentation quality without adding many parameters
+during training. Our experiments show that the SBCB framework improves segmentation quality on many popular
+backbones and segmentation heads. It also improves the segmentation quality around the boundaries which was
+evaluated on boundary F-score. We also have experimented with other customized backbones and recent transformer
+architectures to show that the SBCB framework is versatile. Not only is the SBCB framework effective, but we have
+also provided modiﬁcations and methods of explicit feature fusion to promote the broader use of semantic boundaries
+for semantic segmentation.
+20Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+A On-the-ﬂy Boundary Generation
+In this section, we will explain the on-the-ﬂy (OTF) semantic boundary generation algorithm in detail. For a single
+labell, we apply a signed distance function (SDF) on the inner and outer masks, where the inner mask represents the
+pixels that are land the outer mask represents pixels that are not l. We can then take the sum of the inner and outer
+masks and use the pixels under the radius as the boundary pixels. When instance segmentation maps are available, we
+generate per-instance distance maps, which we threshold using the same radius. We sum all the boundaries for category
+l(with instance boundaries) and binaries the resulting boundaries. We repeat this step for every label until we have L
+labels. We concatenate the Lboundaries to form a LHWsemantic boundary tensor.
+BackboneFCN
+Seg. Head
+BiSeNetSBD headFuse Side La yerSide La yer
+Side La yer
+Side La yerAux
+Prediction
+ImageStage 2Aggregation
+Stage 1Stage 3Stage 4Stage 5
+Spatial
+PathContext
+Path
+Stage 1Stage 2Stage 3
+Figure 13: Architecture diagram for applying the SBCB framework to BiSeNet.
+BackboneStage 1
+STDC B ackboneSBD headFuse Side La yerSide La yer
+Side La yer
+Side La yerAux
+Prediction
+FCN
+Seg. Head
+Stage 2Stage 3Stage 4Stage 5
+ARMARMFFM
+Side La yer
+Figure 14: Architecture diagram for applying the SBCB framework to STDC backbone.
+B Qualitative Visualizations
+We show qualitative visualizations for the results in Tables 11a and 12a in Figures 17 and 18 respectively.
+21Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Backbone
+ImageSide1
+(Stem)Side2Side3Side4Side5
+1x1con v1x1con v1x1con v1x1con vPPM1x1con v
+Seg. Head
+Bdry. HeadFuseUp
+Up
+UpUp
+Merge Module
+Concat
+Split
+Channel
+Merge Module1x1conv 1x1convSplit Concat 
+Figure 15: Diagram of applying Channel-Merge module for explicit feature fusion based on the SBCB framework.
+BackboneSide1
+(Stem)Side2Side3Side4Side5ASPP + B ot. C1 Bot.Seg. Head
+ResNetSBD headFuse Side La yerSide La yer
+Side La yer
+Side La yerAux
+Prediction
+1x1con v
+Figure 16: Diagram of applying two-stream approach for explicit feature fusion in the SBCB framework. The
+architecture is modeled after the GSCNN architecture.
+C BiSeNet + SBCB
+In Figure 13, we show a detailed architecture diagram showing which features of the BiSeNet backbone are used in the
+SBD head. In both BiSeNet V1 and V2, the architecture is composed of a Context Path and a Spatial Path. We use the
+three stages of the spatial path for the earlier Side Layers of the SBD head. We used the last feature of the Aggregation
+Layer for the last Side Layer.
+D STDC + SBCB
+In Figure 14, we show a detailed architecture diagram showing how we applied the SBCB framework to the STDC
+architecture. The architecture is more reminiscent of a ResNet-like hierarchical backbone, but the original STDC
+applies a Detail Head, which uses the features of the third stage. Instead, we remove the Detail Head and instead add an
+SBD head by using the ﬁrst four stages for the binary side layer and the ﬁnal output of the FFM as the input to the
+semantic side layer.
+22Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+E Explicit Feature Fusion Architectures
+In Figure 15, we show the proposed explicit feature fusion architecture built on top of the SBCB framework called
+the Channel-Merge module. The diagram shows a backbone with hierarchical features and a PPM head used in the
+PSPNet. The Channel-Merge module uses the features before upsampling in the Side Layers of the SBD head. Each
+feature is resized and concatenated into a single tensor, again concatenated with the features obtained by the PPM. The
+tensor undergoes two 11convolutional kernels to mix the features in the channel direction. Note that the number of
+convolutions can be modiﬁed. Finally, the features are split into the original shape and concatenated to the original side
+layer to be upsampled and fused.
+In Figure 16, we show explicit feature fusion by applying the two-stream architecture proposed in GSCNN. We treat the
+SBD head as the Shape Stream, the ﬁnal feature obtained in the Fuse Layer, and apply a 11convolutional kernel
+similar to how GSCNN used the features from the Shape Stream.
+References
+Bowen Cheng, Ross B. Girshick, Piotr Doll’ar, Alexander C. Berg, and Alexander Kirillov. Boundary iou: Improving
+object-centric image segmentation evaluation. 2021 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pages 15329–15337, 2021. 1
+Gedas Bertasius, Jianbo Shi, and Lorenzo Torresani. High-for-low and low-for-high: Efﬁcient boundary detection from
+deep object features and its applications to high-level vision. 2015 IEEE International Conference on Computer
+Vision (ICCV) , pages 504–512, 2015. 1
+Michael Ramamonjisoa, Yuming Du, and Vincent Lepetit. Predicting sharp and accurate occlusion boundaries in
+monocular depth estimation using displacement ﬁelds. 2020 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pages 14636–14645, 2020. 1
+Srikumar Ramalingam, Soﬁen Bouaziz, Peter F. Sturm, and Matthew Brand. Skyline2gps: Localization in urban
+canyons using omni-skylines. 2010 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) ,
+pages 3816–3823, 2010. 1
+Towaki Takikawa, David Acuna, V . Jampani, and Sanja Fidler. Gated-scnn: Gated shape cnns for semantic segmentation.
+2019 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 5228–5237, 2019. 1, 3, 10, 15, 18
+Xiangtai Li, Xia Li, Li Zhang, Guangliang Cheng, Jianping Shi, Zhouchen Lin, Shaohua Tan, and Yunhai Tong.
+Improving semantic segmentation via decoupled body and edge supervision. 2020 IEEE/CVF European Conference
+on Computer Vision (ECCV) , abs/2007.10035, 2020. 1, 3
+Mingmin Zhen, Jinglu Wang, Lei Zhou, Shiwei Li, Tianwei Shen, Jiaxiang Shang, Tian Fang, and Quan Long. Joint
+semantic segmentation and boundary detection using iterative pyramid contexts. 2020 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR) , pages 13663–13672, 2020. 1, 3, 18
+Zhiding Yu, Rui Huang, Wonmin Byeon, Sifei Liu, Guilin Liu, Thomas Breuel, Anima Anandkumar, and Jan Kautz.
+Coupled segmentation and edge learning via dynamic graph propagation. In Advances in Neural Information
+Processing Systems (NeurIPS) , 2021. 1, 3, 10, 16, 18
+Yuhui Yuan, Jingyi Xie, Xilin Chen, and Jingdong Wang. Segﬁx: Model-agnostic boundary reﬁnement for segmentation.
+2020 IEEE/CVF European Conference on Computer Vision (ECCV) , abs/2007.04269, 2020. 2, 3, 14
+Jonathan Long, Evan Shelhamer, and Trevor Darrell. Fully convolutional networks for semantic segmentation. 2015
+IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 3431–3440, 2015. 3
+Liang-Chieh Chen, George Papandreou, Florian Schroff, and Hartwig Adam. Rethinking atrous convolution for
+semantic image segmentation. ArXiv , abs/1706.05587, 2017. 3
+Hengshuang Zhao, Jianping Shi, Xiaojuan Qi, Xiaogang Wang, and Jiaya Jia. Pyramid scene parsing network. 2017
+IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 6230–6239, 2017. 3, 14, 18
+J. Fu, J. Liu, Haijie Tian, Zhiwei Fang, and Hanqing Lu. Dual attention network for scene segmentation. 2019
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 3141–3149, 2019a. 3
+Zhen Zhu, Mengde Xu, Song Bai, Tengteng Huang, and Xiang Bai. Asymmetric non-local neural networks for semantic
+segmentation. 2019 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 593–602, 2019. 3, 18
+Yanwei Pang, Yazhao Li, Jianbing Shen, and Ling Shao. Towards bridging semantic gap to improve semantic
+segmentation. 2019 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 4229–4238, 2019. 3, 18
+23Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Figure 17: Visualization of the segmentation masks and segmentation errors for the models in Table 11a. Each column,
+from the left, represents the input image, prediction without SBCB, prediction with SBCB, ground truth, segmentation
+errors without SBCB, and segmentation error with SBCB. We visualize two samples (two rows) per backbone. From the
+top row, the backbones are ResNet-50, DenseNet-169, ResNeSt-101, HR18, HR48, MobileNetV2, and MobileNetV3.
+Best seen in color and zoomed in.
+24Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Figure 18: Visualization of the segmentation masks and segmentation errors for the models in Table 12a. Each column,
+from the left, represents the input image, backbone feature without SBCB, backbone feature with SBCB, prediction
+without SBCB, prediction with SBCB, and ground truth. We visualize two samples (two rows) per segmentation head.
+From the top row, the segmentation heads are FCN, ANN, GCNet, DNLNet, CCNet, UperNet, and OCR. Best seen in
+color and zoomed in.
+25Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Zilong Huang, Xinggang Wang, Lichao Huang, Chang Huang, Yunchao Wei, Humphrey Shi, and Wenyu Liu. Ccnet:
+Criss-cross attention for semantic segmentation. 2019 IEEE/CVF International Conference on Computer Vision
+(ICCV) , pages 603–612, 2019. 3, 18
+J. Fu, J. Liu, Haijie Tian, Zhiwei Fang, and Hanqing Lu. Dual attention network for scene segmentation. 2019
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 3141–3149, 2019b. 3, 18
+Yue Cao, Jiarui Xu, Stephen Lin, Fangyun Wei, and Han Hu. Global context networks. IEEE Transactions on Pattern
+Analysis and Machine Intelligence (TPAMI) , 2020. 3
+Minghao Yin, Zhuliang Yao, Yue Cao, Xiu Li, Zheng Zhang, Stephen Lin, and Han Hu. Disentangled non-local neural
+networks. 2020 IEEE/CVF European Conference on Computer Vision (ECCV) , abs/2006.06668, 2020. 3
+J. Fu, Jing Liu, Jie Jiang, Yong Li, Yongjun Bao, and Hanqing Lu. Scene segmentation with dual relation-aware
+attention network. IEEE Transactions on Neural Networks and Learning Systems , 32:2547–2560, 2021. 3
+X. Wang, Ross B. Girshick, Abhinav Kumar Gupta, and Kaiming He. Non-local neural networks. 2018 IEEE/CVF
+Conference on Computer Vision and Pattern Recognition (CVPR) , pages 7794–7803, 2018. 3
+Ashish Vaswani, Noam M. Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser,
+and Illia Polosukhin. Attention is all you need. Advances in Neural Information Processing Systems (NeurIPS) ,
+abs/1706.03762, 2017. 3
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, and Neil Houlsby. An
+image is worth 16x16 words: Transformers for image recognition at scale. International Conference on Learning
+Representations (ICLR) , abs/2010.11929, 2021. 3, 20
+Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, Stephen Lin, and Baining Guo. Swin transformer:
+Hierarchical vision transformer using shifted windows. 2021 IEEE/CVF International Conference on Computer
+Vision (ICCV) , pages 9992–10002, 2021. 3
+Robin Strudel, Ricardo Garcia Pinel, Ivan Laptev, and Cordelia Schmid. Segmenter: Transformer for semantic
+segmentation. 2021 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 7242–7252, 2021. 3
+Enze Xie, Wenhai Wang, Zhiding Yu, Anima Anandkumar, José Manuel Álvarez, and Ping Luo. Segformer: Simple
+and efﬁcient design for semantic segmentation with transformers. In Advances in Neural Information Processing
+Systems (NeurIPS) , 2021. 3, 20
+Yifu Chen, Arnaud Dapogny, and Matthieu Cord. Semeda: Enhancing segmentation precision with semantic edge
+aware loss. Pattern Recognition , 108:107557, 2020. 3
+Chi Wang, Yunke Zhang, Miaomiao Cui, Jinlin Liu, Peiran Ren, Yin Yang, Xuansong Xie, Xiansheng Hua, Hujun Bao,
+and Weiwei Xu. Active boundary loss for semantic segmentation. In AAAI , 2022. 3
+Saining Xie and Zhuowen Tu. Holistically-nested edge detection. International Journal of Computer Vision (IJCV) ,
+125:3–18, 2015. 3, 15
+Yun Liu, Ming-Ming Cheng, Xiaowei Hu, Kai Wang, and Xiang Bai. Richer convolutional features for edge detection.
+2017 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 5872–5881, 2017. 3
+Mengyang Pu, Yaping Huang, Yuming Liu, Qingji Guan, and Haibin Ling. Edter: Edge detection with transformer.
+2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 1392–1402, 2022. 3
+Zhiding Yu, Chen Feng, Ming-Yu Liu, and Srikumar Ramalingam. Casenet: Deep category-aware semantic edge
+detection. 2017 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 1761–1770, 2017. 3,
+5, 9
+Yuan Hu, Yunpeng Chen, Xiang Li, and Jiashi Feng. Dynamic feature fusion for semantic edge detection. In IJCAI ,
+2019. 3, 5, 9
+Yun Liu, Ming-Ming Cheng, Jiawang Bian, Le Zhang, Peng-Tao Jiang, and Yang Cao. Semantic edge detection with
+diverse deep supervision. International Journal of Computer Vision (IJCV) , 130:179–198, 2022a. 3, 6, 9, 16
+Ishan Misra, Abhinav Shrivastava, Abhinav Kumar Gupta, and Martial Hebert. Cross-stitch networks for multi-task
+learning. 2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 3994–4003, 2016. 3
+Iasonas Kokkinos. Ubernet: Training a universal convolutional neural network for low-, mid-, and high-level vision
+using diverse datasets and limited memory. 2017 IEEE Conference on Computer Vision and Pattern Recognition
+(CVPR) , pages 5454–5463, 2017. 3
+Tete Xiao, Yingcheng Liu, Bolei Zhou, Yuning Jiang, and Jian Sun. Uniﬁed perceptual parsing for scene understanding.
+In2018 IEEE/CVF European Conference on Computer Vision (ECCV) . Springer, 2018. 3
+26Boosting Semantic Segmentation by Conditioning the Backbone with Semantic Boundaries A P REPRINT
+Dan Xu, Wanli Ouyang, Xiaogang Wang, and N. Sebe. Pad-net: Multi-tasks guided prediction-and-distillation network
+for simultaneous depth estimation and scene parsing. 2018 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pages 675–684, 2018. 3
+F. Xia, Amir Roshan Zamir, Zhi-Yang He, Alexander Sax, Jitendra Malik, and Silvio Savarese. Gibson env: Real-world
+perception for embodied agents. 2018 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) ,
+pages 9068–9079, 2018. 3
+Medhini Narasimhan, Erik Wijmans, Xinlei Chen, Trevor Darrell, Dhruv Batra, Devi Parikh, and Amanpreet Singh.
+Seeing the un-scene: Learning amodal semantic maps for room navigation. ArXiv , abs/2007.09841, 2020. 3
+Shikun Liu, Edward Johns, and Andrew J. Davison. End-to-end multi-task learning with attention. 2019 IEEE/CVF
+Conference on Computer Vision and Pattern Recognition (CVPR) , pages 1871–1880, 2018. 3
+Augustus Odena, Vincent Dumoulin, and Chris Olah. Deconvolution and checkerboard artifacts. Distill , 2016.
+doi:10.23915/distill.00003. URL http://distill.pub/2016/deconv-checkerboard . 5
+Marius Cordts, Mohamed Omran, Sebastian Ramos, Timo Rehfeld, Markus Enzweiler, Rodrigo Benenson, Uwe
+Franke, Stefan Roth, and Bernt Schiele. The cityscapes dataset for semantic urban scene understanding. 2016 IEEE
+Conference on Computer Vision and Pattern Recognition (CVPR) , pages 3213–3223, 2016. 9
+Zhiding Yu, Weiyang Liu, Yang Zou, Chen Feng, Srikumar Ramalingam, B. V . K. Vijaya Kumar, and Jan Kautz.
+Simultaneous edge alignment and learning. 2018 IEEE/CVF European Conference on Computer Vision (ECCV) ,
+abs/1808.01992, 2018a. 9, 10
+Fisher Yu, Haofeng Chen, Xin Wang, Wenqi Xian, Yingying Chen, Fangchen Liu, Vashisht Madhavan, and Trevor
+Darrell. Bdd100k: A diverse driving dataset for heterogeneous multitask learning. 2020 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR) , pages 2633–2642, 2018b. 9
+Germán Ros, Laura Sellart, Joanna Materzynska, David Vázquez, and Antonio M. López. The synthia dataset: A large
+collection of synthetic images for semantic segmentation of urban scenes. 2016 IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR) , pages 3234–3243, 2016. 10
+MMSegmentation Contributors. MMSegmentation: Openmmlab semantic segmentation toolbox and benchmark.
+https://github.com/open-mmlab/mmsegmentation , 2020. 10
+Liang-Chieh Chen, Yukun Zhu, George Papandreou, Florian Schroff, and Hartwig Adam. Encoder-decoder with atrous
+separable convolution for semantic image segmentation. In 2018 IEEE/CVF European Conference on Computer
+Vision (ECCV) , 2018. 18
+Hengshuang Zhao, Yi Zhang, Shu Liu, Jianping Shi, Chen Change Loy, Dahua Lin, and Jiaya Jia. Psanet: Point-wise
+spatial attention network for scene parsing. In ECCV , 2018. 18
+Bolei Zhou, Hang Zhao, Xavier Puig, Sanja Fidler, Adela Barriuso, and Antonio Torralba. Scene parsing through
+ade20k dataset. 2017 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 5122–5130,
+2017. 19
+Changqian Yu, Jingbo Wang, Chao Peng, Changxin Gao, Gang Yu, and Nong Sang. Bisenet: Bilateral segmentation
+network for real-time semantic segmentation. In European Conference on Computer Vision , 2018c. 19
+Changqian Yu, Changxin Gao, Jingbo Wang, Gang Yu, Chunhua Shen, and Nong Sang. Bisenet v2: Bilateral network
+with guided aggregation for real-time semantic segmentation. International Journal of Computer Vision , 129:3051 –
+3068, 2020. 19
+Mingyuan Fan, Shenqi Lai, Junshi Huang, Xiaoming Wei, Zhenhua Chai, Junfeng Luo, and Xiaolin Wei. Rethink-
+ing bisenet for real-time semantic segmentation. 2021 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pages 9711–9720, 2021. 19
+Zhuang Liu, Hanzi Mao, Chaozheng Wu, Christoph Feichtenhofer, Trevor Darrell, and Saining Xie. A convnet for
+the 2020s. 2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 11966–11976,
+2022b. 20
+27

@@ -1,0 +1,953 @@
+Real-time volumetric rendering of dynamic humans
+Ignacio Rocco Iurii Makarov Filippos Kokkinos David Novotny
+Benjamin Graham Natalia Neverova Andrea Vedaldi
+Meta AI
+Abstract
+We present a method for fast 3D reconstruction and real-
+time rendering of dynamic humans from monocular videos
+with accompanying parametric body ﬁts. Our method can
+reconstruct a dynamic human in less than 3h using a sin-
+gle GPU, compared to recent state-of-the-art alternatives
+that take up to 72h. These speedups are obtained by us-
+ing a lightweight deformation model solely based on lin-
+ear blend skinning, and an efﬁcient factorized volumetric
+representation for modeling the shape and color of the per-
+son in canonical pose. Moreover, we propose a novel local
+ray marching rendering which, by exploiting standard GPU
+hardware and without any baking or conversion of the radi-
+ance ﬁeld, allows visualizing the neural human on a mobile
+VR device at 40 frames per second with minimal loss of vi-
+sual quality. Our experimental evaluation shows superior
+or competitive results with state-of-the art methods while
+obtaining large training speedup, using a simple model, and
+achieving real-time rendering.
+1. Introduction
+Emerging technologies such as virtual and mixed reality
+make photorealistic 3D reconstruction increasingly relevant
+and impactful. We can envisage a future in which, instead of
+taking pictures or movies with smartphone cameras, anyone
+will be able to capture and experience full 360holograms
+with equal quality, simplicity, and generality. However, de-
+spite recent progress in methods such as neural rendering,
+we remain quite far from this objective.
+Many neural rendering approaches assume static scenes
+and the availability of dozens if not hundreds of input views
+for each reconstructed scene [1, 2, 24, 31, 32, 38]. Many dy-
+namic extensions of neural rendering [21,25–27,30] handle
+small deformations. The most interesting content, however,
+is highly dynamic and often involves people. This has mo-
+tivated the development of specialised models that can ac-
+count for the highly-deformable structure of such objects,
+but most of these still assume that scenes are captured from
+multiple cameras [20,22,29,44], which is incompatible with
+Figure 1. Given a monocular video with a SMPL parametric body
+ﬁt, our method quickly reconstructs a 3D model of the person in
+canonical pose using a factorized radiance ﬁeld representation [5].
+Then, it extracts a tight rigged mesh and uses a new local ray-
+marching render which, without baking or otherwise converting
+the radiance ﬁeld, can render the dynamic human on a consumer
+VR device at 40FPS. Videos and demos are available at https:
+//real-time-humans.github.io/ .
+consumer applications. When data is captured by a smart-
+phone or pair of AR glasses, only a single slowly-varying
+viewpoint is available for 3D reconstruction.
+A few methods such as HumanNeRF-UW [41],
+A-NeRF [36] and NeuMan [17] can obtain photorealistic
+reconstructions of articulated humans from such monocular
+videos. These methods use articulated human models such
+as SMPL [23] to deﬁne a scaffold to model the object de-
+formation, using a pre-trained predictor to obtain an initial
+estimate of the 3D body shape and pose. Then, they cap-
+ture the shape of the subject over time as a deformation of
+acanonical radiance ﬁeld, which is time-invariant. Unfor-
+tunately, jointly learning a radiance and deformation ﬁelds
+with a neural network requires several days of optimiza-
+tion to reconstruct a single monocular video. Furthermore,
+3D video playback using the standard emission-absorption
+method is also slow due to the necessity of evaluating the
+neural network hundreds of times for each rendered pixel.
+1arXiv:2303.11898v1  [cs.CV]  21 Mar 2023In this paper, we reconsider these architectures and we
+improve them signiﬁcantly in terms of training and render-
+ing speed, achieving fast training and real-time rendering.
+This is achieved by three design decisions, discussed next.
+First, instead of representing the radiance ﬁeld with a
+neural network, we use a tensor-based decomposition of
+the ﬁeld, inspired by [4, 5, 33]. This representation leads
+to faster convergence than when using an MLP.
+Second, we directly leverage linear blend skinning
+(LBS) in SMPL to model motion during training and ren-
+dering. This differ from previous approaches that trained a
+module to invert SMPL [20, 41] or learned a 3D scene ﬂow
+ﬁeld using a separate MLP [17, 22, 41], which is costly. In-
+stead, we map each 3D point to canonical space solely by
+approximating the inverse LBS function using the inverse
+transformation of the closest SMPL face. This approxima-
+tion is good where it matters, namely when the queried 3D
+point is already in the vicinity of the body surface.
+Third, we propose to extract a personalized human mesh
+template from the reconstructed human in the factorized ra-
+diance ﬁeld. During training, the exact shape of the per-
+son is not known, and the continuous volumetric represen-
+tation allows to learn it though back-propagation. However,
+neural rendering requires sampling the full estimated ob-
+ject bounding box, which is too slow for real-time render-
+ing. After the training is completed, we thus extract a mesh
+that is close to the surface of the reconstructed person. This
+mesh can then be used as a tight scaffold to implement neu-
+ral rendering efﬁciently on device. Speciﬁcally, we describe
+a new local ray marching algorithm that carries out, using
+a custom shader, ray marching and emission absorption on
+a short distance from the mesh triangles as these are pro-
+cessed by the GPU rasteriser. Compared to other recent
+hardware-accelerated neural rendering techniques, our tech-
+nique avoids baking, i.e., sampling the radiance ﬁeld values
+and storing them in a different specialized data structure,
+which is usually expensive and lossy. Instead, it displays
+theunmodiﬁed radiance ﬁeld directly.
+To summarize, our contributions are the following: 1.
+We show that adopting a factorized radiance ﬁeld represen-
+tation and a simple LBS-based deformation model allows
+for fast reconstruction ( 24times faster than HumanNeRF-
+UW) with comparable or better rendering quality on the
+ZJU-Mocap [29] scenes. 2.We show that it is possible
+to extract a canonical mesh from the learned radiance ﬁeld,
+together with a rig derived from the LBS model in SMPL,
+which approximates well each individual. 3.We show that,
+given these design choices, it is possible to use GPU hard-
+ware to renderer the deformable radiance ﬁeld model pre-
+serving quality while achieving real-time playback (at 40
+FPS on the mobile GPU of a consumer VR device), which
+is three orders of magnitude faster than the HumanNeRF-
+UW approach (0.05 FPS).2. Related work
+Reconstructing humans from single images. Perform-
+ing 3D reconstruction of humans from single images is ill-
+posed and requires leveraging prior information on human
+geometry and poses. Several methods [3, 19, 37] use the
+SMPL model [23] as prior, but they result in only approxi-
+mate reconstructions which are insufﬁcient for VR/AR ap-
+plications. PIFu [33, 34] directly predicts a volumetric rep-
+resentation of a human from a single RGB image using an
+MLP, but generalizes poorly beyond the training data dis-
+tribution. ARCH [14, 16] combines parametric models and
+implicit function representations to obtain higher ﬁdelity re-
+constructions, which are also rigged and animatable, but
+achieve limited overall quality due to the fact that they use
+asingle image and cannot take advantage of video data.
+Reconstructing humans from multiple videos. In or-
+der to obtain higher quality reconstructions, several meth-
+ods [20, 22, 29, 44] leverage multiple synchronized videos.
+Neural Actor [22] learns neural radiance ﬁelds [24] to
+model a human in canonical pose, and uses the inverse lin-
+ear blend skinning (LBS) transform from SMPL to map be-
+tween posed and canonical spaces. TA V A [20] uses a simi-
+lar approach, but proposes to learn the inverse LBS weights
+and use Mip-NeRF [1] instead of vanilla NeRF. Neu-
+ral Body [29] attaches neural codes to the SMPL vertices,
+poses them, and converts them to a full volumetric represen-
+tation of the radiance ﬁeld using a 3D sparse CNN [9, 13].
+HumanNeRF-ShanghaiTech [44] combines NeRF and the
+inverse LBS mapping (as in Neural Actor), but conditions
+the NeRF model on features sampled from neighbouring in-
+put views similar to IBRNet [39] for rigid scenes. However,
+these methods require multiple views, and are thus inappli-
+cable when only a monocular sensor is available.
+Reconstructing humans from monocular videos. Re-
+cent methods considered 3D human reconstruction from
+monocular videos . Vid2Actor [40] extracts from SMPL
+a motion basis, uses it for inverse LBS, and trains two
+3D CNNs to regress the inverse LBS weights in posed
+space and the density and color of the canonical human.
+HumanNeRF-UW [41] extends Vid2Actor by replacing
+their voxel-grid representation with a coordinate MLP and
+further reﬁne deformations using SMPL pose reﬁnement
+and a non-rigid scene-ﬂow MLP. A-NeRF [36] computes
+codes of the posed 3D points that are relative to the SMPL
+skeleton and use those to construct a pose-dependent NeRF
+model (somewhat analogously to the approach used in Neu-
+ral Body). NeuMan [17] decomposes the scene into a static
+background component and the foreground dynamic hu-
+man, and learns a different NeRF model for each compo-
+nent separately. They use inverse LBS for warping points
+from posed to canonical space and a standard NeRF MLP
+for modelling the canonical human.
+2While powerful, these models are typically very slow to
+train (sometimes in the order of days on a single GPU) and
+to render, making them unsuitable for playback in mobile
+devices such as in VR headsets.
+Real-time neural and volumetric rendering. Most of
+the works discussed above represent radiance ﬁelds us-
+ing MLPs and use raymarching for rendering. Hence, the
+MLPs need to be evaluated hundreds of time for each pixel,
+which requires seconds for each rendered image. For real-
+time rendering, several methods have proposed to “bake”
+or cache the NeRF MLP [11, 15, 42]. However, such rep-
+resentations are memory intensive, do not support dynamic
+content, and require a high-end GPU for achieving real-time
+rendering.
+Closer to ours, MobileNeRF [7] leverages the fast tri-
+angle rasterization hardware in modern GPUs for real-time
+rendering of NeRF, but with substantial differences. They
+also need to “bake” the radiance ﬁeld into an especially-
+crafted mesh to avoid emission-absorption rendering. Be-
+cause they change the rendering model, they require a con-
+version step that involves further learning and approxima-
+tions, which also does not support dynamic content. In
+contrast, our technique renders in real time the original dy-
+namic radiance ﬁeld, accelerating emission absorption. Be-
+cause we load the original model into the GPU, we do not
+require conversion, and we can preserve the shape and ap-
+pearance details in the source radiance ﬁeld with only minor
+approximations. As far as we are aware of, our method is
+the ﬁrst one to be able to render dynamic radiance ﬁelds in
+real-time on mobile hardware without resorting to baking.
+3. Fast reconstruction of dynamic humans
+Our method leverages recent progress in neural ﬁelds
+and monocular 3D reconstruction in order to allow for fast
+3D reconstruction of humans from monocular videos and
+corresponding parametric SMPL ﬁts. During reconstruc-
+tion, our method employs the following modules: (i) a fac-
+torized volumetric representation that learns the shape and
+color of the human in canonical pose, (ii) a deformation
+module which performs inverse linear blend skinning to
+map 3D points from posed space to canonical space. In
+addition, we propose (iii) a rasterization-based method for
+rendering the trained model in real-time. Our full model is
+illustrated in Fig. 2. Each of these components is presented
+next in more detail.
+3.1. Factorized volumetric radiance ﬁelds
+In this work, we leverage recent progress on neural ra-
+diance ﬁelds [5, 24] as a continuous and differentiable rep-
+resentation for modeling shape and color. Next, we review
+these models and present the factorized formulation that we
+adopt in this work.Radiance ﬁelds. An imageI: 
+!R3is a map from
+pixelsu2
+ = [0;:::;W ][0;:::;H ]to correspond-
+ing colorsI(u)2R3. The camera projection function
+:R3!R2is a map from 3D points x2R3in the world
+space to corresponding pixels (image points) u2R2. Ara-
+diance ﬁeld is a pair of functions mapping each 3D point x
+to a corresponding density (x)2R+and corresponding
+colorc(x)2R3.
+The color of a pixel uis obtained by marching along the
+rayruoriginating from the camera center and propagating
+in the direction of pixel u(interpreted as a 3D point). Let
+(xi)N 1
+0 be a sequence of Nsamples along ray rusepa-
+rated by steps . The color of pixel uis extracted from the
+radiance ﬁeld via the following emission-absorption render-
+ing equation:
+I(u) =N 1X
+i=0(Ti Ti+1)c(xi); Ti=e Pi 1
+j=0(xi):(1)
+whereTiis the accumulated transmittance up to xi, namely
+the probability that a photon is transmitted from point xi
+back to the camera center without being absorbed.
+Deformable radiance ﬁelds. The radiance ﬁeld of eq. (1)
+could be extended to represent the different poses of an ar-
+ticulated object by adding the object’s pose parameters 
+as an additional parameter of the density (x;)and color
+c(x;)functions. Modelling such functions directly, how-
+ever, would be statistically inefﬁcient because it would not
+account for the fact that the different poses are not arbitrary,
+but related by geometric deformations.
+Therefore, in this work we adopt more efﬁcient approach
+with considers canonical density (x)and color c(x)ﬁelds
+that are pose-invariant and, separately, a posing function
+x=h(x;)mapping points xfrom the canonical space to
+their posed locations x. The pose-dependent ﬁelds are the
+composition of the pose-invariant ﬁelds and of the inverse
+of the posing function:
+(x;) = (h 1(x;)); c(x;) = c(h 1(x;)):(2)
+Tensorial ﬁelds. We leverage the recent factorized volu-
+metric neural ﬁeld formulation from TensoRF [5] to repre-
+sent the shape and color of the canonical human.
+In order to model the ﬁeld (;c), we do not use the
+standard approach of adopting an MLP and positional en-
+coding [24], but use instead the TensoRF parameteriza-
+tion. Speciﬁcally, we consider a voxel grid of resolution
+DHWand further decompose it as the sum of three
+matrix-vector products:
+(x)= RX
+r=1MYX
+r;y;xvZ
+r;z+MYZ
+r;y;zvX
+r;x+MXZ
+r;x;zvY
+r;y!
+:(3)
+3Factorized volumetric 
+representationTraining
+inverse
+LBS
+Canonical
+mesh
+Posed
+meshRasterization
+Final renderLocal
+EA
+ray-
+marchingPostprocessing Real-time rendering
+camerabody 
+Figure 2. Overview of the proposed method. During training, we shoot rays from the training cameras onto the scene and sample points
+withing the bounding box of the parametric human body mesh. Points which are close to the mesh are warped to canonical space via
+inverse linear-blend-skinning (LBS), where the factorized volumetric representation is sampled for density and color, and whose values
+are used to perform raymarching. After training, a canonical mesh is extracted from the learnt factorized volumetric representation. For
+real-time rendering, the canonical mesh is posed, rasterized, and used to guide the inverse skinning and local raymarching.
+Here x= (x;y;z),ris the channel index, and the sub-
+indices indicate the tensor sampling position.1In addition,
+MYXis aRHWtensor,vZaRDmatrix, and
+the other terms follow a similar pattern, so in total there are
+R(HW +HD+WD +H+W+D)parameters only,
+far less than HWD as long as the number of components
+R(HWD )1
+3. The activation function (a) = log(1 +
+exp(Ga))is the softplus operator with a ﬁxed gain G
+1=, where is the step between ray samples.
+The color ﬁeld cis deﬁned in a similar manner, for each
+of the three RGB components, and uses the sigmoid as ac-
+tivation function.
+The adoption of these factorized representation not only
+allows for faster training compared to the MLP-based mod-
+els, but is particularly suitable for fast real-time render-
+ing by storing the different tensor factors as textures that
+are naturally interpolated by the graphic shaders of GPUs
+(cf. Sec. 4).
+3.2. Skinning-based deformation module
+Several previous works use MLP-based deformation
+models [17, 22, 26, 27, 41], alone, or in conjunction with
+articulated deformations [17,22,41]. Because these models
+are slow to evaluate, we propose to use only a linear blend
+skinning (LBS) articulated deformation model, and show
+that this simple deformation model can still achieve com-
+petitive results while being much simpler and allowing for
+real-time rendering. We next review LBS and present our
+proposed approach.
+Posing via blend skinning. Given that humans are articu-
+lated objects, we leverage the parametric SMPL model [23]
+1In order to map coordinates x= (x;y;z)deﬁned in canonical space
+to indices in the respective tensors and matrices above, we use bilinear
+interpolation after remapping the nominal bounding box of the object to
+the corresponding grid dimensions.and the linear blend skinning formulation which allows to
+easily build the posing function h, given the SMPL tem-
+plate mesh model and the pose parameters. In particular, the
+SMPL model provides a template mesh M= (V;F)with
+points v2V R3and triangular faces f2F. In addition,
+the template mesh is associated with a skeleton , which is a
+collection of bones b2f1;:::;Bgwhose angles deﬁne the
+pose parameters. Each template vertex vissoftly attached
+to the different bones by its skinning weights w(v)2RB
++.
+Then, the posed vertices can be obtained by an afﬁne map
+v=h(v;) =A(v;)v, where:
+A(v;) =BX
+b=1wb(v)Ab(); (4)
+andAb()is the afﬁne transform associated to bone bfor
+the pose. More details are provided in Appendix A.1.
+Volumetric and inverse blend skinning. Skinned mod-
+els like SMPL only deﬁne the skinning weights w(v)for the
+vertices of the template mesh, which approximates the real
+object surface. However, because the radiance ﬁeld is a vol-
+umetric representation, we need transformations to be de-
+ﬁned around the object surface, and not just onthe surface,
+and thus the skinning weights need to be extended to nearby
+3D points. Furthermore, in order to perform ray march-
+ing and compute the pose-invariant ﬁelds from eq. (2), we
+need to map points xfrom the posed space back to canon-
+ical space, and therefore knowledge of the posing function
+h(x;)is not enough; instead, we require its inverse :
+x=h 1(x;)=A(x;) 1x="BX
+b=1wb(x)Ab()# 1
+x:(5)
+Because xappears on the l.h.s. and r.h.s. of this expression,
+this deﬁnes xas the solution to an equation which cannot be
+4posed face
+rasterised
+face
+cameracanonical faceFigure 3. Real-time radiance ﬁelds via rasterization. The posed
+face fis used to determine the portion of the radiance ﬁeld that
+is likely to affect given pixel uand to map computations to the
+rasterization unit of the GPU.
+solved in closed form. Prior works [6, 10] addressed these
+issues by learning the extended skinning weights and/or the
+inverse posing function, but these approaches increase the
+complexity of the model and therefore the training and ren-
+dering time.
+In contrast, we employ the approach introduced in [22],
+where the inverse transformation of a point xis approxi-
+mated to that of the closest mesh vertex vi:
+x=h 1(x;)A(vi;) 1x;
+s.t.i= argmin
+ikx vik2: (6)
+This approximation is only valid locally, and therefore only
+applied to ray points xwhere the distance to the closest ver-
+tex is below a threshold . Otherwise, points are discarded
+and not used for raymarching, which is equivalent to setting
+(x;) =1[d(x;vi)](h 1(x;)):
+Contrary to prior work, we do not combine this deforma-
+tion with any additional trainable model, in order to allow
+for real-time evaluation of the deformation model in mobile
+hardware. Our experimental results show that our method
+performs similarly to prior state-of-the-art despite of this
+simpliﬁed deformation model.
+4. Real-time dynamic radiance ﬁelds
+The factorized radiance ﬁeld and deformation model pre-
+sented in Sec. 3.1 and Sec. 3.2 were chosen speciﬁcally to
+allow for real-time rendering, through a customized GPU
+shader program that implements an efﬁcient local emission-
+absortion raymarching. Our approach avoids baking or con-
+version steps and allows to replay the original radiance ﬁeld
+with only minor approximations.
+Customized human mesh. Our proposed local ray-
+marching is guided by an initial rasterization step of the
+posed mesh. In order to handle occlusions and object
+boundaries properly, we replace the SMPL mesh with one
+that more accurately approximates the body shape at rest,and transfer to the SMPL joints and blendshapes so that it
+is fully-rigged and amenable for posing.
+We extract this mesh from the radiance ﬁeld by: (i) ren-
+dering frames with masks and depth-maps from the canon-
+ical model, (ii) unprojecting these depth maps to form a
+dense point cloud and, (iii) converting this point cloud onto
+a mesh. An example of the extracted mesh is shown on
+Fig. 2. Please refer to the Appendix A.2 for further details.
+Rasterization of the posed mesh. Without any guidance,
+volumetric rendering using eq. (1) requries to sample hun-
+dreds of ray points for each generated pixel. For an opaque
+object, this is extermely inefﬁcient, as only a tiny fraction
+of those samples land close enough to the surface to make a
+signiﬁcant contribution to the ﬁnal color. Instead, we resort
+to rasterization of the customized posed mesh as an initial
+step of our rendering pipeline, which provides guidance for
+performing a local volumetric rendering.
+In this case, the rasterizer iterates over the triangles
+f2F of the mesh, quickly ﬁnding the pixels uthat are
+contained in them (Fig. 3). The rasterizer also quickly com-
+putes the barycentric coordinates iof the 3D face point
+vfu2fthat projects onto pixel u, deﬁned as:
+vfu=3X
+i=1ivfi; i0;3X
+i=1i= 1; (7)
+where vfiare the three mesh vertices. Then, the color I(u)
+of the pixel is obtained by computing the color c(vfu)of
+pointvfu. This calculation is done in parallel for all pixels
+using a shader program running in the GPU.
+Local emission-absorption raymarching. Instead of
+computing the color c(vfu)by using an UV-texture map-
+ping, as it is usually done for coloring meshes, we com-
+putec(vfu)by performing a local emission-absorption ray-
+marching in the vicinity of point vfu, as illustrated in Fig. 3.
+In practice, we ﬁrst map the point vfufrom the posed
+mesh to its counterpart in canonical space vfuby apply-
+ing the transformation A(vfu) 1. For this,A(vfu) 1is
+efﬁciently and automatically approximated by the vertex
+shader through barycentric interpolation, by storing the in-
+verse transformation A(v) 1of each vertex v2 V as a
+vertex property.
+Once vfuis computed, we can consider a small number
+of samples xi(as illustrated in the right side of Fig. 3) to
+perform local emission-absorption raymarching. For this,
+the evaluation of the factors Mandvof the density and
+color for ﬁelds can be done very efﬁciently on the GPU by
+mapping these 2D and 1D tensors to 2D and 1D textures
+maps and using the native GPU texture sampling functions.
+Once the densities and colors are computed for all sam-
+plesxiin the local ray segment, eq. (1) is used to obtain the
+ﬁnal pixel color I(u).
+5(a) Ground-truth (b) NeuralBody [29] (c) HumanNeRF-UW [41] (d) Ours - reconstruction (e) Ours - real-time
+Figure 4. Qualitative results on ZJU-Mocap. We show a qualitative comparison between our proposed method and other state-of-the-
+art methods on test images. Our method produces sharp images, perceptually similar to those of HumanNeRF-UW, despite presenting a
+simpler deformation model. Faces have been blurred for privacy reasons.
+6LPIPS*1000 # PSNR " SSIM "
+Sequence ID Sequence ID Sequence ID
+Method 377 386 387 392 393 394 377 386 387 392 393 394 377 386 387 392 393 394
+Neural Body (14h) 43.08 48.08 57.34 50.39 57.09 54.36 28.87 30.12 26.76 29.84 27.80 28.90 0.9609 0.9588 0.9462 0.9575 0.9472 0.9497
+HumanNeRF-UW (72h) 30.28 34.16 41.10 36.24 40.30 38.12 30.19 32.83 28.06 30.91 28.44 30.47 0.9642 0.9669 0.9551 0.9641 0.9544 0.9567
+Ours - reconstruction (2-3h) 27.72 34.42 43.44 35.68 41.28 38.00 30.00 32.90 28.08 31.08 28.51 30.28 0.9710 0.9687 0.9545 0.9645 0.9535 0.9564
+Ours - real-time (40FPS) 32.76 35.01 42.87 37.79 41.86 40.53 28.42 32.19 27.76 30.35 27.91 29.46 0.9671 0.9677 0.9540 0.9635 0.9531 0.9555
+Table 1. Results on the ZJU-mocap benchmark. Our method obtains the best reconstruction results on most of the scenes on the PSNR
+metric, and on half of the scenes, with respect to the LPIPS and SSIM metrics, while being signiﬁcantly faster to train (2–3h vs 14h or
+72h). Our real-time variant introduces a small performance drop but mantains similar visual quality (cf. Fig. 4).
+Limitations. The proposed local emission-absorption
+raymarching relies on the rasterization of the posed cus-
+tomized human mesh to deﬁne the local ray segments where
+ray marching is performed. This can cause small issues
+around occlusion boundaries, if the estimated mesh is either
+too small or too large. If the occluding part of the object is
+too small, the render will show a slight “loss of mass” when
+rendered. If it is too large, this additional occluding part of
+the object will produce ”black pixels”, which should in re-
+ality show the background part of the object. This issue is
+minimized by making the scaffold as tight as possible.
+5. Experimental evaluation
+In order to demonstrate the performance of our proposed
+method, we evaluate results on two different benchmarks,
+the ZJU-Mocap scenes and the NeuMan scenes. In addi-
+tion, we show the results of the proposed on-device real-
+time renderer and ablations on the color model employed
+by the factorized volumetric representation.
+Implementation details. We implement our model using
+PyTorch [28]. In particular, we use 8 channels for modeling
+density and color ( R=Rc=8) in the tensorial model. In ad-
+dition, we use a coarse-to-ﬁne training approach, increasing
+the voxel grid resolution DHWseveral times during
+training, following [5]. We begin training with a resolution
+HWD = 106and end with HWD = 4:096106, scaled
+accordingly to the person’s bounding box. At each train-
+ing iteration, a batch of training rays ruis constructed by
+sampling six 3232image patches, each centered around
+a foreground point. The models are trained for 30 epochs
+of 1000 iterations each, regardless of the number of train-
+ing images. Before posing the SMPL template with the
+provideddataparameters from each dataset, we compute
+a small reﬁnement refusing a 4-layer MLP with 256 hid-
+den units, following [41]. The ﬁnal body parameters are
+thus=refdata. The factorized neural ﬁeld and the pose
+correction MLP are trained jointly. For training, we employ
+a photometric loss, a sparsity regularization loss, as well
+as a perceptual loss (LPIPS). The whole training procedure
+takes between 2 and 3 hours on a single modern GPU.ZJU-Mocap benchmark. We ﬁrst evaluate our method
+on the ZJU-Mocap dataset introduced in [29]. We follow
+the evaluation protocol from [29] and, for each sequence,
+use images from 19 unseen cameras for testing, sampled at
+a 30 frames interval for the ﬁrst 300 frames, giving 190 test
+images per sequence. Following [41], we evaluate on 6 se-
+quences, identiﬁed by their sequence IDs (377, 386, 387,
+392, 393, and 394). In Tab. 1 and Fig. 4 we present the
+quantitative and qualitative results of our method compared
+to NeuralBody [29] and HumanNeRF-UW [41]. We present
+results both for the reconstruction phase (Sec. 3) using stan-
+dard emission-absorption raymarching and for the proposed
+real-time rendering (Sec. 4) that can run at 40FPS on mo-
+bile hardware. Our reconstructions obtain the best PSNR
+results for most of the scenes, and best LPIPS and SSIM re-
+sults for half of the scenes, while being signiﬁcantly faster
+to train than the baselines (2–3h for our method vs. 72h
+for HumanNeRF-UW and 15h for Neural Body). In ad-
+dition, we observe that the rasterization-guided raymarch-
+ing introduces a small performance loss, while allowing for
+real-time rendering. As shown in Fig. 4, the visual qual-
+ity of our reconstuction and real-time variants is on-par or
+superior to previous methods.
+NeuMan benchmark. In addition, we evaluate our
+method on the scenes from NeuMan [17]. The NeuMan
+method uses a NeRF [24] module to model the background
+scene, which is used for segmenting the person. As our
+model does not explicitly model the background, we use
+XMeM [8] to segment the foreground person by scribbling
+the ﬁrst frame of each sequence and propagating results
+automatically. The results in Tab. 2 show that our recon-
+structions outperform NeuMan on two scenes according to
+LPIPS, and are slightly inferior for the other four scenes.
+Nevertheless, qualitative results from Fig. 5 show that the
+perceptual quality of our method is similar to that of Neu-
+Man, even for our real-time renders.
+Model ablations. We also evaluate the effect of modify-
+ing the color model of the factorized volumetric represen-
+tation. In Sec. 3.1 we proposed to model color directly, i.e.
+outputting RGB values directly from the factorized volu-
+metric representation. Alternatively, we can have the factor-
+7LPIPS*1000 # PSNR " SSIM "
+Sequence name Sequence name Sequence name
+Method bike citron jogging lab parkinglot seattle bike citron jogging lab parkinglot seattle bike citron jogging lab parkinglot seattle
+NeuMan 44.65 28.00 41.53 43.38 44.23 24.23 26.73 27.88 26.31 28.37 27.43 27.80 0.9521 0.9633 0.9496 0.9593 0.9581 0.9687
+Ours - reconstruction 49.63 29.60 42.00 42.18 49.24 19.76 26.37 26.60 25.88 28.29 24.12 28.43 0.9465 0.9588 0.9461 0.9574 0.9524 0. 9722
+Ours - real-time 48.04 31.43 41.86 42.71 56.54 21.14 25.86 26.12 25.13 27.39 23.12 27.86 0.9457 0.9580 0.9451 0.9552 0.9438 0.9706
+Table 2. Quantitative results on the NeuMan benchmark. Our method obtains comparable reconstruction performance to NeuMan [17]
+for most sequences, with superior performance for seattle , while having real-time rendering capabilities without signiﬁcant loss in visual
+quality (cf. Fig. 5).
+Ground-truth NeuMan Ours - recon. Ours - real-time
+Figure 5. Qualitative results on NeuMan scenes. Our method
+obtains state-of-the-art visual quality, comparable to that of Neu-
+Man, while being fast to train and render. Faces have been blurred
+for privacy reasons.Color
+modelPose
+correctionLPIPS
+*1000#PSNR "SSIM "
+Ours - recon. Direct Yes 36.76 30.14 0.9614
+FA-Spherical Harm. SH Yes 36.97 30.17 0.9612
+FA-MLP color MLP Yes 37.57 30.20 0.9616
+FA-No pose corr. Direct No 38.63 29.95 0.9607
+Table 3. Ablation study. We analyze the performance drop in-
+curred by modifying several components of the proposed method.
+We show the mean LPIPS, PSNR and SSIM metrics over all ZJU-
+Mocap sequences.
+ized representation output spherical harmonic coefﬁcients
+or color descriptors which are then used to and compute
+the ﬁnal RGB values via spherical harmonic functions or a
+small color MLP, respectively. The results of using these
+different color models are presented in Tab. 3. We observe
+that the choice of the color model does not affect perfor-
+mance signiﬁcantly. We therefore propose to use direct
+color prediction (RGB values), for its simplicity compared
+to using spherical harmonics or MLP for color prediction,
+allowing for faster real-time rendering. Finally, we observe
+that disabling the body pose correction also diminishes per-
+formance to a small extent.
+6. Conclusion
+We have introduced a method capable of learning neu-
+ral radiance ﬁelds of articulated humans from monocular
+videos. By adopting a factorized radiance ﬁeld model and
+a simple deformation model, we were able to cut down the
+training time by an order of magnitude or more compared
+to prior work, while matching these methods in visual qual-
+ity. Furthermore, we have introduced a novel approach to
+render these dynamic reconstructions in real-time on a mo-
+bile GPU. This is done through a rasterization-guided local
+raymarching which leverages a reﬁned customized human
+mesh for rendering the neural radiance ﬁeld without resort-
+ing to baking, and with minimal loss of quality. As far as
+we know, this is the ﬁrst work to perform realtime render-
+ing of dynamic humans in mobile hardware using radiance
+ﬁelds, and without resorting to baking. We hope this work
+will inspire other future work in this area.
+8References
+[1] Jonathan T Barron, Ben Mildenhall, Matthew Tancik, Peter
+Hedman, Ricardo Martin-Brualla, and Pratul P Srinivasan.
+Mip-nerf: A multiscale representation for anti-aliasing neu-
+ral radiance ﬁelds. In Proc. ICCV , 2021. 1, 2
+[2] Jonathan T. Barron, Ben Mildenhall, Dor Verbin, Pratul P.
+Srinivasan, and Peter Hedman. Mip-nerf 360: Unbounded
+anti-aliased neural radiance ﬁelds. In Proc. CVPR , 2022. 1
+[3] Federica Bogo, Angjoo Kanazawa, Christoph Lassner, Peter
+Gehler, Javier Romero, and Michael J Black. Keep it SMPL:
+Automatic estimation of 3d human pose and shape from a
+single image. In Proc. ECCV , 2016. 2
+[4] Eric R Chan, Connor Z Lin, Matthew A Chan, Koki Nagano,
+Boxiao Pan, Shalini De Mello, Orazio Gallo, Leonidas J
+Guibas, Jonathan Tremblay, Sameh Khamis, et al. Efﬁcient
+geometry-aware 3d generative adversarial networks. In Proc.
+CVPR , 2022. 2
+[5] Anpei Chen, Zexiang Xu, Andreas Geiger, Jingyi Yu, and
+Hao Su. TensoRF: Tensorial radiance ﬁelds. In Proc. ECCV ,
+2022. 1, 2, 3, 7
+[6] Xu Chen, Yufeng Zheng, Michael J. Black, Otmar Hilliges,
+and Andreas Geiger. SNARF: differentiable forward skin-
+ning for animating non-rigid neural implicit shapes. arXiv.cs ,
+abs/2104.03953, 2021. 5
+[7] Zhiqin Chen, Thomas Funkhouser, Peter Hedman, and An-
+drea Tagliasacchi. Mobilenerf: Exploiting the polygon ras-
+terization pipeline for efﬁcient neural ﬁeld rendering on mo-
+bile architectures. arXiv preprint arXiv:2208.00277 , 2022.
+3
+[8] Ho Kei Cheng and Alexander G. Schwing. XMem: Long-
+term video object segmentation with an atkinson-shiffrin
+memory model. In Proc. ECCV , 2022. 7
+[9] Christopher Choy, JunYoung Gwak, and Silvio Savarese. 4d
+spatio-temporal convnets: Minkowski convolutional neural
+networks. In Proc. CVPR , 2019. 2
+[10] Boyang Deng, John P. Lewis, Timothy Jeruzalski, Gerard
+Pons-Moll, Geoffrey E. Hinton, Mohammad Norouzi, and
+Andrea Tagliasacchi. NASA: Neural articulated shape ap-
+proximation. In Proc. ECCV , 2020. 5
+[11] Stephan J Garbin, Marek Kowalski, Matthew Johnson, Jamie
+Shotton, and Julien Valentin. FastNeRF: High-ﬁdelity neural
+rendering at 200fps. In Proc. ICCV , 2021. 3
+[12] Michael Garland and Paul S Heckbert. Surface simpliﬁcation
+using quadric error metrics. In Proceedings of the 24th an-
+nual conference on Computer graphics and interactive tech-
+niques , 1997. 11
+[13] Benjamin Graham and Laurens van der Maaten. Sub-
+manifold sparse convolutional networks. arXiv preprint
+arXiv:1706.01307 , 2017. 2
+[14] Tong He, Yuanlu Xu, Shunsuke Saito, Stefano Soatto, and
+Tony Tung. ARCH++: Animation-ready clothed human re-
+construction revisited. In Proc. ICCV , 2021. 2
+[15] Peter Hedman, Pratul P Srinivasan, Ben Mildenhall,
+Jonathan T Barron, and Paul Debevec. Baking neural ra-
+diance ﬁelds for real-time view synthesis. In Proc. ICCV ,
+2021. 3[16] Zeng Huang, Yuanlu Xu, Christoph Lassner, Hao Li, and
+Tony Tung. ARCH: Animatable reconstruction of clothed
+humans. In Proc. CVPR , 2020. 2
+[17] Wei Jiang, Kwang Moo Yi, Golnoosh Samei, Oncel Tuzel,
+and Anurag Ranjan. NeuMan: Neural human radiance ﬁeld
+from a single video. In Proc. ECCV , 2022. 1, 2, 4, 7, 8
+[18] Michael Kazhdan and Hugues Hoppe. Screened poisson sur-
+face reconstruction. ACM Transactions on Graphics , 32(3),
+2013. 11
+[19] Nikos Kolotouros, Georgios Pavlakos, Michael J Black, and
+Kostas Daniilidis. Learning to reconstruct 3d human pose
+and shape via model-ﬁtting in the loop. In Proc. ICCV , 2019.
+2
+[20] Ruilong Li, Julian Tanke, Minh V o, Michael Zollhofer, Jur-
+gen Gall, Angjoo Kanazawa, and Christoph Lassner. TA V A:
+Template-free animatable volumetric actors. In Proc. ECCV ,
+2022. 1, 2
+[21] Zhengqi Li, Simon Niklaus, Noah Snavely, and Oliver Wang.
+Neural scene ﬂow ﬁelds for space-time view synthesis of dy-
+namic scenes. In Proc. CVPR , 2021. 1
+[22] Lingjie Liu, Marc Habermann, Viktor Rudnev, Kripasindhu
+Sarkar, Jiatao Gu, and Christian Theobalt. Neural actor:
+Neural free-view synthesis of human actors with pose con-
+trol. ACM Transactions on Graphics , 40(6), 2021. 1, 2, 4,
+5
+[23] Matthew Loper, Naureen Mahmood, Javier Romero, Gerard
+Pons-Moll, and Michael J Black. SMPL: A skinned multi-
+person linear model. ACM Transactions on Graphics , 34(6),
+2015. 1, 2, 4
+[24] Ben Mildenhall, Pratul P Srinivasan, Matthew Tancik,
+Jonathan T Barron, Ravi Ramamoorthi, and Ren Ng. NeRF:
+Representing scenes as neural radiance ﬁelds for view syn-
+thesis. Communications of the ACM , 65(1), 2022. 1, 2, 3,
+7
+[25] Phong Nguyen, Nikolaos Saraﬁanos, Christoph Lassner,
+Janne Heikkila, and Tony Tung. Free-viewpoint RGB-D hu-
+man performance capture and rendering. In Proc. ECCV ,
+2022. 1
+[26] Keunhong Park, Utkarsh Sinha, Jonathan T Barron, Soﬁen
+Bouaziz, Dan B Goldman, Steven M Seitz, and Ricardo
+Martin-Brualla. Nerﬁes: Deformable neural radiance ﬁelds.
+InProc. ICCV , 2021. 1, 4
+[27] Keunhong Park, Utkarsh Sinha, Peter Hedman, Jonathan T.
+Barron, Soﬁen Bouaziz, Dan B Goldman, Ricardo Martin-
+Brualla, and Steven M. Seitz. HyperNeRF: A higher-
+dimensional representation for topologically varying neural
+radiance ﬁelds. ACM Transactions on Graphics , 40(6), 2021.
+1, 4
+[28] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer,
+James Bradbury, Gregory Chanan, Trevor Killeen, Zeming
+Lin, Natalia Gimelshein, Luca Antiga, et al. Pytorch: an
+imperative style, high-performance deep learning library. In
+NeurIPS , 2019. 7
+[29] Sida Peng, Yuanqing Zhang, Yinghao Xu, Qianqian Wang,
+Qing Shuai, Hujun Bao, and Xiaowei Zhou. Neural body:
+Implicit neural representations with structured latent codes
+for novel view synthesis of dynamic humans. In Proc. CVPR ,
+2021. 1, 2, 6, 7
+9[30] Albert Pumarola, Enric Corona, Gerard Pons-Moll, and
+Francesc Moreno-Noguer. D-NeRF: Neural radiance ﬁelds
+for dynamic scenes. In Proc. CVPR , 2021. 1
+[31] Gernot Riegler and Vladlen Koltun. Free view synthesis. In
+Proc. ECCV , 2020. 1
+[32] Gernot Riegler and Vladlen Koltun. Stable view synthesis.
+InProc. CVPR , 2021. 1
+[33] Shunsuke Saito, Zeng Huang, Ryota Natsume, Shigeo Mor-
+ishima, Angjoo Kanazawa, and Hao Li. PIFu: Pixel-aligned
+implicit function for high-resolution clothed human digitiza-
+tion. In Proc. ICCV , 2019. 2
+[34] Shunsuke Saito, Tomas Simon, Jason Saragih, and Hanbyul
+Joo. PIFuHD: Multi-level pixel-aligned implicit function for
+high-resolution 3d human digitization. In Proc. CVPR , 2020.
+2
+[35] Karen Simonyan and Andrew Zisserman. Very deep convo-
+lutional networks for large-scale image recognition. In Proc.
+ICLR , 2015. 12
+[36] Shih-Yang Su, Frank Yu, Michael Zollhoefer, and Helge
+Rhodin. A-NeRF: Surface-free human 3d pose reﬁnement
+via neural rendering. In NeurIPS , 2021. 1, 2
+[37] Yu Sun, Qian Bao, Wu Liu, Yili Fu, Michael J Black, and
+Tao Mei. Monocular, one-stage, regression of multiple 3d
+people. In Proc. CVPR , 2021. 2
+[38] Peng Wang, Lingjie Liu, Yuan Liu, Christian Theobalt, Taku
+Komura, and Wenping Wang. Neus: Learning neural implicit
+surfaces by volume rendering for multi-view reconstruction.
+InNeurIPS , 2021. 1
+[39] Qianqian Wang, Zhicheng Wang, Kyle Genova, Pratul P
+Srinivasan, Howard Zhou, Jonathan T Barron, Ricardo
+Martin-Brualla, Noah Snavely, and Thomas Funkhouser.
+IBRNet: Learning multi-view image-based rendering. In
+Proc. CVPR , 2021. 2
+[40] Chung-Yi Weng, Brian Curless, and Ira Kemelmacher-
+Shlizerman. Vid2Actor: Free-viewpoint animatable per-
+son synthesis from video in the wild. arXiv preprint
+arXiv:2012.12884 , 2020. 2
+[41] Chung-Yi Weng, Brian Curless, Pratul P Srinivasan,
+Jonathan T Barron, and Ira Kemelmacher-Shlizerman. Hu-
+manNeRF: Free-viewpoint rendering of moving people from
+monocular video. In Proc. CVPR , 2022. 1, 2, 4, 6, 7
+[42] Alex Yu, Ruilong Li, Matthew Tancik, Hao Li, Ren Ng, and
+Angjoo Kanazawa. PlenOctrees for real-time rendering of
+neural radiance ﬁelds. In Proc. ICCV , 2021. 3
+[43] Richard Zhang, Phillip Isola, Alexei A Efros, Eli Shechtman,
+and Oliver Wang. The unreasonable effectiveness of deep
+features as a perceptual metric. In Proc. CVPR , 2018. 12
+[44] Fuqiang Zhao, Wei Yang, Jiakai Zhang, Pei Lin, Yingliang
+Zhang, Jingyi Yu, and Lan Xu. HumanNeRF: Efﬁciently
+generated human radiance ﬁeld from sparse inputs. In Proc.
+CVPR , 2022. 1, 2
+10Appendix A. Additional technical details
+A.1. Linear blend skinning
+Given a canonical mesh and its associated skeleton ,
+which is a collection of bones b2f1;:::;Bg, and the pose
+parameters, which are the rotations of the bone joints, lin-
+ear blend skinning (LBS) allows to pose the canonical mesh
+using the pose parameters alone. In order to account for
+transitions between bones, each canonical vertex xis not
+assigned to a single bone, but rather softly attached to dif-
+ferent bones by its skinning weights w(x).
+Bones form a tree, where b0= par(b)denotes the parent
+of boneb, except for the root bone b= 1 which has no
+parent.
+Then, given a 3D point ~xdeﬁned in the reference frame
+of boneb, we can express it in the reference frame of the
+parent bone as x0=gb()~x, wheregb()2SE(3)is
+the rigid transformation between the two bones. Hence,
+the pose vector speciﬁes three rotation angles for each
+transformation gb(the translation component is given by
+the parent bone’s length); only for the root transformation
+g1, which positions the skeleton in world space, speciﬁes
+the translation component as well. In order to express the
+3D point in world coordinates x=Gb()~x, we compose
+recursively the transformation towards the root:
+Gb() =Gpar(b)()gb(); G 1() =g1():
+Consider now a 3D point xin canonical space, rigidly at-
+tached to bone b. In order to pose it, we ﬁrst express it rela-
+tive to its bone as ~x=G 1
+b(0)x, where0is the canonical
+pose. Then, we map it to world space by as x=Gb()~x.
+In practice, each point xis attached to all bones to a de-
+gree expressed by the skinning weights w(x)2RB, which
+are non-negative and sum to one. The individual maps are
+linearly combined (called blend skinning ), resulting in the
+afﬁne map
+A(x;) =BX
+b=1wb(x)Gb()G 1
+b(0): (8)
+For simplicity, in the main paper we consider the composed
+afﬁne map for each bone Ab() =Gb()G 1
+b(0), assum-
+ing0as ﬁxed.
+Finally, the corresponding posing function resulting
+from linear blend skinning is
+x=h(x;) =A(x;)x: (9)
+A.2. Customized human mesh extraction
+While previous methods have used algorithms such as
+marching cubes to extract meshes from implicit volumetric
+representations, we propose to use a render-based approach
+instead, as our canonical model contains noise in the regionswhere no supervision was provided due to the threshold .
+To this end, we render frames from the trained canonical
+factorized model, along with their depth maps and estimated
+foreground masks, with a circular camera trajectory around
+the object (in a turntable fashion).
+The depth maps are computed by measuring the depth
+w.r.t. to the current camera of the expected termination ^xt
+of each camera ray, deﬁned as
+^xt=X
+i=0;:::;N 1(Ti Ti+1)xi; (10)
+as done in NeRF [21]. Similarly, the foreground masks are
+obtained by computing the expected ray opacity as
+^o=X
+i=0;:::;N 1(Ti Ti+1) = 1 TN; (11)
+The estimated object foreground masks are obtained by re-
+taining the pixels where ^o>0:5.
+Then, each depth-map is unprojected using the camera
+parameters and combined with the color render to obtain a
+set of 3D points, which are then fused with those from other
+images to obtain a dense point cloud. This point cloud is
+ﬁnally ﬁltered using the foreground masks, such that only
+points that are classiﬁed as foreground for all images are
+kept.
+Next, this dense point cloud is converted into a mesh
+by applying the screened Poisson surface reconstruction al-
+gorithm [18], and simpliﬁed using an edge-collapse tech-
+nique [12] such that the number of ﬁnal faces is around
+15K, which is on the order of magnitude to the template
+mesh in SMPL. The surface normals for the extracted
+canonical mesh are mapped to the surface normals of the
+closest vertices of the underlying SMPL template mesh.
+Note that these normals are not used for shading, but only
+for running the screened Poisson surface reconstruction.
+Finally, in order to be able to perform skinning of the
+extracted canonical mesh, we transfer the skinning weights
+from the SMPL template using the nearest vertices. The
+process of canonical mesh extraction is illustrated in Fig. 6.
+Note that the colors of the extracted canonical mesh are
+solely used for visualization purposes, and not used in the
+proposed rasterization-based raymarching, which only re-
+quires the vertices and triangles of the canonical mesh to
+guide the raymarching on the factorized volumetric repre-
+sentation.
+A.3. Training losses
+We present some additional details about the losses used
+for training. At each training iteration, a batch B=
+fPigi=1;:::;6of six image patches Pof size 3232is con-
+structed, and the our proposed model is used to estimate the
+image color I(u)for each pixel u2P. Then we use three
+11different loss terms for optimizing the proposed model: (i)
+a photometric lossLrgb, (ii) a perceptual loss (LPIPS) Llpips,
+and, (iii) a sparsity regularization loss Lsparse. Our overall
+loss is thus:
+L(B) =Lrgb(B) +Llpips(B) +Lsparse;
+with:
+Lrgb(B) =1
+NX
+u2BkI(u) Igt(u)k2
+2 (12)
+Llpips(B) =1
+6X
+P2BLPIPS vgg(I(P);Igt(P)) (13)
+Lsparse=1
+RHWDX
+(M;v)2WX
+rxyz(Mv)+; (14)
+whereN= 63232is the total number of pixels
+in the training batch, LPIPS vggis the perceptual loss pro-
+posed in [43] using the VGG-Net feature extractor [35],
+and the sparsity loss is applied over all three factors
+W=f(MYX;vZ);(MYZ;vX);(MXZ;vY)gof the im-
+plicit volumetric representation of the density , and across
+all channels R. In addition, the coefﬁcients ;; which
+modulate each loss term vary as the training progresses, and
+we can therefore deﬁne them as functions of the training it-
+erationi= 1;:::; 30 000 :
+(i) =(
+1 0:8i=10 000 ifi<10 000
+0:2 otherwise(15)
+(i) =(
+0:8i=10 000 ifi<10 000
+0:8 otherwise(16)
+(i) =8
+><
+>:0 ifi<2 000
+810 5if2 000i<4 000
+510 5otherwise(17)
+(a) Dense PCL (b) Mesh (100K faces) (c) Mesh (15K faces)
+Figure 6. Canonical mesh extraction. We ﬁrst generate a dense
+point cloud (a), from which we perform screened Poisson recon-
+struction (b), and, ﬁnally mesh simpliﬁcation to 15K faces (c).A.4. Proposed rasterization-guided local raymarch-
+ing vs. phong shading
+As an ablation study, we show in Fig. 7 the comparison
+of rendering the posed template mesh with our proposed
+method against using standard phong shading based on ver-
+tex colors. Note that as a texture of the human is not avail-
+able, many details are lost when applying phong shading
+directly. In addition, this rendering technique requires an
+artiﬁcial light source and generates unrealistic reﬂection ef-
+fects. On the contrary, our proposed method recovers the
+textures details from the learnt volumetric representation,
+and new views can be rendered directly without any addi-
+tional artiﬁcial light source.
+Appendix B. Demos and source code
+B.1. VR Mixed reality demo
+We have built a VR Mixed reality demo that demon-
+strates our proposed method, and rendering at 40FPS in
+consumer-level standalone VR headset, using the recon-
+structions obtained from the ZJU-mocap scenes.
+Several recordings of these scenes playing on the VR
+headset, as illustrated in Figure 8, are available in our web-
+sitehttps://real-time-humans.github.io/ .
+Note that the background scene is rendered in mixed reality
+thorough RGB passthrough using the VR headset’s frontal
+RGB camera, giving the effect of an AR device.
+B.2. Desktop WebGL demo
+Additionally we developed a Desktop WebGL demo that
+implements the proposed real-time volumetric rendering
+and runs inside the web browser, as illustrated in Figure 9.
+The demo is available in our website https://real-
+time-humans.github.io/ .
+B.3. Source code.
+We will release our source code to allow for repro-
+ducibility. It will be released under an open-source licence.
+The VR and WebGL demo apps will be released in binary
+format.
+12(a) Local volumetric rendering
+(b) Phong shading
+Figure 7. Comparison between rendering techniques. We illus-
+trate the results of the proposed local rasterization-based emission-
+absorption raymarching against rendering the template mesh di-
+rectly with a standard phong shading.
+Figure 8. VR Mixed reality demo. The dynamic human is ren-
+dered using VR-passthrough at 40FPS on a standalone VR device.
+Figure 9. WebGL desktop demo. The demo is available in our
+website.
+13

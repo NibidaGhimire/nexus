@@ -1,0 +1,849 @@
+Temporal Segment Transformer for Action Segmentation
+Zhichao Liu1,Leshan Wang1,Desen Zhou1,Jian Wang2,Songyang Zhang4,Yang
+Bai3,Errui Ding2and Rui Fan1
+1ShanghaiTech University
+2Department of Computer Vision Technology (VIS), Baidu Inc
+3Department of Computer Science, Durham University
+4Shanghai AI Laboratory
+fliuzhch, wanglsh, zhouds, fanrui g@shanghaitech.edu.cn, fwangjian33, dingerrui g@baidu.com
+Abstract
+Recognizing human actions from untrimmed
+videos is an important task in activity understand-
+ing, and poses unique challenges in modeling long-
+range temporal relations. Recent works adopt a
+predict-and-reﬁne strategy which converts an ini-
+tial prediction to action segments for global context
+modeling. However, the generated segment rep-
+resentations are often noisy and exhibit inaccurate
+segment boundaries, over-segmentation and other
+problems. To deal with these issues, we propose
+an attention based approach which we call tempo-
+ral segment transformer , for joint segment relation
+modeling and denoising. The main idea is to de-
+noise segment representations using attention be-
+tween segment and frame representations, and also
+use inter-segment attention to capture temporal cor-
+relations between segments. The reﬁned segment
+representations are used to predict action labels and
+adjust segment boundaries, and a ﬁnal action seg-
+mentation is produced based on voting from seg-
+ment masks. We show that this novel architec-
+ture achieves state-of-the-art accuracy on the pop-
+ular 50Salads, GTEA and Breakfast benchmarks.
+We also conduct extensive ablations to demonstrate
+the effectiveness of different components of our de-
+sign.
+1 Introduction
+Action segmentation is the task of assigning an action la-
+bel to each frame of a minutes-long untrimmed video. Ac-
+tion segmentation has been studied extensively in computer
+vision [Rohrbach et al. , 2012; Kuehne et al. , 2016 ], and plays
+a crucial role in achieving a ﬁne-grained understanding of
+videos of human activities. It has a number of applica-
+tions, including in robotics, industrial anomalies detection
+and surveillance.
+Since the input to an action segmentation network usu-
+ally contains thousands of frames, modeling long-range tem-
+poral relations between frames is a key challenge. Early
+works mostly followed a per-frame classiﬁcation paradigm.
+Equal contribution.
+Figure 1: Comparison of different representation update strategies
+using prior segment modeling approaches (a) and ours (b). Prior
+works directly perform message passing between segments using
+heuristic graphs, leading to representation noise caused by inaccu-
+rate initial segment predictions. Our design jointly performs seg-
+ment relation modeling and feature denoising using a uniﬁed trans-
+former framework.
+They ﬁrst aggregate frame features in a hierarchical man-
+ner, using gradually larger temporal kernels and stacking
+multiple layers of per-frame representations computed us-
+ing TCN [Farha and Gall, 2019 ], GCN [Wang et al. , 2020a ]
+or Transformers [Yiet al. , 2021 ]. However, such hierarchi-
+cal frame-level modeling has several disadvantages. For ex-
+ample, since the method requires many layers to achieve a
+large receptive ﬁeld, it leads to inefﬁcient modeling of global
+context. This can lead to a number of errors, including in-
+correct ordering of the predicted action sequence, incorrect
+action segment labels, over or under-segmentation and er-
+rors in segment boundaries. Another important problem is
+that certain benchmark videos [Stein and McKenna, 2013;
+Fathi et al. , 2011 ]have a limited camera view, while oth-
+ers[Huang et al. , 2020 ]show a ﬁrst-person perspective from
+which certain actions cannot be directly observed. In the lat-
+ter case, while humans are able to infer certain unseen actions
+from context (for example, a ball which is shown only in the
+left and later right portion of the screen can be inferred to
+have crossed the middle), such a task is generally difﬁcult for
+neural networks.
+To address these problems, recent works have proposedarXiv:2302.13074v1  [cs.CV]  25 Feb 2023a ”predict-reﬁne” paradigm which models relations between
+action segments [Ahn and Lee, 2021; Huang et al. , 2020 ].
+Speciﬁcally, they ﬁrst use a backbone action segmenta-
+tion network (typically based on the per-frame classiﬁcation
+model, e.g. MS-TCN [Farha and Gall, 2019 ]) to generate an
+initial segmentation prediction, which is then converted into
+a set of temporally ordered action segments. Next, they com-
+pute a representation for each segment, and model relation-
+ships between the segments using techniques such as graph
+message passing or GRU [Ahn and Lee, 2021 ]. These rela-
+tionships are used to update the segments and are mapped to
+corresponding frames for the ﬁnal action predictions.
+Despite encouraging results, one crucial limitation in ex-
+isting segment modeling approaches is that the initial seg-
+ment representations are typically noisy, due to inaccurate
+initial frame predictions. Hence, subsequent message pass-
+ing performed on these noisy representations may propagate
+noise between segments and reduce accuracy. To overcome
+this problem, we propose to examine the relationship be-
+tween each initial segment representation and a subsequence
+of other frames in order to reﬁne both the segment predictions
+and frame representations.
+To implement the above intuition, we design an attention-
+based network which performs joint segment relations mod-
+eling and denoising. The network uses one branch to extract
+frame representations and form segment representations, then
+denoises the segment representations using attention between
+each segment and other frames within a local window. Also,
+in contrast to prior works [Huang et al. , 2020 ]which use
+heuristic segment graphs for auxiliary tasks such as segment
+labeling and boundary regression, we perform these tasks us-
+ing an additional inter-segment attention block. A compari-
+son of segment representation update strategies is shown in
+Figure 1. For each reﬁned segment representation, we next
+perform two tasks, namely segment classiﬁcation to reﬁne
+the action label of the initial prediction, and segment bound-
+ary regression to reﬁne the boundary of the initial segment.
+Lastly, we convert each segment boundary to a binary mask
+and fuse these with the segment classiﬁcation probabilities
+using a voting strategy to generate the ﬁnal action segmenta-
+tions.
+We evaluate our method on three widely used bench-
+marks, 50Salad [Stein and McKenna, 2013 ], GTEA [Fathi et
+al., 2011 ]and Breakfast [Kuehne et al. , 2014 ]. The results
+show that our approach outperforms prior works and achieve
+new state-of-the-art accuracy results. We furthermore val-
+idate our design using a number of ablation studies which
+show the signiﬁcant performance improvements achieved by
+our model’s modules.
+To summarize, the contributions of this paper are as fol-
+lows:
+• We propose to jointly model segment relations and de-
+noise segments representations using a uniﬁed trans-
+former architecture.
+• The reﬁned action segment representations are able to
+predict segment labels and boundaries, which are com-
+bined in a mask voting strategy.
+• We validate the effectiveness of our design through ex-tensive ablations, and achieve new state-of-the-art accu-
+racy on three public benchmarks, 50Salads, GTEA and
+Breakfast.
+2 Related Work
+Earlier approaches to action segmentation used a sliding win-
+dow to detect action segments [Rohrbach et al. , 2012; Kara-
+man et al. , 2014 ]. Some approaches modeled the temporal
+action sequence using hidden Markov models [Kuehne et al. ,
+2016; Tang et al. , 2012 ]. In recent years temporal convolution
+achieved great success in speech synthesis, and motivated by
+this, the per-frame classiﬁcation paradigm applies temporal
+convolutional networks (TCN) to action segmentation [Lea
+et al. , 2017; Lea et al. , 2016b; Lei and Todorovic, 2018;
+Farha and Gall, 2019 ]. TCN consists of 1D dilated convo-
+lution with multiple dilation rates, giving algorithms such as
+MS-TCN large receptive ﬁelds and capacity and beneﬁting
+their temporal modeling capabilities. C2F-TCN [Singhania
+et al. , 2021 ]implicitly ensembles multiple temporal resolu-
+tions, which produces smoother segmentations and obviates
+additional reﬁnement modules.
+In contrast to the previous approaches, the ”predict-reﬁne”
+[Chen et al. , 2020; Wang et al. , 2020b; Huang et al. , 2020;
+Ishikawa et al. , 2021; Ahn and Lee, 2021; Li et al. , 2022 ]
+paradigm ﬁrst uses an arbitrary segmentation backbone to
+produce a preliminary segmentation, then seeks to improve
+the accuracy of the initial output using a variety of mecha-
+nisms. For example, HASR [Ahn and Lee, 2021 ]models the
+relationships between the segment-level features and the en-
+tire video context embedding to allow modiﬁcations to the
+labels of action segments. However, this method does not re-
+ﬁne the boundaries of segments, which is actually the most
+common source of segmentation error in many cases. [Huang
+et al. , 2020 ]constructs two parallel GCNs to reﬁne the seg-
+ment class and segment boundary respectively. Similarly,
+ASRF [Ishikawa et al. , 2021 ]proposes the two parallel action
+segmentation and boundary regression branches and lever-
+ages the boundaries to reﬁne the frame-wise classiﬁcation,
+which reduces the over-segmentation problem.
+Recently, transformers have also been applied in action
+segmentation to improve performance. ASFormer [Yiet al. ,
+2021 ]proposed an effective hierarchical attention mecha-
+nism which is used to capture dependencies in minutes-long
+video sequences, and designed a decoder to reﬁne their out-
+put. In weakly supervised action segmentation, [Ridley et
+al., 2022 ]uses sliding windows on frame-level features in a
+Transformer encoder to capture local context rather than that
+from the entire video sequence.
+3 Temporal Segment Transformer
+3.1 Overview
+Suppose the video being segmented consist of Tframes,
+each with size HWin RGB color; denote the video as
+V=fIt2RHW3jt= 1;2;:::;Tg. The goal of ac-
+tion segmentation is to predict action labels S=fct2
+Cjt= 1;2;:::;Tg, whereCis the set of action labels for
+the dataset, and ctis the action of the t’th frame. Con-
+ventional action segmentation methods often adopt a per-Figure 2: Overview of our framework. Our model jointly performs segment relation modeling and feature denoising in a Transformer-based
+architecture. The backbone network ﬁrst generates an initial segmentation prediction and frame features. The segment encoder then generates
+initial segment representations. The frame encoder further improves the frame representations for segment feature denoising. The segment
+decoder exploits segment-frame and inter-segment attention for feature denoising. Each reﬁned segment representation predicts an action
+probability distribution and reﬁnes segment boundaries, which are transformed to a binary segment mask. The ﬁnal prediction is obtained by
+the voting of different segment masks.
+frame classiﬁcation paradigm, which ﬁrst learn a represen-
+tation for each frame and then perform a jCj-class classiﬁ-
+cation on the representation, resulting in a probability dis-
+tributionpt2jCj, where jCjis thejCj-dimensional
+probability simplex. Since the videos usually contain thou-
+sands of frames, modeling long-range temporal relations be-
+tween frames is challenging using frame representations.
+Therefore, we follow recent approaches [Ahn and Lee, 2021;
+Huang et al. , 2020 ]which ﬁrst groups frames into segments,
+then models temporal relations between the action segments.
+As an example of such a relation, consider the GTEA dataset
+containing cooking related videos, in which the “chopping
+vegetables” action is often, though not always preceded by
+the “washing vegetables” action.
+In more detail, we ﬁrst utilize an off-the-shelf backbone,
+such as the state-of-the-art hierarchical model ASFormer [Yi
+et al. , 2021 ]to generate an initial segmentation prediction.
+Our method is agnostic to the backbone, so that other models
+such as MS-TCN [Farha and Gall, 2019 ]can be used as well.
+The backbone network predicts a sequence of frame-level
+probability distributions Y= [p1;:::;p T], and also gen-
+erates frame representations   = [1;:::; T], where each
+t2RDis the features of the t’th frame and Dis the dimen-
+sionality of the features. However, there are often errors in
+the initial backbone-produced segmentation, which we want
+to correct.
+Our algorithm for improving the segmentation is shownschematically in Figure 2. We ﬁrst predict an action type for
+each frametusing the initial frame probabilities [p1;:::;p T],
+and then group consecutive actions of the same type together
+into an action segment . Next we form representations of
+each action segment using a segment encoder , and also reﬁne
+the frame representations using a computationally efﬁcient
+method called the frame encoder . We combine the outputs of
+the segment and frame encoders using the segment decoder ,
+and then model temporal relationships between the segments
+using an attention mechanism between segments and local
+frames, as well as between pairs of segments. This produces
+corrected class predictions for each action segment and also
+reﬁnes the boundaries of the segments. While it is possible to
+ﬁrst generate corrected class predictions and then use these as
+input to boundary reﬁnement, we found experimentally that
+this only minimally improves accuracy, and thus we adopt
+a simpler approach of performing the tasks concurrently. Fi-
+nally, we convert the reﬁned boundaries to segment masks de-
+limiting the temporal extent of each segment, and then com-
+bine this with the corrected class predictions to produce our
+ﬁnal action segmentation.
+3.2 Segment Encoder
+The segment encoder generates segment representations
+fi2RDgN
+i=1(Nis the total number of segments) based
+on the backbone predictions Yand corresponding features  .
+We also take the class with the highest probability for eachFigure 3: The segment encoder extracts segment representations
+based on the initial prediction and backbone features. Each repre-
+sentation consists of a frame embedding and a category embedding
+based on the initial segments.
+frame inYto produce a sequence of predictions [c1;:::;c T],
+where eachc2C. For each segment i21;:::;N , letls
+iand
+le
+idenote the start and end frame of the segment. We produce
+a latent representation of the i’th segment using two terms, a
+frame embedding and a category embedding. For the frame
+embedding, we extract all the frame representations from the
+i’th segment and average them:
+fi=1
+le
+i ls
+i+ 1le
+iX
+t=ls
+it: (1)
+For the category embedding, we take a one-hot vector eci2
+f0;1gjCjfor category ci, which has the ci’th coordinate set to
+1, and use a multilayer perception (MLP) to map it to a latent
+space to produce a category representation:
+ci= MLP(eci) (2)
+Finally, the frame embedding and category embedding are
+added to produce the segment representation:
+i=fi+ci (3)
+An illustration of the segment encoder is shown in Figure 3.
+3.3 Frame Encoder
+The frame encoder is another network branch which aims to
+improve the frame representations produced by the backbone
+in a computationally efﬁcient manner. In particular, when
+training our segmentation network, we optimize the frame
+encoder using backpropagation, but not the computationally
+more expensive backbone network, thereby reducing overall
+computational load. We use the popular MS-TCN [Farha and
+Gall, 2019 ]as our frame encoder due to its simple but effec-
+tive structure. The MS-TCN network contains Llayers, for
+a hyperparameter L, and the receptive ﬁeld of the i’th layer
+is set to 2iframes to allow the network to gradually capture
+global context. The frame encoder takes as input the initial
+frame representations  and outputs
+^  = [^1;:::; ^T] = MS-TCN( ) (4)3.4 Segment Decoder
+Segment-frame Attention Block The predictions and rep-
+resentations produced by the backbone are sometimes noisy
+and inaccurate, and using only this information for segmen-
+tation may lead to poor results. To deal with this, we per-
+form segment representation denoising in our segment de-
+coder using an attention mechanism between each segment
+and nearby frame representations. We call this form of atten-
+tionsegment-frame attention. We found it is challenging and
+in fact sometimes harmful for segments to attend to very dis-
+tant frames. Thus for each segment we restrict attention be-
+tween the segment to only frames from its own or nearby seg-
+ments, e.g. the previous and next segment. As we described
+in the introduction using the example with the “place cucum-
+ber” and “cut cheese” actions, the features of segments and
+nearby frames may be correlated (or anti-correlated), and thus
+segment-frame attention provides signals which may help im-
+prove segment labeling accuracy.
+To implement attention, we follow [Vaswani et al. , 2017 ]
+and use positional encodings with different frequencies to
+create a tensor PE12RTDencoding the position of each
+frame and a tensor PE22RNDto encode the position
+of each segment. Formally, given segment representations
+[1;:::; N], we ﬁrst compute the start and end frames of all
+the segments [(ls
+1;le
+1);:::; (ls
+N;le
+N)], then generate an atten-
+tion maskMi2R1Tfori’th segment as
+Mi(t) =0 ifls
+i 1tle
+i+1;
+ 1 otherwise(5)
+Then, thei’th denoised segment representation 0
+i2R1D
+is computed using attention by
+0
+i=i+ softmax(Mi+WqiK)V>(6)
+HereWq2Ris a weight for the query embedding, and
+K;V2RDTare the key and value embeddings, which
+are computed using two auxiliary MLPs MLP 1andMLP 2,
+respectively.
+K=MLP 1(^  + PE1));V=MLP 2(^  + PE1))
+Inter-segment Attention Block In addition to attention be-
+tween segments and nearby frames, another informative type
+of attention is between different segments. We call this form
+of attention inter-segment attention . Indeed, as we mentioned
+earlier using the example with washing and cutting vegeta-
+bles, action segments often exhibit a degree of temporal (anti-
+)correlation, so that inter-segment attention helps constrain
+plausible action sequences and improves prediction accuracy.
+To implement inter-segment attention, prior works either
+used a one-layer GRU [Ahn and Lee, 2021 ]or heuristic seg-
+ment graphs [Huang et al. , 2020 ]for inter-segment message
+passing. In contrast, we use a Transformer-based attention
+mechanism.
+00
+i=0
+i+ softmax(Wq0(0
+i+ PE2
+i))(K0)>)V0(7)
+Here,00
+i2R1Dis the category denoised segment rep-
+resentation. Wq02Ris a weight for the query embedding,Figure 4: The segment decoder alternatingly performs segment-
+frame attention (SF) for segment relation modeling and inter-
+segment attention (IS) block for segment representation denoising.
+PE22RNDis a positional encoding used for inter-segment
+attention, and K0;V02RNDare the key and value em-
+beddings, computed using two auxiliary MLPs MLP 3and
+MLP 4respectively.
+K0=MLP 3(0
+i+ PE2
+i);V0=MLP 4(0
+i+ PE2
+i)
+As illustrated in Figure 4, the segment decoder has multiple
+layers and alternatingly performs inter-segment attention for
+segment relation modeling and segment-frame attention for
+segment representation denoising.
+We denote the ﬁnal collection of Nreﬁned segment rep-
+resentations produce by the segment decoder output as 002
+RND.
+3.5 Prediction heads
+Segment classiﬁcation Having computed reﬁned segment
+representations using the above procedures, we now generate
+reﬁned probability distributions for the segment labels. We
+use a two-layer MLP followed by a softmax operation.
+Pmask= softmax ( MLP (00)) (8)
+HerePmaskis anN(jCj+ 1) matrix giving the classiﬁ-
+cation probabilities for each of the Nsegments among the
+Cclasses, as well as an additional “junk” class for segments
+which cannot be classiﬁed.
+Segment Boundary Regression In addition to correcting
+segment classiﬁcations, we also want to correct segment
+boundaries using boundary regression. For this, we follow
+previous works [Huang et al. , 2020; Gao et al. , 2017 ]and ap-
+ply a two-layer MLP on the reﬁned segment representations.
+^O=MLP (00) (9)
+Here ^O 2 RN2gives the boundary offsets of all seg-
+ments. In particular, each segment has an offset vector ^oi=
+(^oi;c;^oi;l), where ^oi;cis the offset of the segment center (nor-
+malized by the length of the segment), and ^oi;lis the change
+in the segment’s length given in log scale.During inference, we can use the reﬁned boundaries
+[(^ls
+1;^le
+1);:::; (^ls
+N;^le
+N)]to generate reﬁned masks for the seg-
+mentsM02RNT, where each binary mask is 1 in the
+frames the corresponding segment occupies and 0 otherwise.
+Mask Voting for Action Segmentation Our ultimate goal
+is to obtain the frame level probability distribution over the
+actionsP=fct2Cjt= 1;2;:::;Tg, whereCis the set of
+action labels for the dataset, and ctis the action of the t’th
+frame. We observed experimentally that directly maximizing
+per segment class prediction likelihood and mapping reﬁned
+boundaries leads to poor performance. Since we calculated
+the segment masks M0and their label probabilities Pmask,
+we use a voting strategy to fuse different masks. Speciﬁ-
+cally, we drop the “junk” class from Pmaskto form matrix
+~Pmask2RNjCj, and then for every frame tand classc,
+we calculate the frame level action probability P(t;c)using
+a weighted summation over different queries
+P(t;c) =NX
+i=1M0(i;t)~Pmask(i;c) (10)
+Writing this in matrix form, we have
+Pframe= (M0)>~Pmask(11)
+Note that we do not need to apply the normalization in Eq.
+11, since the ﬁnal labels can be directly read out by taking the
+category with the largest value for each segment.
+3.6 Model Training
+In the segment encoder stage, for each segment representa-
+tion, we ﬁrst assign the ground truth segment(s). We compute
+the temporal intersection-over-union (tIoU) between the ini-
+tial predicted segment masks and all ground truth segments.
+Then we perform a Hungarian matching based on the tIoU
+distance to best align predicted and ground truth segments.
+Additionally, we drop matching pairs where the matched tIoU
+is 0. We consider an initial segment positive if it is matched
+to a ground truth segment.
+To optimize the temporal segment transformer, we use
+losses on both segment classiﬁcation and boundary regres-
+sion accuracy. We use cross entropy loss Lcefor the clas-
+siﬁcation task. Our regression strategy follows [Huang et
+al., 2020 ]and uses smooth L1 loss in the loss term Lreg.
+To generate ground truth offsets for the boundary regression
+head, we let li;c= (ls
+i+le
+i)=2be the center of segment i
+and letli;l=le
+i ls
+ibe its length. The ground truth offset
+Ogt
+i=
+ogt
+i;c;ogt
+i;l
+is
+ogt
+i;c=li;c lgt
+i;c
+li;l; ogt
+i;l= log 
+li;l
+lgt
+i;l!
+(12)
+The overall decoder loss function has the form:
+L=1Lce+2Lreg(Ogt;^O); (13)
+where1;2are hyperparameters.4 Experiments
+4.1 Datasets
+50Salads [Stein and McKenna, 2013 ]This dataset consists
+of 50 videos with 17 action classes and contains 20 action
+instances which were performed by 25 human subjects, and
+videos are 6.4 minutes long on average. The 5-fold cross-
+validation is performed for evaluation.
+GTEA [Fathi et al. , 2011 ]This dataset consists of 28 ego-
+centric videos with 11 action classes of daily activities in the
+kitchen performed by 4 human subjects. Each video has an
+average of 20 action instances, with an average duration of
+about half a minute. The 4-fold cross-validation is performed
+for evaluation
+Breakfast [Kuehne et al. , 2014 ]This dataset consists of
+1712 videos of 18 different activities in kitchens, showing
+breakfast preparation from 52 human subjects. The dataset
+can be divided into four splits. The videos are annotated with
+48 different actions and contain 6 action instances on average.
+The 4-fold cross-validation is performed for evaluation.
+4.2 Evaluation Metrics
+We evaluate performance using several metrics, including
+frame-level accuracy (Acc), a segmental edit score (Edit)
+and segmental F1 score with overlap threshold k=100, for
+k= 10;25;50. The edit score penalizes over-segmentation,
+while the segmental F1 score measures prediction quality. For
+each dataset, we use k-fold cross validation and report aver-
+age results.
+4.3 Implementation Details
+We freeze the backbone and train our Transformer head for
+60 epochs. We used a similar training strategy as prior work
+[Ahn and Lee, 2021 ]which utilized the data splits and pre-
+dictions from early stop epochs. The learning rate was set
+to 1e-4 on all datasets. All experiments used the Adam opti-
+mizer with weight decay rate 1e-4.
+We use MS-TCN [Farha and Gall, 2019 ]as our frame en-
+coder withL= 10 layers and with the size of the local win-
+dow doubled at each layer, starting from size 2. We used
+D= 64 as the dimension of hidden representations. For the
+segment decoder, we increased the backbone feature dimen-
+sion toD= 256 , and used two layers which corresponded
+to frame features from the 8’th and 9’th layers of the frame
+encoder. The weights 1and2for the different loss compo-
+nents in Eq.13 were set to 1.
+4.4 Comparisons with the State-of-the-Art
+Methods
+We compare our temporal segment transformer with a num-
+ber of existing state of the art action segmentation methods in
+Tables 1, 2 and 3. The results show that our method outper-
+forms all prior methods on all datasets.
+The results on the 50Salads dataset are shown in Ta-
+ble 1. Our model exceeds the prior state of the art model
+ASFormer [Yiet al. , 2021 ]with HASR [Ahn and Lee, 2021 ]
+by0:9%,1:4% and 1:1% on segmental F1 score with different
+kvalues, by 1:1% on segment edit distance, and by 0:8%onTable 1: Performance comparison on 50Salads dataset.
+50Salads F1 @f10,25, 50g Edit Acc
+IDT+LM [Richard and Gall, 2016 ] 44.4 38.9 27.8 45.8 48.7
+ST-CNN [Leaet al. , 2016a ] 55.9 49.6 37.1 45.9 59.4
+Bi-LSTM [Singh et al. , 2016 ] 62.6 58.3 47.0 55.6 55.7
+ED-TCN [Leaet al. , 2017 ] 68.0 63.9 52.6 59.8 64.7
+TDRN [Lei and Todorovic, 2018 ] 72.9 68.5 57.2 66.0 68.1
+SSA-GAN [Gammulle et al. , 2020 ] 74.9 71.7 67.0 69.8 73.3
+MS-TCN [Farha and Gall, 2019 ] 76.3 74.0 64.5 67.9 80.7
+MS-TCN [Farha and Gall, 2019 ](HSAR impl) 77.2 74.7 64.8 70.4 80.3
+MS-TCN [Farha and Gall, 2019 ]+ HASR [Ahn and Lee, 2021 ] 83.4 81.8 71.9 77.4 81.7
+DTGRM [Wang et al. , 2020a ] 79.1 75.9 66.1 72.0 80.0
+BCN [Wang et al. , 2020b ] 82.3 81.3 74.0 74.3 84.4
+Gao [Gaoet al. , 2021 ] 80.3 78.0 69.8 73.4 82.2
+ASRF [Ishikawa et al. , 2021 ] 84.9 83.5 77.3 79.3 84.5
+HASR [Ahn and Lee, 2021 ]+ASRF [Ishikawa et al. , 2021 ] 86.6 85.7 78.5 81.0 83.9
+ASFormer [Yiet al. , 2021 ] 85.1 83.4 76.0 79.6 85.6
+ASFormer [Yiet al. , 2021 ]+ HASR [Ahn and Lee, 2021 ](our impl.) 86.2 84.5 77.2 81.3 85.3
+ASFormer [Yiet al. , 2021 ]+ ASRF [Ishikawa et al. , 2021 ] 86.8 85.4 79.3 81.9 85.9
+MS-TCN [Farha and Gall, 2019 ]+ Ours 83.9 82.7 72.9 78.5 82.6
+ASFormer [Yiet al. , 2021 ]+ Ours 87.1 85.9 78.3 82.4 86.1
+ASFormer [Yiet al. , 2021 ]+ ASRF [Ishikawa et al. , 2021 ]+ Ours 87.9 86.6 80.5 82.7 86.6
+Table 2: Performance comparison on GTEA dataset.
+GTEA F1 @f10,25, 50g Edit Acc
+ST-CNN [Leaet al. , 2016a ] 58.7 54.5 41.9 - 60.6
+Bi-LSTM [Singh et al. , 2016 ] 66.5 59.0 43.6 - 55.5
+ED-TCN [Leaet al. , 2017 ] 72.2 69.3 56.0 - 64.0
+TDRN [Lei and Todorovic, 2018 ] 79.2 74.4 62.7 74.1 70.1
+SSA-GAN [Gammulle et al. , 2020 ] 80.6 79.1 74.2 76.0 74.4
+MS-TCN [Farha and Gall, 2019 ] 85.8 83.4 69.8 79.0 76.3
+MS-TCN [Farha and Gall, 2019 ](hasr impl) 88.6 86.4 72.5 83.9 78.3
+MS-TCN [Farha and Gall, 2019 ]+ HASR [Ahn and Lee, 2021 ] 89.2 87.3 73.2 85.4 77.4
+DTGRM [Wang et al. , 2020a ] 87.8 86.6 72.9 83.0 77.6
+BCN [Wang et al. , 2020b ] 88.5 87.1 77.3 84.4 79.8
+Gao [Gaoet al. , 2021 ] 89.9 87.8 75.8 84.6 78.5
+ASRF [Ishikawa et al. , 2021 ] 89.4 87.8 79.8 83.7 77.3
+HASR [Ahn and Lee, 2021 ]+ ASRF [Ishikawa et al. , 2021 ] 89.2 87.2 74.8 84.5 76.9
+ASFormer [Yiet al. , 2021 ] 90.1 88.8 79.2 84.6 79.7
+ASFormer [Yiet al. , 2021 ]+ HASR [Ahn and Lee, 2021 ](our impl.) 90.7 89.4 80.3 85.8 79.3
+MS-TCN [Farha and Gall, 2019 ]+ Ours 90.1 87.9 74.4 86.1 78.4
+ASFormer [Yiet al. , 2021 ]+ Ours 91.4 90.2 82.1 86.6 80.3
+frame-wise accuracy. Since ASFormer is improved by incor-
+porating the boundary reﬁnement algorithm ASRF [Ishikawa
+et al. , 2021 ], we also experimented with combining our
+model and ASRF. The last row in Table 1 shows that adding
+ASRF to our method further improves segmental F1 score
+by0:8%,0:7%and1:9%, improves segment edit distance
+by1:3%, and frame-wise accuracy by 0:5%. We also ex-
+perimented with using MS-TCN [Farha and Gall, 2019 ]as
+a backbone. As shown in the third to last line in Table 1, our
+method outperforms MS-TCN with HASR by 0:5%,0:9%
+and1:0% on segmental F1 score, 1:1% on segment edit dis-
+tance, and 0:9%on frame-wise accuracy.
+On the GTEA dataset, our model outperforms ASFormer
+with HASR by 0:7%,0:8% and 1:8% on segmental F1 score,
+by0:8% on segment edit distance, and by 1:0%on frame-
+wise accuracy. Since F1 score and edit distance measure the
+quality of the segments, the signiﬁcant improvements we ob-
+tain demonstrate the effectiveness of our mask classiﬁcation
+strategy. Our model also outperform MS-TCN with HASR
+by0:9%,0:6% and 1:2% on segmental F1 score, by 0:7% on
+segment edit distance, and 1:0%on frame-wise accuracy.
+On the Breakfast dataset, our method exceeds ASFormer
+with HASR by 1:2%,1:1% and 1:0% on segmental F1 score,
+by1:2% on segment edit distance, and by 1:5%on frame-
+wise accuracy. Using MS-TCN as a backbone, we outperform
+MS-TCN with HASR 1:1%,0:9%,1:3% on segmental F1
+score, by 0:8% on segment edit distance, and by 1:2%on
+frame-wise accuracy.Figure 5: Visualization of the predictions of our model, ASFormer and ground truth (GT). Only partial segments are shown for clarity. Our
+segment transformer helps reﬁne both segment labels (red boxes) and boundaries (black boxes).
+Table 3: Performance comparison on Breakfast dataset.
+Breakfast F1 @f10,25, 50g Edit Acc
+ED-TCN [Leaet al. , 2017 ] - - - - 43.3
+HTK [Kuehne et al. , 2017 ] - - - - 50.7
+TCFPN [Ding and Xu, 2018 ] - - - - 52.0
+SA-TCN [Daiet al. , 2019 ] - - - - 50.0
+HTK(64) [Kuehne et al. , 2016 ] - - - - 56.3
+MS-TCN [Farha and Gall, 2019 ] 52.6 48.1 37.9 61.7 66.3
+MS-TCN [Farha and Gall, 2019 ](HASR impl) 63.5 58.3 45.9 66.2 67.7
+MS-TCN [Farha and Gall, 2019 ]+ HASR [Ahn and Lee, 2021 ] 73.2 67.9 54.4 70.8 69.8
+DTGRM [Wang et al. , 2020a ] 68.7 61.9 46.6 68.9 68.3
+BCN [Wang et al. , 2020b ] 68.7 65.5 55.0 66.2 70.4
+Gao [Gaoet al. , 2021 ] 74.9 69.0 55.2 73.3 70.7
+ASRF [Ishikawa et al. , 2021 ] 74.3 68.9 56.1 72.4 67.6
+HASR [Ahn and Lee, 2021 ]+ ASRF [Ishikawa et al. , 2021 ] 74.7 69.5 57.0 71.9 69.4
+ASFormer [Yiet al. , 2021 ] 76.0 70.6 57.4 75.0 73.5
+ASFormer [Yiet al. , 2021 ]+ HASR [Ahn and Lee, 2021 ](our impl.) 76.3 71.2 58.5 74.5 72.2
+MS-TCN [Farha and Gall, 2019 ]+ Ours 74.3 68.8 55.7 71.6 71.0
+ASFormer [Yiet al. , 2021 ]+ Ours 77.5 72.3 59.5 76.7 73.7
+4.5 Ablation Study
+In this subsection, we perform experiments to develop a de-
+tailed understanding of the effectiveness of various compo-
+nents of our proposed architecture on the 50Salads dataset.
+Model components
+Recall that our model consists of two main components, a
+frame encoder for aggregating frame-level contextual infor-
+mation, and a segment decoder for reﬁning segment repre-
+sentations. To validate the effectiveness of each module, we
+performed an ablation study which only added the segment
+decoder to the ASFormer backbone, and aggregated frame-
+level features directly from the backbone outputs. As shown
+in the second row of Table 4, performance is signiﬁcantly im-
+proved compared using the backbone alone, demonstrating
+the segment decoder’s utility in reﬁning segment classiﬁca-
+tion and segment boundaries. Another ablation is to add the
+frame encoder, i.e. to compare the performance in the second
+and third rows of Table 4. The improvement here shows that
+the frame encoder can aggregate the frame-level contextual
+information efﬁciently and provide more useful frame-level
+features to reﬁne segment representations.
+Table 4: Ablation on decoder modules on 50Salads dataset.
+Backbone Segment dec. Frame enc. F1@f10, 25, 50gEdit Acc.
+X - - 85.1 83.4 76.0 79.6 85.6
+X X - 86.5 85.1 77.6 81.3 85.8
+X X X 87.1 85.9 78.3 82.4 86.1Different segment encoder strategies
+The segment encoder used both frame and category embed-
+dings. We conducted an ablation on the removal of either type
+of embedding. As shown in Table 5, dropping the category
+embedding results in slightly decreased accuracy. However,
+removing the frame embedding signiﬁcantly reduces perfor-
+mance for all metrics.
+Table 5: Ablation on segment encoder strategies on 50Salads
+dataset.
+Feature emb. Category emb. F1@f10, 25, 50gEdit Acc.
+X X 87.1 85.9 78.3 82.4 86.1
+X 86.2 84.9 78.1 81.3 85.9
+ X 85.6 83.9 76.8 79.6 85.7
+Different segment-frame attention strategies in segment
+decoder
+The segment decoder used segment-frame attention to reﬁne
+segment classiﬁcation, based on the hypothesis that frames
+near a segment provide useful information about the segment
+itself. To test this hypothesis we examined in Table 6 remov-
+ing segment-frame attention (row 1), or performing this at-
+tention between a segment and all frames in the video (row
+2). The results show that segment-frame attention is useful
+for improving accuracy, but that attending to nearby frames
+is better than attending to all frames.
+Table 6: Ablation on segment-frame attention strategies in segment
+decoder on 50Salads dataset.
+Method F1@f10, 25, 50gEdit Acc.
+no segment-frame (SF) attention 85.9 84.3 77.2 80.9 85.8
+global SF attention 86.6 84.8 77.7 81.5 86.0
+local SF attention 87.1 85.9 78.3 82.4 86.1
+Different number of layers in segment decoder
+We performed an ablation study on the optimal number of
+layers to use in the segment decoder. As the results in Table
+7 show, the best performance is obtained with 2 layers. This
+shows that using multiple layers is useful, but deep layering
+is not necessary and its correspondingly high computational
+cost can be avoided.
+The window size of local cross attention
+We only performed segment-frame attention on frames which
+were near each segment, based on the hypothesis that farawayTable 7: Ablation on number of layers in segment decoder.
+Layer number F1@f10, 25, 50gEdit Acc.
+1 85.3 83.8 76.7 80.0 85.8
+2 87.1 85.9 78.3 82.4 86.1
+3 86.9 85.3 78.2 81.2 85.7
+interactions are weak and can be ignored. To test this assump-
+tion, we tested using different window sizes on which to per-
+form attention. That is, for a window size of k, we performed
+attention between a segment and all frames within kseg-
+ments before or after . As the results in Table 8 show, atten-
+tion using window size 1 produced the best results, indicating
+that modeling faraway interactions is not only unnecessary
+but possibly harmful.
+Table 8: Ablation on different window sizes for segment-frame at-
+tention in segment decoder.
+Windows size F1@f10, 25, 50gEdit Acc.
+1 87.1 85.9 78.3 82.4 86.1
+2 86.6 85.3 78.0 81.3 85.9
+3 86.4 84.9 78.2 81.2 85.9
+4.6 Qualitative Analysis
+Finally, we show in Figure 5 a qualitative comparison of
+our segmentation results and the output from ASFormer and
+ground truth, using a video from the 50Salads dataset. For
+clarity, we show only segments from only a portion of the
+video. We observe from the visualization that our model is
+able to reﬁne both segment labels and boundaries, and does
+not produce jittery or unnaturally short segments like AS-
+Former sometimes does.
+5 Conclusion
+In this paper, we proposed an attention-based action seg-
+mentation model called temporal segment transformer, which
+performs joint segment relations modeling and feature de-
+noising. Our method uses a segment-frame attention mech-
+anism to denoise segment representation, and also segment-
+segment attention to capture temporal dependencies among
+segments. Our method outperforms all prior approaches on
+several widely used benchmarks.
+References
+[Ahn and Lee, 2021 ]Hyemin Ahn and Dongheui Lee. Re-
+ﬁning action segmentation with hierarchical video rep-
+resentations. In Proceedings of the IEEE/CVF Inter-
+national Conference on Computer Vision , pages 16302–
+16310, 2021.
+[Chen et al. , 2020 ]Min-Hung Chen, Baopu Li, Yingze Bao,
+Ghassan AlRegib, and Zsolt Kira. Action segmentation
+with joint self-supervised temporal domain adaptation. In
+Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , pages 9454–9463, 2020.[Daiet al. , 2019 ]Rui Dai, Luca Minciullo, Lorenzo Garat-
+toni, Gianpiero Francesca, and Franc ¸ois Bremond. Self-
+attention temporal convolutional network for long-term
+daily living activity detection. In 2019 16th IEEE Inter-
+national Conference on Advanced Video and Signal Based
+Surveillance (AVSS) , pages 1–7. IEEE, 2019.
+[Ding and Xu, 2018 ]Li Ding and Chenliang Xu. Weakly-
+supervised action segmentation with iterative soft bound-
+ary assignment. In Proceedings of the IEEE Conference
+on Computer Vision and Pattern Recognition , pages 6508–
+6516, 2018.
+[Farha and Gall, 2019 ]Yazan Abu Farha and Jurgen Gall.
+Ms-tcn: Multi-stage temporal convolutional network for
+action segmentation. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition ,
+pages 3575–3584, 2019.
+[Fathi et al. , 2011 ]Alireza Fathi, Xiaofeng Ren, and
+James M Rehg. Learning to recognize objects in egocen-
+tric activities. In CVPR 2011 , pages 3281–3288. IEEE,
+2011.
+[Gammulle et al. , 2020 ]Harshala Gammulle, Simon Den-
+man, Sridha Sridharan, and Clinton Fookes. Fine-grained
+action segmentation using the semi-supervised action gan.
+Pattern Recognition , 98:107039, 2020.
+[Gaoet al. , 2017 ]Jiyang Gao, Zhenheng Yang, and Ram
+Nevatia. Cascaded boundary regression for temporal ac-
+tion detection. arXiv preprint arXiv:1705.01180 , 2017.
+[Gaoet al. , 2021 ]Shang-Hua Gao, Qi Han, Zhong-Yu
+Li, Pai Peng, Liang Wang, and Ming-Ming Cheng.
+Global2local: Efﬁcient structure search for video action
+segmentation. In Proceedings of the IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition , pages
+16805–16814, 2021.
+[Huang et al. , 2020 ]Yifei Huang, Yusuke Sugano, and
+Yoichi Sato. Improving action segmentation via graph-
+based temporal reasoning. In Proceedings of the
+IEEE/CVF conference on computer vision and pattern
+recognition , pages 14024–14034, 2020.
+[Ishikawa et al. , 2021 ]Yuchi Ishikawa, Seito Kasai,
+Yoshimitsu Aoki, and Hirokatsu Kataoka. Alleviating
+over-segmentation errors by detecting action boundaries.
+InProceedings of the IEEE/CVF Winter Conference on
+Applications of Computer Vision , pages 2322–2331, 2021.
+[Karaman et al. , 2014 ]Svebor Karaman, Lorenzo Seidenari,
+and Alberto Del Bimbo. Fast saliency based pooling of
+ﬁsher encoded dense trajectories. In ECCV THUMOS
+Workshop , volume 1, page 5, 2014.
+[Kuehne et al. , 2014 ]Hilde Kuehne, Ali Arslan, and
+Thomas Serre. The language of actions: Recovering the
+syntax and semantics of goal-directed human activities. In
+Proceedings of the IEEE conference on computer vision
+and pattern recognition , pages 780–787, 2014.
+[Kuehne et al. , 2016 ]Hilde Kuehne, Juergen Gall, and
+Thomas Serre. An end-to-end generative framework for
+video segmentation and recognition. In 2016 IEEE WinterConference on Applications of Computer Vision (WACV) ,
+pages 1–8. IEEE, 2016.
+[Kuehne et al. , 2017 ]Hilde Kuehne, Alexander Richard, and
+Juergen Gall. Weakly supervised learning of actions from
+transcripts. Computer Vision and Image Understanding ,
+163:78–89, 2017.
+[Leaet al. , 2016a ]Colin Lea, Austin Reiter, Ren ´e Vidal, and
+Gregory D Hager. Segmental spatiotemporal cnns for ﬁne-
+grained action segmentation. In European Conference on
+Computer Vision , pages 36–52. Springer, 2016.
+[Leaet al. , 2016b ]Colin Lea, Rene Vidal, Austin Reiter, and
+Gregory D Hager. Temporal convolutional networks: A
+uniﬁed approach to action segmentation. In European
+Conference on Computer Vision , pages 47–54. Springer,
+2016.
+[Leaet al. , 2017 ]Colin Lea, Michael D Flynn, Rene Vidal,
+Austin Reiter, and Gregory D Hager. Temporal convolu-
+tional networks for action segmentation and detection. In
+proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition , pages 156–165, 2017.
+[Lei and Todorovic, 2018 ]Peng Lei and Sinisa Todorovic.
+Temporal deformable residual networks for action seg-
+mentation in videos. In Proceedings of the IEEE confer-
+ence on computer vision and pattern recognition , pages
+6742–6751, 2018.
+[Liet al. , 2022 ]Muheng Li, Lei Chen, Yueqi Duan, Zhilan
+Hu, Jianjiang Feng, Jie Zhou, and Jiwen Lu. Bridge-
+prompt: Towards ordinal action understanding in instruc-
+tional videos. In Proceedings of the IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition , pages
+19880–19889, 2022.
+[Richard and Gall, 2016 ]Alexander Richard and Juergen
+Gall. Temporal action detection using a statistical lan-
+guage model. In Proceedings of the IEEE Conference on
+Computer Vision and Pattern Recognition , pages 3131–
+3140, 2016.
+[Ridley et al. , 2022 ]John Ridley, Huseyin Coskun,
+David Joseph Tan, Nassir Navab, and Federico Tombari.
+Transformers in action: Weakly supervised action
+segmentation. arXiv preprint arXiv:2201.05675 , 2022.
+[Rohrbach et al. , 2012 ]Marcus Rohrbach, Sikandar Amin,
+Mykhaylo Andriluka, and Bernt Schiele. A database for
+ﬁne grained activity detection of cooking activities. In
+2012 IEEE conference on computer vision and pattern
+recognition , pages 1194–1201. IEEE, 2012.
+[Singh et al. , 2016 ]Bharat Singh, Tim K Marks, Michael
+Jones, Oncel Tuzel, and Ming Shao. A multi-stream bi-
+directional recurrent neural network for ﬁne-grained ac-
+tion detection. In Proceedings of the IEEE conference
+on computer vision and pattern recognition , pages 1961–
+1970, 2016.
+[Singhania et al. , 2021 ]Dipika Singhania, Rahul Rahaman,
+and Angela Yao. Coarse to ﬁne multi-resolution temporal
+convolutional network. arXiv preprint arXiv:2105.10859 ,
+2021.[Stein and McKenna, 2013 ]Sebastian Stein and Stephen J
+McKenna. Combining embedded accelerometers with
+computer vision for recognizing food preparation activi-
+ties. In Proceedings of the 2013 ACM international joint
+conference on Pervasive and ubiquitous computing , pages
+729–738, 2013.
+[Tang et al. , 2012 ]Kevin Tang, Li Fei-Fei, and Daphne
+Koller. Learning latent temporal structure for complex
+event detection. In 2012 IEEE Conference on Computer
+Vision and Pattern Recognition , pages 1250–1257. IEEE,
+2012.
+[Vaswani et al. , 2017 ]Ashish Vaswani, Noam Shazeer, Niki
+Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
+Łukasz Kaiser, and Illia Polosukhin. Attention is all you
+need. Advances in neural information processing systems ,
+30, 2017.
+[Wang et al. , 2020a ]Dong Wang, Di Hu, Xingjian Li, and
+Dejing Dou. Temporal relational modeling with self-
+supervision for action segmentation. arXiv preprint
+arXiv:2012.07508 , 2020.
+[Wang et al. , 2020b ]Zhenzhi Wang, Ziteng Gao, Limin
+Wang, Zhifeng Li, and Gangshan Wu. Boundary-aware
+cascade networks for temporal action segmentation. In
+European Conference on Computer Vision , pages 34–51.
+Springer, 2020.
+[Yiet al. , 2021 ]Fangqiu Yi, Hongyu Wen, and Tingting
+Jiang. Asformer: Transformer for action segmentation.
+arXiv preprint arXiv:2110.08568 , 2021.

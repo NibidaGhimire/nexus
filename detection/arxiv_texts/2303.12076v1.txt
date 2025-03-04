@@ -1,0 +1,1130 @@
+Dexterity from Touch: Self-Supervised Pre-Training
+of Tactile Representations with Robotic Play
+Irmak Guzey
+New York UniversityBen Evans
+New York UniversitySoumith Chintala
+Meta AILerrel Pinto
+New York University
+Abstract —Teaching dexterity to multi-ﬁngered robots has been
+a longstanding challenge in robotics. Most prominent work in
+this area focuses on learning controllers or policies that either
+operate on visual observations or state estimates derived from
+vision. However, such methods perform poorly on ﬁne-grained
+manipulation tasks that require reasoning about contact forces or
+about objects occluded by the hand itself. In this work, we present
+T-D EX, a new approach for tactile-based dexterity, that operates
+in two phases. In the ﬁrst phase, we collect 2.5 hours of play
+data, which is used to train self-supervised tactile encoders. This
+is necessary to bring high-dimensional tactile readings to a lower-
+dimensional embedding. In the second phase, given a handful of
+demonstrations for a dexterous task, we learn non-parametric
+policies that combine the tactile observations with visual ones.
+Across ﬁve challenging dexterous tasks, we show that our tactile-
+based dexterity models outperform purely vision and torque-
+based models by an average of 1.7X. Finally, we provide a detailed
+analysis on factors critical to T-D EXincluding the importance
+of play data, architectures, and representation learning.
+I. I NTRODUCTION
+Humans are able to solve novel and complex manipu-
+lation tasks with small amounts of real-world experience.
+Much of this ability can be attributed to our hands, which
+allow for redundant contacts and multi-ﬁnger manipulation.
+Endowing multi-ﬁngered robotic hands such dexterous capa-
+bilities has been a long-standing problem, with approaches
+ranging from physics-based control [36] to simulation to real
+(sim2real) learning [52, 51]. More recently, the prevalence of
+improved hand-pose estimators has enabled imitation learning
+approaches to teach dexterity, which in turn improves sample
+efﬁciency and reduces the need for precise object and scene
+modelling [4, 3, 25].
+Even with improved algorithms, teaching dexterous skills
+is still quite inefﬁcient, requiring hours of demonstration data
+for imitation or days of training for sim2real [3, 52]. While
+algorithmic improvements in control will inevitably lead to
+improvements in dexterity over time, an often overlooked
+source of improvement lies in the sensing modality. Current
+dexterous robots either use high-dimensional visual data or
+compact states estimated from them. Both suffer signiﬁcantly
+either when the task requires reasoning about contact forces,
+or when the ﬁngers occlude the object being manipulated.
+In contrast to vision, tactile sensing provides rich contact
+information while being unaffected by occlusions.
+The importance of touch is most evident in human dexterity.
+Touch is the ﬁrst sense developed in babies, at as little as 7
+weeks in utero [19] and newborn babies have grasping reﬂexes
+Tactile ObservationTactile PadsTactile  Encoder
+T-Dex Rollout
+PolicyFig. 1: T-D EXlearns dexterous policies from high-dimensional
+tactile sensors on a multi-ﬁngered robot hand (top). Combined with
+vision, our tactile representations are crucial to learn ﬁne-grained
+manipulation tasks (bottom).
+when touched [61]. Moreover, adult humans who have the
+sense of touch on their hands artiﬁcially disabled have reduced
+dexterity [31], highlighting the necessity of tactile feedback.
+Many works have sought to replicate this sensing modality
+for robotics, with impressive successes in object identiﬁcation,
+pose estimation, and policy learning. Simultaneously, the cost
+of such sensors is becoming increasingly affordable. However,
+the application of tactile sensing to multi-ﬁngered dexterous
+manipulation remains limited.
+So, why is tactile-based dexterity hard to achieve? There are
+three signiﬁcant challenges. First, tactile sensors are difﬁcult
+to simulate, which limits the applicability of sim2real based
+methods [52, 71]. Second, for many commonly available tac-
+tile sensors, precise calibration of analog readings to physical
+forces is difﬁcult to achieve [38]. This limits the applicability
+of physics-based control. Third, for multi-ﬁngered hands,
+tactile sensors need to cover a larger area compared to two-
+ﬁngered hands. This increases the dimensionality of the tactile
+observation, which in turn makes learning-based approaches
+inefﬁcient. A common approach to alleviate this challenge in
+vision-based learning is to use pretrained models that encode
+high-dimensional images to low-dimensional representation.
+However, such pretrained models do not exist for tactile data.arXiv:2303.12076v1  [cs.RO]  21 Mar 2023In this work, we present T-D EX, a new approach to teach
+tactile-based dexterous skills on multi-ﬁngered robot hands. To
+overcome issues in simulating tactile sensors and calibration,
+we use an imitation framework that trains directly using raw
+tactile data obtained from a human operator teleoperating
+the robot. However, directly reasoning about actions from
+raw tactile data would still require collecting large amounts
+of demonstrations. To address this, we take inspiration from
+recent works in robot play [75], and pretrain our own tactile
+representations. This is done by collecting 2.5 hours of aimless
+manipulation of objects through teleoperation. Tactile data
+collected through this play is used to train tactile encoders
+through standard self-supervised techniques, mitigating the
+need for exact force calibration.
+Given this pretrained tactile encoder, we use it to solve
+tactile-rich dexterous tasks with just a handful of demonstra-
+tions: 6 demonstrations per task, corresponding to under 10
+minutes of demonstration time. To achieve imitation with so
+few demonstrations, we employ a non-parameteric policy that
+retrieves nearest-neighbor actions from the demonstration set.
+Importantly, this allows us to combine tactile encodings with
+other sensor modalities such as vision without any additional
+training or sensor fusion. This ability to combine touch with
+vision makes T-D EXcompatible with tasks that require visual
+sensing for coarse-grained manipulation and tactile sensing for
+ﬁne-grained manipulation.
+We evaluate T-D EXacross ﬁve challenging tasks such as
+opening a book, bottle cap opening, and precisely unstacking
+cups. Through a large-scale experimental study of over 40 hrs
+of robot evaluation we present the following insights:
+1) T-D EXimproves upon vision-only and torque-only imi-
+tation models with over a 170% improvement in average
+success rate (Section V-C).
+2) Play data signiﬁcantly improves tactile-based imitation,
+with an average of 58% improvement over tactile models
+that do not use play data (Section V-D).
+3) Ablations on different tactile representations and archi-
+tectures show that the design decisions in T-D EXare
+important for high performance (Section V-E).
+Open-sourced code, data and videos of T-D EXcan be found
+at tactile-dexterity.github.io.
+II. R ELATED WORK
+Our work builds on several prior ideas in dexterous manip-
+ulation, tactile sensing, representation learning and imitation
+learning. For brevity, we describe the most relevant below:
+A. Dexterous Manipulation
+Multi-ﬁngered robot control has been studied exten-
+sively [13, 35, 65]. Initial work focuses on physics-based
+modelling of grasping [50, 49] that often used contact force es-
+timates to compute grasp stability. However, contact estimates
+derived from motor torque only give point estimates and are
+susceptible to noise due to coupling with the hand’s controller.
+There has also been work on performing dynamic tasks with
+tactile sensing [30] that relies on a hand-designed controller.More recent works have sought to incorporate learning into
+the process to reduce the need for accurate modeling and to
+allow for more complicated manipulation tasks.
+There are several methodologies for using learning in
+dexterity. Model-based reinforcement learning (RL) methods
+have been shown to work in both simulation [44, 41] and
+the real world [46, 36]. Model-free RL has been used to
+train policies both in simulation [29, 11] and directly on
+hardware [79]. Simulation to real transfer has also shown
+success [40, 52, 26, 66], though it often requires extensive
+randomization, signiﬁcantly increasing training time. The use
+of expert demonstrations can reduce the amount of real-world
+interactions needed to learn a dexterous policy [59, 79, 4].
+The works mentioned above either use visual observations or
+estimates of object state, which suffer during heavy occlusion
+of the object.
+B. Tactile Sensing
+To give robots a sense of touch, many tactile sensors
+have been created for enhancing robotic sensing [70, 6, 2].
+Prominently, the GelSight sensor has been used for object
+identiﬁcation [54], geometry sensing [17], and pose estima-
+tion [32]. However, since GelSight requires a large form factor,
+it is difﬁcult to cover a entire multiﬁngered hand with it.
+Instead ‘skin’-like sensors [15] and tactile pads can cover
+entire hands, yielding high-dimensional tactile observations for
+dexterity. In this work, we use the XELA uSkin [68] sensors
+to cover our Allegro hand.
+Due to the high-dimensional readings from tactile sensors,
+machine learning has been employed to leverage the sen-
+sors for a variety of applications. The sensors have been
+applied to two-ﬁngered grippers to improve grasping and
+manipulation [45, 8, 64]. They have also been used with
+cameras for object classiﬁcation [76], 3D shape detection [69],
+and to learn a multi-modal representation for end effector
+control [33, 39]. However, these prior works differ from T-
+DEXin two key ways. First, such tactile learning methods have
+not been applied to multiﬁngered hands. Second, the tactile
+representations learned in these works require large amounts
+of task-centric data for each task. On the other hand, T-D EX
+uses a large amount of task-agnostic play data, which enables
+learning tasks with small amounts of data per task.
+C. Representation Learning for Robotics
+Learning concise representations from high-dimensional
+observations is an active area of research in robotics. A
+wide variety of approaches using auto-encoders [20, 58, 24],
+physical interaction [55], dense descriptors [22], and mid-level
+features [10] have been studied.
+In computer vision, self-supervised learning (SSL) is often
+used to pre-train visual features from unlabeled data, im-
+proving downstream task performance. Contrastive methods
+learn features by moving features of similar observations
+closer to one another and features of dissimilar observations
+farther from one another [12, 9]. These methods require
+sampling negative pairs of datapoints, which adds an additionallayer of complexity. Non-contrastive methods typically try to
+learn features by making augmented versions of the same
+observation close [23, 5] and do not require sampling neg-
+ative examples. Self-supervision has been adopted for visual
+RL [72, 37, 47, 58] and robotics [62, 53, 3, 77] to improve
+sample efﬁciency and asymptotic performance. SSL methods
+have also been applied to other sensory inputs like audio [48]
+and depth [1]. We build on this idea of self-supervision and
+extend it to tactile observations. However, unlike visual data,
+for which large pretrained models or Internet data exists,
+neither are available for tactile data. This necessitates the
+creation of large tactile datasets, which we generate through
+robot play.
+D. Exploratory and Play Data
+Since task-speciﬁc data can be expensive to collect, a
+number of works have examined leveraging off-policy data
+to improve task performance. Previous work has used play
+data to learn latent plan representations [42] and to learn a
+goal-conditioned policy [14]. Recent work in ofﬂine RL has
+noted that including exploratory data improves downstream
+performance [73] and that actively straying away from the
+task improves robustness [7]. These ﬁndings are paralleled
+by studies on motor development in humans. 3-5-month old
+infants spontaneously explore novel objects [60] and 15-
+month-old infants produce the same quantity of locomotion
+in a room without toys than in a room with toys [28]. Given
+these motivating factors, we opt to leverage a play dataset of
+cheap, imperfect, tactile-rich interactions in order to improve
+our representations and downstream task performance.
+E. Ofﬂine Imitation Learning
+Imitation Learning (IL) allows for efﬁcient training of skills
+from from data demonstrated by an expert. Given a set of
+demonstrations, ofﬂine imitation methods such as Behavior
+Cloning (BC) use supervised learning to learn a policy that
+outputs actions similar to the expert data and have been
+used extensively in robotics [57, 21, 63, 80, 43]. However,
+such methods often require demonstrations on the order of
+hundreds to thousands trajectories. While getting such a scale
+of demonstrations for two-ﬁngered grippers is achievable using
+a surrogate for the robot hardware [67, 74], collecting the same
+quantity of data for dexterous tasks is difﬁcult due to cognitive
+and physical demands of teleoperating multi-ﬁngered hands.
+To learn with fewer demonstrations in high-dimensional action
+spaces, non-parametric approaches such as nearest neighbors
+have shown to be more effective than parametric ones [4, 3].
+T-D EXbuilds on this idea and uses nearest neighbor-based
+ofﬂine imitation to learn tasks with few demonstrations.
+III. S YSTEM DETAILS AND ROBOT SETUP
+Our robotic system, visualized in Figure 2, consists of a
+robotic arm and hand. The arm is a 6-dof Kinova Jaco and
+the hand is a 16-dof Allegro hand with four ﬁngers. The
+arm can be teleoperated through the built-in Kinova joystick,
+while the the hand can be teleoperated using the the Holo-Dex
+Realsense  Cameras
+Oculus Headset
+Kinova Joystick
+Kinova Robot Arm
+Allegro HandFig. 2: Hardware setting of T-D EX. We use an Oculus Headset
+to teleoperate the Allegro hand and the built in Kinova joystick
+to control the arm. Visual observations are streamed through two
+different Realsense cameras and tactile observations are saved with
+XELA touch sensors on the Allegro hand.
+framework [3]. Here, our teleoperator uses a virtual reality
+headset to both visualize robot images and control the hand in
+real time. The headset returns a pose estimate for each ﬁnger
+of the hand which is re-targeted to the Allegro Hand. Inverse
+Kinematics is then used to translate target Cartesian positions
+in space to joint angles, which are fed into the low-level hand
+controller. To achieve robust position control, we use a low-
+level PD joint position controller with gravity compensation to
+allow the robot to maintain a hand pose at different orientations
+in space. Our action space is Cartesian position and orientation
+of the arm (3D position and 4D quaternion for orientation)
+and the 16-dimensional joint state of the hand for a total of
+23 dimensions.
+The Allegro hand is ﬁtted with 15 XELA uSkin tactile
+sensors, 4 on each ﬁnger and 3 on the thumb. Each sen-
+sor has a 4x4 resolution output of tri-axial force reading
+(forces in translational x, y, z) information, which amounts
+to a 720-dimensional tactile reading. The force readings are
+uncalibrated, susceptible to hysterisis, and can change when
+strong magnets or metals are in the vicinity. Due to this, we
+opt against explicit calibration of the 720 sensor units. To
+supplement the tactile sensors, we also use two RGB cameras
+with 640x480 resolution to capture visual information in the
+scene, though our policies only uses information from one to
+execute. Our choice of camera for tasks depends on which
+one captures the most visual information about the objects to
+ensure fairness when comparing to baselines and enable better
+joint vision and tactile control.
+IV. T ACTILE -BASED DEXTERITY (T-D EX)
+T-D EXoperates in two phases: pretraining from task-
+agnostic play data and downstream learning from a few task-
+speciﬁc demonstrations. In the pretraining phase, we begin by
+collecting a diverse, contact-rich play dataset from a variety
+of objects by teleoperating the robot (see Section III for
+details). Once collected, we use self-supervised learning (SSL)Fig. 3: Visualization of some of the play tasks. We play with grasping, pinching, moving objects, and other in-hand manipulation tasks.
+algorithms on the play data to learn an encoder for tactile
+observations. In the downstream learning phase, a teleoperator
+collects demonstrations of solving a desired task. Given these
+demonstrations, non-parametric imitation learning is combined
+with the pretrained tactile encoder to efﬁciently learn dexter-
+ous policies. See Figure 4 for a high-level overview of our
+framework. Details of individual phases follow:
+A. Phase I: Pre-Training Tactile Representations from Play
+Play Data Collection: The play data is collected from
+a variety of contact-rich tasks including picking up objects,
+grasping a steering wheel, and in-hand manipulation. Visual-
+ization of some of the play tasks can be seen in Figure 3.
+We collect a total of 2.5 hours of play data, including failed
+examples and random behavior. Because the image and tactile
+sensors operate at 30Hz and 100Hz, respectively, we sub-
+sample the data to about 10Hz to reduce the size of the dataset.
+We only include observations whenever the total changed
+distance of the ﬁngertips and robot end effector exceed 1cm,
+reducing the dataset from 450k frames to 42k. This reduces
+subsequent training time and ﬁlters out similar states in the
+dataset when the robot is still, which could potentially bias
+the SSL phase. All of the play data will be publicly released
+on our website at tactile-dexterity.github.io.
+Feature Learning: To extract useful representations from
+the play data we employ SSL, which tries to learn a low dimen-
+sional representation from high-dimensional observations [18].
+Speciﬁcally, we use Bootstrap your own Latent (BYOL),
+which has been shown to improve performance on computer
+vision tasks [23] as well as visual robotics tasks [53, 4].
+BYOL has both a primary encoder f, and a target encoder
+f, which is an exponential moving average of the primary.Two augmented views of the same observation oando0are
+fed into each to produce representations yandy0, which are
+passed through projectors gandgto produce zandz0, which
+are higher dimensional. The primary encoder and projector are
+then tasked with predicting the output of the target projector.
+After training, we use fto extract features from observations.
+To apply BYOL to our tactile data, we treat the sensor data
+as an image with one channel for each axis of force. Each
+of the ﬁnger’s 3-axis 4x4 sensors are stacked into a column
+to produce a 16x4 image for the ﬁngers and a 12x4 image
+for the thumb. These images are then concatenated to produce
+a three-channel 16x16 image with constant padding for the
+shorter thumb. A visualization of the tactile images can be
+seen in Figure 4. We scale the tactile image up to 224x224
+to work with standard image encoders. For the majority of
+our experiments, we use the AlexNet [34] architecture, also
+starting with pre-trained weights. Unlike SSL techniques in
+vision [23], we only apply the Gaussian blur and small random
+resized crop augmentations, since other augmentations such
+as color jitter and grayscale would violate the assumption that
+augmentations do not change the tactile signal signiﬁcantly.
+Importantly, unlike vision, since all of the tactile data is
+collected in the frame of the hand, the sensor readings are
+invariant to hand pose and can be easily reused between tasks.
+B. Phase II: Non-parametric Learning
+Demonstration Collection: Six demonstrations are col-
+lected for each task by a teleoperator. Because the nature of
+our tasks are contact-dependent and the human operator does
+not receive tactile feedback, there is a relatively high failure
+rate while collecting demonstrations. Although the successful
+demonstrations correspond to at most 10 minutes of robotPhase 1: Self-supervised learning from play 
+Play Data Tactile Values
+Aug. 1Aug. 2
+AugmentationsTrainingTactile  EncoderSSL  LossTarget  Encoder
+DemonstrationsRolloutDemonstration Buffer
+Phase 2: Downstream learning with Nearest-Neighbor retrieval Tactile  EncoderTactile  EncoderApplied Action
+Current obsNext obs
+Fig. 4: An overview of the T-D EXframework. Left: we train tactile representations using BYOL on a large play dataset. Right: we leverage
+the learned representations using nearest neighbors imitation.
+time, it requires up to 30 minutes of collection time in order to
+get successful demonstrations. A common complaint for our
+teleoperators was that it is difﬁcult to infer tactile feedback in
+Holodex [3], which resulted in a large fraction of failures. This
+exempliﬁes why tactile feedback is necessary to accelerate
+learning of dexterous manipulation and the importance of
+learning from small amounts of task-speciﬁc data.
+Similar to the play data, we subsample the demonstrations
+to only include data where the ﬁngertips and end effector of
+the arm move by more than a total of 2cm. This can be viewed
+as discretizing space rather than time, reducing the size of the
+dataset and serving as a ﬁltering mechanism to remove noise
+in the demonstrations.
+Visual Feature Learning: Many of our tasks require
+coarse-grained information about the location of objects. This
+necessitates incorporating vision feedback as tactile obser-
+vations are not meaningful when the hand is not touch-
+ing the object. To do this, we extract visual features using
+standard BYOL augmentations on the images collected from
+demonstration data. The views for each task are signiﬁcantly
+different, so we did not observe a beneﬁt from including the
+play data in the visual representation learning. Similar to prior
+work [4, 3], we start with a ResNet-18 [27] architecture that
+has been pre-trained on the ImageNet [16] classiﬁcation task.
+Downstream Imitation Learning: Our action space con-
+sists of both the hand pose, speciﬁed by 16 absolute joint
+angles, and the robot end effector position and orientation,
+speciﬁed by a 3-dimensional position and a 4-dimensional
+quaternion. Due to both the high-dimensional action and ob-
+servation spaces, parametric methods struggle to learn quality
+policies in the low-data regime. To mitigate this, we use
+a nearest neighbors-based imitation learning policy [53] to
+leverage our demonstrations. For each tuple of observations
+and actions in the demonstrations (oV
+i; oT
+i; ai), we compute
+visual and tactile features (yV
+i; yT
+i)and store them along-side
+the corresponding actions. Since the scales of the two features
+are at different, we scale both features such that the maximum
+distance in the dataset for each feature is 1. At test time tgiven
+ot, we compute (yV
+t; yT
+t), ﬁnd the datum with the lowest total
+distance, and execute the action associated with it.V. E XPERIMENTS
+We evaluate T-D EXon a range of tasks that are designed
+to answer the following questions:
+Does tactile information improve policy performance?
+How important is play data to our representations?
+What are important design choices when learning features
+of tactile information?
+A. Description of Dexterous Tasks
+We examine ﬁve dexterous contact-rich tasks that require
+precise multi-ﬁnger control (see Figure 5). We describe them
+in detail below:
+1) Joystick Movement: Starting over an arcade gamepad,
+the hand is tasked with moving down and pulling a joystick
+backwards. This task is difﬁcult because the hand occludes the
+gamepad when manipulating it. We collect demonstrations of
+the joystick in two different positions and evaluate on different
+positions and orientations not seen during training. A trial is
+successful if the joystick has been pulled within 60 seconds.
+2) Bottle Opening: This task requires the hand to open the
+lid of a bottle. We collect three demonstrations with the bottle
+orientation requiring the use of the thumb, and three other
+requiring the use of the middle ﬁnger. The task is considered
+successful if the lid is open within 120 seconds.
+3) Cup Unstacking: Given two cups stacked inside one
+another, the tasks is to remove the smaller cup from the inside
+of the larger one. In addition to occlusion, this task requires
+making contact both the inner and outer cups before lifting the
+inner cup with the index ﬁnger. It is considered a success if the
+smaller cup is raised outside the larger cup without dropping
+it or knocking the cup off the table within 240 seconds.
+4) Bowl Unstacking: This task is similar to the previous,
+but with bowls instead of cups. Since the bowls are larger,
+multiple ﬁngers are required to lift and stabilize them. A run
+is successful if it has lifted the bowl within 100 seconds.
+5) Book Opening: This task requires opening a book with
+three ﬁngers. After making contact with the cover, the hand
+must pull up with an arm movement, remaining in contact
+until it is fully open. The task is considered a success if the
+book is open within 300 seconds.Cup  Unstacking
+Bowl  Unstacking
+Bottle Opening
+Book Opening
+Joystick MovementFig. 5: Visualization of robot rollouts from T-D EXpolicies. Note the severe visual occlusions when the robot makes contact with the object.
+To evaluate various models for dexterity, we ﬁrst col-
+lect six demonstrations for each task in which the object’s
+conﬁguration is varying inside a 10x15cm box. Models are
+then evaluated on new conﬁgurations in the convex hull
+of demonstrated ones. This follows the standard practice of
+evaluating representations for robotics [78, 47, 58]. Additional
+experimental details can be found in Appendix A.
+B. Baselines for Dexterity
+We study the impact of tactile information on policies
+learned through imitation, comparing against a number of
+baselines. Unless otherwise speciﬁed, the methods receive both
+tactile and image data. Each method is described below:
+1) Behavior Cloning (BC) [56]: We train a neural network
+end-to-end to map from visual and tactile features to actions.
+2) Nearest Neighbors with Torque only (NN-Torque) [66]:
+We perform nearest neighbors with the output torques from
+our PD controller. The torque targets can be used as a proxy
+for force, providing some tactile information.
+3) Nearest Neighbors with Image only (NN-Image) [53]:
+We perform nearest neighbors with the image features only.
+During evaluation, to ensure fairness we use viewpoints that
+can convey maximal information about the scene.
+4) Nearest Neighbors with Tactile only (NN-Tactile): Near-
+est neighbors with the tactile features trained on play data.
+Unlike T-D EXwe do not use vision data for this baseline.
+5) Nearest Neighbors with Tactile Trained on Task Data
+(NN-Task): Instead of training the tactile encoder on the play
+data, we train it on the 6 task-speciﬁc demonstrations.
+6) Nearest Neighbors with Tactile Trained on Play Data
+(T-D EX):This is our main method with the tactile encoder
+pre-trained on all the play data followed by nearest neighbor
+retrieval on task data.
+Additional model details can be found in Appendix B.TABLE I: Real-world success rate of the learned policies
+Joystick Cup Bowl Book Bottle Average
+BC 0% 0% 0% 0% 0% 0%
+NN-Image 40% 0% 20% 50% 0% 22%
+NN-Tactile 60% 0% 20% 0% 60% 28%
+NN-Task 80% 40% 30% 60% 30% 48%
+NN-Torque 70% 20% 40% 30% 30% 38%
+T-D EX 80% 80% 70% 90% 60% 76%
+C. How important is tactile sensing for dexterity?
+In Table I we report success rates of T-D EXalong with
+baseline methods. We make several observations from these
+experiments. First, we ﬁnd that BC completely fails on all
+tasks, quickly moving to states outside the distribution of
+demonstrations. This behavior has been previously reported
+in small data regime [4]. Among the nearest neighbor based
+methods, we ﬁnd that tactile-only (NN-tactile) struggles on
+Book Opening and Cup Unstacking since the hand fails to
+localize the objects to make ﬁrst contact. On the other hand,
+the image-only (NN-Image) struggles on Bottle Opening and
+Cup Unstacking as severe occlusions caused by the hand result
+in poor retrievals. Using torque targets (NN-Torque) instead of
+tactile feedback proved useful, improving over NN-Image, but
+did not match using tactile feedback.
+We ﬁnd that T-D EXcombines the coarse-grained localiza-
+tion ability of NN-Image along with the ﬁne-grained manipula-
+tion of NN-Tactile, and results in the strongest results across
+all tasks. To further analyze why T-D EXperforms so well,
+we visualize the nearest neighbors of states for the image-
+only and tactile-only methods. Figure 6 shows neighbors for
+our method and baselines. Our method produces neighbors
+that seem to capture the state of the world better than image
+and tactile alone. On the Bottle Opening task, the NN-Image
+method returned a neighbor that looked visually similar, butRobot observationImage-onlyTactile-onlyT-DexFig. 6: Visualization of the camera image, top-two activated tactile sensors, and their nearest neighbors for our method and baselines. While
+it is able to return a visually similar image, the image-only baseline is unable to recognize contact with the bottle. The tactile-only baseline
+can return a tactilely similar neighbor, but fails to capture the position of the robot.
+was not in contact with the bottle. The NN-Tactile method was
+able to produce a similar grasp to the observation, but it was
+not able to capture the position of the hand. Additional failure
+modes for NN-Image can be see in Figure 9. We notice that it
+often applies too much or not enough force, causing the task
+to fail. Combining both image and tactile information gives
+us the best of both, allowing us to ﬁnd a visually and tactilely
+similar neighbor. Successful policy rollouts can be seen in
+Figure 5 and in Appendix C.
+D. Does pre-training on play improve tactile representations?
+To understand the importance of pre-training, we run NN-
+Task, which pre-trains tactile representations on task data.
+As seen in Table I, This baseline does quite well on the
+simpler Joystick Movement task. However, on harder tasks,
+particularly the Unstacking tasks and Bottle Opening, we ﬁnd
+that NN-Task struggles signiﬁcantly. This can be attributed to
+poor representational matches when trained on limited task
+data. To mitigate this, we also try training the encoder with
+a combination of successful and failed demonstrations on the
+Bowl Unstacking task, getting a success rate of 30%, which
+shows no improvement in task performance.
+To provide further evidence for the usefulness of tactile
+pretraining, we plot the gains in performance across varying
+amounts of play data in Figure 7. We see that for easier tasks
+like Book Opening, even small amounts of play data (20 mins)
+is sufﬁcient to achieve a 90% success rate. However, for harder
+tasks like Cup Unstacking, we see steady improvements in
+success rate with larger amounts of play data.
+E. Importance of tactile representation
+A critical component in T-D EXis the architectural details
+in representing and processing tactile data. In this section, we
+examine various architectures to represent tactile features. For
+simplicity, we study a subset of the tasks, Book Opening and
+1 5 20 80 150
+Amount of Play Data (Minutes)020406080100Success Rate (%)Success Rate vs Amount of Play Data
+Book Opening
+Cup UnstackingFig. 7: Success rate on Book Opening and Cup Unstacking tasks with
+varying amount of play data. Training only on task data performs
+moderately well, but is outperformed with just 20 minutes of play.
+Cup Unstacking. Each encoder is trained using BYOL on the
+play dataset with the same augmentations used in the main
+method. We compare our main encoder, AlexNet with different
+architectures described below:
+ResNet: A standard ResNet-18 [27] with weights pre-
+trained on the ImageNet [16] classiﬁcation task.
+3-layer CNN: A lightweight CNN with three layers
+initialized with random weights.
+Stacked CNN: Rather than laying out the sensor data of
+the ﬁngers spatially in the image, we consider stacking
+the sensor output into one 45-channel image.
+Shared CNN: We consider a shared encoder for each
+sensor pad. We pass individual pad values to the same
+network and concatenate the outputs.
+Raw Tactile: Instead of utilizing the geometry of the
+tactile sensors with a CNN, we ﬂatten the raw tactile
+data into a 720-dimensional vector.Cup Unstacking
+Bowl Unstacking
+T-DEX
+Image Only
+Fig. 8: We show rollouts of T-D EXand our Image-only baseline on objects not seen during demonstration collection. For both Bowl and
+Cup Unstacking, we ﬁnd that T-D EXgeneralizes to more scenarios, while our image only baseline fails on all but one scenario.
+TABLE II: Success rates of various representations for tactile data
+on the Book Opening and Cup Unstacking tasks.
+T-D EX ResNet 3-layer Stacked Shared Raw
+Book 90% 90% 60% 50% 20% 50%
+Cup 80% 60% 30% 10% 10% 30%
+Full results for this experiment can be found in Table
+II. We ﬁnd that both T-D EXand ResNet perform similarly
+on Book Opening, although ResNet takes signiﬁcantly more
+computation for the same results. On Cup Unstacking we ﬁnd
+that ResNet performs a little worse than T-D EX, which further
+informs our architectural choice. While, one may conclude that
+smaller architectures are better, we see that a simpler 3-layered
+CNN also performs poorly and does not reach the performance
+of either of the larger models.
+Apart from the architecture, we ﬁnd that the structure
+of inputting tactile data from individual tactile pads is also
+important. For example, we ﬁnd that stacking tactile pads
+channel-wise is substantially worse than T-D EXthat stacks
+the tactile pads spatially. Similarly we ﬁnd that using a shared
+encoder for each tactile pad is also poor. This is perhaps
+because of the noise that exists in high-dimensional raw tactile
+data, which is difﬁcult to ﬁlter out with the stacked and shared
+encoders. Hence, one spurious reading in an unused tactile pad
+could yield an incorrect neighbor, producing a bad action. This
+hypothesis is further substantiated in the Raw Tactile method,
+which is roughly on par with the Stacked method.
+We additionally run three experiments with different tactile
+representations on the Bowl Unstacking task to analyze our
+choice of representation. We run PCA on the Raw Tactile
+features on the play dataset and use the top 100 components
+as features, achieving a success rate of 40%. When PCA fails,
+it is not able to capture ﬁne-grained tactile information that
+is necessary to solve the task. Next, we sum the activations
+of each 4x4 tactile sensor in each dimension to create a 45-
+dimensional feature, which does not succeed on any task.
+Finally, we shufﬂe the order of the pads in the tactile image,
+which achieves 20% success, which is much lower than using
+the structured layout (Section IV-A), showing that the layout
+of tactile data is highly important to our method.
+F . Generalization to Unseen Objects
+To examine the generalization ability of T-D EX, we run
+the Bowl Unstacking and Cup Unstacking tasks with unseen
+T-DEX
+Image only
+T-DEX
+Image only
+Fig. 9: Visualization of the failure modes of our Image only baseline.
+Without tactile information, the robot applies either too much force,
+causing it to pick up both objects or does not realize it is not correctly
+in contact with the objects.
+crockery and compare against NN-Image. Seen in Figure 8,
+T-D EXis able to pick up 3 out of 4 of the new bowls
+and 2 out of 4 of the unseen cups, while NN-Image only
+succeeds on a single novel bowl. Although the learned visual
+features for the task are only sufﬁcient to solve one of the
+new tasks, incorporating tactile information enables us to ﬁnd
+good neighbors in our demonstrations, allowing us to solve
+tasks on unseen objects without retraining.
+VI. L IMITATIONS AND CONCLUSION
+In this work, we have presented an approach for tactile-
+based dexterity (T-D EX) that combines tactile pretraining on
+play data along with efﬁcient downstream learning on a small
+amount of task-speciﬁc data. Our results indicate that T-
+DEXcan signiﬁcantly improve over prior approaches that use
+images, torque and tactile data. However, we recognize two
+key limitations. Although T-D EXsucceeds on several out-of-
+distribution examples, the success rate is lower than the train-
+ing object. The second, is that our approach is currently limited
+to ofﬂine imitation, which limits the ability of our policies to
+learn from failures. Both limitations could be addressed by
+integrating online learning, improving architectures for tactile
+data, and better tactile-vision fusion algorithms. While these
+aspects are out of scope to this work, we hope that the ideas
+introduced in T-D EXcan spur future work in these directions.ACKNOWLEDGMENTS
+We thank Vaibhav Mathur, Jeff Cui, Ilija Radosavovic,
+Wenzhen Yuan and Chris Paxton for valuable feedback and
+discussions. This work was supported by grants from Honda,
+Meta, Amazon, and ONR awards N00014-21-1-2758 and
+N00014-22-1-2773.
+REFERENCES
+[1] Mohamed Afham, Isuru Dissanayake, Dinithi Dis-
+sanayake, Amaya Dharmasiri, Kanchana Thilakarathna,
+and Ranga Rodrigo. Crosspoint: Self-supervised cross-
+modal contrastive learning for 3d point cloud understand-
+ing. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition , pages 9902–
+9912, 2022.
+[2] Alex Alspach, Kunimatsu Hashimoto, Naveen Kup-
+puswamy, and Russ Tedrake. Soft-bubble: A highly
+compliant dense geometry tactile sensor for robot ma-
+nipulation. In 2019 2nd IEEE International Conference
+on Soft Robotics (RoboSoft) , pages 597–604. IEEE, 2019.
+[3] Sridhar Pandian Arunachalam, Irmak G ¨uzey, Soumith
+Chintala, and Lerrel Pinto. Holo-dex: Teaching dexterity
+with immersive mixed reality, 2022. URL https://arxiv.
+org/abs/2210.06463.
+[4] Sridhar Pandian Arunachalam, Sneha Silwal, Ben Evans,
+and Lerrel Pinto. Dexterous imitation made easy: A
+learning-based framework for efﬁcient dexterous manip-
+ulation. arXiv preprint arXiv:2203.13251 , 2022.
+[5] Adrien Bardes, Jean Ponce, and Yann LeCun. Vicreg:
+Variance-invariance-covariance regularization for self-
+supervised learning. arXiv preprint arXiv:2105.04906 ,
+2021.
+[6] Raunaq M. Bhirangi, Tess Lee Hellebrekers, Carmel Ma-
+jidi, and Abhinav Gupta. Reskin: versatile, replaceable,
+lasting tactile skins. CoRR , abs/2111.00071, 2021. URL
+https://arxiv.org/abs/2111.00071.
+[7] David Brandfonbrener, Stephen Tu, Avi Singh, Stefan
+Welker, Chad Boodoo, Nikolai Matni, and Jake Var-
+ley. Visual backtracking teleoperation: A data collection
+protocol for ofﬂine image-based reinforcement learning,
+2022. URL https://arxiv.org/abs/2210.02343.
+[8] Roberto Calandra, Andrew Owens, Dinesh Jayaraman,
+Justin Lin, Wenzhen Yuan, Jitendra Malik, Edward H
+Adelson, and Sergey Levine. More than a feeling:
+Learning to grasp and regrasp using vision and touch.
+IEEE Robotics and Automation Letters , 3(4):3300–3307,
+2018.
+[9] Mathilde Caron, Ishan Misra, Julien Mairal, Priya Goyal,
+Piotr Bojanowski, and Armand Joulin. Unsupervised
+learning of visual features by contrasting cluster as-
+signments. Advances in neural information processing
+systems , 33:9912–9924, 2020.
+[10] Bryan Chen, Alexander Sax, Gene Lewis, Iro Armeni,
+Silvio Savarese, Amir Zamir, Jitendra Malik, and Lerrel
+Pinto. Robust policies via mid-level visual representa-tions: An experimental study in manipulation and navi-
+gation. arXiv preprint arXiv:2011.06698 , 2020.
+[11] Tao Chen, Jie Xu, and Pulkit Agrawal. A system for
+general in-hand object re-orientation. Conference on
+Robot Learning , 2021.
+[12] Ting Chen, Simon Kornblith, Mohammad Norouzi, and
+Geoffrey Hinton. A simple framework for contrastive
+learning of visual representations. arXiv preprint
+arXiv:2002.05709 , 2020.
+[13] Matei T. Ciocarlie, Corey Goldfeder, and Peter K. Allen.
+Dexterous grasping via eigengrasps : A low-dimensional
+approach to a high-complexity problem. In Dexterous
+Grasping via Eigengrasps : A Low-dimensional Ap-
+proach to a High-complexity Problem , 2007.
+[14] Zichen Jeff Cui, Yibin Wang, Nur Muhammad, Lerrel
+Pinto, et al. From play to policy: Conditional behavior
+generation from uncurated robot data. arXiv preprint
+arXiv:2210.10047 , 2022.
+[15] Ravinder Dahiya, Nivasan Yogeswaran, Fengyuan Liu,
+Libu Manjakkal, Etienne Burdet, Vincent Hayward, and
+Henrik J ¨orntell. Large-area soft e-skin: The challenges
+beyond sensor designs. Proceedings of the IEEE ,
+107(10):2016–2033, 2019. doi: 10.1109/JPROC.2019.
+2941366.
+[16] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,
+and Li Fei-Fei. Imagenet: A large-scale hierarchical
+image database. In 2009 IEEE conference on computer
+vision and pattern recognition , pages 248–255. Ieee,
+2009.
+[17] Siyuan Dong, Wenzhen Yuan, and Edward H Adelson.
+Improved gelsight tactile sensor for measuring geometry
+and slip. In 2017 IEEE/RSJ International Conference on
+Intelligent Robots and Systems (IROS) , pages 137–144.
+IEEE, 2017.
+[18] Linus Ericsson, Henry Gouk, Chen Change Loy, and
+Timothy M Hospedales. Self-supervised representation
+learning: Introduction, advances, and challenges. IEEE
+Signal Processing Magazine , 39(3):42–62, 2022.
+[19] Jaqueline Fagard, Rana Esseily, Lisa Jacquey, Kevin
+O’Regan, and Eszter Somogyi. Fetal origin of senso-
+rimotor behavior. Frontiers in Neurorobotics , 12, May
+2018. doi: 10.3389/fnbot.2018.00023. URL https://doi.
+org/10.3389/fnbot.2018.00023.
+[20] Chelsea Finn, Xin Yu Tan, Yan Duan, Trevor Darrell,
+Sergey Levine, and Pieter Abbeel. Deep spatial au-
+toencoders for visuomotor learning. In 2016 IEEE
+International Conference on Robotics and Automation
+(ICRA) , pages 512–519. IEEE, 2016.
+[21] Pete Florence, Corey Lynch, Andy Zeng, Oscar A
+Ramirez, Ayzaan Wahid, Laura Downs, Adrian Wong,
+Johnny Lee, Igor Mordatch, and Jonathan Tompson.
+Implicit behavioral cloning. In Conference on Robot
+Learning , pages 158–168. PMLR, 2022.
+[22] Peter R Florence, Lucas Manuelli, and Russ Tedrake.
+Dense object nets: Learning dense visual object descrip-
+tors by and for robotic manipulation. In Conference onRobot Learning , pages 373–385. PMLR, 2018.
+[23] Jean-Bastien Grill, Florian Strub, Florent Altch ´e,
+Corentin Tallec, Pierre Richemond, Elena Buchatskaya,
+Carl Doersch, Bernardo Avila Pires, Zhaohan Guo,
+Mohammad Gheshlaghi Azar, et al. Bootstrap your
+own latent-a new approach to self-supervised learning.
+NeurIPS , 2020.
+[24] David Ha and J ¨urgen Schmidhuber. World models. arXiv
+preprint arXiv:1803.10122 , 2018.
+[25] Ankur Handa, Karl Van Wyk, Wei Yang, Jacky Liang,
+Yu-Wei Chao, Qian Wan, Stan Birchﬁeld, Nathan Ratliff,
+and Dieter Fox. Dexpilot: Vision-based teleopera-
+tion of dexterous robotic hand-arm system. In 2020
+IEEE International Conference on Robotics and Automa-
+tion (ICRA) , pages 9164–9170, 2020. doi: 10.1109/
+ICRA40945.2020.9197124.
+[26] Ankur Handa, Arthur Allshire, Viktor Makoviychuk,
+Aleksei Petrenko, Ritvik Singh, Jingzhou Liu, Denys
+Makoviichuk, Karl Van Wyk, Alexander Zhurke-
+vich, Balakumar Sundaralingam, Yashraj Narang, Jean-
+Francois Laﬂeche, Dieter Fox, and Gavriel State. Dex-
+treme: Transfer of agile in-hand manipulation from sim-
+ulation to reality. arXiv , 2022.
+[27] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian
+Sun. Deep residual learning for image recognition. In
+Proceedings of the IEEE conference on computer vision
+and pattern recognition , pages 770–778, 2016.
+[28] Justine E. Hoch, Sinclaire M. O'Grady, and Karen E.
+Adolph. It's the journey, not the destination: Locomotor
+exploration in infants. Developmental Science , 22(2),
+October 2018. doi: 10.1111/desc.12740. URL https:
+//doi.org/10.1111/desc.12740.
+[29] Wenlong Huang, Igor Mordatch, Pieter Abbeel, and
+Deepak Pathak. Generalization in dexterous manipulation
+via geometry-aware multi-task learning. arXiv preprint
+arXiv:2111.03062 , 2021.
+[30] Tatsuya Ishihara, Akio Namiki, Masatoshi Ishikawa, and
+Makoto Shimojo. Dynamic pen spinning using a high-
+speed multiﬁngered hand with high-speed tactile sensor.
+In2006 6th IEEE-RAS International Conference on Hu-
+manoid Robots , pages 258–263. IEEE, 2006.
+[31] Roland S Johansson, Charlotte H ¨ager, and Lars
+B¨ackstr ¨om. Somatosensory control of precision grip dur-
+ing unpredictable pulling loads: Iii. impairments during
+digital anesthesia. Experimental brain research , 89:204–
+213, 1992.
+[32] Tarik Kelestemur, Robert Platt, and Taskin Padir. Tactile
+pose estimation and policy learning for unknown object
+manipulation. arXiv preprint arXiv:2203.10685 , 2022.
+[33] Justin Kerr, Huang Huang, Albert Wilcox, Ryan Hoque,
+Jeffrey Ichnowski, Roberto Calandra, and Ken Goldberg.
+Learning self-supervised representations from vision and
+touch for active sliding perception of deformable sur-
+faces, 2022. URL https://arxiv.org/abs/2209.13042.
+[34] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton.
+Imagenet classiﬁcation with deep convolutional neuralnetworks. In Advances in neural information processing
+systems , pages 1097–1105, 2012.
+[35] Vikash Kumar, Yuval Tassa, Tom Erez, and Emanuel
+Todorov. Real-time behaviour synthesis for dynamic
+hand-manipulation. In 2014 IEEE International Confer-
+ence on Robotics and Automation (ICRA) , pages 6808–
+6815. IEEE, 2014.
+[36] Vikash Kumar, Emanuel Todorov, and Sergey Levine.
+Optimal control with learned local models: Application
+to dexterous manipulation. In 2016 IEEE International
+Conference on Robotics and Automation (ICRA) , pages
+378–383, 2016. doi: 10.1109/ICRA.2016.7487156.
+[37] Michael Laskin, Aravind Srinivas, and Pieter Abbeel.
+Curl: Contrastive unsupervised representations for re-
+inforcement learning. In International Conference on
+Machine Learning , pages 5639–5650. PMLR, 2020.
+[38] Hyosang Lee, Hyunkyu Park, Gokhan Serhat, Huanbo
+Sun, and Katherine J Kuchenbecker. Calibrating a soft
+ert-based tactile sensor with a multiphysics model and
+sim-to-real transfer learning. In 2020 IEEE International
+Conference on Robotics and Automation (ICRA) , pages
+1632–1638. IEEE, 2020.
+[39] Michelle A. Lee, Yuke Zhu, Peter Zachares, Matthew
+Tan, Krishnan Srinivasan, Silvio Savarese, Li Fei-Fei,
+Animesh Garg, and Jeannette Bohg. Making sense of
+vision and touch: Learning multimodal representations
+for contact-rich tasks, 2019. URL https://arxiv.org/abs/
+1907.13098.
+[40] Kendall Lowrey, Svetoslav Kolev, Jeremy Dao, Aravind
+Rajeswaran, and Emanuel Todorov. Reinforcement learn-
+ing for non-prehensile manipulation: Transfer from sim-
+ulation to physical system. In 2018 IEEE International
+Conference on Simulation, Modeling, and Programming
+for Autonomous Robots (SIMPAR) , pages 35–42. IEEE,
+2018.
+[41] Kendall Lowrey, Aravind Rajeswaran, Sham Kakade,
+Emanuel Todorov, and Igor Mordatch. Plan online, learn
+ofﬂine: Efﬁcient learning and exploration via model-
+based control. arXiv preprint arXiv:1811.01848 , 2018.
+[42] Corey Lynch, Mohi Khansari, Ted Xiao, Vikash Kumar,
+Jonathan Tompson, Sergey Levine, and Pierre Sermanet.
+Learning latent plans from play, 2019.
+[43] Ajay Mandlekar, Danfei Xu, Josiah Wong, Soroush
+Nasiriany, Chen Wang, Rohun Kulkarni, Li Fei-Fei,
+Silvio Savarese, Yuke Zhu, and Roberto Mart ´ın-Mart ´ın.
+What matters in learning from ofﬂine human demon-
+strations for robot manipulation. arXiv preprint
+arXiv:2108.03298 , 2021.
+[44] Igor Mordatch, Zoran Popovi ´c, and Emanuel Todorov.
+Contact-invariant optimization for hand manipulation. In
+Proceedings of the ACM SIGGRAPH/Eurographics sym-
+posium on computer animation , pages 137–144, 2012.
+[45] Adithyavairavan Murali, Yin Li, Dhiraj Gandhi, and
+Abhinav Gupta. Learning to grasp without seeing. In
+Jing Xiao, Torsten Kr ¨oger, and Oussama Khatib, editors,
+Proceedings of the 2018 International Symposium onExperimental Robotics , pages 375–386, Cham, 2020.
+Springer International Publishing. ISBN 978-3-030-
+33950-0.
+[46] Anusha Nagabandi, Kurt Konoglie, Sergey Levine, and
+Vikash Kumar. Deep dynamics models for learning
+dexterous manipulation. arXiv , 2019.
+[47] Suraj Nair, Aravind Rajeswaran, Vikash Kumar, Chelsea
+Finn, and Abhinav Gupta. R3m: A universal visual
+representation for robot manipulation. arXiv preprint
+arXiv:2203.12601 , 2022.
+[48] Daisuke Niizumi, Daiki Takeuchi, Yasunori Ohishi,
+Noboru Harada, and Kunio Kashino. BYOL for Audio:
+Exploring pre-trained general-purpose audio represen-
+tations. IEEE/ACM Transactions on Audio, Speech,
+and Language Processing , 31:137–151, 2023. ISSN
+2329-9304. doi: 10.1109/TASLP.2022.3221007. URL
+http://dx.doi.org/10.1109/TASLP.2022.3221007.
+[49] Lael U Odhner, Leif P Jentoft, Mark R Claffee, Nicholas
+Corson, Yaroslav Tenzer, Raymond R Ma, Martin
+Buehler, Robert Kohout, Robert D Howe, and Aaron M
+Dollar. A compliant, underactuated hand for robust
+manipulation. The International Journal of Robotics
+Research , 33(5):736–752, 2014.
+[50] Allison M Okamura, Niels Smaby, and Mark R Cutkosky.
+An overview of dexterous manipulation. In Proceedings
+2000 ICRA. Millennium Conference. IEEE International
+Conference on Robotics and Automation. Symposia Pro-
+ceedings (Cat. No. 00CH37065) , volume 1, pages 255–
+262. IEEE, 2000.
+[51] OpenAI, Ilge Akkaya, Marcin Andrychowicz, Maciek
+Chociej, Mateusz Litwin, Bob McGrew, Arthur Petron,
+Alex Paino, Matthias Plappert, Glenn Powell, Raphael
+Ribas, Jonas Schneider, Nikolas Tezak, Jerry Tworek,
+Peter Welinder, Lilian Weng, Qiming Yuan, Wojciech
+Zaremba, and Lei Zhang. Solving rubik’s cube with a
+robot hand. arXiv , 2019.
+[52] OpenAI, Marcin Andrychowicz, Bowen Baker, Maciek
+Chociej, Rafal Jozefowicz, Bob McGrew, Jakub Pa-
+chocki, Arthur Petron, Matthias Plappert, Glenn Powell,
+Alex Ray, Jonas Schneider, Szymon Sidor, Josh Tobin,
+Peter Welinder, Lilian Weng, and Wojciech Zaremba.
+Learning dexterous in-hand manipulation, 2019.
+[53] Jyothish Pari, Nur Muhammad Shaﬁullah, Sridhar Pan-
+dian Arunachalam, and Lerrel Pinto. The surprising ef-
+fectiveness of representation learning for visual imitation,
+2021.
+[54] Radhen Patel, Rui Ouyang, Branden Romero, and Ed-
+ward Adelson. Digger ﬁnger: Gelsight tactile sensor
+for object identiﬁcation inside granular media. In Ex-
+perimental Robotics: The 17th International Symposium ,
+pages 105–115. Springer, 2021.
+[55] Lerrel Pinto, Dhiraj Gandhi, Yuanfeng Han, Yong-Lae
+Park, and Abhinav Gupta. The curious robot: Learning
+visual representations via physical interactions. In ECCV ,
+2016.
+[56] Dean A Pomerleau. Alvinn: An autonomous land vehiclein a neural network. In NIPS , 1989.
+[57] Dean A Pomerleau. Alvinn: An autonomous land vehicle
+in a neural network. In NeurIPS , pages 305–313, 1989.
+[58] Ilija Radosavovic, Tete Xiao, Stephen James, Pieter
+Abbeel, Jitendra Malik, and Trevor Darrell. Real-world
+robot learning with masked visual pre-training, 2022.
+URL https://arxiv.org/abs/2210.03109.
+[59] Aravind Rajeswaran, Vikash Kumar, Abhishek Gupta,
+Giulia Vezzani, John Schulman, Emanuel Todorov, and
+Sergey Levine. Learning complex dexterous manipula-
+tion with deep reinforcement learning and demonstra-
+tions. In RSS, 2018.
+[60] Philippe Rochat. Object manipulation and exploration in
+2-to 5-month-old infants. Developmental Psychology , 25
+(6):871, 1989.
+[61] J M Schott. The grasp and other primitive reﬂexes.
+Journal of Neurology, Neurosurgery &amp Psychiatry ,
+74(5):558–560, May 2003. doi: 10.1136/jnnp.74.5.558.
+URL https://doi.org/10.1136/jnnp.74.5.558.
+[62] Pierre Sermanet, Corey Lynch, Yevgen Chebotar, Jas-
+mine Hsu, Eric Jang, Stefan Schaal, Sergey Levine,
+and Google Brain. Time-contrastive networks: Self-
+supervised learning from video. In 2018 IEEE inter-
+national conference on robotics and automation (ICRA) ,
+pages 1134–1141. IEEE, 2018.
+[63] Nur Muhammad Mahi Shaﬁullah, Zichen Jeff Cui, Ariun-
+tuya Altanzaya, and Lerrel Pinto. Behavior transformers:
+Cloning $k$ modes with one stone. In Advances in
+Neural Information Processing Systems , 2022. URL
+https://openreview.net/forum?id=agTr-vRQsa.
+[64] Yu She, Shaoxiong Wang, Siyuan Dong, Neha Sunil,
+Alberto Rodriguez, and Edward Adelson. Cable ma-
+nipulation with a tactile-reactive gripper, 2019. URL
+https://arxiv.org/abs/1910.02860.
+[65] Satoshi Shigemi. ASIMO and Humanoid Robot Re-
+search at Honda , pages 1–36. Springer Netherlands,
+Dordrecht, 2018. ISBN 978-94-007-7194-9. doi: 10.
+1007/978-94-007-7194-9 9-2. URL https://doi.org/10.
+1007/978-94-007-7194-9 9-2.
+[66] Leon Sievers, Johannes Pitz, and Berthold B ¨auml. Learn-
+ing purely tactile in-hand manipulation with a torque-
+controlled hand. In 2022 International Conference on
+Robotics and Automation (ICRA) , pages 2745–2751,
+2022. doi: 10.1109/ICRA46639.2022.9812093.
+[67] Shuran Song, Andy Zeng, Johnny Lee, and Thomas
+Funkhouser. Grasping in the wild: Learning 6dof closed-
+loop grasping from low-cost demonstrations. RA-L , 2020.
+[68] Tito Pradhono Tomo, Massimo Regoli, Alexander
+Schmitz, Lorenzo Natale, Harris Kristanto, Sophon Som-
+lor, Lorenzo Jamone, Giorgio Metta, and Shigeki Sugano.
+A new silicone structure for uskin—a soft, distributed,
+digital 3-axis skin sensor and its integration on the
+humanoid robot icub. IEEE Robotics and Automation
+Letters , 3(3):2584–2591, 2018. doi: 10.1109/LRA.2018.
+2812915.
+[69] Shaoxiong Wang, Jiajun Wu, Xingyuan Sun, WenzhenYuan, William T Freeman, Joshua B Tenenbaum, and
+Edward H Adelson. 3d shape perception from monocular
+vision, touch, and shape priors. In 2018 IEEE/RSJ Inter-
+national Conference on Intelligent Robots and Systems
+(IROS) , pages 1606–1613. IEEE, 2018.
+[70] Shaoxiong Wang, Yu She, Branden Romero, and Edward
+Adelson. Gelsight wedge: Measuring high-resolution 3d
+contact geometry with a compact robot ﬁnger, 2021.
+URL https://arxiv.org/abs/2106.08851.
+[71] Yikai Wang, Wenbing Huang, Bin Fang, Fuchun Sun,
+and Chang Li. Elastic tactile simulation towards tactile-
+visual perception. In Proceedings of the 29th ACM
+International Conference on Multimedia , pages 2690–
+2698, 2021.
+[72] Denis Yarats, Rob Fergus, Alessandro Lazaric, and Lerrel
+Pinto. Reinforcement learning with prototypical rep-
+resentations. In International Conference on Machine
+Learning , pages 11920–11931. PMLR, 2021.
+[73] Denis Yarats, David Brandfonbrener, Hao Liu, Michael
+Laskin, Pieter Abbeel, Alessandro Lazaric, and Lerrel
+Pinto. Don’t change the algorithm, change the data:
+Exploratory data for ofﬂine reinforcement learning. arXiv
+preprint arXiv:2201.13425 , 2022.
+[74] Sarah Young, Dhiraj Gandhi, Shubham Tulsiani, Abhinav
+Gupta, Pieter Abbeel, and Lerrel Pinto. Visual imitation
+made easy, 2020.
+[75] Sarah Young, Jyothish Pari, Pieter Abbeel, and Lerrel
+Pinto. Playful interactions for representation learning.
+arXiv preprint arXiv:2107.09046 , 2021.
+[76] Martina Zambelli, Yusuf Aytar, Francesco Visin, Yuxiang
+Zhou, and Raia Hadsell. Learning rich touch represen-
+tations through cross-modal self-supervision. In Con-
+ference on Robot Learning , pages 1415–1425. PMLR,
+2021.
+[77] Albert Zhan, Ruihan Zhao, Lerrel Pinto, Pieter Abbeel,
+and Michael Laskin. A framework for efﬁcient robotic
+manipulation. In Deep RL Workshop NeurIPS 2021 ,
+2020.
+[78] Gaoyue Zhou, Victoria Dean, Mohan Kumar Srirama,
+Aravind Rajeswaran, Jyothish Pari, Kyle Beltran Hatch,
+Aryan Jain, Tianhe Yu, Pieter Abbeel, Lerrel Pinto,
+Chelsea Finn, and Abhinav Gupta. Train ofﬂine, test
+online: A real robot learning benchmark. In Deep
+Reinforcement Learning Workshop NeurIPS 2022 , 2022.
+URL https://openreview.net/forum?id=eqrVnNgkYWZ.
+[79] Henry Zhu, Abhishek Gupta, Aravind Rajeswaran,
+Sergey Levine, and Vikash Kumar. Dexterous manipula-
+tion with deep reinforcement learning: Efﬁcient, general,
+and low-cost. In ICRA , 2019.
+[80] Yifeng Zhu, Abhishek Joshi, Peter Stone, and Yuke
+Zhu. Viola: Imitation learning for vision-based ma-
+nipulation with object proposal priors. arXiv preprint
+arXiv:2210.11339 , 2022.APPENDIX
+A. Experiment Details
+For simplicity, we secure the joystick, bottle, and book to the
+table. This mimics having another manipulator keep the object
+in place while the hand manipulates the object. The bowls and
+cups are not secured, making the problem of unstacking much
+more difﬁcult.
+To ensure fair evaluation, we start each method with the
+object in the same conﬁguration for each index trial. This
+corresponds to 10 different starting positions, each of which
+is used at the start of each baseline run.
+B. Model Details
+Here we provide additional details about our method and
+baselines for easier reproduction.
+For all image-based models, we normalize the inputs based
+on the mean and standard deviation of the data seen during
+training. For the tactile-based models, we normalize the inputs
+to be within the range [0;1].
+1) BYOL Details: The complete list of BYOL hyperparam-
+eters has been provided in Table III. We take the model with
+the lowest training loss out of all the epochs.
+Parameter Value
+Optimizer Adam
+Learning rate 1e 3
+Weight decay 1e 5
+Max epochs 1000
+Batch size (Tactile) 1024
+Batch size (Image) 64
+Aug. (Tactile) Gaussian Blur (3x3) (1.0, 2.0) p= 0:5
+Random Resize Crop (0.9, 1.0) p= 0:5
+Aug. (Image) Color Jitter (0.8, 0.8, 0.8, 0.2) p= 0:2
+Gaussian Blur (3x3) (1.0, 2.0) p= 0:2
+Random Grayscale p= 0:2
+TABLE III: BYOL Hyperparameters.
+2) Nearest Neighbors Details: We give equal weight to
+visual and tactile distances for all of the tasks except bottle
+cap, where tactile and image features were given weights of
+2 and 1, respectively. We do this because the quality of the
+neighbors on image data was poor and emphasizing the tactile
+data slightly vastly improves performance.
+While executing NN imitation, we keep a buffer of recently
+executed neighbors that we call the reject buffer. Given a new
+observation, we pick the ﬁrst nearest neighbor not in the reject
+buffer. This prevents the policy from getting stuck in loops
+if a chain of neighbors and actions are cyclical. We set the
+reject buffer size to 10 for every task except Joystick Pulling,
+which is set to 3. The buffer, combined with the 2cm spatial
+subsampling are critical for the success of NN policies.
+3) BC Details: We train BC end-to-end using standard
+MSE loss on the actions with the same learning rate as BYOL
+and a batch size of 64.
+0 100 200 300 400 500 600 700
+Number of Components0.50.60.70.80.91.0Explained Variance RatioExplained Variance vs Number of ComponentsFig. 10: Explained variance ratio for PCA on the play tactile data.
+Most variance is captured in the ﬁrst 100 components.
+4) NN-Torque Details: Our hand does not have torque
+sensors, but is actuated by torque targets from a low-level
+PD position controller. We use the torque targets as a proxy
+for torque information since the desired torque will be higher
+when the ﬁnger is in contact with an object, but trying to move
+further inside, and lower when it is not in contact.
+5) PCA Details: We run PCA on the tactile play data and
+take the top 100 components for use as features. The captured
+variance is about 95% and the entire explained variance ratio
+can be seen in Figure 10. By visualizing the reconstructions
+(Figure 11), we can see that it retains a majority of the tactile
+information.
+6) Shufﬂed Pad Details: For this experiment, we permute
+the position of the 15 4x4 tactile sensors using the same
+permutation for both pretraining and deployment. This ensures
+that we’re inputting the same data from each sensor to each
+location in the tactile image, but does not leverage the spatial
+locations of the pads on the hand. If spatial layout had no
+effect, we would expect no difference in the performance
+between this and T-D EX.
+C. Additional Rollouts
+We visualize extra rollouts for each task in Figures 12-16.
+D. Tactile Image Visualization
+We visualize tactile images for each task in Figures 17-21.Original Tactile Data
+ PCA Reconstruction
+Original Tactile Data
+ PCA ReconstructionFig. 11: Tactile data and the PCA reconstruction of two using 100 components for two tactile readings. Most of the information is preserved,
+but we can see minor differences in magnitude and offset.
+Bottle Opening
+NN-Image
+ NN-tactile
+ T-Dex
+Fig. 12: Additional rollouts for the Bottle Opening task.Book Opening
+NN-Image
+ NN-tactile
+ T-Dex
+Fig. 13: Additional rollouts for the Book Opening task.
+Bowl Unstacking
+NN-Image
+ NN-tactile
+ T-Dex
+Fig. 14: Additional rollouts for the Bowl Unstacking task.Cup Unstacking
+NN-Image
+ NN-tactile
+ T-Dex
+Fig. 15: Additional rollouts for the Cup Unstacking task.
+Joystick Pulling
+NN-Image
+ NN-tactile
+ T-Dex
+Fig. 16: Additional rollouts for the Joystick Pulling task.Fig. 17: Tactile Image for the Bottle Opening task.
+Fig. 18: Tactile Image for the Book Opening task.Fig. 19: Tactile Image for the Bowl Unstacking task.
+Fig. 20: Tactile Image for the Cup Unstacking task.Fig. 21: Tactile Image for the Joystick Pulling task.

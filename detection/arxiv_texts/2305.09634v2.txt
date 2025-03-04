@@ -1,0 +1,1207 @@
+Bi-Objective Lexicographic Optimization in
+Markov Decision Processes with Related
+Objectives⋆
+Damien Busatto-Gaston1, Debraj Chakraborty2, Anirban Majumdar3, Sayan
+Mukherjee3, Guillermo A. Pérez4, and Jean-François Raskin3
+1Université Paris Est Créteil, LACL, F-94010, France
+damien.busatto-gaston@u-pec.fr
+2Masaryk University, Brno, Czech Republic chakraborty@fi.muni.cz
+3Université Libre de Bruxelles, Brussels, Belgium
+{anirban.majumdar,sayan.mukherjee,jean-francois.raskin}@ulb.be
+4University of Antwerp – Flanders Make, Antwerp, Belgium
+guillermo.perez@uantwerpen.be
+Abstract. We consider lexicographic bi-objective problems on Markov
+Decision Processes (MDPs), where we optimize one objective while guar-
+anteeing optimality of another. We propose a two-stage technique for
+solving such problems when the objectives are related (in a way that we
+formalize). We instantiate our technique for two natural pairs of objec-
+tives: minimizing the (conditional) expected number of steps to a target
+while guaranteeing the optimal probability of reaching it; and maximiz-
+ing the (conditional) expected average reward while guaranteeing an op-
+timal probability of staying safe (w.r.t. some safe set of states). For the
+first combination of objectives, which covers the classical frozen lake en-
+vironment from reinforcement learning, we also report on experiments
+performed using a prototype implementation of our algorithm and com-
+pare it with what can be obtained from state-of-the-art probabilistic
+model checkers solving optimal reachability.
+Keywords: Markov decision processes ·Multi-objective ·Synthesis.
+1 Introduction
+Probabilistic model-checkers, such as Storm[16] or Prism[18], have been de-
+veloped to solve the model-checking problem for logics like PCTL and models
+like Markov decision processes. These tools can be used to compute strategies
+(or schedulers) that maximize the probability of, for instance, reaching a set of
+⋆G. A. Pérez was supported by the iBOF “DESCARTES” and FWO “SAILor”
+projects. Debraj Chakraborty, Anirban Majumdar, Sayan Mukherjee and Jean-
+François Raskin were supported by the EOS project Verifying Learning Artificial
+Intelligent Systems (F.R.S.-FNRS and FWO). Debraj Chakraborty was also sup-
+ported by MASH (MUNI/I/1757/2021) of Masaryk University.arXiv:2305.09634v2  [cs.GT]  16 Aug 20232 Busatto-Gaston et al.
+1 2
+Fig. 1.In the game of Frozen Lake, a robot moves in a slippery grid. It has to reach
+the target (the gem) while avoiding holes in the grid. The robot can no longer move
+once in a hole. Part of the grid contains walls and the robot cannot move into them.
+The frozen surface of the lake being slippery, when the robot tries to move by picking a
+cardinal direction, the next state is determined stochastically over adjacent directions.
+For example, trying to move right would result on the robot going to the cell on the
+right with probability 0.8but going up or down with probability 0.1for each.
+states.As aconcreteexample, theycanbeused tosolvethe Frozen Lakeproblem
+shown in Figure 1, where a robot must navigate from an initial point to a target
+while avoiding holes in the ice. The ground is frozen and so the movements of the
+robot are subject to stochastic dynamics. While model-checkers provide optimal
+strategies for the probability of reaching the target, those strategies may not
+be efficient in terms of the expected number of steps required to reach it. For
+instance, the strategy returned by Stormfor the grid given in Fig. 1 requires
+on average 345steps to reach the target, while there are other strategies that
+are optimal for reachability that can reach the target in just 34steps on average.
+Indeed, a strategy can be optimal in terms of the probability to reach the target
+while (seemingly) behaving like a random walk on the grid (on portions without
+holes in particular). In the worst case, one could expect to reach the target after
+large number of steps (even on grids where there is a short and direct path to
+target), which can be considered useless for practical purposes.5Therefore, in
+this context, we aim to not only maximize the probability of reaching the tar-
+get, but also minimize the expected number of steps required to reach it, which
+is thus a multi-objective problem. Unfortunately, multi-objective optimization
+is not yet standard for probabilistic model checkers and most of them support
+it only for specific combinations of some objectives. For instance, Stormcan
+solve the optimal reachability problem and compute the minimal expected cost
+to target, but only for target sets that can be reached with probability one. The
+latter is not usually the case in the Frozen Lake problem: the robot may need to
+5In particular, the strategy could be used as a component of some larger approach
+dealing with a more challenging problem too difficult for exact methods. In these
+cases, such as [7], one frequently relies on machine-learning techniques ( e.g.Monte-
+Carlo methods or reinforcement learning) that run simulations for a fixed number
+of steps. Thus, a strategy that takes needlessly too many steps to reach a target will
+not help with learning practical and relevant strategies.Bi-Objective Lexicographic Optimization in MDPs 3
+walk next to a hole, and risk falling into it, in order to reach the target. In this
+paper, we demonstrate how to address the problems we have identified with the
+Frozen Lake example by leveraging the algorithms implemented in Storm.
+We identify a family of bi-objective optimization problems that can be solved
+intwostepsusingreadilyavailablemodel-checkingtools.Thisfamilyofproblems
+is formalized as follows. Let Mbe an MDP and Σ(M)the set of all strategies
+for it. We study reward functions that map strategies σ∈Σ(M)to real numbers
+via the induced MC Mσ. Concretely, let f, g:Σ(M)→R. We say a strategy
+σ∈Σ(M)isf-optimal if f(σ) = supτ∈Σ(M)f(τ)and write Σffor the set of all
+f-optimal strategies.
+There are multiple ways in which one can approach the problem of finding
+optimal strategies with respect to both fandg(see, e.g., [10] and references
+therein). In this work, we fix a lexicographic order on the functions. Formally,
+we want to compute a strategy σsuch that the following holds:
+σ∈Σfandg(σ) = sup
+τ∈Σfg(τ) (1)
+Our contribution. In this paper, we discuss the problem described above for
+two concrete cases of fandg. First, we tackle the motivating example from
+Frozen Lake and detail how to find strategies that maximize f, the probability
+of reaching a set of target states, while minimizing the conditional expected
+number of steps to reach them, encoded as g. It is not clear how to obtain an
+exact finite representation of the set Σfof all optimal strategies for f. To solve
+this problem, we first compute an over-approximation Σover
+fofΣf. We then
+prune the original MDP in such a way that the set of all strategies in the pruned
+MDP is exactly Σover
+f. In this context, Σover
+fwill be the set of strategies that
+only play actions used by at least one optimal strategy for reachability. We then
+optimize a modified objective g′in the pruned MDP, that, in turn, optimizes
+both fandgin the lexicographic order in the original MDP. The pruned MDP
+may contain actions from states that are part of some strategy maximizing the
+probability of reaching a target but which (taken together) do not make any
+progress towards the target (for example, a self-loop). These actions, however,
+are not part of the strategies that optimize g′in the pruned MDP and hence they
+are also not part of the strategies that are returned by our algorithm. Secondly,
+we also consider the problem of maximizing the probability of remaining in a safe
+set of states, encoded as f, while maximizing the expected mean-payoff along
+safe paths, encoded as g. Unlike the case for reachability, in this problem, we
+can in fact construct an exact finite representation of Σfin the form of an MDP
+(Theorem 2), which we again construct by pruning the original one. Similar to
+the reachability case, we then optimize a modified objective g′in the pruned
+MDP. In both of these cases, we prove (in Theorems 1 and 3) that the strategies
+optimizing g′in the pruned MDP, are solutions to Eq. 1.
+Note that, the solution to the second problem is related to the shielding [2]
+framework and similar works [11,17], where one computes an exact representa-
+tion of the set of all optimal strategies for the first objective and then solves4 Busatto-Gaston et al.
+for the second objective within that space. However, as remarked earlier, it is
+unclear how to get an exact representation of Σfin the first problem.
+In both cases, our solution to these (lexicographic) bi-objective problems can
+be implemented by using two calls to off-the-shelf tools like StormorPRISM,
+thus resulting in a polynomial-time solution. We report on experimental results
+for the Frozen Lake example that validate the need and practicality of our ap-
+proach. Finally, we discuss other instances of multi-objective problems where
+our approach naturally generalizes.
+Related works. The strategy synthesis problem in MDPs (or stochastic games,
+their 2.5-players extension) can be defined for a wide variety of temporal objec-
+tives and quantitative rewards. Multi-objective problems are particularly chal-
+lenging, as they need to optimize for multiple, potentially conflicting, goals.
+[9] detailed a strategy synthesis algorithm for lexicographic combinations of ω-
+regular objectives. This problem has also been studied with model-free, rein-
+forcement learning approaches [15]. However, these approaches do not consider
+objectives that maximize quantitative rewards, and cannot optimize for proper-
+ties such as the time to reach a target. In [6], one can mix LTL objectives with
+mean-payoff rewards and in [20] a lexicographic combination of discounted-sum
+rewards is considered. Moreover, a discounted semantics of LTL6is studied in
+[1], and can be used as a way to optimize for the time until a target is reached.
+Combinations of LTL and total-reward objectives have been considered in works
+such as [14] and [12], under assumptions that exclude our problem. Indeed, while
+minimizing the time to reach a target can be encoded as optimizing the total-
+reward of a slightly modified structure (where costs are 1at every move before
+the target is reached then 0forever), these works are not directly applicable to
+our problem: applying [14] requires the assumption that the optimal probability
+to reach a target is 1in order to minimize the expected time to target, and
+[12] searches for a strategy on the Pareto frontier instead of optimizing for a
+lexicographic combination of objectives.
+Note that minimizing the time to reach a target (a variant of the stochastic
+shortest path problem [5]) is only well-defined under the condition that the target
+is reached, so that our example requires studying conditional probabilities. This
+notion has been studied in single-objective settings, so that for example proba-
+bilisticmodel-checkerscanoptimizeforthe(conditional)probabilityofsatisfying
+anω-regular event under the condition that another ω-regular event holds [3]. In
+particular, [4] details how to maximize the expected total-reward until a target
+is reached, under the assumption that the target is indeed reached with positive
+probability. This does not solve our motivating example however, as it may yield
+a strategy that is suboptimal for the probability of reaching the target. Finally,
+we note that tools such as [8] can handle settings similar to our second example
+(optimizing for safety and mean-payoff), but they do not consider conditional
+mean-payoff.
+6This allows one to express constraints on the number of steps needed to satisfy an
+Until operator.Bi-Objective Lexicographic Optimization in MDPs 5
+Overall, our general two-stage technique covers combinations of objectives
+that are subcases of problems previously studied (e.g. in [9]) but it is also ap-
+plicable to combinations not previously considered. Interestingly, and to the
+best of our knowledge, optimizing for a reachability objective while minimiz-
+ing the conditional time to satisfy is not formally covered by previous work on
+multi-objective strategy synthesis, and is not an available feature of probabilistic
+model-checkers. It may be possible that this problem can be reduced to finding
+bias-optimal strategies [13] in a slightly modified MDP. However, this does not
+generalize to other objectives.
+2 Preliminaries
+Aprobability distribution on a countable set Sis a function d:S→[0,1]such
+thatP
+s∈Sd(s) = 1.Wedenotethesetofallprobabilitydistributionsonset Sby
+D(S). The support of a distribution d∈ D(S)isSupp (d) ={s∈S|d(s)>0}.
+2.1 Markov Chain
+Definition 1 (Markov chain). A (discrete-time) Markov chain or an MC is
+a tuple M= (S, P), where Sis a countable set of states and Pis a mapping
+from StoD(S).
+For states s, s′∈S,P(s)(s′)denotes the probability of moving from state
+sto state s′in a single transition and we denote this probability P(s)(s′)as
+P(s, s′).
+For a Markov chain M, afinite path ρ=s0s1. . . s iof length i >0is a se-
+quenceof i+1consecutivestatessuchthatforall t∈[0, i−1],st+1∈Supp (P(st)).
+Wealsoconsiderstatestobepathsoflength 0.Similarly,An infinite path isanin-
+finitesequence ρ=s0s1s2. . .ofstatessuchthatforall t∈N,st+1∈Supp (P(st)).
+For a finite or infinite path ρ=s0s1. . ., we denote its (i+1)thstate by ρ[i] =si.
+We denote the last state of a finite path ρ=s0s1. . . s nbylast(ρ) =sn. Let
+ρ=s0s1. . . s iandρ′=s′
+0s′
+1. . . s′
+jbe two paths such that si=s′
+0. Then, ρ·ρ′
+denotes the path s0s1. . . s is′
+1. . . s′
+j. For a finite or infinite path ρ=s0s1. . ., we
+denote its i-length prefix asρ|i=s0s1. . . s i.
+For a finite path ρ∈Paths M, we use Pathsω
+M(ρ)to denote the set of all paths
+ρ′∈Pathsω
+Msuch that there exists ρ′′∈Pathsω
+Mwith ρ′=ρ·ρ′′.Pathsω
+M(ρ)is
+called the cylinder set ofρ.
+The σ-algebra associated with the MC Mis the smallest σ-algebra that
+contains the cylinder sets Pathsω
+M(ρ)for all ρ∈Paths M. For a state sinS, a
+measure is defined for the cylinder sets as –
+PM,s(Pathsω
+M(s0s1. . . s i)) =(Qi−1
+t=0P(st)(st+1)ifs0=s
+0 otherwise.
+Wealsohave PM,s(Pathsω
+M(s)) = 1andPM,s(Pathsω
+M(s′)) = 0fors′̸=s.This
+can be extended to a unique probability measure PM,son the aforementioned6 Busatto-Gaston et al.
+σ-algebra. In particular, if C ⊆ Paths Mis a set of finite paths forming pair-
+wisedisjointcylindersets,then PM,s(∪ρ∈CPathsω
+M(ρ)) =P
+ρ∈CPM,s(Pathsω
+M(ρ)).
+Moreover, if Π∈Pathsω
+Mis the complement of a measurable set Π′, then
+PM,s(Π) = 1−PM,s(Π′).
+2.2 Markov Decision Process
+Definition 2 (Markov decision process). A Markov decision process or an
+MDP is a tuple M= (S, A, P ), where Sis a finite set of states, Ais a finite set
+of actions, and Pis a (partial) mapping from S×AtoD(S).
+P(s, a)(s′)denotes the probability that action ain state sleads to state s′
+and we denote this probability P(s, a)(s′)asP(s, a, s′). Note that not all actions
+may belegalfrom a state. Therefore, if an action ais legal from a state s, we
+will haveP
+s′∈SP(s, a, s′) = 1. Otherwise, we will have P(s, a, s′)is undefined
+(denoted by ⊥) for all s′∈S.
+ThedefinitionsandnotationsusedforpathsinMarkovchaincanbeextended
+in the case of MDPs. In an MDP, a pathis a sequence of states and actions.
+For an MDP M, a (probabilistic) strategyis a function σ:Paths M→ D (A)
+that maps a finite path ρto a probability distribution in D(A). For a path
+ρ∈Paths Mand a strategy σ, we will write σ(ρ, a)in place of σ(ρ)(a). A strategy
+σisdeterministic if the support of the probability distributions σ(ρ)has size 1.
+A strategy σismemoryless ifσ(ρ)depends only on last(ρ), i.e. if σsatisfies that
+for all ρ, ρ′∈Paths M,last(ρ) =last(ρ′)⇒σ(ρ) =σ(ρ′). We denote the set of all
+finite paths in Mstarting from sfollowing σbyPaths M(s, σ).
+An MDP Minduced by a strategy σdefines an MC Mσ. Intuitively, this
+is obtained by unfolding Musing the strategy σand using the probabilities in
+Mto define the transition probabilities. Formally, Mσ= (Paths M, Pσ)where
+for all paths ρ∈Paths M,Pσ(ρ)(ρ·as) =σ(ρ)(a)·P(last(ρ), a)(s). Thus, a
+state ρinPaths Muniquely matches a finite path ρ′inMσwhere last(ρ′) =ρ.
+This way when a strategy σand a state sis fixed, the probability measure PMσ,s
+defined in Mσis also extended for paths in Paths M. We write the expected value
+of a random variable Xwith respect to the probability distribution PMσ,sas
+EMσ,s(X). For the ease of notation, we write PMσ,sandEMσ,sasPσ,sandEσ,s
+respectively, if the MDP Mis clear from the context. Also, we write Pathsω
+Mσ(ρ)
+asCylσ(ρ), if the MDP Mis clear from the context.
+In the sequel, we make use of (technical) lemmas that follow from the exten-
+sive literature on Markov chains and MDPs. However, for completeness, and to
+give the reader intuition regarding the presented objectives, we also give proofs
+for some of them.
+3 Length-Optimal Strategy for Reachability
+We begin by considering the multi-objective problem motivated by the game of
+frozen lake – the robot tries to reach a target with as few steps as possible whileBi-Objective Lexicographic Optimization in MDPs 7
+not compromising on the probability of reaching a target. More formally, in this
+section, we find a strategy in an MDP that minimizes the expected number
+of steps to reach some goal states among those strategies that maximize the
+probability of reaching the goal states.
+We consider a set of target states T⊆SinM, and assume that every
+state in Tis a sink state, that is, it has only one outgoing action to itself with
+probability 1. Given a path ρin an MC M= (S, P), we use lenT(ρ)to denote
+the length of the shortest prefix of ρthat reaches one of the states of T, that is,
+lenT(ρ) =iifρ[i]∈Tand for all j < i,ρ[j]/∈T.
+For an MDP M= (S, A, P ), letPσ,s(♢T)be the probability of reaching
+a state in T, starting from s∈S, following the strategy σinM. Then, let
+ValM(s) = max σPσ,s(♢T)be the maximum probability to reach Tfrom s, and
+ΣM,s(♢T) = arg maxσPσ,s(♢T)be the set of all optimal strategies.
+Problem statement.
+Given an MDP M, an initial state s0and a set of goal states T, our objective
+is to find a strategy that minimizes Eσ,s0(lenT|♢T)among the strategies in
+ΣM,s0(♢T), that is, the strategies which maximize Pσ,s0(♢T).
+For the rest of this section, we fix the MDP M= (S, A, P )and a set of
+target states T⊆S. Note that, in this case, the functions σ7→Pσ,s0(♢T)and
+σ7→ −Eσ,s0(lenT|♢T)correspond to the two functions fandg, respectively,
+and the set ΣM,s0(♢T)corresponds to Σf, described in the introduction (Eq. 1).
+3.1 Maximizing Probability to Reach a Target
+We denote the set {(s, a)∈S×A|ValM(s) =P
+s′P(s, a, s′)·ValM(s′)}by
+OptM. For s∈S, let OptM(s)be the set {a|(s, a)∈OptM}. Finally, we use
+ΣOpt
+Mto represent the set of strategies that takes actions according to OptM,
+that is, ΣOpt
+M={σ| ∀ρ,∀a∈Supp (σ(ρ)); (last(ρ), a)∈OptM}.
+Lemma 1. For every state s∈Sand for every a∈A,
+ValM(s)≥X
+s′P(s, a, s′)·ValM(s′).
+Proof.Suppose, there is a state s∈Sand an action a∈Asuch that ValM(s)<P
+s′P(s, a, s′)·ValM(s′). Now, consider the strategy σ′that takes action afrom
+sand then from paths s·as′follows a strategy σs′∈ΣM,s′(♢T)that maximizes
+the probability to reach states in Tfrom s′. Formally,
+σ′(ρ) =(
+a ifρ=s
+σs′(ρ′)ifρ=s·as′·ρ′
+Then, Pσ′,s(♢T) =P
+s′P(s, a, s′)·Pσs′,s′(♢T) =P
+s′P(s, a, s′)·ValM(s′)>
+ValM(s),which is a contradiction as ValM(s)≥Pσ,s(♢T)for any σ.8 Busatto-Gaston et al.
+Lemma 2. For every state s∈S,ΣM,s(♢T)⊆ΣOpt
+M.
+Proof.Towardsacontradiction,supposethat,thereisastrategy σ∗∈ΣM,s(♢T)
+such that σ∗/∈ΣOpt
+M. Then there exists a path ρand an action a∈Supp (σ∗(ρ))
+such that (last(ρ), a)̸∈OptM. Let last(ρ) =t. Then, from Lemma 1 and the fact
+that (t, a)̸∈OptM, we get:
+ValM(t)>X
+s′P(t, a, s′)·ValM(s′), (2)
+and for every other action a′̸=a,
+ValM(t)≥X
+s′P(t, a′, s′)·ValM(s′). (3)
+Consider the strategy σ∗that differs from σ∗only on paths with ρas prefix: on
+every path having ρas a prefix, σ∗takes the next action according to a strategy
+σt∈ΣM,t(♢T)that maximizes the probability to reach a state in Tfrom t,
+whereas, it takes action according to σ∗on every other path. Formally,
+σ∗(ρ′) =(
+σt(ρ′′)ifρ′=ρ·ρ′′
+σ∗(ρ′)otherwise.
+Note that, for every strategy σ, and for all a′∈A,PMσ∗,ρ·a′s′(♢T)≤ValM(s′).
+Therefore, Pσ∗,ρ(♢T) =X
+a′
+σ∗(ρ, a′)·X
+s′ 
+P(t, a′, s′)·Pσ∗,ρ·a′s′(♢T)
+≤X
+a′
+σ∗(ρ, a′)·X
+s′ 
+P(t, a′, s′)·ValM(s′)
+<X
+a′σ∗(ρ, a′)·ValM(t) [from Eq. 2 and 3 ]
+=ValM(t)
+So,Pσ∗,ρ(♢T) =Pσt,t(♢T) =ValM(t)>Pσ∗,ρ(♢T). For a finite path ρand an
+infinite path ρ′, we write ρ⊑ρ′if there exists an infinite path ρ′′such that
+ρ′=ρ·ρ′′. Now note that, for every strategy σ,
+Pσ,s(♢T) =Pσ,s(ρ′|=♢T∧ρ⊑ρ′) +Pσ,s(ρ′|=♢T∧ρ̸⊑ρ′)
+=Pσ,s(Cylσ(p))·Pσ,ρ(♢T) +Pσ,s(ρ′|=♢T∧ρ̸⊑ρ′)(4)
+Since for any ρ′such that ρ̸⊑ρ′,σ∗(ρ′) =σ∗(ρ′), we have Pσ∗,s(Cylσ(ρ))is
+equal to Pσ∗,s(Cylσ∗(ρ)), and furthermore, Pσ∗,s(ρ′|=♢T∧ρ̸⊑ρ′)is equal to
+Pσ∗,s(ρ′|=♢T∧ρ̸⊑ρ′). Plugging this into Eq. 4 for σ∗andσ∗, and the fact that
+Pσ∗,ρ(♢T)<Pσ∗,ρ(♢T), we conclude Pσ∗,s(♢T)<Pσ∗,s(♢T), which contradicts
+the fact that σ∗is an optimal strategy.Bi-Objective Lexicographic Optimization in MDPs 9
+3.2 Minimizing Expected Conditional Length to Target
+In the following, we propose a simple two-step pruning algorithm to solve the
+multi-objective problem defined earlier in this section. Towards that direction,
+we first modify the given MDP Min the following manner.
+Definition 3. We define the pruned MDP M′= (S′, A, P′)withS′={s∈S|
+ValM(s)>0}andP′constructed from Pin the following way:
+P′(s, a, s′) =(
+P(s, a, s′)·ValM(s′)
+ValM(s)if(s, a)∈OptMands, s′∈S′
+⊥ otherwise.
+Note that M′= (S′, A, P′)is well-defined, since P′is a probability distribu-
+tion. Indeed,P
+s′P′(s, a, s′) =P
+s′P(s, a, s′)·ValM(s′)
+ValM(s)=ValM(s)
+ValM(s)= 1.
+From the construction of M′, we get that the set Σ(M′)of all strategies
+inM′is, in fact, ΣOpt
+M. Following similar notation as introduced earlier, for a
+strategy σ∈Σ(M′), we write PM′σ,sandEM′σ,sasP′
+σ,sandE′
+σ,s, respectively.
+Also, we write Pathsω
+M′σ(ρ)asCyl′
+σ(ρ).
+We now have all the ingredients to present the algorithm:
+Algorithm 1
+Input: M= (S, A, P ),s0∈SandT⊆S.
+1: Create MDP M′= (S′, A, P′)according to Definition 3.
+2: Find a strategy σ∗that minimizes the expected length in M′:
+σ∗∈arg minσE′
+σ,s0(lenT).
+3:return σ∗.
+Note that, the strategies present in the pruned MDP M′contain every strat-
+egy of Mthat optimizes the probability of reaching a target (Lemma 2). To
+show that Algorithm 1 indeed returns a length-optimal strategy maximizing the
+probability of reachability in M, we need to show the following:
+–the strategy given by Algorithm 1 is indeed a strategy that optimizes the
+probability to reach a target, and
+–for every strategy σ∈ΣM,s0(♢T), the conditional expected length to a tar-
+get state Eσ,s0(lenT|♢T)inMis the same as E′
+σ,s0(lenT)inM′. Therefore,
+it is enough to minimize the expected length in M′.
+We first show a relation between the measures of cylinder sets in MandM′.
+Lemma 3. For every strategy σ∈ΣOpt
+Mand for every path ρ=s0a0s1. . . s n∈
+((S′\T)·A)∗T∩Paths M′(s0, σ),P′
+σ,s0(Cyl′
+σ(ρ)) =Pσ,s0(Cylσ(ρ))
+ValM(s0).10 Busatto-Gaston et al.
+Proof.Assn∈T,ValM(sn) = 1. So,
+P′
+σ,s0(Cyl′
+σ(ρ)) =n−1Y
+i=0σ(ρ|i, ai)·P′(si, ai, si+1)
+=n−1Y
+i=0σ(ρ|i, ai)·P(si, ai, si+1)·ValM(si+1)
+ValM(si)
+=Pσ,s0(Cylσ(ρ))·ValM(sn)
+ValM(s0)=Pσ,s0(Cylσ(ρ))
+ValM(s0).
+Using Lemma 3 we will prove that (cf. Corollary 1) every strategy that max-
+imizes the probability of reaching a target state in M, reaches a target state in
+M′with probability 1, and vice versa.
+Lemma 4. For every strategy σ∈ΣOpt
+M,P′
+σ,s0(♢T) =Pσ,s0(♢T)
+ValM(s0).
+Proof.Note that, Paths M′(s0)∩((S′\T)·A)∗T=Paths M(s0)∩((S\T)·A)∗T,
+since in the construction of M′we only remove states of Mfrom which no state
+inTis reachable. Therefore, using Lemma 3, we get:
+P′
+σ,s0(♢T) =X
+ρ∈PathsM′(s0)∩((S′\T)A)∗TP′
+σ,s0(Cyl′
+σ(ρ))
+=X
+ρ∈PathsM(s0)∩((S\T)A)∗TPσ,s0(Cylσ(ρ))
+ValM(s0)
+=Pσ,s0(♢T)
+ValM(s0).
+Corollary 1. For every σ∈Σ(M),σ∈ΣM,s0(♢T)iffP′
+σ,s0(♢T) = 1.
+Since for every σ∈ΣM,s0(♢T),Pσ,s0(♢T|♢T) = 1, we can write:
+Eσ,s0(lenT|♢T) =∞X
+r=0r·Pσ,s0({ρ|ρ|=♢T∧lenT(ρ) =r})
+Pσ,s0(♢T)
+=∞X
+r=0r·X
+ρ∈PathsM(s0)∩((S\T)A)∗T:lenT(ρ)=rPσ,s0(Cylσ(ρ))
+ValM(s0).
+We now relate the expected length of reaching a target state in M′with the
+expected conditional length of reaching a target state in M.
+Lemma 5. For any strategy σ∈ΣM,s0(♢T),E′
+σ,s0(lenT) =Eσ,s0(lenT|♢T).
+Proof.Using Paths M′(s0)∩((S′\T)·A)∗T=Paths M(s0)∩((S\T)·A)∗T,
+Lemma 3 and Corollary 1, we get:
+E′
+σ,s0(lenT) =∞X
+r=0r·P′
+σ,s0({ρ|ρ|=♢T∧lenT(ρ) =r})
+=∞X
+r=0r·X
+ρ∈PathsM′(s0)∩((S′\T)A)∗T:lenT(ρ)=rP′
+σ,s0(Cyl′
+σ(ρ))Bi-Objective Lexicographic Optimization in MDPs 11
+=∞X
+r=0r·X
+ρ∈PathsM(s0)∩((S\T)A)∗T:lenT(ρ)=rPσ,s0(Cylσ(ρ))
+ValM(s0)
+=Eσ,s0(lenT|♢T).
+Finally, we prove the correctness of Algorithm 1:
+Theorem 1. Given an MDP M= (S, A, P ), a state s0∈SandT⊆S, letσ∗
+be the strategy returned by Algorithm 1. Then,
+1.Pσ∗,s0(♢T) =ValM(s0).
+2.Eσ∗,s0(lenT|♢T) = min
+σ∈ΣM,s0(♢T)Eσ,s0(lenT|♢T)
+Proof.From Corollary 1, we get that E′
+σ,s0(lenT)̸=∞iffσ∈ΣM,s0(♢T).
+So if σ∗/∈ΣM,s0(♢T), then E′
+σ∗,s0(lenT) =∞. But since for any strategy
+σinΣM,s0(♢T),E′
+σ,s0(lenT)<∞, it contradicts the fact that σ∗minimizes
+E′
+σ,s0(lenT). Therefore, σ∗∈ΣM,s0(♢T), and hence Pσ∗,s0(♢T) =ValM(s0).
+From Lemma 5, we get for any σ∈ΣM,s0(♢T),
+Eσ,s0(lenT|♢T) =E′
+σ,s0(lenT)
+=⇒ arg min
+σ∈ΣM,s0(♢T)Eσ,s0(lenT|♢T) = arg min
+σ∈ΣM,s0(♢T)E′
+σ,s0(lenT)
+Hence, σ∗∈arg minσ∈ΣM,s0(♢T)Eσ,s0(lenT|♢T)and therefore, we conclude,
+Eσ∗,s0(lenT|♢T) = min
+σ∈ΣM,s0(♢T)Eσ,s0(lenT|♢T).
+Note that, constructing the MDP M′(Line 1 of Algorithm 1) takes polyno-
+mial time. Finding a strategy that optimizes E′
+σ,s0(lenT)also takes polynomial
+time [5]. Therefore, the overall algorithm terminates in polynomial time.
+4 Experimental Results
+We have made a prototype implementation of the pruning-based algorithm (Al-
+gorithm 1) described in Section 3. In this section, we compare the performance
+(expected number of steps to reach the goal states) of our algorithm with the
+strategies generated by Stormthat (only) maximize the probability of reaching
+the goal states.
+In our MDP, when the robot tries to move by picking a direction, the next
+state is determined randomly over the neighbouring positions of the robot, ac-
+cordingtothefollowingdistributionweights:theintendeddirectiongetsaweight
+of10, and other directions that are not a wall and not the reverse direction of
+the intended one get a weight of 1, the distribution is then normalized so that
+the weights sum up to 1.
+We generated 100layouts of size 10×10where we placed walls in (i) each
+cell in the border of the grid and (ii) with probability 0.1, at each of other cells.
+We then placed holes in the remaining empty cells with the same probability.12 Busatto-Gaston et al.
+layouts ( M)ValM(s0,♢T)Shortest distance vDistOpt vStorm
+1 0.66 9 76.48 76.48
+2 0.52 18 299.75 629.16
+3 1.00 2 2.40 12.12
+4 1.00 3 3.44 34.47
+5 1.00 6 7.71137.56
+6 0.68 10 264.04 9598.81
+7 1.00 5 112.69 9367.02
+8 0.91 10 11.495879.63
+9 1.00 3 3.665711.76
+10 0.91 5 12.89149357.57
+Table 1. Comparison of the expected conditional length to reach the target for the
+strategies given by Algorithm 1 ( vDistOpt) and Storm(vStorm) on some of the ran-
+domly generated layouts, sorted by their ratio. ‘Shortest distance’ refer to the length of
+the shortest path to the target (without considering the stochastic dynamics of Frozen
+Lake) and ‘ ValM(s0,♢T)’ represents the maximum probability of reaching the target
+from the initial position of the robot ( s0).
+Finally, we chose the position of the target and the starting position from the
+remaining empty cells uniformly at random.
+From these layouts, we constructed MDPs described in the Prismlanguage,
+a format supported by Storm. For each MDP, we extracted two strategies: (i)
+a strategy σStorm∈ΣM,s(♢T)that is produced by Stormthat optimizes the
+probability to reach the target, and (ii) σDistOpt, a strategy that is derived from
+Algorithm 1. Note that, both of these strategies are optimal for the probability
+to reach the target. However, the first strategy does not focus on optimizing the
+length to reach the target. For both of these strategies, we calculate the expected
+conditionaldistancetothetargetintheirinducedMarkovchains.Table1reports
+on our experimental results for a representative subset of the 100layouts we
+generated, one of each decile (one layout from the 10best percents, one from
+the10−20%range, etc).
+Observe that the strategy given by Algorithm 1 does not necessarily suggest
+following the shortest path, as this may not optimize the first objective (reaching
+the target with maximum probability). For example, in the layout in Figure 1,
+the ‘shortest’ path to the target has length 10. But if we need to maximize the
+probability to reach the target, from the cell in the grid marked with 1, instead of
+going right, a better strategy would be to keep going to the cell above and then
+coming back. This way, the agent will avoid the hole below with certainty, and
+will eventually go to the right. This is the strategy that Algorithm 1 provides,
+which has expected conditional length to the target 33.85. On the other hand,
+theexpectedconditionallengthtothetargetwhilefollowingtheoptimalstrategy
+produced by Stormis much larger ( 345.34). This is because it asks the robot to
+loop in the 6×3area in the left. Because of the stochastic dynamics it eventually
+leaves this area and reaches the target, but it may take a long time, increasing
+the expected conditional length.Bi-Objective Lexicographic Optimization in MDPs 13
+While performing the experiments on the 100randomly generated layouts,
+we observed that in 9layouts out of 10, the expected conditional length ( vStorm)
+for the strategy σStormis at least twice the expected conditional length ( vDistOpt)
+for the strategy σDistOpt. In69%of the layouts, vStormvalues are 10times worse
+than the vDistOptvalues. In the worst cases ( 23%of the layouts), vStormvalues
+are at least a 1000times worse than the vDistOptvalues.
+5 Safety and Expected Mean Payoff
+Inthissection,weconsideranothermulti-objectiveproblem–asafirstobjective,
+we maximize the probability of avoiding a set of states in an MDP, and as a sec-
+ond objective, we maximize the expected conditional Mean Payoff. We propose
+a pruning-based algorithm, similar to Algorithm 1, to solve this problem.
+For this section, we augment the definition of an MDP Mwith areward
+function R:S×A→R, where S, AandPare the same as in the previous
+sections. Furthermore, we consider a set of states Bad⊂SinMand assume
+that every state in Badis a sink state.
+For an MDP M= (S, A, P, R ), letPMσ,s(□¬Bad)be the probability of
+avoiding all states in Bad, starting from s∈S, following the strategy σinM.
+Then, let ValM(s) = max σPMσ,s(□¬Bad)be the maximum probability to avoid
+Badfrom s, and ΣM,s(□¬Bad) = arg maxσPMσ,s(□¬Bad)be the set of all
+optimal strategies for safety.
+To formally define the second objective, we first define the total reward of
+horizon nfor a path ρ=s0a0. . .asRew n(ρ) =Pn−1
+i=0R(si, ai). Then, for a
+strategy σand a state s, theexpected mean-payoff is defined as
+Eσ,s(MP) = lim inf
+n→∞1
+nEσ,s(Rew n).
+The optimal expected average reward starting from a state sin an MDP M
+is defined over all strategies σinMassupσEσ,s(MP). One can restrict the
+supremum to the deterministic memoryless strategies [19, section 9.1.4].
+We use Eσ,s(Rew n|□¬Bad)to denote the expected conditional finite horizon
+reward. Then the expected conditional mean-payoff is defined as
+Eσ,s(MP|□¬Bad) = lim inf
+n→∞1
+nEσ,s(Rew n|□¬Bad).
+Intuitively, it represents the expected mean-payoff one would obtain by following
+the strategy σand staying safe.
+Problem statement.
+GivenanMDP M,aninitialstate s0andasetofstates Badwhere ValM(s0)>0,
+our objective is to find a strategy that maximizes EMσ,s0(MP|□¬Bad)among
+the strategies in ΣM,s0(□¬Bad), i.e., the strategies maximizing PMσ,s0(□¬Bad).14 Busatto-Gaston et al.
+For the rest of this section, we fix the MDP M= (S, A, P, R )and a set of bad
+states Bad⊂S. Note that, in this case, the functions σ7→Pσ,s0(□¬Bad)and
+σ7→Eσ,s0(MP|□¬Bad)correspond to the two functions fandg, respectively,
+andΣM,s0(□¬Bad)corresponds to Σf, described in the introduction (Eq. 1).
+5.1 Maximizing Probability of Staying Safe
+We denote the set {(s, a)∈S×A|ValM(s) =P
+s′P(s, a, s′)·ValM(s′)}using
+OptM. For s∈S, let OptM(s)be the set {a|(s, a)∈OptM}. Finally, we use
+ΣOpt
+Mto represent the set of strategies that takes actions according to OptM,
+that is, ΣOpt
+M={σ| ∀ρ,∀a∈Supp (σ(ρ)); (last(ρ), a)∈OptM}.
+We first state the following results, analogous to Lemma 1 and 2 respectively,
+which can be proved similarly as in the case of reachability.
+Lemma 6. For every state s∈S\Badand for every action a,
+ValM(s)≥X
+s′P(s, a, s′)·ValM(s′).
+Lemma 7. For every state s∈S,ΣM,s(□¬Bad)⊆ΣOpt
+M.
+Furthermore, we will show that, unlike reachability, in this case, the other
+direction of the containment also holds:
+Lemma 8. For every state s∈S,ΣM,s(□¬Bad)⊇ΣOpt
+M.
+In order to prove Lemma 8, we first develop a few intermediate results. We
+start with defining the following notations:
+UPre0(Bad) =Bad,UPrei+1(Bad) ={s| ∀a,∃s′∈UPrei(Bad), P(s, a, s′)>0},
+UPre∗(Bad) =∞[
+i=0UPrei(Bad).
+Furthermore, we define Good =S\UPre∗(Bad),V=S\(Good∪Bad).
+Lemma 9. For every state s∈S,ValM(s) = 1iffs∈Good.
+Proof.Fors∈Good,∃asuch that Supp (P(s, a))⊆Good. This gives a strategy
+to surely avoid Bad, and hence ValM(s) = 1.
+Ifs̸∈Good, then either (i) s∈Bad, in which case ValM(s) = 0, or (ii)
+s∈UPre∗(Bad), and hence s∈UPrei(Bad)\UPrei−1(Bad)for some i. Then, for
+every action a,Supp (P(s, a))∩UPrei−1(Bad)̸=∅. This implies, for any strategy
+σ, there is a path from sof length at most ireaching Badfollowing σ. Since this
+path has a non-zero probability, we therefore get that ValM(s)<1.
+For a strategy σand a finite path ρ, we define the strategy σρas follows: for
+any finite path ρ′starting from last(ρ),σρ(ρ′) =σ(ρ·ρ′).Bi-Objective Lexicographic Optimization in MDPs 15
+Lemma 10. For every strategy σ∈ΣOpt
+M, and every finite path ρinMfollowing
+σ,Pσρ,last(ρ)(□¬Bad) = 1ifflast(ρ)∈Good.
+Proof.We denote last(ρ)bys. First, let s∈Good. Then we can show that
+∀a∈OptM(s),Supp (P(s, a))⊆Good. Indeed, if there exists an action a∈
+OptM(s)andastate s′∈Supp (P(s, a))suchthat s′/∈Good,thenfromLemma9,
+Val(s′)<1, which would further imply that
+ValM(s) =X
+s′P(s, a, s′)·ValM(s′)<X
+s′P(s, a, s′) = 1 ,
+which contradicts the fact that s∈Good(using Lemma 9). So for every strategy
+σinΣOpt
+M, every path from sfollowing σρonly visits states from Good. Therefore,
+Pσρ,s(□¬Bad) = 1.
+To conclude, observe that if s∈S\Good,Pσρ,s(□¬Bad)≤ValM(s)<1.
+In the following, for the ease of notation, for any state s∈Sand a strategy σ,
+we denote Pσ,s(Cylσ(ρ))byPσ,s(ρ). Recall that, for every action a∈OptM(s),
+ValM(s) =P
+s′P(s, a, s′)·ValM(s′).We can then expand ValM(s)as:
+ValM(s) =X
+aσ(s, a)ValM(s) =X
+aσ(s, a)X
+s′P(s, a, s′)·ValM(s′).
+We can generalize the above statement by unfolding ValM(·)fornsteps:
+Lemma 11. For every state s∈Sand for every strategy σ∈ΣOpt
+M,
+ValM(s) =X
+ρ∈(V A)nVPσ,s(ρ)·ValM(last(ρ)) +X
+ρ∈(V A)<nGoodPσ,s(ρ)
+The summation in the first term of the above expression is taken over all
+paths that reach neither GoodnorBadwithin nsteps, whereas the summation
+in the second term is over all paths that reach some state in Goodwithin nsteps.
+The result in Lemma 11 follows from the following result:
+Lemma 12. For every finite path ρ=s0a0s1. . . s nof length nand for every
+strategy σinΣOpt
+M, for all k < n:
+ValM(sk) =X
+ρ′∈(V A)n−kVPσρ|k,sk(ρ′)·ValM(last(ρ′)) +X
+ρ′∈(V A)<n−kGoodPσρ|k,sk(ρ′).
+Using Lemma 12, we can now prove Lemma 11:
+Proof of Lemma 11. Putting k= 0in Lemma 12, we get:
+ValM(s0) =X
+ρ′∈(V A)nVPσ,s0(ρ′)·ValM(last(ρ′)) +X
+ρ′∈(V A)<nGoodPσ,s0(ρ′).16 Busatto-Gaston et al.
+We now characterize P(·)in the same way as we did for Val(·). Note that, for
+any state sand any strategy σ, we can expand Pσ,s(□¬Bad)as
+Pσ,s(□¬Bad) =X
+aσ(s, a)X
+s′P(s, a, s′)·Pσsas′,s′(□¬Bad).
+Analogous to Lemma 11, we can generalize this statement by unfolding P(·)for
+nsteps:
+Lemma 13. For every state s∈Sand for every strategy σ∈ΣOpt
+M,
+Pσ,s(□¬Bad) =X
+ρ∈(V A)nVPσ,s(ρ)·Pσρ,last(ρ)(□¬Bad) +X
+ρ∈(V A)<nGoodPσ,s(ρ).
+Lemma 14. For every s∈S, and every σ∈ΣOpt
+M,ValM(s) =Pσ,s(□¬Bad).
+Proof.Ifs∈Good,ValM(s) =Pσ,s(□¬Bad) = 1. Ifs∈Bad,ValM(s) =
+Pσ,s(□¬Bad) = 0. Finally, if s∈V, from Lemma 11 and Lemma 13,
+ValM(s)−Pσ,s(□¬Bad) =X
+ρ∈(V A)nVPσ,s(ρ)·(ValM(last(ρ))−Pσρ,last(ρ)(□¬Bad))
+<X
+ρ∈(V A)nVPσ,s(ρ)[Using Lemma 10]
+Fors∈UPre∗(Bad), there is a path of length at most |V|reaching BadinMσ.
+Solimn→∞P
+ρ∈(V A)nVPσ,s(ρ) = 0.
+Lemma 8 follows directly from Lemma 14. Then, using Lemma 7 and 8, we
+conclude the following theorem:
+Theorem 2. For every state s∈S,ΣM,s(□¬Bad) =ΣOpt
+M.
+5.2 Maximizing Expected Conditional Mean Payoff
+We propose a simple two-step pruning algorithm, similar to Algorithm 1, to solve
+the multi-objective problem defined by safety and mean-payoff. We first modify
+the given MDP Min the following manner.
+Definition 4. LetS′={s∈S|ValM(s)>0}. We define M′= (S′, A, P′, R)
+where P′is defined as follows:
+P′(s, a, s′) =(
+P(s, a, s′)·ValM(s′)
+ValM(s)if(s, a)∈OptMands∈S′
+⊥ otherwise.
+Note that M′is again well-defined. We now present the two-step algorithm:
+For a state s0, a strategy σ, and a finite path ρ=s0a0s1. . . s n∈(S′A)∗S′∩
+Paths M′(s0, σ), we define, GoodCylσ(ρ) =Cylσ(ρ)∩ {ρ′|ρ′|=□¬Bad}. Then,
+using Lemma 14, we get that if σ∈ΣOpt
+M, then
+Pσ,s0(GoodCylσ(ρ)) =Pσ,s0(Cylσ(ρ))·Pσρ,sn(□¬Bad) =Pσ,s0(Cylσ(ρ))·ValM(sn).(5)Bi-Objective Lexicographic Optimization in MDPs 17
+Algorithm 2
+Input: M= (S, A, P, R ),s0∈S,Bad⊆S
+1: Create the MDP M′= (S′, A, P′, R′)according to Definition 4.
+2: Find a strategy σ∗that maximizes the expected mean payoff in M′:
+σ∗∈arg maxσE′
+σ,s0(MP).
+3:return σ∗.
+Lemma 15. For every strategy σ∈ΣOpt
+M,s0∈S′and every finite path ρ=
+s0a0s1. . . s n∈(S′A)∗S′∩Paths M′(s0, σ),P′
+σ,s0(Cyl′
+σ(ρ)) =Pσ,s0(GoodCylσ(ρ))
+ValM(s0).
+Proof.
+P′
+σ,s0(Cyl′
+σ(ρ)) =n−1Y
+i=0σ(ρ|i, ai)·P′(si, ai, si+1)
+=n−1Y
+i=0σ(ρ|i, ai)·P(si, ai, si+1)·ValM(si+1)
+ValM(si)
+=Pσ,s0(Cylσ(ρ))·ValM(sn)
+ValM(s0)=Pσ,s0(GoodCylσ(ρ))
+ValM(s0)[from Eq. 5 ]
+We now show the following correlation between the expected mean-payoff in
+M′and the expected conditional mean-payoff in M:
+Lemma 16. For every strategy σ,E′
+σ(MP) =Eσ(MP|□¬Bad)
+Proof.Forr∈R, we define ξr={ρ∈Paths M(s0)∩(SA)nS|Rew n(ρ) =r}
+andξ′
+r={ρ∈Paths M′(s0)∩(S′A)nS′|Rew n(ρ) =r}. Note that for a fixed n,
+there are finitely many such non-empty ξr. From the definition of the conditional
+expected reward in M, we get:
+Eσ,s0(Rew n|□¬Bad) =X
+rr·Pσ,s0({ρ|Rew n(ρ) =r} ∩□¬Bad)
+Pσ,s0(□¬Bad)
+=X
+rr·X
+ρ∈ξrPσ,s0(Cylσ(ρ)∩□¬Bad)
+ValM(s0)
+=X
+rr·X
+ρ∈ξrPσ,s0(GoodCylσ(ρ))
+ValM(s0).
+Then, E′
+σ,s0(Rew n) =X
+rr·P′
+σ,s0({ρ|Rew n(ρ) =r}) =X
+rr·X
+ρ∈ξ′rP′
+σ,s0(Cyl′
+σ(ρ))
+=X
+rr·X
+ρ∈ξ′
+rPσ,s0(GoodCylσ(ρ))
+ValM(s0)18 Busatto-Gaston et al.
+=X
+rr·X
+ρ∈ξrPσ,s0(GoodCylσ(ρ))
+ValM(s0)(6)
+=Eσ,s0(Rew n|□¬Bad) (7)
+The equality in Eq. 6 is due to the fact that for any finite path ρ=s0. . . s n∈
+(SA)nS\(S′A)nS′,∃is.t.ValM(si) = 0, which implies, Pσ,s0(GoodCylσ(ρ))≤
+Pσ,s0(GoodCylσ(s0. . . s i)) =Pσ,s0...si(□¬Bad)≤ValM(si) = 0.
+Finally, dividing by nand taking limit on the both sides of Eq. 7, we get
+E′
+σ,s0(MP) =Eσ,s0(MP|□¬Bad).
+Now we prove the correctness of Algorithm 2:
+Theorem 3. Given an MDP M= (S, A, P, R ), a state s0∈SandBad⊂S,
+letσ∗be the strategy returned by Algorithm 2. Then,
+1.Pσ∗,s0(□¬Bad) =ValM(s0).
+2.Eσ∗,s0(MP|□¬Bad) = max
+σ∈ΣM,s0(□¬Bad)Eσ,s0(MP|□¬Bad)
+Proof.From Theorem 2, for any σinΣOpt
+M,Pσ,s0(□¬Bad) = ValM(s0). Note
+that a strategy in M′would be in ΣOpt
+M. Therefore, Pσ∗,s0(□¬Bad) =ValM(s0).
+From Lemma 16, we get for any σ,
+Eσ,s0(MP|□¬Bad) =E′
+σ,s0(MP)
+⇒ arg max
+σ∈ΣM,s0(□¬Bad)Eσ,s0(MP|□¬Bad) = arg max
+σ∈ΣM,s0(□¬Bad)E′
+σ,s0(MP)
+Hence, σ∗∈arg maxσ∈ΣM,s0(□¬Bad)Eσ,s0(MP|□¬Bad)and therefore, we con-
+clude, Eσ∗,s0(MP|□¬Bad) = max
+σ∈ΣM,s0(□¬Bad)Eσ,s0(MP|□¬Bad).
+Note that, constructing the MDP M′(Line 1 of Algorithm 2) takes polyno-
+mial time. Finding a strategy that optimizes E′
+σ,s0(MP)also takes polynomial
+time [19, Chapter 9]. Therefore, the overall algorithm takes polynomial time.
+6 Discussion
+The work presented in this article proposes a pruning-based approach (Algo-
+rithms 1, 2) that can be used to solve certain multi-objective problems in MDPs.
+The algorithms work by first pruning the given MDP based on the first objec-
+tive, and then solving the (possibly simplified) second objective on the pruned
+MDP. Note that, optimizing the second objective, in turn, optimizes both of the
+objectives in the lexicographic order.
+The case where the first objective is to maximize the probability of reaching
+a set of (target) states in an MDP and the second objective is to minimize the
+conditional expected time to reach the same set of states, has been discussed
+in Section 3. Note that one can consider more general (positive) cost functionsBi-Objective Lexicographic Optimization in MDPs 19
+and try to minimize the conditional expected cost to reach the target states as
+a secondary objective, keeping the first objective unchanged.
+Based on a suggestion by Jakob Piribauer, we conjecture that the second
+objective considered in this paper can, in fact, be replaced by any measurable
+function. More precisely, when the first objective is to remain safe, our technique
+can be applied to solve the bi-objective problem where the second objective is
+to optimize the expected value of a measurable function g, conditioned on the
+event that safety is satisfied. To this end, we can prove the following result:
+every strategy in the original MDP Mthat maximizes E(g|□¬Bad)while
+maximizing the probability of staying safe, also maximizes the expected value of
+gin the pruned MDP M′, that is,
+sup
+σ∈ΣM
+SafeEσ(g|□¬Bad) = sup
+σ∈Σ(M′)E′
+σ(g)
+where ΣM
+Safedenotes the set of all strategies that maximize the probability of
+staying safe in M. We believe this result can be proved by generalizing the
+proof of Lemma 16.
+Similarly, when the primary objective is to reach a set of target states with
+as high probability as possible, we believe our technique will be able to compute
+the optimal strategy when the secondary objective is given by any measurable
+function g. We conjecture that the following result will hold: any strategy in
+Mthat first maximizes the probability to reach a target and further maximizes
+the expected value of a measurable function gconditioned on reaching a target
+state, will also maximize the (unconditional) expected value of gin the pruned
+MDP M′, among the strategies that reach a target almost surely, that is, with
+probability 1. More formally, we can obtain the following result:
+sup
+σ∈ΣM
+ReachEσ(g|♢T) = sup
+σ∈ΣM′
+a.s.ReachE′
+σ(g)
+where ΣM′
+a.s.Reachis the set of all strategies in M′that, when followed, forces M′
+to reach a target state with probability 1. Further, if it is the case that every
+strategy in M′maximizing the (unconditional) expected value of greaches a
+target with probability 1(which was the case in the pair of objectives consid-
+ered in Section 3), then the problem reduces to finding a strategy in M′that
+maximizes the (unconditional) expected value of gamong all strategies, that is,
+sup
+σ∈ΣM
+ReachEσ(g|♢T) = sup
+σ∈Σ(M′)E′
+σ(g).
+While we studied only two-dimensional lexicographic objectives for the sake
+of clarity and simplicity, we note that our work can be straight-forwardly ex-
+tended to more than two reward structures. For example, one may want to op-
+timize for safety first, reachability second, and minimal expected time to reach
+a target as a third objective. In this case, we would proceed in three steps: a
+first pruning of the MDP that solves the safety problem, a second pruning that
+over-approximate the winning strategies for reachability, and finally we would
+minimize the expected distance.20 Busatto-Gaston et al.
+References
+1. Almagor, S., Boker, U., Kupferman, O.: Discounting in LTL. In: Ábrahám, E.,
+Havelund, K. (eds.) Tools and Algorithms for the Construction and Analysis of
+Systems. pp. 424–439. Springer Berlin Heidelberg, Berlin, Heidelberg (2014)
+2. Alshiekh, M., Bloem, R., Ehlers, R., Könighofer, B., Niekum, S., Topcu, U.: Safe
+reinforcement learning via shielding. In: Proceedings of the 32nd AAAI Conference
+on Artificial Intelligence, (AAAI 2018). pp. 2669–2678. AAAI Press (2018)
+3. Baier, C., Klein, J., Klüppelholz, S., Märcker, S.: Computing conditional prob-
+abilities in Markovian models efficiently. In: Ábrahám, E., Havelund, K. (eds.)
+Tools and Algorithms for the Construction and Analysis of Systems. pp. 515–530.
+Springer Berlin Heidelberg, Berlin, Heidelberg (2014)
+4. Baier, C., Klein, J., Klüppelholz, S., Wunderlich, S.: Maximizing the conditional
+expected reward for reaching the goal. In: Legay, A., Margaria, T. (eds.) Tools and
+Algorithms for the Construction and Analysis of Systems. pp. 269–285. Springer
+Berlin Heidelberg, Berlin, Heidelberg (2017)
+5. Bertsekas, D.P., Tsitsiklis, J.N.: An analysis of stochastic shortest path problems.
+Math. Oper. Res. 16(3), 580–595 (1991), https://doi.org/10.1287/moor.16.3.580
+6. Bohy, A., Bruyère, V., Filiot, E., Raskin, J.F.: Synthesis from LTL specifications
+with mean-payoff objectives. In: Piterman, N., Smolka, S.A. (eds.) Tools and Algo-
+rithms for the Construction and Analysis of Systems. pp. 169–184. Springer Berlin
+Heidelberg, Berlin, Heidelberg (2013)
+7. Chakraborty, D., Busatto-Gaston, D., Raskin, J., Pérez, G.A.: Formally-sharp dag-
+ger for MCTS: lower-latency monte carlo tree search using data aggregation with
+formal methods. In: Agmon, N., An, B., Ricci, A., Yeoh, W. (eds.) Proceedings
+of the 2023 International Conference on Autonomous Agents and Multiagent Sys-
+tems, AAMAS 2023, London, United Kingdom, 29 May 2023 - 2 June 2023. pp.
+1354–1362. ACM (2023), https://dl.acm.org/doi/10.5555/3545946.3598783
+8. Chatterjee, K., Henzinger, T.A., Jobstmann, B., Singh, R.: QUASY: Quantitative
+synthesistool.In:Abdulla,P.A.,Leino,K.R.M.(eds.)ToolsandAlgorithmsforthe
+Construction and Analysis of Systems. pp. 267–271. Springer Berlin Heidelberg,
+Berlin, Heidelberg (2011)
+9. Chatterjee, K., Katoen, J.P., Mohr, S., Weininger, M., Winkler, T.: Stochastic
+games with lexicographic objectives. Formal Methods in System Design (Mar
+2023), https://doi.org/10.1007/s10703-023-00411-4
+10. Chatterjee, K., Majumdar, R., Henzinger, T.A.: Markov decision processes with
+multiple objectives. In: Durand, B., Thomas, W. (eds.) STACS 2006, 23rd Annual
+Symposium on Theoretical Aspects of Computer Science, Marseille, France, Febru-
+ary 23-25, 2006, Proceedings. Lecture Notes in Computer Science, vol. 3884, pp.
+325–336. Springer (2006), https://doi.org/10.1007/11672142_26
+11. Chatterjee, K., Novotný, P., Pérez, G.A., Raskin, J., Zikelic, D.: Optimizing ex-
+pectation with guarantees in POMDPs. In: Singh, S., Markovitch, S. (eds.) Pro-
+ceedings of the Thirty-First AAAI Conference on Artificial Intelligence, February
+4-9, 2017, San Francisco, California, USA. pp. 3725–3732. AAAI Press (2017),
+http://aaai.org/ocs/index.php/AAAI/AAAI17/paper/view/14354
+12. Chen, T., Kwiatkowska, M., Simaitis, A., Wiltsche, C.: Synthesis for multi-
+objective stochastic games: An application to autonomous urban driving. In: Joshi,
+K., Siegle, M., Stoelinga, M., D’Argenio, P.R. (eds.) Quantitative Evaluation of
+Systems. pp. 322–337. Springer Berlin Heidelberg, Berlin, Heidelberg (2013)Bi-Objective Lexicographic Optimization in MDPs 21
+13. Denardo, E.V.: Computing a bias-optimal policy in a discrete-time Markov deci-
+sion problem. Operations Research 18(2), 279–289 (1970), http://www.jstor.org/
+stable/168684
+14. Forejt, V., Kwiatkowska, M., Norman, G., Parker, D., Qu, H.: Quantitative multi-
+objective verification for probabilistic systems. In: Abdulla, P.A., Leino, K.R.M.
+(eds.) Tools and Algorithms for the Construction and Analysis of Systems. pp.
+112–127. Springer Berlin Heidelberg, Berlin, Heidelberg (2011)
+15. Hahn, E.M., Perez, M., Schewe, S., Somenzi, F., Trivedi, A., Wojtczak, D.: Model-
+free reinforcement learning for lexicographic omega-regular objectives. In: Huis-
+man, M., Păsăreanu, C., Zhan, N. (eds.) Formal Methods. pp. 142–159. Springer
+International Publishing, Cham (2021)
+16. Hensel, C., Junges, S., Katoen, J., Quatmann, T., Volk, M.: The probabilistic
+model checker Storm. Int. J. Softw. Tools Technol. Transf. 24(4), 589–610 (2022),
+https://doi.org/10.1007/s10009-021-00633-z
+17. Junges, S., Jansen, N., Dehnert, C., Topcu, U., Katoen, J.: Safety-constrained
+reinforcement learning for MDPs. In: Chechik, M., Raskin, J. (eds.) Tools and
+Algorithms for the Construction and Analysis of Systems - 22nd International
+Conference, TACAS 2016, Held as Part of the European Joint Conferences on
+Theory and Practice of Software, ETAPS 2016, Eindhoven, The Netherlands, April
+2-8, 2016, Proceedings. Lecture Notes in Computer Science, vol. 9636, pp. 130–146.
+Springer (2016), https://doi.org/10.1007/978-3-662-49674-9_8
+18. Kwiatkowska, M., Norman, G., Parker, D.: PRISM 4.0: Verification of probabilistic
+real-time systems. In: Gopalakrishnan, G., Qadeer, S. (eds.) Proc. 23rd Interna-
+tional Conference on Computer Aided Verification (CAV’11). LNCS, vol. 6806, pp.
+585–591. Springer (2011)
+19. Puterman, M.L.: Markov Decision Processes: Discrete Stochastic Dynamic
+Programming. Wiley Series in Probability and Statistics, Wiley (1994).
+https://doi.org/10.1002/9780470316887
+20. Skalse, J., Hammond, L., Griffin, C., Abate, A.: Lexicographic multi-objective re-
+inforcement learning. In: Raedt, L.D. (ed.) Proceedings of the Thirty-First In-
+ternational Joint Conference on Artificial Intelligence, IJCAI-22. pp. 3430–3436.
+International Joint Conferences on Artificial Intelligence Organization (7 2022),
+https://doi.org/10.24963/ijcai.2022/476, main Track22 Busatto-Gaston et al.
+A Missing proofs of Section 5
+A.1 Proof of Lemma 6
+Suppose, there is a state s∈S\Badand an action a∈Asuch that ValM(s)<P
+s′P(s, a, s′)·ValM(s′).Now,considerthestrategy σ′thattakesaction afrom s
+andthenfrompaths s·as′followsastrategy σs′∈ΣM,s′(□¬Bad)thatmaximizes
+the probability to avoid states in Bad. Formally,
+σ′(ρ) =(
+a ifρ=s
+σs′(ρ′)ifρ=s·as′·ρ′
+Then, we get the following: PMσ′,s(□¬Bad) =P
+s′P(s, a, s′)·Pσs′,s′(□¬Bad) =P
+s′P(s, a, s′)·ValM(s′)>ValM(s), which is a contradiction.
+A.2 Proof of Lemma 7
+Suppose that there is a strategy σ∗∈ΣM,s(□¬Bad)where there exists a path
+ρand an action a∈Supp (σ∗(ρ))such that (last(ρ), a)̸∈OptM. Let last(ρ) =t.
+Assume that ρ|=□¬Bad. Then, from Lemma 6 and the fact that (t, a)̸∈OptM,
+ValM(last(ρ))>X
+s′P(t, a, s′)·ValM(s′)
+and for every other action a′̸=a,
+ValM(t)≥X
+s′P(t, a′, s′)·ValM(s′).
+Consider the strategy σ′′which differs from σ∗only on paths with ρas prefix: on
+every path having ρas a prefix, σ′′takes the next action according to a strategy
+σt∈ΣM,t(□¬Bad)that maximizes the probability to avoid states in Badfrom
+last(ρ), whereas, it takes action according to σ∗on every other path. Formally,
+σ′′(ρ′) =(
+σt(ρ′′)ifρ′=ρ·ρ′′
+σ∗(ρ′)otherwise.
+Note that, for every strategy σ,
+PMσ,ρ(□¬Bad) =X
+a′
+σ(ρ, a′)·X
+s′(P(t, a′, s′)·PMσ,ρ·a′s′(□¬Bad))
+.
+Also,PMσ∗,ρ·a′s′(□¬Bad)≤ValM(s′)for all a′∈A. Therefore,
+PMσ∗,ρ(□¬Bad) =X
+a′
+σ∗(ρ, a′)·X
+s′(P(t, a′, s′)·PMσ∗,ρ·a′s′(□¬Bad))Bi-Objective Lexicographic Optimization in MDPs 23
+≤X
+a′
+σ∗(ρ, a′)·X
+s′(P(t, a′, s′)·ValM(s′))
+<X
+a′σ∗(ρ, a′)·ValM(t)
+=ValM(t)
+So,PMσ′′,ρ(□¬Bad) =PMσt,t(□¬Bad) =ValM(t, T)>PMσ∗,ρ(□¬Bad). Now
+note that, for any strategy σ,
+PMσ,s(□¬Bad) =PMσ,s(ρ′|=□¬Bad∧ρ⊑ρ′) +PMσ,s(ρ′|=□¬Bad∧ρ̸⊑ρ′)
+=PMσ,s(Cylσ(ρ))·PMσ,ρ(□¬Bad) +PMσ,s(ρ′|=□¬Bad∧ρ̸⊑ρ′)
+Asσ∗(ρ′) =σ′′(ρ′)for any ρ′such that ρ⊑ρ′,
+PMσ∗,s((Cylσ∗(ρ))) =PMσ′′,s((Cylσ′′(ρ))).
+and
+PMσ∗,s(ρ′|=□¬Bad∧ρ̸⊑ρ′) =PMσ′′,s(ρ′|=□¬Bad∧ρ̸⊑ρ′).
+Then PMσ∗,s(□¬Bad)<PMσ′′,s(□¬Bad), which cannot be true as σ∗is an
+optimal strategy. Therefore, ΣM,s(□¬Bad)⊆ΣOpt
+M.
+A.3 Proof of Lemma 12
+We prove this by backward induction on k.
+Base case: k=n−1. Ifsn−1∈Good, then ValM(sn−1) = 1. Ifsn−1∈Bad, then
+ValM(sn−1) = 0. In both cases, the statement is trivially true. If sn−1∈V,
+ValM(sn−1) =X
+an−1σ(ρ|n−1, an−1)X
+s′nP(sn−1, an−1, s′
+n)·ValM(s′
+n)
+=X
+ρ′∈{sn−1}ASPσρ|n−1,sn−1(ρ′)·ValM(last(ρ′))
+=X
+ρ′∈{sn−1}AVPσρ|n−1,sn−1(ρ′)·ValM(last(ρ′))+
+X
+ρ′∈{sn−1}AGoodPσρ|n−1,sn−1(ρ′)×1 +X
+ρ′∈{sn−1}ABadPσρ|n−1,sn−1(ρ′)×0
+=X
+ρ′∈V AVPσρ|n−1,sn−1(ρ′)·ValM(last(ρ′)) +X
+ρ′∈V AGoodPσρ|n−1,sn−1(ρ′)
+Suppose the statement is true for k+ 1. Then,
+ValM(sk) =X
+akσ(ρ|k, ak)X
+s′
+k+1P(sk, ak, s′
+k+1)ValM(s′
+k+1)
+=X
+akσ(ρ|k, ak)
+X
+s′
+k+1∈VP(sk, ak, s′
+k+1)ValM(s′
+k+1)+24 Busatto-Gaston et al.
+X
+s′
+k+1∈GoodP(sk, ak, s′
+k+1)ValM(s′
+k+1) +X
+s′
+k+1∈BadP(sk, ak, s′
+k+1)ValM(s′
+k+1)
+
+=X
+akσ(ρ|k, ak)
+X
+s′
+k+1∈VP(sk, ak, s′
+k+1)ValM(s′
+k+1) +X
+s′
+k+1∈GoodP(sk, ak, s′
+k+1)
+
+=X
+akσ(ρ|k, ak)X
+s′
+k+1∈VP(sk, ak, s′
+k+1)X
+ρ′∈({s′
+k+1}·A)n−k−1·VPσρ|k+1,s′
+k+1(ρ′)·ValM(last(ρ′))
++X
+akσ(ρ|k, ak)X
+s′
+k+1∈VP(sk, ak, s′
+k+1)X
+ρ′∈({s′
+k+1}·A)≤n−k−1·GoodPσρ|k+1,s′
+k+1(ρ′)
++X
+akσ(ρ|k, ak)X
+s′
+k+1∈GoodP(sk, ak, s′
+k+1)
+=X
+ρ′∈(V A)n−kVPσρ|k,sk(ρ′)·ValM(last(ρ′)) +X
+ρ′∈(V A)<n−kGoodPσρ|k,sk(ρ′).
+A.4 Proof of Lemma 13
+Here, for the ease of notation, we will use Valσ(s)to denote Pσ,s(□¬Bad).
+Lemma 17. Letρ=s0a0s1. . . snbe a finite path of length n. Let σbe a strategy in
+ΣOpt
+M. Then for all k < n:
+Valσp|k(sk) =X
+ρ′∈(V A)n−kVPσp|k,sk(ρ′)·Valσp|k·ρ′(last(ρ′))+X
+ρ′∈(V A)<n−kGoodPσp|k,sk(ρ′)
+Proof.We prove this by backward induction on k. For k=n−1. Ifsn−1∈Good, then
+ValM(sn−1) = 1. Ifsn−1∈Bad, then ValM(sn−1) = 0. In both cases, the statement is
+trivially true. If sn−1∈V,
+Valσp|n−1(sn−1) =X
+a′
+n−1σ(p|n−1, a′
+n−1)X
+s′nP(sn−1, a′
+n−1, s′
+n)Valσp|n−1·a′
+n−1s′
+n−1(s′
+n)
+=X
+ρ′∈{sn−1}ASPσp|n−1,sn−1(ρ′)·Valσp|n−1·ρ′(last(ρ′))
+=X
+ρ′∈{sn−1}AVPσp|n−1,sn−1(ρ′)·Valσp|n−1·ρ′(last(ρ′))
++X
+ρ′∈{sn−1}AGoodPσp|n−1,sn−1(ρ′)×1
++X
+ρ′∈{sn−1}ABadPσp|n−1,sn−1(ρ′)×0
+=X
+ρ′∈V AVPσp|n−1,sn−1(ρ′)·Valσp|n−1·ρ′(last(ρ′)) +X
+ρ′∈V AGoodPσp|n−1,sn−1(ρ′)
+Suppose the statement is true for k+ 1. Then, using Lemma 10,
+Valσp|k(sk) =X
+a′
+kσ(p|k, a′
+k)X
+s′
+k+1P(sk, a′
+k, s′
+k+1)Valσp|k·a′
+ks′
+k+1(s′
+k+1)Bi-Objective Lexicographic Optimization in MDPs 25
+=X
+akσ(p|k, ak)
+X
+s′
+k+1∈VP(sk, a′
+k, s′
+k+1)Valσp|k·a′
+ks′
+k+1(s′
+k+1)
++X
+s′
+k+1∈GoodP(sk, a′
+k, s′
+k+1)Valσp|k·a′
+ks′
+k+1(s′
+k+1)
++X
+s′
+k+1∈BadP(sk, a′
+k, s′
+k+1)Valσp|k·a′
+ks′
+k+1(s′
+k+1)
+
+=X
+akσ(p|k, ak)
+X
+s′
+k+1∈VP(sk, a′
+k, s′
+k+1)Valσp|k·a′
+ks′
+k+1(s′
+k+1)
++X
+s′
+k+1∈GoodP(sk, a′
+k, s′
+k+1)
+
+=X
+akσ(p|k, ak)X
+s′
+k+1∈VP(sk, a′
+k, s′
+k+1)×
+
+X
+ρ′∈(V A)n−k−1VPσp|k·a′
+ks′
+k+1,sk+1(ρ′)·Valσp|k·a′
+ks′
+k+1·ρ′(last(ρ′))
++X
+ρ′∈(V A)<n−kGoodPσp|k,sk(ρ′)
+
++X
+akσ(p|k, ak)X
+s′
+k+1∈GoodP(sk, a′
+k, s′
+k+1)
+=X
+ρ′∈(V A)n−kVPσp|k,sk(ρ′)·Valσp|k·ρ′(last(ρ′))
++X
+ρ′∈(V A)<n−kGoodPσp|k,sk(ρ′)
+Proof of Lemma 13. Fork= 0in Lemma 17, we get:
+Valσ(s0) =X
+p′∈(V A)nVPσ,s0(p′)·Valσ(last(p′)) +X
+p′∈(V A)<nGoodPσ,s0(p′).

@@ -1,0 +1,1219 @@
+Reclaiming Privacy and Performance over
+Centralized DNS
+Rashna Kumar
+Northwestern University
+rashnakumar2024@u.northwestern.eduFabián E. Bustamante
+Northwestern University
+fabianb@cs.northwestern.edu
+ABSTRACT
+The Domain Name System (DNS) is both a key determinant
+of users’ quality of experience (QoE) and privy to their tastes,
+preferences, and even the devices they own. Growing con-
+cern about user privacy and QoE has brought a number of
+alternative DNS services, from public DNS to encrypted and
+Oblivious DNS. While offering valuable features, these DNS
+variants are operated by a handful of providers, reinforcing a
+trend towards centralization that has raised concerns about
+privacy, competition, resilience and Web QoE.
+The goal of this work is to let users take advantage of
+third-party DNS services, without sacrificing privacy or per-
+formance. We follow Wheeler’s advice, adding another level
+of indirection with an end-system DNS resolver, Ónoma , that
+improves privacy, avoiding DNS-based user-reidentification
+by inserting and sharding requests across resolvers, and im-
+proves performance by running resolution races among re-
+solvers and reinstating the client-resolver proximity assump-
+tion content delivery networks rely on. As our evaluation
+shows, while there may not be an ideal service for allclients
+inallplaces, Ónoma dynamically finds the bestservice for
+anygiven location.
+1 INTRODUCTION
+Domain Name System (DNS) is a key component of the
+Internet. Originally designed to translate domain names to
+IP addresses [ 50], it has evolved into a complex infrastructure
+providing platform for a wide range of applications.
+Today DNS is a key determinant, directly and indirectly,
+of users’ quality of experience (QoE) and privy to their tastes,
+preferences, and even the devices they own. It directly deter-
+mines user performance as, for instance, accessing any web-
+site requires tens of DNS resolutions [ 13,14,16]. Indirectly,
+a user’s specific DNS resolver determines their QoE as many
+content delivery networks (CDNs) continue to rely on DNS
+for replica selection. As we show in Sec. 2, despite some adop-
+tion of anycast [ 4,17] and EDNS Client Subnet (ECS) [ 19],
+and the promise of CDN-ISP collaborations [ 3,55,57,73],
+many CDNs continue to rely on the assumption that the
+location of a client’s resolver provides a good proxy for the
+client’s own location [22, 36].
+Beyond its critical role in the user’s experience, clear
+text DNS requests can have a significant impact on privacyand security and, in certain parts of the world, on human
+rights [ 5,20,74]. The set of DNS requests issued by a user re-
+veals much about their tastes, preferences, or the devices they
+own and how they used them [ 6,12,32,40], even when using
+VPN or Tor [ 31]. Prior work [ 10,51] shows that browsing pro-
+files, a subset of users’ DNS request streams, are both highly
+distinctive (e.g., 98-99% of browsing profiles are unique) and
+stable (e.g., re-identifiability rate as high as 80%), suggesting
+the viability of browser profiles as user identifiers.
+Concerns about user privacy and QoE have served as moti-
+vation for a number of alternative DNS techniques and third-
+party services, from public DNS to encrypted and Oblivious
+DNS [ 43,62,62,68]. Google Public DNS was announced
+in late 2009 promising better performance and higher reli-
+ability [ 29], while DNS over HTTPS (DoH), DNS over TLS
+(DoT), DNSCrypt, and Oblivious DNS are some of the latest
+proposals to make DNS more secure [26, 47, 68].
+While offering some valuable features, these DNS vari-
+ants are operated by a handful of providers such as Google,
+Cloudflare or IBM, strengthening a concerning trend toward
+DNS centralization and its implications [ 39,41,70]. First, the
+use of encrypted DNS, while avoiding man-in-the-middle
+attacks, does not necessarily improve client’s privacy as the
+DNS provider has access to the highly-unique, unencrypted
+request streams of millions of clients and is a clear target
+for a court order to release data in bulk [ 67]. Second, while
+centralized DNS could offer better DNS response times, it
+may result in worst Web QoE as it breaks CDNs’ assumption
+about the proximity between users and their resolvers [ 53].
+Our evaluation (§4) shows that, despite the large-scale de-
+ployment of many third-party DNS services, the proximity
+to users of their resolvers varies widely across locales [ 22].
+While EDNS IP Subnet extension is meant to address this
+problem, prior work [ 22] shows that adoption of ECS across
+the Internet is minuscule and even large providers, such as
+Cloudflare, have stopped supporting it due to privacy con-
+cerns [ 56].1Last, part of the Internet’s inherent resilience
+lies in its diversity; centralization leads to a clustering of
+multiple risks, from technical to economic ones [ 39], while
+increasing the potential impact of any single failure [23].
+1The Cloudflare’s CEO commented that his company is instead exploring
+an alternative to the EDNS IP Subnet extension for user geolocation [56].
+1arXiv:2302.13274v1  [cs.CR]  26 Feb 2023The goal of our work is to let users take advantage of third-
+party DNS services without sacrificing privacy or performance.
+Our approach follows Wheeler’s advice, adding another level
+of indirection with an end-system DNS resolver.2We present
+Ónoma , an end-system resolver that:
+(1)enhances privacy by sharding users’ requests across
+multiple resolvers [8, 34, 36] (§4.2.1),
+(2)reduces reidentifiablitly by adaptively inserting pop-
+ular requests on a user DNS request stream based on
+the uniqueness of a requested domain (§4.2.2),
+(3)improves DNS performance, independently of a user’s
+location and specific DNS or CDN services’ deploy-
+ments, by running resolution races [ 69] among re-
+solvers (§4.3.1) and
+(4)addresses the QoE impact of client-LDNS mismatch
+problem [53] (§4.3.2).
+We evaluate Ónoma across geographic locales and with
+different DNS services, content providers, and CDNs and
+a range of settings for sharding, insertion and racing. Our
+evaluation results show that Ónoma can take advantage of
+third-party DNS while avoiding user re-identification – 100%
+of the users can not be re-identified (are k-anonymous) with
+low insertion and sharding requests across 8 resolvers (§4.2).
+Our results also demonstrate that, across a number of DNS
+resolvers and CDNs, Ónoma can improve average resolution
+time by 38.8% by racing just two resolvers, and can yield up
+to 10% shorter Time-To-First-Byte(§4.3). More importantly,
+the average performance of Ónoma is better or equal to the
+best service for most CDN and individual DNS at any locale
+(§6). While there may not be an ideal service for all clients
+inallplaces, Ónoma dynamically selects the bestservice for
+anygiven location.
+2 BACKGROUND
+In the following paragraphs, we provide background on DNS,
+the relation between DNS and CDNs and recent trends in
+the DNS market.
+The process of DNS resolution involves at least a stub
+resolver that asks questions from a recursive resolver which,
+in turn, finds the answer by asking one or more authoritative
+DNS servers. Traditionally, the user’s recursive resolver has
+been provided by the user’s ISP and found, in networking
+terms, generally close to their users.
+ISP DNS recursive resolvers are, however, not always the
+best in terms of resolution time [ 2,61], and slower DNS
+resolutions can significantly impact users’ QoE. Besides res-
+olution performance, there are several other potential draw-
+backs of using an ISP provided resolver in terms of reliability,
+privacy and censorship [11, 46, 60].
+2“All problems in computer science can be solved by another level of indi-
+rection”, David WheelerPartially in response to these issues, a third-party ecosys-
+tem has evolved around DNS over the years. Services such
+as OpenDNS, UltraDNS and Google Public DNS [ 29] offer
+a number of valuable features, from load balancing, nonce
+prepending and shared caching for performance, to phishing
+and botnet detection for security. More recently, some of
+these same providers have begun to offer DNS over HTTPs
+(DoH), DNS over TLS (DoT) and DNSCrypt [ 26] using en-
+cryption between the DNS stub and the provided recursive
+resolver to prevent on-path eavesdropping, spoofing, and
+blocking [ 21,58]. These DNS services typically host servers
+on multiple sites around the globe and use anycast to guide
+DNS clients to the nearest resolver. Note, of course, that
+the resolution times experienced by any particular client
+will depend in part on their location and proximity to these
+“nearest” resolvers for their chosen DNS service.
+The proximity, or lack thereof, between clients and their
+DNS resolvers can impact not just resolution times. This
+observation has been at the core of CDNs mapping systems,
+sometimes referred to as redirection , the process by which the
+CDN decides the replica server where to redirect a client’s
+request for content to improve user-perceived performance
+and balance the load across servers [33].
+The proximity, or lack thereof, between clients and their
+DNS resolvers can impact not just resolution times, depend-
+ing on the CDN redirection method. While most of the
+time DNS-based redirection performs well, the “client-LDNS
+mismatch” hurts performance by directing users to distant
+servers. EDNS Client Subnet (ECS) aims to address this prob-
+lem by allowing a client’s resolver to forward a portion of
+the client’s IP address to an authoritative DNS server. While
+a number of large-scale DNS services and some CDNs have
+adopted ECS, older et al. [ 22] shows that adoption of ECS
+across the Internet is minuscule and even large providers,
+such as Cloudflare, have stopped supporting it due to privacy
+concerns [56].
+To illustrate the potential impact of client-LDNS mismatch,
+we select top50 Alexa sites3in the US and resolve the re-
+sources of these sites, hosted on the two most popular CDNs
+– Akamai and Amazon CloudFront, using the Ripe Atlas DNS
+API. We use probes in the US and the RIPE probes’ resolvers
+as local resolvers, and use distant regional resolvers in Ar-
+gentina and India. We measure the median round-trip time
+(RTT) of five runs to the replicas assigned using the local
+and distant resolvers. If a CDN does not rely on DNS for redi-
+rection, one would expect no RTT differences between the
+replicas assigned when using the different resolvers. If, on
+the other hand, a CDN does rely on DNS-based redirection,
+there should be larger RTTs to the replicas assigned with
+3We discuss the use of Alexa regional rankings in Sec.8.
+2(a) Akamai CDN
+Figure 1: Client-LDNS mismatch problem and CDN
+redirection. Latency to assigned replica servers for
+Akamai and Amazon CloudFront for resources in
+top50 US websites. The client in the US is using lo-
+cal DNS resolvers (cyan) and distant resolvers in Ar-
+gentina and India.
+increasingly distant resolvers, even when the client location
+does not change.
+Figure 1 clearly illustrates the client-LDNS mismatch prob-
+lem with the two most popular CDNs (full set of graphs in
+§A). The RTTs to replicas assigned when using a local re-
+solver are consistently lower - up to an order of magnitude
+lower at the median than those to replicas assigned when
+using any of the distant resolvers (e.g., 9ms for the local
+resolver and 160ms with a resolver in India in the case of
+Akamai), and the overall distributions are ordered matching
+the relative geographic distances of the replicas.
+3 ÓNOMA’S MOTIVATIONS AND GOALS
+Concerns about user privacy and QoE have served as mo-
+tivation for a number of alternative DNS techniques and
+third-party services [ 26,29,43,62,68,68]. While offering
+some valuable features, these DNS variants are operated by
+a handful of providers such as Google, Cloudflare or IBM,
+strengthening a concerning trend toward DNS centralization
+and its implications [ 39,41,41,70]. We briefly discuss these
+implications, as they motivate the design of Ónoma, and
+present its derived goals.
+For starters, DNS-over-Encryption services are not pri-
+vacy panacea. While they protect user data from ISPs and
+man-in-the-middle attacks, they expose all information to
+the recursive DNS providers. Prior studies [ 10,51] have an-
+alyzed the uniqueness of users’ web browsing histories, a
+subset of their DNS request streams, and shown that users’
+browsing profiles are both highly distinctive and stable (andthus a viable tracking vector). Centralized DNS is also an eas-
+ier target for court order to release data in bulk [ 67] and no
+privacy agreement policy by a DNS provider can escape that.
+Recent work on Oblivious DNS addresses some of these con-
+cerns by preventing queried domains from being associated
+with the client identity [ 62,68]. However, Oblivious DNS
+also increases the cost of DNS resolutions and contributes
+to the client-LDNS mismatch problem impacting users’ web
+QoE.
+In addition, consolidation may also result in lower in-
+frastructure resilience and increases the risk of a captive
+market [ 41]. Using measurements from 100,000 users of the
+OONI app, Radu et al. [ 59] show that Google and Cloudflare
+control 49.7% of the resolver market. Part of the Internet’s in-
+herent resilience lies in its diversity (i.e., different networks,
+peerings, code base and servers), and centralization leads to
+a clustering of multiple such risks, at once increasing the
+probability of failures andthe potential impact of any single
+failure [1, 23].
+Finally, while many of these infrastructures are perva-
+sive [ 18], for specific locales a particular third-party DNS
+service may not have nearby servers to offer [ 53], negatively
+impacting both DNS resolution times and web QoE for users
+of the many CDNs that continue to rely on DNS for replica
+selection. Poor user-mappings can lead to increased delays
+and worsening QoE, lower engagement [ 44] and revenue
+loss [71].
+Ónoma’s Goals. The emergence of a handful of third-
+party recursive DNS services is a natural result of a ma-
+turing Internet market and the benefits of economies of
+scale. Ónoma’s design aims to let users take advantage of
+third-party DNS services while avoiding the potential costs.
+Specifically, Ónoma aims to improve privacy by avoiding
+re-identification of users based on their DNS request streams,
+and achieve performance comparable to that of the best per-
+forming services in the user’s locale, independently of any
+deployment of any specific DNS service, while avoiding re-
+liance on any single DNS service. In addition, Ónoma should
+be an easy-to-install, readily-deployable solution that by-
+passes the need for agreements and coordination between
+providers (CDNs, DNS or ISPs).
+4 SYSTEM DESIGN
+In the following paragraphs, we present the key features of
+Ónoma’s design, experimentally motivating and illustrating
+the benefits of each of its features. We close the section with
+an overview of Ónoma’s system design.
+4.1 Privacy and Third-party DNS
+A recursive DNS resolver is privy to much information about
+a user’s taste, preferences and habits. Prior studies [ 10,51]
+3have analyzed the uniqueness of users’ web browsing histo-
+ries. Olejnik et al. [ 51], among other findings, show that out
+of the 382,269 users that completed their popular site test,
+94% had unique browsing histories. They found that with
+just the 50 most popular sites in their users’ histories – a
+subset of their DNS request streams – they were able to get
+a very similar distribution of distinctive histories compared
+to complete knowledge of the site list. The replication study
+by Bird et al. [ 10] confirm this and show that such histories
+are also highly stable and thus a viable tracking vector.
+Beyond having access to detailed DNS request traces of
+million of users [ 29], large third-party services are also an
+easier target for court order to release data in bulk [ 67] and
+no privacy agreement policy can escape that.
+Ónoma improves privacy by avoiding DNS-based user
+identification through (𝑖)domain specific sharding [ 8,34,36]
+and(𝑖𝑖)DNS request insertion.
+4.2 Evaluating Privacy Gains
+Since DNS resolvers are, by definition of their functional-
+ity, privy to the unencrypted version of the requested re-
+sources, the best privacy a user could expect is in terms of
+k-anonymity. A dataset is said to be k-anonymous if the in-
+formation for each person contained in the release cannot be
+distinguished from at least 𝑘−1individuals whose informa-
+tion also appear in the release. To measure the k-anonymity
+value, we group users with the same profile (computed using
+jaccard distance between the profiles) in the same cluster.
+Users in clusters of size 1 (k-value = 1), can be re-identified
+on the basis of unique profiles.
+We evaluate the privacy gains of the different techniques
+used by Ónoma in terms of their impact on k-anonymity.
+We use for this two weeks of users’ DNS logs, separated by
+one week, collected (using CLI [ 52] and Splunk [ 66]) and
+made available (anonymized) by the Information Technol-
+ogy Center (IT) team at our institution. This two-week log
+correspond to 85,967 users. For every user, the DNS request
+logs consist of a browsing history, over a window of time,
+including all urls resolved by the user during that time.
+From the DNS request logs of every user, we construct a
+boolean vector of distinct domains, thereby removing all fre-
+quency measures. This boolean vector comprises the union
+of the 50 most popular domains visited by each user in our
+set and ranks the domains based on their popularity across
+all users. The length of our data collection window, and the
+format and size of the vector of popular domains we used,
+follows Olejnik et al. [51] and Bird et al. [10]’s approaches.
+Ethics. Since DNS requests are by their nature sensitive,
+some ethical questions arise that we address here.
+To preserve the privacy of our users, the data we receive
+from the IT team consists of the sites visited by each userstored against random non-persistent ids so our data does
+not give us access to any personal identifiers of users. These
+ids are one-way hashes and can not be mapped back to the
+users. They are, however, unique for each user allowing us
+to check if we can correctly re-identify users (anonymized)
+based on their DNS request logs. Since we are not able to
+identify individual users, we cannot associate the specific
+queries of any sensitive nature with any particular user. At
+most we can only identify the queries that are being made.
+In addition, we submitted our methodology to our institu-
+tion’s ethical review board and were given a determination
+of “not human research”.
+4.2.1 Domain-specific Sharding. Previous work has sug-
+gested sharding – scattering DNS requests, randomly, across
+different resolvers – as a way to address centralization con-
+cerns and to improve privacy [ 8,34,36]. Sharding prevents
+any single resolver from acquiring the complete user’s re-
+quest stream. However, if all DNS requests were distributed
+randomly across the available DNS servers, after a suffi-
+ciently long period of time, each DNS providers will have
+been queried for most DNS questions. Thus, a basic random
+distribution of request across resolvers makes each DNS ser-
+vice provider able to obtain a full view of the client’s request
+stream and construct their profile.
+Ónoma avoids this by using domain-specific sharding [ 7].
+After selecting a DNS provider for a query, Ónoma stores
+this mapping in a domain-to-DNS map. All of subsequent
+queries of a user under the same SLD will be directed to the
+same DNS server. This form of sharding [ 8] limits the view
+of DNS service providers to a subset of the users’ queries,
+preventing any provider from constructing a full user profile.
+To evaluate the privacy benefits of domain specific shard-
+ing, we select users, from the two-week data set, with DNS
+request streams including more than 50 unique SLDs.4We
+apply the domain specific sharding algorithm on the request
+streams of each user and distribute the requests across a set
+of resolvers, 𝑅, which we referred to as the sharding value.
+Each resolver stores a bit vector for each user (a union of
+the 50 most popular domains visited by all users, initially
+set to zero) and sets the bit to one for the user if the cor-
+responding domain is found in the user’s request stream.
+Our privacy goal is to challenge re-identification, ensuring
+that the vector maps at each resolver for different users are
+similar for several ( 𝑘>1) users.
+Figure 2 shows the cumulative distribution function (CDF)
+of k-anonymity, averaged across resolvers, for different shard-
+ing values. No sharding provides the baseline and has the
+lowest level of k-anonymity with k-values of 1, i.e., unique
+4We ran our analysis over a window of different days in the two-week
+period and obtained similar results.
+4Figure 2: K-anonymity values of the set of users with
+different sharding values.
+profiles, for over 88% of users. This is consistent with previ-
+ous findings on the uniqueness of browsing histories [ 10,51].
+A sharding value of 2, that is when a user’s request stream
+is sharded across two resolvers, drops the set of users that
+can be re-identify to 79%; the maximum sharding value of
+8 in this analyzes reduces this to 49%. A concern with high
+sharding values is that while relying on more resolvers may
+improve improve k-anonymity, it also increases the chance
+of finding an under-performing resolver which can impact
+the user’s average resolution time. We illustrate this and
+discuss Ónoma response in Sec. 4.3.
+4.2.2 Popular Request Insertion. Domain specific shard-
+ing, while clearly useful, has limited impact on k-anonymity.
+Ónoma further improves the k-anonymity of users by adap-
+tively inserting popular requests on a users’ DNS request
+stream based on its uniqueness. The more distinctive the
+request streams, the higher the fraction of popular DNS re-
+quest streams needed to make it similar (higher 𝑘) to other
+users’ request streams.5
+Our current implementation inserts a number, an “inser-
+tion factor”, of popular domains randomly sampled from the
+top50 most popular sites,6for every unique domain in the
+users’ request stream. We consider a domain as unique if it
+is not part of the top500 most popular sites. The approach is
+clearly independent of both the specific list and the subsets
+(top50 and top500) we use.
+To analyze the privacy benefits of popular request inser-
+tion, we follow the same approach as in our evaluation of
+sharding, and apply our insertion algorithm with different
+values of the insertion factor 𝑓. As before, each recursive
+resolver stores a bit vector per user, recomputed for each
+value of 𝑓as insertion causes an addition of requests to the
+5Ónoma lets users to direct truly distinctive or otherwise problematic do-
+mains to an Oblivious DNS [62, 68], thus limiting its performance impact.
+6We exclude a configurable blacklist of domains.users’ request streams. Each resolver, as before, sets the bit
+to one for a given user if it sees the corresponding domain
+in the user’s request stream.
+Figure 3: K-anonymity values for different insertion
+factors and a sharding value of 2.
+Figure 3 shows the CDF of k-anonymity values for differ-
+ent insertion factors (no insertion and insertion factors of 1,
+2 and 3) and sharding value of 2. The figure shows that, even
+for the lowest sharding value, an insertion factor of 2 results
+in k-anonymity larger than 2 for over 98% of users. Insertion
+factors of 1, 2 and 3, yield k-anonymity larger than two for
+79%, 98% and 100% of users respectively. With a sharding
+value of 8 (not shown), increasing the insertion values by
+the same degree yields 2-anonymity for 86%, 99% and 100%
+with insertion factors of 1, 2 and 3.
+Figure 4 shows the benefit of higher sharding values for
+a given insertion factor. For an insertion value of 3, shard-
+ing values of 2 and 8 increase the number of users with
+2-anonymity to 100% (and 4-anonymity by 53% of users).
+The insertion of popular requests comes at the cost of
+additional requests. Even for a fixed insertion factor, the
+number of additional requests inserted will vary as this is
+a function of the uniqueness of a user’s request stream. We
+estimated the mean overhead (and standard deviations) of
+different insertion factors for users in our dataset. Table 1
+summarizes this overhead, as percentage of bytes added to
+a user’s request stream, for three different insertion factors
+– 1, 2 and 3. For these factors, the average overhead ranges
+from 20.27% to 42.29%. Given that DNS is responsible for
+less than 0.1% of total traffic volume [ 63], even the highest
+overhead should minimally impact network load.
+Ónoma uses a combination of popular request insertion and
+domain specific sharding to achieve k-anonymity for a large
+number of users, with relatively low overhead, while avoid-
+ing other potential costs of centralization. Figure 4 shows
+the combined effect of sharding and insertion in the distri-
+bution of k-anonymity values across all users in our dataset
+5Table 1: Privacy overhead for insertion factors.
+Insertion Factor Mean (%) Std Dev
+1 20.27 3.91
+2 33.37 5.33
+3 42.29 5.89
+for an insertion factor of 3. Sharding over 4 resolvers with
+an insertion factor of 3 yields 2-anonymity for over 100% of
+users (and 4-anonymity for ≈60% of users).
+Figure 4: K-anonymity values of users in our dataset
+with insertion factor of 3.
+4.3 Performance and Third-party DNS
+Despite the global scale of many of these DNS services’ in-
+frastructures [ 18], not all regions are equally covered by all
+services. For specific locales, a particular third-party DNS
+service may not have nearby servers to offer users, or have
+fewer or farther away servers than a different service. This
+can negatively impact both DNS resolution times and web
+QoE [ 53] for users of the many CDNs that continue to rely
+on DNS for replica selection, translating into lower engage-
+ment [44] and potential loss of revenue [71].
+To illustrate the extent to which the best DNS service
+is location specific, we measure the DNS resolution times
+with different DNS services in different countries. We se-
+lect Argentina, Germany, India and the US; one country in
+each of the top four continents in terms of Internet users
+(Asia, North America, Europe, South America). In each lo-
+cale, we determine the performance of three popular services
+– Google, Quad9 and Cloudflare – as well as two regional
+DNS services. For each country, we select the top50 sites and
+issue multiple DNS requests (three) for each of the resources
+included in those pages. We record the minimum TTFB from
+the three repeated runs to ignore any transient spikes in the
+latency. To ensure we are assigned to the correct resolver forclients in each specific country, we use a VPN (NordVPN)
+with servers in the selected countries.
+Figure 5 plots the CDFs of the resolution time for popular
+resources in two of these countries, India and the US (full
+set of graphs in §A). The resolution times of all resources,
+for each DNS provider in a country, are plotted relative to
+the DNS service performing best in the average case. Service
+resolution times are relative to Quad9 in the US and to Cloud-
+flare in India. We can see that in the median case, Google
+performs as well as Cloudflare but Regional2 performs 40ms
+worse than Cloudflare and Regional1 performs 87ms worse
+than Cloudflare in India. In the US, Regional 1, Regional2
+and Cloudflare have a difference of less than 10ms from the
+best resolver(Quad9) whereas Google performs 25ms worse
+than Quad9(for the 50th percentile).
+(a) IN
+ (b) US
+Figure 5: DNS resolution times of individual, public
+DoH and DNS providers in IN and the US relative
+to the best performing DNS service in each country
+(Cloudflare for IN and Quad9 for the US).
+Figure 6 is a bump graph that summarizes the rankings
+of the evaluated services, based on DNS resolution times,
+across countries. Each service is associated with a differently
+colored line. The different lines change positions as the as-
+sociated service changes rank positions between countries.
+The plot clearly illustrates that the ranking among DNS ser-
+vices varies widely across locales7. Figure 5 illustrates the
+differences in relative resolution times using Germany and
+the US as examples (full set of graphs in §A). While Quad9
+has the best resolution times in the US, Google ranks the
+lowest. On the other hand, Cloudflare has the best resolution
+times in India while Google performs second to the best. The
+maximum (average) Kendall tau distance8between rankings
+is 0.6 (0.37) clearly showing that there is no bestDNS service
+for every location.
+7We repeated this measurement over a period of a week and noticed that
+the ranking changed over time as well
+8The Kendall tau rank distance is a metric, ranging form 0 to 1, that counts
+the number of pairwise disagreements between two ranking lists.
+6Table 2: Regional DNS resolvers IP references.
+Countries Regional 1 Regional 2
+AR 190.151.144.21 200.110.130.194
+DE 46.182.19.48 159.69.114.157
+IN 182.71.213.139 111.93.163.56
+US 208.67.222.222 208.67.220.220
+Figure 6: A bump graph of DNS resolution times rank-
+ing across countries (Regional DNS services in Ta-
+ble 2). The maximum (avg) Kendall tau distance be-
+tween rankings is 0.6 (0.37) showing that there is no
+bestDNS service for every location.
+The differences in performance across DNS services means
+that sharding requests will result in high performance vari-
+ability. To illustrate this we plot CDFs of the resolution time
+for popular resources in different countries using different
+DNS services and basic sharding. Figure 7 shows the reso-
+lution times for each service relative to the best performing
+resolver in Germany (full set of graphs in §A). The figures
+clearly show that the resolution times of sharding in each
+locale are affected by the worst performing DNS service in
+a locale (Regional1 service in Germany) thereby increasing
+the resolution times of sharding in comparison to the better
+performing DNS services.
+Domain specific sharding, while improving privacy, will
+most likely not improve performance variability as all queries
+belonging to a given domain could be assigned to a randomly
+selected (potentially the slowest/fastest for the locale) DNS
+service and the association persists for all resolution request
+of the associated domain.
+4.3.1 Racing. Ónoma addresses this potential problem by
+using resolution races [ 69] that place DNS services in compe-
+tition with each other. For each DNS request, Ónoma uses a
+configurable number of DNS resolvers and issues the same re-
+quest to each of them simultaneously, returning to the client
+the first response from the first resolver that successfully
+resolves the query addressing the problem of high latency
+caused by latency variance. This redundancy comes with
+negligible cost on bandwidth for potentially significant im-
+provements on resolution times.
+(a) DE
+Figure 7: DNS resolution times of individual, public
+DoH and DNS providers and sharding in Germany rel-
+ative to the best performing DNS service (Quad9).
+A potential issue of racing DNS services is the associated
+tradeoff between privacy and performance. Racing a larger
+number of DNS services increases the chances of finding the
+bestresolver for that request and locale, but also increases
+the fraction of the user’s DNS request stream seen by any
+particular service.
+To illustrate this tradeoff, we conduct an experiment mea-
+suring the performance and request stream exposure of dif-
+ferent racing configurations. We shard 100 resources, in the
+top50 sites in the US, across different DNS providers. We issue
+resolution requests for these resources to a randomly selected
+resolver, and run races between two and three resolvers for
+each resolution request. Table 3 presents a summary of these
+results.
+Table 3: Resolution times with Ónoma running no
+resolution races, racing 2 and racing 3 resolvers, and
+the associated percentage of requests each resolver re-
+ceives.
+Resol Time Request %
+Mean Std Dev Max Avg
+No Racing 42.22 38.13 20.34 12.5
+Racing 2 25.83 12.42 28.10 25.0
+Racing 3 21.34 6.53 42.31 37.5
+The table show the performance advantages of racing.
+Just racing two resolvers offers a percentage improvement
+of 38.8%, while racing three provides an additional 17.88%
+improvement on resolution time.9
+9A reminder of the power of two random choices [49].
+7Table 3 also show the tradeoff posed by increasing the
+number of raced resolvers showing the percentage increase
+(maximum and average) of the DNS request stream exposed
+by each of these strategies to the different resolvers. The
+maximum percentage of requests seen by each resolver in-
+creases from 20.34%, with no racing , to 28.10% when racing
+2 resolvers and 42.31% when racing 3 resolvers. Racing 2
+resolvers achieves the best balance between privacy and
+performance in our analysis and we set this as the default
+configuration of Ónoma.
+Finally, we also show the tradeoff between privacy and
+performance across different DNS variants, such as DNS
+over Tor, our ISP DNS, third-party DNS services, sharding
+and Ónoma. Figure 8 shows box plots of resolution times (x
+axis) for each DNS variant and the y-axis shows the privacy
+gain for each DNS variant in terms of the percentage of
+users that have at least 2-anonymity. The figure shows that
+DNS over Tor gives the maximum privacy but significantly
+worse resolution times, whereas ISP DNS while providing the
+best performance compromises on privacy significantly. We
+show that sharding improves 2-anonymity but by randomly
+distributing requests across popular DNS providers it can
+also significantly hurt performance. Ónoma, on the other
+hand, gives the best privacy and performance for users.
+Figure 8: Privacy and/or Performance. Average DNS
+resolution times and corresponding 2-anonymity val-
+ues of different DNS variants and Ónoma.
+4.3.2 Direct Resolution. Even if certain third-party DNS
+services result in faster resolution time for their users, the
+same users can still experience worsening Web QoE, de-
+pending on the specific deployment of the DNS services and
+popular CDNs infrastructures in their region, and the map-
+ping policies of these CDNs. Differences in relative distance
+between the users and their recursive DNS resolvers can
+result in poor mapping of a user to a CDN replica server and
+higher delays in getting objects hosted by those replicas.
+Figure 9: Relative popularity of CDNs in top50 Re-
+gional sites in Argentina, Germany, India and the US.
+The popularity of CDNs varies across locales. Fig-
+ure 9 shows the relative popularity of different CDNs per
+country. Each cluster represents a country and each bar indi-
+cates the number of resources, from the top50 regional sites,
+hosted on a particular CDN. Clearly, the relative ranking
+of CDNs as host to the most poular resources varies across
+locales. For instance Germany’s popular sites and resources
+seem to be preferentially hosted on Fastly (44% resources)
+whereas, the other three countries rely primarily – although
+to different degrees – on Akamai (ranging from 44% to 50%).
+Additionally Amazon has relatively better presence in the
+US, but not in the other three countries.
+User’s QoE is impacted by the choice of DNS service
+depending on the locale. To evaluate how users’ QoE in
+different locales for content hosted on different CDNs varies
+with the choice of DNS service, we then conduct an exper-
+iment measuring time-to-first-byte (TTFB) as a proxy for
+Web QoE. TTFB gives the minimum response time for the
+content obtained from the CDN replica and thus measures
+the effectiveness of the CDN mapping. For this experiment,
+we use resources from the top50 regional sites hosted on the
+most popular CDN in each country (Fig. 9).
+We load each resource three times using Google’s light-
+house [ 30] for different (CDN, country) combinations using
+the same VPN service and record the minimum TTFB for
+each resource. We use the minimum value to ignore any
+transient spikes in TTFB measurements.
+From the recorded TTFB measurements with each resolver
+for the (CDN, country) combination, we find the best per-
+forming resolver, in the median case, and calculate the per-
+centage difference in TTFB of each DNS service from this
+baseline for the given CDN and locale.
+Figure 10 plots a CDF of this difference in TTFB. The fig-
+ure shows that different DNS providers result in different
+TTFB for resources hosted on different CDNs, across differ-
+ent locales. Cloudflare which performs worst in Germany
+for content hosted on Fastly, shows 10% higher TTFB in
+the median case compared to the best service (Regional1)
+8(a) AR,Akamai
+ (b) DE,Fastly
+ (c) IN,Akamai
+ (d) US,Akamai
+Figure 10: Percentage Difference in TTFB of individual, public DoH and DNS resolvers per country, relative to
+the best DNS service in that locale, across different countries. Cloudflare which performs worst in Germany for
+content hosted on Fastly, shows 10% greater TTFB in the median case compared to the best service (Regional).
+(a) Akamai
+(b) Amazon
+Figure 11: DNS resolvers ranking by TTFB for re-
+sources hosted on different CDN across different coun-
+tries. The maximum (avg) Kendall tau distance be-
+tween rankings is 0.4 (0.27) for Akamai and 0.7 (0.53)
+for Amazon.
+and Google (with the worst TTFB in IN,Akamai) shows 1%
+higher TTFB in the median case compared to the best service
+(Regional2).
+Figure 11 is a bump graph further highlighting this point
+(full set of graphs in §A). The figure ranks DNS resolvers by
+TTFB for resources hosted on different CDNs across different
+countries and highlight their relative changes in ranks. For
+instance, Google gives the worst QoE for content hosted
+on Akamai in the US and India (even though Google gives
+second best DNS resolution times in India as shown in Fig. 6),
+but results in best QoE for content hosted on Amazon in
+Argentina (where it has the second worst resolution time asseen from Fig. 6). This reiterates that the user’s web QoE in
+fact depends on the specific deployment of the DNS services
+and popular CDNs infrastructures in their region, and the
+mapping policies of these CDNs.
+To address the QoE impact of using different third-party
+DNS resolvers and CDNs in different locales, Ónoma combines
+racing with direct resolution [ 53] when resolving content that
+is hosted by a CDN. It uses the response from the fastest
+DNS resolver for direct resolution. Direct resolution com-
+bines the best aspect of interative and recursive DNS resolu-
+tion to obtain improved CDN redirections for each resource.
+It leverages the cache of a recursive resolver to efficiently
+map a Canonical Name (CNAME) to an authoritative name
+server, but directly contacts the CDN’s authoritative server
+to obtain a precise redirection for the client. This gives the
+CDN’s authoritative server better information of the clients’
+actual network location and allows for a better replica as-
+signment [53].
+To understand the aggregated benefits of the combined
+approach, we compare the performance of Ónoma with that
+of sharding. Since sharding, by itself, randomly distributes
+DNS requests across a set of public DNS servers, the resulting
+performance matches the average performance of public
+DNS services in each region and can serve as a baseline for
+comparison. We load each resource, of the regional top50
+sites three times and compute the minimum TTFB.
+Figure 12 presents a CDN of the percentage difference
+in TTFB for both Ónoma and sharding, relative to the best
+performing DNS service for a particular (CDN, country) com-
+bination (complete graphs in §A). The figure includes plots
+for Argentina for content hosted on Akamai. The graphs
+show the clear dominance of Ónoma over sharding across
+CDNs in both locales, with a median improvement of 9.34%
+in Argentina with Akamai CDN.
+9(a) AR,Akamai
+Figure 12: Percentage Difference in TTFB of Sharding
+and Ónoma relative to the best DNS service across the
+US and Argentina.
+4.4 Overview
+Ónoma lets users leverage the benefits of third-party DNS
+services while(𝑖)providing improved k-anonymity, via a
+combination of sharding and popular domain insertion, (𝑖𝑖)
+consistently better resolution times than individual DNS
+resolvers, independently of the locale, by running resolution
+races, and(𝑖𝑖𝑖)and without impacting users’ web experience
+via direct resolution.
+Figure 13: Ónoma interaction with DNS resolvers.
+Pseudocode 1 provides a high-level description of Ónoma’s
+DNS request resolution process, while Fig. 13 illustrates its
+interaction with the different DNS resolvers.
+5 IMPLEMENTATION
+We have implemented Ónoma as an end-system resolver
+running on users’ machines. Ónoma is implemented in 3,510
+lines of Go code, excluding comments, and is designed asPseudocode 1 Resolution process followed by Ónoma.
+forDNS resolution do
+ifdomain ∉DomainMap then
+Run races among resolution
+Add domain and winner resolver to DomainMap
+end if
+ifdomain ∉popular domains then
+forinsertion-factor do
+Sample a popular domain
+Insert the domain in request stream
+end for
+end if
+ifCDN-ized domain then
+Direct resolution for domain
+end if
+end for
+a background service. It is readily deployable and easy-to-
+install on any operating system and neither requires any
+modification to the user’s operating system nor coordination
+with existing CDN or DNS services. The implementation in-
+cludes a light-weight, client-side application (under 500MB)
+hosting a simple user interface to let users install, start and
+stop the service and modify default configuration settings
+such as changing the set of DNS resolvers used for sharding
+and racing, and the request insertion factor. Ónoma main-
+tains a set of DNS services which includes popular public
+encrypted services – Google, Cloudflare and Quad9 – as
+well as a set of regional public DNS services available at the
+clients’ location.
+Ónoma also implements a measurement module to per-
+form experimentation on the clients’ side. Ónoma uses the
+collected results to indentify optimal default values for shard-
+ing, racing and insertion, as well as dynamically select the
+best DNS resolvers for the user’s locale.
+6 END-TO-END EVALUATION
+In this section, we present results from an end-to-end evalu-
+ation of Ónoma, combining all the design features discussed.
+In our evaluation we compare Ónoma’s performance with
+that of different third-party DNS services, across locales and
+CDNs. We use TTFB, as the performance metric for compar-
+ison, and the resources hosted on the top50 regional sites, as
+a proxy of users’ QoE in those regions.
+The reported results were collected by the measurement
+module that is part of Ónoma, which runs all the experiments
+in the background (§5). We set up the evaluation measure-
+ments in the selected locations using a VPN service, using
+different DNS settings including public DoH resolvers, re-
+gional resolvers and Ónoma. We focus on three CDN services
+– Akamai, Amazon and Fastly – and the resources they host.
+For each DNS setting and (CDN, country) combination,
+the measurement module loads the set of resources with
+Google Lighthouse. It records the minimum TTFB from three
+10repeated runs, finds the best performing resolver, in the me-
+dian case, and calculates the percentage difference in TTFB
+between each DNS service and the indentified best DNS
+service for a given CDN and locale.
+Figure 14 presents boxplots of the performance of different
+DNS services and Ónoma (full set of graphs in §A). The plots
+are relative to the best performing resolver for a given CDN
+and locale (e.g., Cloudflare for Akamai in the US). Boxplots
+clearly show the median and the first and third quartiles, as
+well as the minimum and maximum values (upper and lower
+whiskers) of the collected TTFB data. The outliers of the data
+are shown by circles above and below the whiskers.
+The figure shows that the performance of Ónoma is ei-
+ther best, or comparable to the average performance of the
+public DNS services. Ónoma gives consistently a lower inter-
+quartile range (third quartile - first quartile), indicated by the
+colored boxes in the plot (blue box for other providers and
+green for Ónoma), for most cases. Median performance of
+Ónoma is better than the best Service for most CDN, country
+combinations or at least comparable to all the DNS services
+tested for that locale. We see significant performance im-
+provement with content hosted on Amazon in Germany and
+with content hosted on Akamai in India and the US. For
+instance, the inter-quartile range (IQR) of Ónoma is 18.4%
+in the US, for Akamai’s content, but for other DNS services
+it ranges between 18.7% to 24.8%. For Akamai’s content in
+India, Ónoma gives an IQR of 1.7% and for other DNS ser-
+vices the IQR ranges between 1.7% to 2.5%. Note that Ónoma
+attains this for any combination of CDN and locale and with
+high values of k-anonymity (§4.2).
+7 RELATED WORK
+Our work builds on an extensive body of research on char-
+acterizing and improving DNS performance, privacy and its
+impact on users’ QoE. For over two decades since Mock-
+apetris [ 50], DNS has been the subject of several measure-
+ment studies in the wild [ 2,38,42,45,48,53,64,72]. Much of
+this work has focused on caching, performance and scalabil-
+ity across locales (e.g., [ 42,45], and the interaction between
+DNS and content distribution (e.g., [48, 53, 64]).
+The appearance of open DNS resolvers, offered by compa-
+nies such as Google and OpenDNS, and the follow-up EDNS-
+client-subnet DNS extension (ECS) [ 24], motivated prior
+work to understand these services’ relative performance [ 2]
+and their potential impact on QoE [ 28,53,57]. These and
+other related efforts have shown that user-mapping accu-
+racy is worsening, leading to increased delays, lower engage-
+ment [44] and revenue loss [71].
+Despite some adoption of anycast [ 4,17] and the promise
+of CDN-ISP collaborations [ 3,55,57,73], many CDNs con-
+tinue to rely on DNS-based server redirection. Otto et al. [ 53]proposed direct resolution as an alternative end-user approach
+to address the impact of remote DNS resolvers on Web QoE
+despite the limited adoption of ECS. Direct resolution lever-
+ages the recursive DNS server to obtain the authoritative
+server for CDN-hosted content, but have the client itself
+do the final resolution by directly contacting the author-
+itative server operated by the CDN. This yields better lo-
+calization and, thus QoE performance, without additional
+privacy costs [ 54]. Ónoma adopts direct resolution, including
+caching of the CDN-run authoritative name server to avoid
+additional delay in resolution (Sec.4).
+Beyond performance, increasing concerns about user pri-
+vacy has served as motivation for new DNS techniques and
+services. Recent work evaluates the relative performance
+and QoE impact of DNS-over-Encryption variants [ 13,37],
+and assess their implementations, deployment configura-
+tions [ 25,47] and policy implications [ 27,35]. Deccio et
+al.[25] also show that only 0.15% of open resolvers and a
+negligible number of authoritative servers support DNS pri-
+vacy, and those that do comes from a handful of popular
+DNS providers such as Cloudflare, Facebook, Google, Quad9.
+Although the benefits provided by DNS-over-Encryption
+against certain threats are clear, there are significant pri-
+vacy concerns associated with the need to trust the DNS
+operator with the entire request trace of users. Schmitt et
+al. [62] proposes Oblivious DNS to address centralization, by
+obfuscating the queries that the recursive resolver sees by
+adding its own authoritative ODNS resolver. A few closely
+related efforts [ 8,34,36] have proposed and evaluated the
+use of DNS request sharding to mitigate the privacy con-
+cerns from exposing all DNS resolution to a single DNS-
+over-Encryption service, potentially grouping requests per
+domain to avoid distribution of similar names to different
+resolvers [ 8]. Ónoma builds on this idea (Sec. 3) and shows
+the degree of additional privacy it provides by avoiding DNS-
+based user-reidentification through domain specific sharding
+and by adaptively inserting popular requests on a user DNS
+request stream based on the uniqueness of a requested do-
+main. Ónoma also avoids the potential performance costs
+of sharding by dynamically selecting the different DNS ser-
+vices to use, depending on the user’s location, and racing
+resolvers [ 69]. Other recent works have questioned the actual
+privacy benefits of encrypted DNS and proposed solutions
+to address some of them (e.g., [ 15,65]) which could be easily
+adopted by Ónoma.
+The design of Ónoma, leverages an extensive body of work
+to introduce, to the best of our knowledge, the first end-user
+DNS resolver to take advantage of the privacy and perfor-
+mance benefits of centralized DNS services while avoiding
+the associated costs.
+11(a) AR,Akamai
+ (b) IN,Akamai
+ (c) US,Akamai
+(d) DE,Akamai
+ (e) DE,Amazon
+ (f) DE,Fastly
+Figure 14: Performance of Ónoma and of individual, public DoH and DNS resolvers per country, relative to the
+best DNS service across CDNs and countries. The top set focuses on one CDN, Akamai, across countries while
+the bottom set focuses on different CDNs in Germany. The graph for Akamai in Germany is included only once.
+Ónoma offers consistently better performance across CDN and country combinations.
+8 LIMITATIONS AND FUTURE WORK
+In this section we discuss limitations of our approach and its
+evaluation. For starters, we focus on challenging attempts
+at user re-identification by third-party DNS resolvers, mo-
+tivated by the findings of Olejnik et al. [ 51] and Bird et
+al. [10]. Due to the privileged position of DNS resolvers
+in the resolution path, the best privacy a user could expect is
+in terms of k-anonymity. We adopt the user identification ap-
+proach and follow the evaluation model and settings of prior
+work [ 10,51]. We do not claim this to be the only approach
+to (re)identify users, but we posit that the combination of
+popular domain insertion and sharding will complicate the
+task of user identification by most third-party resolvers. The
+opportunistic use of Oblivious DNS [ 62,68] for resolving
+truly distinctive or otherwise problematic domains further
+challenge re-identification while limiting the performance
+impact of the technique.
+In this work we opted for Alexa’s regional ranking as
+this offers country specific rankings available to the com-
+munity, and includes in its listing regional domain aliases
+for instance yahoo.com.jp and yahoo.com. Other popular
+rankings, such as Tranco compile their regional rankings by
+computing an intersection global ranking and the domains
+appearing in the country-specific Chrome User ExperienceReport list. These rankings, therefore, miss all region spe-
+cific domain aliases. While we are exploring the use similar-
+web’s [ 9] regional ranking for future work, we note that our
+analysis and evaluation of Ónoma is largely independent of
+specific website rankings.
+Finally, we also note that the dataset used for our evalua-
+tion, collected from our university network for a two-week
+period, can be biased both in terms of the population and
+the time window over which it was collected. In future work,
+we are exploring ways to expand our evaluation dataset.
+9 CONCLUSION
+Third-party recursive DNS services offer a number of valu-
+able features, from high resolution performance to improved
+privacy through encrypted and Oblivious DNS. At the same
+time, these DNS variants are operated by a handful of providers
+such as Google, Amazon and Cloudflare, strengthening a con-
+cerning trend toward DNS centralization and its implications,
+ranging from user privacy and QoE, to system resilience and
+market competition. We presented Ónoma , an end-system
+DNS resolver that let users take advantage of third-party
+DNS services without sacrificing privacy or performance.
+Our evaluation shows the benefits of Ónoma across locales,
+with different DNS services, content providers, and CDNs.
+12REFERENCES
+[1]Abhishta Abhishta, Roland van Rijswijk-Deij, and Lambert Nieuwen-
+huis. 2019. Measuring the Impact of a Successful DDoS Attack on the
+Customer Behaviour of Managed DNS Service Providers. 48, 5 (2019).
+[2]Bernhard Ager, Wolfgang Mühlbauer, Georgios Smaragdakis, and Steve
+Uhlig. 2010. Comparing DNS resolvers in the wild.
+[3]R. Alimi, R. Penno, and Y. Yang. 2011. ALTO Protocol . RFC 7285. IETF.
+[4]H.A. Alzoubi, S. Lee, M. Rabinovich, and J.V. Merwe O. Spatscheck.
+2008. Anycast CDNS revisited.
+[5]Anonymous. 2012. The Collateral Damage of Internet Censorship by
+DNS Injection. 42, 3 (July 2012).
+[6]Anonymous. 2014. The NSA and GCHQ’s QUANTUMTHEORY Hack-
+ing Tactics. The Intercept (2014). https://theintercept.com/document/
+2014/03/12/nsa-gchqs-quantumtheory-hacking-tactics/
+[7]Jari Arkko. 2019. Centralized Architectures in Internet Infrastruc-
+ture. Network Working Group – Internet Draft draft-arkko-arch-
+infrastructure-centralisation-00. IETF.
+[8]Jari Arkko, Martin Thomson, and Ted Hardie. 2020. Selecting Resolvers
+from a Set of Distributed DNS Resolvers . Internet-Draft. Internet Engi-
+neering Task Force.
+[9]Subin B. 2021. 7 Best Alexa.com Alternatives for Website Rank-
+ing and Traffic Analysis. (Dec 2021). https://beebom.com/
+best-alexa-com-alternatives/
+[10] Sarah Bird, Ilana Segall, and Martin Lopatka. 2020. Replication: Why
+We Still Can’ Browse in Peace: On the Uniqueness and Reidentifiability
+of Web Browsing Histories. In Proc. of USENIX SOUPS .
+[11] Stéphane Bortzmeyer. 2015. DNS Censorship (DNS
+Lies) As Seen By RIPE Atlas. RIPE Labs. (December
+2015). https://labs.ripe.net/Members/stephane_bortzmeyer/
+dns-censorship-dns-lies-seen-by-atlas-probes.
+[12] Stephane Bortzmeyer. 2015. DNS Privacy Considerations . RFC 7626.
+IETF.
+[13] Timm Bottger, Felix Cuadrado, Gianni Antichi, Elder Leao Fernandes,
+Garth Tyson, Igancio Castro, and Steve Uhlig. 2019. An Empirical
+Study of the Cost of DNS-over-HTTPS.
+[14] Ilker Nadi Bozkurt, Anthony Aguirre, Balakrishnan Chandrasekaran,
+P. Brighten Godfrey, Gregory Laughlin, Bruce Maggs, and Ankit Singla.
+2017. Why is the Internet so slow?!
+[15] Jonas Bushart and Christian Rossow. 2020. Padding Ain’t Enough:
+Assessing the Privacy Guarantees of Encrypted DNS. In Proc. of USENIX
+FOCI .
+[16] Michael Butkiewicz, Harsha V. Madhyastha, and Vyas Sekar. 2011.
+Understanding Website Complexity: Measurements, Metrics, and Im-
+plications.
+[17] M. Calder, A. Flavel, Ethan Katz-Bassett, Ratul Mahajan, and J. Padhye.
+2015. Analyzing the performance of an anycast CDN.
+[18] Matt Calder, Xun Xun Fan, Zi Hu, Ethan Katz-Bassett, John Heidemann,
+and Ramesh Govindan. 2013. Mapping the Expansion of Google’s
+Serving Infrastructure.
+[19] F. Chen, R. K. Sitaraman, and M. Torres. 2015. End-User Mapping:
+Next Generation Request Routing for Content Delivery.
+[20] Mariengracia Chirinos, Andrés Azpúrua, Leonid Evdokimov, and Maria
+Xynou. 2016. The State of Internet Censorship in Venezuela. Open
+Observatory of Network Interference (OONI) Blog. (August 2016).
+https://ooni.org/post/venezuela-internet-censorship/.
+[21] CloudFlare. 2021. Running a DNS over HTTPS client . Cloudflare Docs.
+CloudFlare. https://developers.cloudflare.com/1.1.1.1/dns-over-https/
+cloudflared-proxy.
+[22] Matt Colder, Xun Fan, and Liang Zhu. 2019. A Cloud Provider’s View
+of EDNS Client-Subnet Adoption.[23] David Coldewey. 2020. Cloudflare DNS goes down, taking a large
+piece of the Internet with it. TechCrunch Blog. (July 2020). http:
+//tcrn.ch/3pbDJzL.
+[24] C. Contavalli, W. Gaast, D. Lawrence, and W. Kumari. [n. d.]. Client
+subnet in DNS queries . RFC 7871. IETF.
+[25] Casey Deccio and Jacob Davis. 2019. DNS Privacy in Practice and
+Preparation.
+[26] Frank Denis and Yecheng Fu. 2013. DNSCrypt Website.
+https://dnscrypt.info/. (2013).
+[27] IETF (dprive) Working Group. 2014. DNS PRIVate Exchange (dprive)
+Working Group Charter. https://datatracker.ietf.org/wg/dprive/
+charter/. (October 2014).
+[28] Xun Fan, Ethan Katz-Bassett, and John Heidemann. 2015. Assessing
+affinity between users and CDN sites.
+[29] Google. 2009. Introducing Google Public DNS. Google Code
+Blog. (December 2009). http://googlecode.blogspot.com/2009/12/
+introducing-google-public-dns-new-dns.html
+[30] Google. 2022. Google Lighthouse. (2022). https://chrome.google.com/
+webstore/detail/lighthouse/blipmdconlkpinefehnmjammfjpmpbjk?
+hl=en
+[31] Benjamin Greschbach, Tobia Pulls, Laura M. Roberts, Phillip Winter,
+and Nick Feamster. 2017. The Effect of DNS on Tor’s Anonymity.
+[32] Christian Grothoff, Matthias Wachs, Monika Ermert, and Jacob Appel-
+baum. 2015. NSA’s MORECOWBELL: Knell for DNS. (2015). https:
+//cryptome.org/2015/01/MORECOWBELL-Analysis-Grothoff-etal.
+pdf.
+[33] Shuai Hao, Yubao Zhang, Haining Wang, and Angelos Stavrou. 2018.
+End-Users Get Maneuvered: Empirical Analaysis of Redirection Hi-
+jacking in Content Delivery Networks.
+[34] Nguyen Phong Hoang, Ivan Lin, Seyedhamed Ghavamnia, and Michalis
+Polychronakis. 2020. K-resolver: Towards Decentralizing Encrypted
+DNS Resolution. In Proc. of MADWeb .
+[35] Paul Hoffman. 2020. Local and Internet Policy Implications of Encrypted
+DNS. Technical Report OCTO-003v3. ICANN. https://www.icann.org/
+en/system/files/files/octo-003-30apr20-en.pdf.
+[36] Austin Hounsel, Kevin Borgolte, Paul Schmitt, and Nick Feamster. 2020.
+D-DNS: Towards Re-Decentralizing the DNS. (February 2020).
+[37] Austin Hounsel, Kevin Borgolte, Paul Schmitt, Jordan Holland, and
+Nick Feamster. 2019. Analyzing the Costs (and Benefits) of DNS, DoT,
+and DoH for the Modern Web.
+[38] C. Huitema and S. Weerahandi. 2000. Internet Measurements: the
+Rising Tide and the DNS Snag. In Proc. of ITC Specialist Seminar on
+Internet Traffic Measurement and Modeling .
+[39] Geoff Huston. 2019. DNS Resolver Centrality. APNIC Blog. (September
+2019). https://labs.apnic.net/?p=1260.
+[40] Geoff Huston and Joao Luis Silva Dama. 2017. DNS Privacy. Internet
+Protocol Journal 20, 1 (March 2017).
+[41] Internet Society. 2020. Consolidation in the Internet Economy . Global
+Internet Report. Internet Society. https://future.internetsociety.org/
+2019/
+[42] Jaeyeong Jung, Emil Sit, Hari Balakrishnan, and Robert Morris. 2001.
+DNS performance and the effectiveness of caching.
+[43] E. Kinnear, T. Pauly, C. Wood, and P. McManus. 2019. Adaptive DNS:
+Improving Privacy and Name Resolution . Network Working Group –
+Internet Draft. IETF.
+[44] S. S. Krishnan and R. K. Sitaraman. 2012. Video Stream Quality Im-
+pacts Viewer Behavior: Inferring Causality using Quasi-Experimental
+Designs.
+[45] Richard Liston, Sridhar Srinivasan, and Ellen Zegura. 2002. Diversity
+in DNS performance measures.
+[46] Yabin Liu, Han Hee Song, Ignacio Bermudez, Alan Mislove, Mario
+Baldi, and Alok Tongaonkar. 2015. Identifying Personal Information
+13in Internet Traffic.
+[47] Chaoyi Lu, Baojun Liu anbd Zhou Li, Shuang Hao, Haixin Duan, Ming-
+ming Zhang, Chunying Leng, Ying Liu, Zaifeng Zhang, and Jianping
+Wu. 2019. An End-to-End, Large-Scale Measurement of DNS-over-
+Encryption: How Far Have We Come?
+[48] Z. M. Mao, C. D. Cranor, F. Douglis, M. Rabinovich, O. Spatscheck,
+and J. Wang. 2002. A precise and efficient evaluation of the proximity
+between web clients and their local DNS servers.
+[49] Michael Mitzenmacher. 2001. The power of two choices in randomized
+load balancing. 12, 10 (October 2001).
+[50] Paul Mockapetris. 1987. Domain Names – Concepts and Facilities . RFC
+1034. IETF.
+[51] Lukasz Olejnik, Claude Castelluccia, and Artur Janc. 2012. Why Johnny
+Can’t Browse in Peace: On the Uniqueness of Web Browsing History
+Patterns. In Proc. of HotPETs .
+[52] Oracle 2016. Oracle Cloud Infrastructure . Oracle. https://docs.oracle.
+com/en-us/iaas/tools/oci-cli/3.7.2/oci_cli_docs/oci.html.
+[53] John Otto and Mario Sánchez John Rula Fabián E. Bustamante. 2012.
+Content delivery and the natural evolution of DNS: remote DNS trends,
+performance issues and alternative solutions.
+[54] John Otto, Mario Sánchez, John Rula, Ted Stein, and Fabián E. Busta-
+mante. 2012. namehelp: intelligent client-side DNS resolution.
+[55] I. Poese, B. Frank, G. Smaragdakis, S. Uhlig, A. Feldmann, and B. Maggs.
+2012. Enabling Content-aware Traffic Engineering. 42, 5 (2012).
+[56] Matthew Prince. 2019. Comment by Cloudflare CEO on Hacker News.
+Hacker News. (May 2019). https://news.ycombinator.com/item?id=
+19828702.
+[57] Enric Pujol, Ingmar Poese, Johannes Zerwas, Georgios Smaragdakis,
+and Anja Feldmann. 2019. Steering hyper-giants’ traffic at scale.
+[58] Quad9. 2009. DoH with Quad9 DNS Servers. Quad9 Blog. (July 2009).
+https://www.quad9.net/doh-quad9-dns-servers/.
+[59] Roxana Radu and Michael Hausding. 2020. Consolidation in the DNS
+resolver market – how much, how fast, how dangerous? Journal of
+Cyber Policy 5, 1 (February 2020), 46–64.
+[60] Paul F. Roberts. 2005. Comcast suffers DNS outage, denies pharming
+link. (Apr 2005). https://www.networkworld.com/article/2318771/
+comcast-suffers-dns-outage--denies-pharming-link.html.
+[61] John P. Rula and Fabián E. Bustamante. 2014. Behind the Curtain –
+Cellular DNS and Content Replica Selection.
+[62] Paul Schmitt, Anne Edmundson, Allison Manjin, and Nick Feamster.
+2019. Oblivious DNS: Practical privacy for DNS queries. In Proc. on
+Privacy Enhancing Technologies .
+[63] Kyle Schomp, Mark Allman, and Michael Rabinovich. 2014. DNS
+Resolvers Considered Harmful.
+[64] A. Shaikh, R. Tewari, and M. Agrawal. 2001. On the effectiveness of
+DNS-based server selection.
+[65] Sandra Siby, M. Juárez, C. Díaz, N. Vallina-Rodriguez, and C. Troncoso.
+2020. Encrypted DNS -> Privacy? A Traffic Analysis Perspective. In
+Proc. of NDSS .
+[66] Splunk Inc. [n. d.]. Splunk. ([n. d.]). https://www.splunk.com/.
+[67] Jennifer Valentino-devries. 2019. Secret F.B.I. Subpoenas Scoop
+Up Personal Data From Scores of Companies. (Sep 2019).
+https://www.nytimes.com/2019/09/20/us/data-privacy-fbi.html?
+smid=tw-nytimes&smtyp=cur.
+[68] Tanya Verna and Sudheesh Singanamalla. 2020. Improving DNS Pri-
+vacy with Oblivious DoH in 1.1.1.1. CloudFlare Blog. (December 2020).
+https://blog.cloudflare.com/oblivious-dns/.
+[69] Ashish Vulimiri, Oliver Michel, P. Brighten Godfrey, and Scott Shenker.
+2012. More is Less: Reducing Latency via Redundancy.
+[70] Synthia Wang, Kyle MacMillan, Brennan Schaffner, Nick Feamster,
+and Marshini Chetty. 2021. A First Look at the Consolidation of DNS
+and Web Hosting Providers. (October 2021).[71] Kathryn Whitenton. 2020. The Need for Speed, 23 Years Later. NN/g
+Nielsen Norman Group Blog. (May 2020). https://www.nngroup.com/
+articles/the-need-for-speed/.
+[72] Craig E. Wills and Hao Shang. 2000. The Contribution of DNS Lookup
+Costs to Web Object Retrieval . Technical Report WPI-CS-TR-00-12.
+Worcester Polytechnic Institute.
+[73] H. Xie, Y. R. Yang, A. Krishnamurthy, Y. G. Liu, and A. Silberschatz.
+2008. P4P: Provider Portal for Applications.
+[74] Maria Xynou, Arturo Filastò, Mahsa Alimardani, Sina Kouhi, Kyle
+Bowen, Vmon, and Amin Sabeti. 2017. Internet Censorship in Iran:
+Network Measurement Findings from 2014-2017. Open Observatory
+of Network Interference (OONI) Blog. (September 2017). https://ooni.
+org/post/iran-internet-censorship/.
+14A APPENDIX
+In this section we include the remaining graphs from our
+motivation, system design and evaluation of Ónoma.
+A.1 The importance of DNS for CDN
+replica selection
+Figure 15 shows the remaining graphs to illustrate the im-
+portance of DNS for redirection. The client in the US is using
+a local DNS resolver (cyan) and distant ones in Argentina
+and India.
+(a) Amazon
+ (b) Fastly
+Figure 15: Latency to assigned replica servers (/24) for
+Amazon and Fastly for resources of top50 US websites.
+Figure 16 shows the full set of the graphs to illustrate
+the importance of DNS for replica selection for the client in
+(a) Akamai
+ (b) Amazon
+(c) Fastly
+Figure 16: Latency to assigned replica servers (/24) for
+Akamai, Amazon CloudFront and Fastly for resources
+of top50 German websites. The client in Germany uses
+a recursive DNS resolvers local (cyan) and distant ones
+in Sweden and India.
+(a) AR
+ (b) DE
+Figure 17: DNS resolution times of individual, public
+DoH and DNS providers in the Argentina and Ger-
+many, relative to the best performing DNS service,
+across each country.
+Germany using a local DNS resolver (cyan) and distant ones
+in Sweden and India.
+A.2 Performance and Third-party DNS
+Figure 17 shows the remaining graphs to show how resolu-
+tion times of different resolvers varies in different locales.
+A.3 Sharding Performance and
+Third-party DNS
+Figure 18 shows the remaining graphs to show that reso-
+lution times of different resolvers and sharding varies in
+different locales.
+A.4 The Impact of CDN and DNS on Web
+QoE across locales
+Figure 19 shows the graph for the ranking of public and
+regional DNS resolvers by TTFB for resources hosted on
+Fastly in different locales.
+A.5 End-to-end Evaluation of Ónoma
+Figure 21 shows the remaining graphs for the end-to-end
+evaluation of Ónoma, comparing Ónoma to other DNS providers
+for content hosted on different CDNs across the locales.
+15(a) US
+ (b) AR
+ (c) IN
+Figure 18: DNS resolution times of individual, public DoH and DNS providers and sharding in the Argentina, India
+and the US relative to the best performing DNS service, across each country.
+Figure 19: DNS resolvers ranking by Time-to-First-
+Byte for resources hosted on Fastly across different
+countries.
+(a) US,Amazon
+ (b) US,Fastly
+(c) AR,Amazon
+ (d) AR,Fastly
+Figure 20: Percentage Difference in Time-to-First-
+Byte of Sharding and Ónoma relative to the best DNS
+service across the US and Argentina. For every CDN,
+country combination shown in the graph Ónoma per-
+forms better than sharding.
+(a) AR,Amazon
+ (b) AR,Fastly
+(c) IN,Amazon
+ (d) IN,Fastly
+(e) US,Amazon
+ (f) US,Fastly
+Figure 21: Performance of individual, public DoH and
+DNS resolvers in each country and using Ónoma, rela-
+tive to the best DNS service across different CDNs and
+countries.
+16

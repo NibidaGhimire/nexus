@@ -1,0 +1,994 @@
+MS-LSTM: Exploring Spatiotemporal Multiscale Representations
+in Video Prediction Domain
+Zhifeng Maa, Hao Zhanga,∗and Jie Liub
+aFaculty of Computing, Harbin Institute of Technology, Harbin, China
+bInternational Research Institute for Artificial Intelligence, Harbin Institute of Technology, Shenzhen, China
+ARTICLE INFO
+Keywords :
+Video prediction
+multiple scale
+LSTMABSTRACT
+The drastic variation of motion in spatial and temporal dimensions makes the video prediction
+task extremely challenging. Existing RNN models obtain higher performance by deepening or
+widening the model. They obtain the multi-scale features of the video only by stacking layers,
+which is inefficient and brings unbearable training costs (such as memory, FLOPs, and train-
+ing time). Different from them, this paper proposes a spatiotemporal multi-scale model called
+MS-LSTM wholly from a multi-scale perspective. On the basis of stacked layers, MS-LSTM
+incorporates two additional efficient multi-scale designs to fully capture spatiotemporal context
+information. Concretely,weemployLSTMswithmirroredpyramidstructurestoconstructspa-
+tialmulti-scalerepresentationsandLSTMswithdifferentconvolutionkernelstoconstructtem-
+poralmulti-scalerepresentations. Wetheoreticallyanalyzethetrainingcostandperformanceof
+MS-LSTM and its components. Detailed comparison experiments with twelve baseline models
+on four video datasets show that MS-LSTM has better performance but lower training costs.
+1. Introduction
+As a fundamental yet essential research task in predictive learning, video prediction or called spatiotemporal pre-
+dictive learning has aroused widespread research interest in the computer vision community. Video prediction has
+numerous practical applications in various domains, including robot pose prediction [1, 2], precipitation nowcast-
+ing [3, 4, 5, 6, 7], human trajectory prediction[8, 9, 10], traffic flow prediction [11, 12, 13], and so on. It is a special
+case of self-supervision, where the model needs to estimate upcoming future frames from given historical frames at
+the pixel level. While it is not necessary to have annotated data for training such models, the models need to be able
+to grasp the intricate dynamics of real-world phenomena (such as physical interactions) in order to create consistent
+sequences [14].
+Natural videos are inherently uncertain, and this uncertainty increases over time. To accommodate this uncer-
+tainty, the model converges to an average state of the future frame, occurring as visual blurring [15]. To address this
+issue,priorapproacheschoosetodeepenorwidenthepioneermodel. ConvLSTM,whichcombinesconvolutionwith
+long short-term memory (LSTM) to simultaneously capture spatial and temporal dynamics, has served as a founda-
+tional approach upon which subsequent models have been built to improve prediction performance. The evolution of
+theseconvolutionalrecurrentneuralnetworks(ConvRNNsorRNNs)canbebroadlytracedthroughConvLSTM,Pre-
+dRNN[16],TrajGRU[17],PredRNN++[18],MIM[19],MotionRNN[20],PredRNN-V2[21],andPrecipLSTM[22].
+ThesepracticesofincreasingthedepthandwidthofConvLSTMleadtotheincreaseofmodelparametersandtheex-
+pansion of model capacity, which is beneficial to deal with complex nonlinear transformations. Nevertheless, the
+side effect is the skyrocketing training cost, such as memory (most intractable), FLOPs, and training time, which is
+unbearable in high-resolution and resource-constrained scenes.
+As pointed out by Res2Net [23], cardinality [24] and scale [23] were two other essential tricks to improve the
+performanceofneuralnetworks. Inviewofthefactthatgroupingconvolutioncanreduceparameters,cardinalityuses
+groupedconvolutionwhileincreasingthenumberofgroupsuntilthesameparametersasbeforegrouping. Regrettably,
+although cardinality does not increase parameter complexity, it brings extra memory in exchange for performance
+improvement. Multi-scalerepresentationinvisionreferstoreceptivefieldsofdifferentsizes,whichareusedtodescribe
+objectsofdifferentscalesandcanbeachievedinthreeways. (1)Depth. Thereceptivefieldofthenetworkwillgradually
+∗Corresponding author
+zhh1000@hit.edu.cn (H. Zhang)
+ORCID(s):0000-0002-6769-2115 (H. Zhang)
+Ma et al.: Preprint submitted to Elsevier Page 1 of 21arXiv:2304.07724v3  [cs.CV]  16 Feb 2024MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+becomelargerasconvolutionallayersarestacked,andlayersofdifferentdepthsformamulti-scalerepresentation. For
+example, VGGNet [25] and ResNet [26]. (2) Kernel. Convolution kernels of different sizes have receptive fields of
+different sizes, and multiple parallel multi-scale convolution kernels form a multi-scale representation. For example,
+GoogLeNet [27], SKNet [28], and Res2Net [23]. (3) Downsampling (Pooling). The network usually needs to be
+stacked deeply to obtain a larger receptive field, but downsampling can double the receptive field [29]. Generally,
+pooling layers are inserted between convolutional layers to improve efficiency, which is straightforwardly manifested
+asamulti-scalerepresentationcomposedoffeaturemapsofdifferentsizes. Forexample,LeNet[30]andAlexNet[31].
+The most effective way among the three is downsampling, where the former two increase the depth and width of the
+modelrespectivelyandincreasetheoverhead,whilethelatteronlyincreaseslayerswithoutparametersandcanreduce
+the overhead. The past few years have witnessed a trend of convolutional neural networks (CNNs) towards efficient
+multi-scale design. Since convolution is an essential part of ConvRNN, how to efficiently construct a multi-scale
+representation of ConvRNN should also be its future development direction.
+Based on the following two facts: (1) The boom of CNN has witnessed the rapid development of multi-scale
+technology. (2) A basic problem of video prediction is how to efficiently learn a good spatiotemporal representation
+of video speculation or inference. In this work, we absorb the essence of the multi-scale design of CNN, combine
+it with the spatiotemporal characteristics of video, and propose a simple yet efficient spatiotemporal multi-scale ap-
+proach called multi-scale LSTM (MS-LSTM). Unlike most existing methods that enhance the layer-wise multi-scale
+representation strength of RNN, MS-LSTM improves the multi-scale representation ability at a more granular level.
+MS-LSTM incorporates two additional efficient multi-scale designs to fully capture spatiotemporal contextual infor-
+mation. Fromaspatialperspective,westackRNNlayerslikeordinaryRNNsandusedownsamplingtofurtherobtain
+multi-scale representations. Whereas, video prediction is a pixel reconstruction task. Hence, we add a symmetric
+decoder to restore the output of the encoder to the original pixel space, resulting in a mirrored pyramid structure like
+UNet [32]. From a temporal perspective, we use LSTMs with different sizes of kernels instead of a single kernel to
+build multi-scale representations, which we call multi-Kernel LSTM (MK-LSTM). MK-LSTM follows the Markov
+assumptionlikeConvLSTM,usingdifferentscalesofcellularmemorytodescribethedeformationofobjectsatdiffer-
+entscalesovertime. Inaddition,wealsoanalyzethetrainingcost(params,memory,FLOPs,time)ofMS-LSTMand
+its components and the reason (increase of receptive field and stepwise generation) for the performance improvement
+brought by the multi-scale architecture. It should be noted that the utilization of the big kernel gains rewards but it
+brings extra training burden, which can partly be resolved by the introduction of downsampling, which can ensure
+that our model sufficiently learns multi-scale features while bringing modest training cost. Our contributions can be
+summarized as follows:
+•We propose a new spatiotemporal multiscale model named MS-LSTM, which incorporates three orthogonal
+multiscale designs.
+•MS-LSTMemploysstackedLSTMswithmultipleconvolutionkernels(MK-LSTM)toformamirroredpyramid
+structure, which can fully acquire the spatiotemporal context representation and generates video from coarse to
+fine.
+•We theoretically analyze the training cost and performance of MS-LSTM. Experiments on four datasets with
+twelve competing models have proved that MS-LSTM has lower training occupation but higher performance.
+Theremainderofthepaperisstructuredasfollows. Section2brieflyreviewsrelatedworksaboutvariouskindsof
+networks and multi-scale rnn models in the video prediction domain. Section 3 formulates the video prediction prob-
+lem, details the pioneer ConvLSTM, and reviews several baselines (ConvLSTM variants) for comparison. Section 4
+presents two crucial modules that constitute MS-LSTM, namely spatial multi-scale LSTM and temporal multi-scale
+LSTM,andgivesdetailedtrainingcostandperformanceanalysisaboutthem. Extensiveexperimentsonfourdatasets
+in Section 5 demonstrate that MS-LSTM surpasses state-of-the-art CNN, ConvRNN, and Transformer [33] models.
+At last, Section 6 concludes the paper and anticipates the future.
+2. Related Work
+2.1. Video Prediction Models
+Currently, CNNs, ConvRNNs, probabilistic networks, and Transformer [33] networks are four common video
+predictionmodels,whichintroducedifferentinductivebiaseswhendesigningthenetworkstructure. UNet[32]variants
+Ma et al.: Preprint submitted to Elsevier Page 2 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+are common models for precipitation nowcasting, such as RainNet [34], FURENet [35], [36], and Broad-UNet [37].
+However, UNet has a natural disadvantage in capturing long-term changes and may be more suitable for short-term
+inference. Recently,SimVP[38]rehiredUNetforvideoprediction,whichassumedthatconvolution(2Dbydefault)can
+learnspatiotemporaltrendssimultaneously,butthetrickwastrainingforthousandsofepochs. Incontrast,ConvRNN
+is more famous and has an endless series of variants, for example, ConvLSTM [39], MCNet [40], TrajGRU [17],
+PredRNN [16], PredRNN++ [18], E3D-LSTM [41], MIM [19], CubicLSTM [42], TMU [43], SA-ConvLSTM [44],
+PhyDNet[12],[45],MotionRNN[20],MAU[46],STRPM[10],PrecipLSTM[22],PredRNN-V2[21],andsoon. This
+is because they introduce a reasonable spatiotemporal inductive bias, which makes them easier to train and perfectly
+fit the task. Generative adversarial networks (GANs) [47, 48, 49, 50, 51] and variational auto-encoders (VAEs) [52,
+8, 53, 2] learned the underlying distribution of video data by optimizing the KL divergence in loss functions, which
+is why we call them probabilistic networks. Transformer [33] was born for massive time series data. It will be data
+hungryandhardtotrainwithoutintroducingspatiotemporalinductivebias. ComparedtoVideoGPT[54],TATS[55],
+andMaskViT[56],Earthformer[57]andMIMO-VP[58]weremoresuitableforvideopredictiontasks,becausethey
+introduced local spatiotemporal (cuboid attention and 3D convolution) prior assumptions. This paper proposes a new
+networkbelongingtoConvRNN,andwecompareitwithotheradvancedCNN,ConvRNN,andTransformernetworks.
+2.2. Multiscale ConvRNN Models
+Two multiscale ConvRNNs were recently published, both of which are potential competitors. Both CMS-
+LSTM [59] and MoDeRNN [60] contributed two innovations, context embedding and multi-scale expression. Both
+contextual embeddings used the form of mutual gating of current input and previous output, but their multi-scale de-
+signs were quite different, where CMS-LSTM was multi-scale attention while MoDeRNN was multi-scale kernels.
+However,attentionleadstoquadraticcomplexity,andlargeconvolutionkernelsareexpensive. Moreover,experiments
+in Section 5.3.2 show that their multi-scale designs are not only expensive but also inefficient.
+3. Preliminaries
+3.1. Problem Formulation
+Video prediction is a spatiotemporal prediction task. In terms of space, it is a frame at a certain moment. We use
+𝑋𝑡∈ℝ𝑐×ℎ×𝑤to represent it, where 𝑡is time while 𝑐,ℎ, and𝑤represent the channel, height, and width of the frame
+respectively. In terms of time, it is a time sequence { 𝑋0,...,𝑋𝑚−1,𝑋𝑚,...,𝑋𝑚+𝑛−1} composed of multiple frames,
+where𝑚+𝑛is the sequence length. The video prediction task is to predict unknown 𝑛frames𝑌= {𝑋𝑚,...,𝑋𝑚+𝑛−1}
+given known 𝑚frames𝑋= {𝑋0,...,𝑋𝑚−1}. This problem is generally solved using maximum likelihood estimation:
+𝜃∗= arg max
+𝜃𝑃(𝑌|𝑋;𝜃).(1)
+where𝜃istheparametersoftheneuralnetwork,and 𝜃∗istheoptimalparameters,whichareoptimizedbythestochastic
+gradient descent algorithm.
+3.2. ConvLSTM
+In 2015, Shi et al. combined the convolution suitable for spatial tasks and the LSTM [61] suitable for temporal
+taskstoproposeConvLSTM[39]. ConvLSTMcansimultaneouslycapturespatiotemporalmotionandperfectlyadapts
+to video prediction tasks. This characteristic also establishes its status as the father of ConvRNN. The formula of the
+ConvLSTM unit [39, 44] is
+𝑖𝑡=𝜎(𝑊𝑖𝑥∗𝑋𝑙
+𝑡+𝑊𝑖ℎ∗𝐻𝑙
+𝑡−1),
+𝑓𝑡=𝜎(𝑊𝑓𝑥∗𝑋𝑙
+𝑡+𝑊𝑓ℎ∗𝐻𝑙
+𝑡−1),
+𝑔𝑡= tanh(𝑊𝑔𝑥∗𝑋𝑙
+𝑡+𝑊𝑔ℎ∗𝐻𝑙
+𝑡−1),
+𝐶𝑙
+𝑡=𝑓𝑡⊙𝐶𝑙
+𝑡−1+𝑖𝑡⊙𝑔𝑡,
+𝑜𝑡=𝜎(𝑊𝑜𝑥∗𝑋𝑙
+𝑡+𝑊𝑜ℎ∗𝐻𝑙
+𝑡−1),
+𝐻𝑙
+𝑡=𝑜𝑡⊙tanh(𝐶𝑙
+𝑡).(2)
+𝑡and𝑙represent time and layer respectively. 𝑖,𝑓,𝑔, and𝑜denote input, forget, modulation, and output gates respec-
+tively.𝑋istheinput,𝐻isthehiddenstate, 𝐶isthecellstate,and 𝑊istheparameter. Thesigmoidandtanhactivation
+Ma et al.: Preprint submitted to Elsevier Page 3 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+^
+X ^
+t+1 ......Ht5Ct5^
+X ^
+t+2
+X t+1X ^
+t+1/ X tX ^
+t/Ht4Ct4
+Ht1Ct1
+Ht0Ct0Ht4
+Ht0Ht+14
+Ht+10ConvLSTMConvLSTM
+ConvLSTMConvLSTM ConvLSTM
+ConvLSTM
+ConvLSTM ConvLSTM
+Fig. 1:The architecture of ConvLSTM. It only uses depth to obtain the multi-scale representation.
+Table 1
+The complexity of the convolution and ConvLSTM.
+Models Params FLOPs Memory
+Convolution 𝑐2𝑘22𝑏𝑐2ℎ𝑤𝑘2𝑏𝑐ℎ𝑤
+ConvLSTM 8𝑐2𝑘216𝑏𝑐2ℎ𝑤𝑘216𝑏𝑐ℎ𝑤
+functions are expressed in terms of 𝜎andtanhrespectively. Convolutions and Hadamard products are marked with ∗
+and⊙respectively. Fig. 1 shows the ConvLSTM architecture stacked with 6-layer units.
+Next, we will analyze the complexity of ConvLSTM based on convolution to prepare for the subsequent sections.
+Wefirstsummarizetheparameters,computation(FLOPs),andspace(memory)complexityofthetwoinTable1,where
+𝑘,𝑏,𝑐,ℎ, and𝑤represent the convolution kernel size, batch size, channel, height, and width, respectively. Here are
+someassumptions: AssumethatonlyonelayerofconvolutionandoneConvLSTMunitarestudied. Assumetheinput
+andoutputchannelsarethesame( 𝑐). Assumethattheinputandoutputfeaturesareofthesamesize( ℎ×𝑤). Assume
+that the size of the output tensor is used to represent the space complexity. Specifically, the parameters, FLOPs, and
+memoryofconvolutionareeasytoobtain,whichare 𝑐2𝑘2,2𝑏𝑐2ℎ𝑤𝑘2,and𝑏𝑐ℎ𝑤,respectively. SincetheConvLSTM
+unit is equipped with 8 convolutions, its parameters and FLOPs are 8𝑐2𝑘2and16𝑏𝑐2ℎ𝑤𝑘2respectively, where we
+ignorerelativelysmallFLOPsotherthanconvolutions[62]. +doesnottakeupanymemory[63],butactivationlayers
+and Hadamard layers have the same memory footprint as convolutions. The number of these memory-consuming
+operations is 16 in total, so the memory of ConvLSTM is 16𝑏𝑐ℎ𝑤.
+3.3. ConvLSTM Variants
+InordertoenhancethevideopredictionabilityofConvLSTM[39],previousConvRNNsembarkedontheroadof
+widening (TrajGRU, PredRNN, MIM, PredRNN-V2, PrecipLSTM) and deepening (PredRNN++, MotionRNN) the
+basemodel. TheyemployedarecursivepredictionarchitecturesimilartotheConvLSTMinFig.1. Shietal. integrated
+thetraditionalopticalflowmethodintoConvGRU[17]toproposeTrajGRU[17],inwhichrecursiveconnectionswere
+Ma et al.: Preprint submitted to Elsevier Page 4 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+dynamicallydeterminedovertime. OnthebasisofConvLSTM,Wangetal. introducedaspatiotemporalmemoryalong
+the zigzag propagation to construct PredRNN [16]. Wang et al. redefined the formula of PredRNN and introduced
+a gradient highway unit (GHU), which was called PredRNN++ [18]. Wang et al. believed that limited differences
+can bring a stationary process. They added stationary memory and non-stationary memory to launch MIM [19] on
+the basis of PredRNN. Wu et al. borrowed from the momentum update principle of the optimizer and designed Mo-
+tionGRU[20]thatcanmemorizeshort-termandlong-termmotiontrends. TheybuiltMotionRNN[20]byembedding
+MotionGRU between the [20] layers of MIM. Ma et al. introduced PrecipLSTM [22] for precipitation nowcasting
+based on PredRNN, which invented meteorological spatiotemporal memories based on the first law of geography.
+PredRNN-V2 [21] disentangled the two memories in PredRNN and designed a reverse scheduled sampling strategy,
+which was also the latest work of Wang et al. Although these methods of deepening and widening the model bring
+aboutperformanceimprovements,thisisattheexpenseofahugetrainingcost,whichmakesthemdifficulttoapplyto
+high-resolution tasks. Models with high performance and low resource consumption may be more popular.
+^^
+X ^
+t+1^
+X ^
+t+2
+X t+1X ^
+t+1/ X tX ^
+t/Ht1Ht+10Ht+11Ht5Ct5
+HtHt1Ht2Ht3Ht4Ht+14
+Ht+13
+Ht+12
+Ht+11
+Ht+10Ht0Ct5~
+Ht3Ct3
+Ct3~Ht4Ct4
+Ct4~
+Ht2Ct2
+Ct2~
+Ht1Ct1
+Ct1~
+Ht0Ct0
+Ct0~MK-LSTM MK-LSTM
+0MK-LSTM
+MK-LSTM MK-LSTMMK-LSTM MK-LSTM
+MK-LSTM MK-LSTM
+MK-LSTM
+MK-LSTM MK-LSTM
+Fig. 2:The architecture of MS-LSTM. It uses depth, downsampling, and multiple kernels to obtain multi-scale represen-
+tations. The model performs one-step predictions along the spatial axis (vertical direction) while passing hidden states
+between layers. The model extrapolates future frames along the time axis (horizontal direction) while passing the hidden
+and cell states over time. Skip connections (“+”) are represented by curves to combine the features of the encoder and
+decoder at the same scale, enabling the model to generate static or high-frequency features easily [52]. The yellow symbols
+̃𝐶𝑡represent the newly added multi-scale cell memory.
+4. Multi-Scale LSTM
+Duetothehighdimensionalityanduncertaintyofnaturalvideos,extractingarobustrepresentationfromrawpixel
+valuesisanoverlycomplicatedtask. Theper-pixelvariabilitybetweenconsecutiveframescausesexponentialgrowth
+inthepredictionerroronthelong-termhorizon[15]. Commonmodelsstrugglewithblurriness,andpixel-levelvideo
+prediction is still challenging.
+Ma et al.: Preprint submitted to Elsevier Page 5 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+A straightforward idea is that if we hope to foretell the future, we need to memorize as many historical events as
+possible. When we recall something that happened before, we do not just recall object movements, but also recol-
+lect visual appearances from coarse to fine [16]. Motivated by this, we present a new recurrent architecture called
+multi-scale LSTM (MS-LSTM), which combines the multi-scale design of traditional CNNs with the spatiotempo-
+ral motion property of videos. MS-LSTM (6 layers, Fig. 2) integrates three orthogonal multi-scale designs, which
+are depth, downsampling, and multiple convolution kernels, where the first two constitute spatial multi-scale LSTM
+(SMS-LSTM),andthefirstandlastconstitutetemporalmulti-scaleLSTM(TMS-LSTM).Theuseofmulti-scalefea-
+tures makes it easy to capture the motion of objects at different scales, where the small scale focuses on the contour
+and shape transformation of the object, while the large scale focuses on detailed features, such as the trajectories of
+human limbs or the evolution of precipitation. We experimentally verify that MS-LSTM has strong spatiotemporal
+modeling capabilities but consumes fewer training resources (Section 5). We’ll cover the specifics below.
+4.1. Spatial Multi-Scale LSTM
+Limitedbythescaleoftheconvolutionkernel,convolutioncanonlycapturetheshort-distancespatialdependence
+in the image [47]. One way is to use stacked convolution layers. The other way is to use the pooling operation. Both
+have brought about an increase in the spatial receptive field, making the model see wider, which laid the foundation
+fortoday’sCNN.TheConvRNNs(likePredRNN++[18]andMotionRNN[20])inthevideopredictiondomainhave
+absorbedtheessenceof“deep”learning,andmostofthemadoptthemethodofstackingmoremodulestoobtainawider
+spatiotemporal receptive field. However, unlike convolution operations, recursive operations cannot be parallelized,
+resulting in a surge in memory usage and training time. Therefore, blindly increasing the depth will no longer be the
+mosteffectiveway. Theuseofpoolingwillallowthemodeltobettersensecontextualinformationandreducetraining
+requirementsbyworkingatlowresolutions. Regrettably,theuseofdownsamplingtocapturespatialdependencieshas
+been poorly explored among ConvRNNs.
+Inthispaper,weimprovetheexistingRNNmodelsbyusingthefamiliarapproachesinCNN,stackingConvRNN
+layers but interspersing downsampling. Yet using downsampling will bring about a loss of image resolution, which
+is unacceptable for the pixel-level prediction task that requires the output to have the same resolution as the input.
+Inspired by UNet [32], we introduce a symmetric decoder to restore the output of the encoder to the original pixel
+space,resultinginamirroredpyramidstructure. Specifically,supposingwestack6layersofConvRNN(Fig.2),then
+the bottom three layers make up the encoder and the top three layers make up the decoder. We gradually decrease
+theresolutionoftheencoderbutgraduallyincreasetheresolutionofthedecoder. Thedownsamplingandupsampling
+operationsareimplementedbymaxpoolingandbilinearinterpolation,respectively. Besides,weaddskipconnections
+(“+”) between the encoder and decoder at the same scale to enable the model to generate static or high-frequency
+features easily [52]. Ultimately, we obtain a spatial multi-scale LSTM.
+It should be emphasized that the LSTM unit can be replaced by the unit of existing models, such as ConvLSTM,
+TrajGRU, PredRNN, PredRNN++, MIM, MotionRNN, PrecipLSTM, etc. Given that their basic units are either too
+complex (purely for novelty) or do not introduce multi-scale design, we redesign a new ConvRNN unit (MK-LSTM)
+that is relatively simple and introduces the temporal multi-scale design, which will be presented in the next section.
+The SMS-LSTM in subsequent parts of this paper refers to the one that uses the ConvLSTM unit.
+4.2. Temporal Multi-Scale LSTM
+Inadditiontostackinglayersandusingpoolingoperations,GoogLeNet[27]alsoutilizedtheInceptioncomposed
+of parallel filters of different sizes to enhance the multiscale representation capability. It also motivated some follow-
+up work. In theory, superimposing two convolutional layers with 3 × 3kernels is equivalent to a convolutional layer
+with 5 × 5kernel,Res2Net[23]formedanequivalentmulti-kernellayerlikeGoogLeNetbyaddingshortcutsbetween
+parallelgroupconvolutions. SKNet[28]proposedadynamicselectionmechanismthatcanselect 3×3or5×5kernelin
+asoft-attentionmanner. Inspiredbytheseworks,wedesignamulti-scaleconvolutionalLSTMtoexplorefine-grained
+temporalmultiscalerepresentations,whichwecallmulti-kernelLSTM(MK-LSTM).Thetemporalmulti-scaleLSTM
+(TMS-LSTM)willbeobtainedbystackingmultipleMK-LSTMunits(6layers). TheintuitiveviewofTMS-LSTMis
+to replace ConvLSTM units in Fig. 1 with MK-LSTM units.
+MK-LSTM(Fig.3andEq.(3))followstheMarkovassumptionlikeConvLSTM,usingdifferentscalesofcellular
+memorytodescribethedeformationofobjectsatdifferentscalesovertime. Weonlyemploytwotypesofconvolution
+kernels: 3×3and5×5. Therearetworeasons: (1)Forthe 1×1kernel,thereceptivefieldwillnotgrowaslayersstack.
+(2) For the kernel larger than 1 × 1, the deeper layer has larger receptive fields. However, using an excessively large
+Ma et al.: Preprint submitted to Elsevier Page 6 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+⊗
+⊗
+⊗
+⊗
+Input Gate
+F orget GateModulation Gate3×3 Cell State
+i
+3
+5×5g5×5i
+5×5 Cell State
+⊗
+HtOutput Gate
+lCtl
+Ctl~
+Ct-1l
+Xt Ct-1~lHt-1l
+⊗
+: Hardamard Product3×3
+3×3
+g
+3
+3×3f f5×5
+ot
+Fig. 3:The architecture of MK-LSTM. Orange-filled circles denote the differences between MK-LSTM and ConvLSTM
+(White-filled circles).
+convolution kernel will lead to a rapid increase in training consumption. Based on the above reasons, we construct
+MK-LSTMusingtwoConvLSTMswith 3 × 3and5 × 5kernelrespectively,acompromisebetweenperformanceand
+consumption. The equation of the MK-LSTM unit is shown as follows:
+𝑖3×3=𝜎(𝑊𝑖𝑥∗𝑋𝑙
+𝑡+𝑊𝑖ℎ∗𝐻𝑙
+𝑡−1),
+𝑓3×3=𝜎(𝑊𝑓𝑥∗𝑋𝑙
+𝑡+𝑊𝑓ℎ∗𝐻𝑙
+𝑡−1),
+𝑔3×3= tanh(𝑊𝑔𝑥∗𝑋𝑙
+𝑡+𝑊𝑔ℎ∗𝐻𝑙
+𝑡−1),
+𝐶𝑙
+𝑡=𝑓3×3⊙𝐶𝑙
+𝑡−1+𝑖3×3⊙𝑔3×3,
+𝑖5×5=𝜎(𝑊′
+𝑖𝑥∗𝑋𝑙
+𝑡+𝑊′
+𝑖ℎ∗𝐻𝑙
+𝑡−1),
+𝑓5×5=𝜎(𝑊′
+𝑓𝑥∗𝑋𝑙
+𝑡+𝑊′
+𝑓ℎ∗𝐻𝑙
+𝑡−1),
+𝑔5×5= tanh(𝑊′
+𝑔𝑥∗𝑋𝑙
+𝑡+𝑊′
+𝑔ℎ∗𝐻𝑙
+𝑡−1),
+̃𝐶𝑙
+𝑡=𝑓5×5⊙̃𝐶𝑙
+𝑡−1+𝑖5×5⊙𝑔5×5,
+𝑜𝑡=𝜎(𝑊𝑜𝑥∗𝑋𝑙
+𝑡+𝑊𝑜ℎ∗𝐻𝑙
+𝑡−1+𝑊𝑜𝑐∗𝐶𝑙
+𝑡
++𝑊′
+𝑜𝑥∗𝑋𝑙
+𝑡+𝑊′
+𝑜ℎ∗𝐻𝑙
+𝑡−1+𝑊′
+𝑜𝑐∗̃𝐶𝑙
+𝑡),
+𝐻𝑙
+𝑡=𝑜𝑡⊙tanh(𝑊1×1∗ [𝐶𝑙
+𝑡,̃𝐶𝑙
+𝑡]),(3)
+where𝑊and𝑊′aretheparameterstobeoptimized; 𝐶and̃𝐶representcellstatesofdifferentkernelsize; 𝑖∗×∗,𝑓∗×∗,
+and𝑔∗×∗standforinputgate,forgetgate,andmodulationgateofdifferentkernelsizerespectively; 𝑜standsforoutput
+gate; []indicates the channel connection.
+MK-LSTM adds additional multi-scale cellular memory on top of ConvLSTM, which makes it simple for the
+modeltorecallpastobjectchangesatdifferentscalesandperformlong-termpredictions. Furthermore,usingdifferent
+convolution kernels results in different sizes of receptive fields, which makes it easy to capture motion at different
+speeds,wherethelargerconvolutionkernelcancapturefastermotionwhilethesmallerconvolutionkernelcancapture
+slower motion [39]. This characteristic has been confirmed in experiments (Section 5). From the production of the
+Moving MNIST [64] and KTH [65] datasets, it can be intuitively seen that there are different rates of movement.
+The TaxiBJ [66] and Germany [34] datasets implicitly contain different rates of movement, because the movement
+speed of traffic and precipitation should also be random. It should be noted that the utilization of multiple kernels
+(width),likesdepth,gainsrewardsbutbringsextratrainingburden,whichcanpartlyberesolvedbytheintroductionof
+downsamplinginSMS-LSTM,whichensuresthatMS-LSTMcanthoroughlylearnmulti-scalerepresentationswithout
+causing excessive training cost.
+Ma et al.: Preprint submitted to Elsevier Page 7 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+Table 2
+The complexity of the ConvLSTM and MK-LSTM units.
+Models Params FLOPs Memory
+ConvLSTM 72𝑐2144𝑏𝑐2ℎ𝑤 16𝑏𝑐ℎ𝑤
+MK-LSTM 307𝑐2614𝑏𝑐2ℎ𝑤 32𝑏𝑐ℎ𝑤
+4.3. Analysis of Training Cost and Performance
+4.3.1. Analysis of Training Cost
+From Section 3.2, we know that the parameter complexity of a ConvLSTM unit (kernels 𝑘= 3) is72𝑐2, the com-
+putationcomplexity(FLOPs)ofaConvLSTMunitis 144𝑏𝑐2ℎ𝑤,andthespacecomplexity(memory)ofaConvLSTM
+unit is 16𝑏𝑐ℎ𝑤. Analogously, we can extend these training cost representations of ConvLSTM units to MK-LSTM
+units. The parameter complexity of a MK-LSTM unit (kernels 𝑘= 1,3,5) is307𝑐2, the computation complexity
+(FLOPs)ofaMK-LSTMunitis 614𝑏𝑐2ℎ𝑤,andthespacecomplexity(memory)ofaMK-LSTMunitis 32𝑏𝑐ℎ𝑤. We
+display them in Table 2.
+ParamsAnalysis . SincetheparametersoftheConvLSTM(MK-LSTM)unitareindependentofthescale( ℎ𝑤)and
+the max pooling layer, the bilinear interpolation layer, and skip connections (“+”) will not increase the parameters of
+themodel,SMS-LSTM(MS-LSTM)hasthesameparametersasConvLSTM(TMS-LSTM).Inaddition,TMS-LSTM
+(MS-LSTM) has more parameters than ConvLSTM (SMS-LSTM), which is because the MK-LSTM unit has more
+parameters than the ConvLSTM unit.
+Memory Analysis . During the model training process, there are mainly three parts of memory usage, model
+memory (𝑀par), optimizer memory (3 𝑀parfor Adam [67]), and output memory (2 𝑀out) [63]. The model memory
+is used to store model parameters, the optimizer memory is used to store the gradient and momentum buffer of the
+parameter, and the output memory consists of two equal parts, which are the forward output memory ( 𝑀par) to store
+the layer output and the backward output memory to store the output gradient [68]. In summary, the total memory
+footprint of the model during training 𝑀all= 4𝑀par+ 2𝑀out.
+SinceSMS-LSTM(MS-LSTM)hasthesameparametersasConvLSTM(TMS-LSTM),SMS-LSTM(MS-LSTM)
+hasthesamemodelmemory( 𝑀par)asConvLSTM(TMS-LSTM).However,theoutputmemoryofaConvLSTM(MK-
+LSTM) unit is proportional to the scale ( ℎ𝑤). SMS-LSTM (MS-LSTM) uses small-scale ConvLSTM (MK-LSTM)
+units,soithasfewerforwardoutputmemory( 𝑀out)thanConvLSTM(TMS-LSTM),thatis,fewertotalmemoryusage
+𝑀all. In addition, TMS-LSTM (MS-LSTM) has more total memory footprint than ConvLSTM (SMS-LSTM), which
+isbecausetheMK-LSTMunithasmoreparameters( 𝑀par)andmorelayeroutputmemory( 𝑀out)thantheConvLSTM
+unit.
+FLOPsAnalysis . SincetheFLOPsofaConvLSTM(MK-LSTM)unitisproportionaltothescale( ℎ𝑤)andSMS-
+LSTM(MS-LSTM)usessmall-scaleConvLSTM(MK-LSTM)units,supposingneglectingtheFLOPsoffewsampling
+andskipconnection(“+”)operations,SMS-LSTM(MS-LSTM)hasfewerFLOPsthanConvLSTM(TMS-LSTM).In
+addition,TMS-LSTM(MS-LSTM)hasmoreFLOPsthanConvLSTM(SMS-LSTM),whichisbecausetheMK-LSTM
+unit has more FLOPs than the ConvLSTM unit.
+Time Analysis . Theoretically, the smaller the feature size, the fewer times to calculate the convolution, and the
+lower the time complexity. However, in practical applications, convolution operations are generally converted to ma-
+trixoperations(img2colinCaffe[69]orunfoldinPytorch[70])tospeedupcalculations,andthecurrentoptimization
+technology for matrix operations is very mature, which eventually leads to the time complexity of ConvLSTM (MK-
+LSTM) being insensitive to scale ( ℎ𝑤). Therefore, the time complexity of SMS-LSTM (MS-LSTM) is not much
+differentfromConvLSTM(TMS-LSTM).ButthetimecomplexityofTMS-LSTM(MS-LSTM)islargerthanConvL-
+STM (SMS-LSTM) due to the fact that the MK-LSTM unit has more convolution layers with larger kernels than the
+ConvLSTM unit.
+In summary, compared with ConvLSTM (TMS-LSTM), SMS-LSTM (MS-LSTM) has the same parameters and
+trainingtimebutlessmemoryandFLOPs. ComparedwithConvLSTM(SMS-LSTM),TMS-LSTM(MS-LSTM)has
+largerparameters,trainingtime,memory,andFLOPs;comparedwithConvLSTM,MS-LSTMhaslargerparameters,
+moderate training time, moderate memory, and moderate FLOPs because of the neutralizing effect of SMS-LSTM.
+These conclusions are verified in Section 5.2.2. In addition, we also visualize all the above conclusions with a radar
+chart (Fig 4), which also indicates that MS-LSTM has moderate training cost but the best performance.
+Ma et al.: Preprint submitted to Elsevier Page 8 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+/uni00000003/uni00000003/uni00000003/uni00000003/uni00000003/uni00000003/uni00000033/uni00000044/uni00000055/uni00000044/uni00000050/uni00000056/uni00000029/uni0000002f/uni00000032/uni00000033/uni00000056
+/uni00000030/uni00000048/uni00000050/uni00000052/uni00000055/uni0000005c/uni00000003/uni00000003/uni00000003/uni00000003/uni00000003/uni00000003
+/uni00000037/uni0000004c/uni00000050/uni00000048
+/uni00000030/uni00000036/uni00000028/uni00000003/uni00000003/uni00000003/uni00000003/uni00000003/uni00000003/uni00000033/uni00000044/uni00000055/uni00000044/uni00000050/uni00000056/uni00000013/uni00000011/uni00000015/uni00000013/uni00000011/uni00000017/uni00000013/uni00000011/uni00000019/uni00000013/uni00000011/uni0000001b/uni00000014/uni00000011/uni00000013
+/uni00000026/uni00000052/uni00000051/uni00000059/uni0000002f/uni00000036/uni00000037/uni00000030
+/uni00000036/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030
+/uni00000037/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030
+/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030
+Fig. 4:The training cost (params, FLOPs, memory, and time) and performance (MSE) comparison between ConvLSTM,
+SMS-LSTM, TMS-LSTM, and MS-LSTM. It is a normalized version of the data in Table 3. For these five indicators, the
+closer the model is to the center, the better.
+4.3.2. Analysis of Performance
+Tothebestofourknowledge,therearefewworksontheinterpretabilityofConvRNNforvideoprediction,among
+which [71] is relatively systematic and comprehensive. [71] tried to understand the video prediction task from the
+perspective of mathematical theory and visualization experiments, which held that video prediction was a coarse-
+to-fine generation procedure (decoder), depending on the extending the present and erasing the past theory to catch
+spatiotemporal motion (encoder). Fortunately, there were lots of works [29, 72, 73] on the interpretability of CNN
+in other domains, which were also based on codec theory, where convolutions and poolings (optional) constituted the
+encoderandfullconnectionsconstitutedthedecoder. Theytriedtoanalyzeandprintthereceptivefieldoftheencoder
+to explain how models work. Since ConvRNN is also mainly composed of convolutions, we also learn from these
+experiences. In short, we mainly study the encoder of ConvRNN from the perspective of the receptive field, and we
+believe that the decoder should be a natural decoding process from coarse to fine, as analyzed in [71].
+Assumptionsbeforeanalysis: Themodelsalluse6-layerConvRNN,wherethefirst3layersformtheencoderand
+thelast3layersformthedecoder. ConvLSTMandSMS-LSTMuse 3 × 3convolutionkernels,whileTMS-LSTMand
+MS-LSTM use 3 × 3and5 × 5convolution kernels. Activation functions ( 𝜎andtanh) and element-wise operations
+(+and⊙)donotchangethereceptivefield. AConvLSTMunitshouldhavethesamereceptivefieldasaconvolution
+layerinit(Eq.(2)),suchas 𝑊∗𝑥∗𝑋𝑙
+𝑡or𝑊∗ℎ∗𝐻𝑙
+𝑡−1. ThenthetheoreticalreceptivefieldoftheConvLSTMencoder
+is7 × 7. Since the pooling layer can double the receptive field [29], the theoretical receptive field of the SMS-LSTM
+encoderis 15 × 15. Analogously,thetheoreticalreceptivefieldoftheMS-LSTMencoderwillbeapproximatelytwice
+thatofTMS-LSTM.OnthebasisofSMS-LSTM,wereplacetheConvLSTMunitinitwiththeMK-LSTMunitusing
+alargeconvolutionkerneltocontinuallyincreasethereceptivefield. ThisleadstothereceptivefieldoftheMS-LSTM
+encoder being much larger than 15 × 15. There is no doubt that the model with a wider spatiotemporal receptive
+fieldwillhaveastrongerabilitytosimulatecomplexspatiotemporalchanges. Themulti-scaledecoderofSMS-LSTM
+(MS-LSTM) decodes progressively from low-resolution to high-resolution, while the decoder of ConvLSTM (TMS-
+LSTM) does not have this natural coarse-to-fine process. In addition, multi-scale decoders enjoy the benefits of skip
+connections, which bring multi-scale features of encoders to facilitate decoding high-frequency information.
+The above analysis of the receptive field of the encoder and the multi-scale decoder is presented from a spatial
+perspective. However, the video prediction task is a spatiotemporal prediction problem, which can also be analyzed
+fromatemporalperspective. ComparedwithConvLSTM(SMS-LSTM)usingonlyasinglememorycell,TMS-LSTM
+(MS-LSTM) using more memory cells can remember longer spatiotemporal motion, which is why previous models
+(likePredRNN[16],MIM[19],andPrecipLSTM[22])choosetousemorememorycellstowidenthemodelforhigher
+performance.
+Ma et al.: Preprint submitted to Elsevier Page 9 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+Insummary,theencoderofSMS-LSTM(MS-LSTM)hasalargerspatiotemporalreceptivefieldthantheencoder
+ofConvLSTM(TMS-LSTM),andthedecoderofSMS-LSTM(MS-LSTM)enjoysthebenefitofskipconnectionsand
+decodesfromcoarsetofine,whichleadstoSMS-LSTM(MS-LSTM)outperformingConvLSTM(TMS-LSTM).Inad-
+dition,theperformanceofTMS-LSTM(MS-LSTM)isbetterthanConvLSTM(SMS-LSTM),becausetheMK-LSTM
+unit has a wider receptive field (larger convolution kernel) and an additional memory cell ( ̃𝐶𝑙
+𝑡) than the ConvLSTM
+unit.
+These conclusions are verified in Section 5.2.1. In detail, we print the output of each layer of the MS-LSTM,
+SMS-LSTM,TMS-LSTM,andConvLSTM.Inaddition,wealsovisualizealltheaboveconclusionswitharadarchart
+(Fig 4), which also indicates that MS-LSTM has moderate training cost but the best performance.
+Layer 0
+InputsLayer 1Layer 2Layer 3Layer 4Outputst=10    11      12     13      14     15      16      17     18     19 t=10    11      12     13      14     15      16      17     18     19 
+ConvLSTM SMS-LSTM
+Layer 0
+InputsLayer 1Layer 2Layer 3Layer 4Outputs
+TMS-LSTM MS-LSTM
+Fig. 5:The layer outputs of ConvLSTM, SMS-LSTM, TMS-LSTM, and MS-LSTM on the Moving MNIST dataset.
+5. Experiments
+We compare our model MS-LSTM with 12 baseline models on 4 datasets. The datasets include Moving
+MNIST [64], TaxiBJ [66], KTH [65], and Germany [34]. The baseline models include ConvLSTM [39], Traj-
+GRU [17], PredRNN [16], PredRNN++ [18], MIM [19], MotionRNN [20], PrecipLSTM [22], PredRNN-V2 [21],
+CMS-LSTM [59], MoDeRNN [60], SimVP [38], and Earthformer [57]. The results all prove the superiority of MS-
+LSTM in training cost and performance.
+5.1. Implementation Details
+The experimental equipment in this article is a machine equipped with 4 NVIDIA A100 40G graphics cards. We
+usedistributeddataparalleltechnology[70]toalleviatethetensionofvideomemory. Specifically,weuseabatchsize
+Ma et al.: Preprint submitted to Elsevier Page 10 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+Table 3
+Ablation study on the Moving MNIST dataset.
+Models Params ↓Memory ↓FLOPs ↓Time ↓MSE ↓
+ConvLSTM 0.4M 3.6G 34.4G 1.9H 90.36
+SMS-LSTM 0.4M 2.7G 15.1G 2.0H 63.90
+TMS-LSTM 1.9M 9.5G 147.3G 5.0H 67.70
+MS-LSTM 1.9M 5.2G 64.5G 5.0H 52.63
+of4,andeachcardisonlyresponsiblefortrainingonebatch. Theyautomaticallysynchronizethegradienttocomplete
+the entire training. Since each card is load balanced, we only need to record the memory of any card. All ConvRNNs
+have the same experimental configuration, and non-RNNs refer to the official settings (Section 5.2.4). The layers,
+optimizer, initial learning rate, loss, and channels of ConvRNN are 6, Adam [67], 0.0003, 𝐿1+𝐿2, 32, respectively.
+All ConvRNNs use 3 × 3convolution kernels, except MS-LSTM ( 3 × 3and5 × 5) and MoDeRNN ( 3 × 3,5 × 5, and
+7 × 7). MovingMNIST,TaxiBJ,KTH,andGermanydatasetshavedifferenttrainingepochs,whichare40,15,20,and
+20, respectively.
+5.2. Moving MNIST
+The Moving MNIST dataset [64] contains a total of 15,000 video clips, where each sclip contains 20 frames with
+10framesashistoryframesand10framesasfutureframes. Wedividethetrainingsetandtestsetaccordingtotheratio
+of 7:3. The size of the frame is 64 × 64, and 2 numbers move randomly in it. These numbers are randomly selected
+from the static MINIST dataset [30]. They start from random positions, random speeds, and random directions, and
+bounce once they reach the boundary.
+5.2.1. Visualization of Layer Outputs
+Fig. 5 shows an example of the inputs, outputs of layers, and outputs of ConvLSTM, SMS-LSTM, TMS-LSTM,
+and MS-LSTM.
+We first analyze the horizontal comparison between the two pairs of sub-graphs in Fig. 5, which is about the
+differencebetweenthescale-invariantmodelConvLSTM(TMS-LSTM)andthescale-variantmodelSMS-LSTM(MS-
+LSTM). (1) Encoder analysis. First, the numbers are getting fatter as can be seen from feature changes (from inputs
+to layer 2) of all models, indicating that they are all expanding the receptive field to capture motion. Second, SMS-
+LSTM (MS-LSTM) has a larger receptive field than ConvLSTM (TMS-LSTM) because the numbers in its features
+are fatter. Third, the numbers 6 and 1 can be distinguished from all features of ConvLSTM (TMS-LSTM) in early
+moments, and disappear (or became deformed) in later moments (caused by poor performance, the same below).
+But we cannot distinguish numbers 6 and 1 from layer 2 of SMS-LSTM (MS-LSTM), only abstract outlines. This
+shows that ConvLSTM (TMS-LSTM) does not learn abstract features, which is contrary to the common knowledge
+that abstract features generally exist in deep CNN layers. (2) Decoder analysis. From layer 3 to output, SMS-LSTM
+(MS-LSTM) generates predictions from coarse to fine, where layer 3 gives contours, layer 4 supplements details, and
+outputsrestoreresolution. Incontrast,ConvLSTM(TMS-LSTM)doesnotfollowthisrule,wecanalwaysdistinguish
+numbersfromtheirdecoders. (3)Modelanalysis. SMS-LSTM(MS-LSTM)canquicklyexpandthereceptivefieldto
+capturemotionandcansynthesizeframesfromcoarsetofine. ConvLSTM(TMS-LSTM)slowlyexpandsthereceptive
+field,ignoresthenaturalreconstructionprocessfromsimpletodifficult,anddoesnotlearnabstracthigh-levelfeatures
+from beginning to end. All of these make the performance of ConvLSTM (TMS-LSTM) inferior to SMS-LSTM
+(MS-LSTM).
+We then analyze the vertical comparison between the two pairs of sub-graphs in Fig. 5, which is about the differ-
+ence between the single-cell model ConvLSTM (SMS-LSTM) and the double-cell model TMS-LSTM (MS-LSTM).
+Overall,theencodinganddecodingprocessofTMS-LSTM(MS-LSTM)isnotmuchdifferentfromConvLSTM(SMS-
+LSTM).Specifically,thenumbersinlayer0ofMS-LSTMarefatter(largerreceptivefield)thanthoseofSMS-LSTM,
+whichismoreobviousinthecomparisonoflayer1. ThereasonforthisphenomenonisthatweintroduceMK-LSTM
+on the basis of SMS-LSTM, which uses a larger convolution kernel with a wider receptive field. However, it is diffi-
+cult for us to tell which number is fatter between the encoders of TMS-LSTM and ConvLSTM, and it seems that the
+numbersinlayer0ofTMS-LSTMareeventhinnerthanthoseofConvLSTM.Thismaybebecausethereceptivefield
+Ma et al.: Preprint submitted to Elsevier Page 11 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+Table 4
+Training cost comparison with RNN models on the Moving MNIST dataset.
+Model Params ↓Memory ↓FLOPs ↓Time ↓
+ConvLSTM [39] 0.4M 3.6G 34.4G 1.9H
+PredRNN [16] 0.9M 6.3G 69.8G 4.9H
+PredRNN++ [18] 1.4M 8.8G 94.7G 4.5H
+PredRNN-V2 [21] 0.9M 7.3G 70.8G 7.9H
+MIM [19] 1.8M 11.0G 143.0G 9.5H
+MotionRNN [20] 1.9M 11.8G 146.2G 32.7H
+MS-LSTM 1.9M 5.2G 64.5G 5.0H
+Table 5
+Quantitative comparison with RNN models on the Moving MNIST dataset.
+Model SSIM ↑MSE ↓MAE ↓
+ConvLSTM [39] 0.810 90.36 142.5
+PredRNN [16] 0.845 66.17 118.0
+PredRNN++ [18] 0.846 65.63 119.0
+PredRNN-V2 [21] 0.855 61.57 112.9
+MIM [19] 0.855 63.76 113.4
+MotionRNN [20] 0.862 59.62 108.9
+MS-LSTM 0.879 52.63 97.9
+ofthe3-layerRNNwith 3 × 3and5 × 5convolutionisnotmuchdifferentfromthereceptivefieldofthe3-layerRNN
+with 3 × 3convolution. But if the pooling layer is introduced, these gaps may be further widened. Nevertheless, the
+long-term predictive ability of TMS-LSTM is still stronger than that of ConvLSTM. ConvLSTM loses the prediction
+ofthecontourofthedigit6at 𝑡= 14whileTMS-LSTMmaintainsittothelastframe,albeitthereissomedeformation.
+Apparently, this is due to the fact that TMS-LSTM uses MK-LSTM with dual temporal memories.
+5.2.2. Ablation Study
+AsshowninTable3,bothspatialmulti-scaleLSTM(SMS-LSTM)andtemporalmulti-scaleLSTM(TMS-LSTM)
+bringperformanceimprovements. Besides,asanalyzedinSection4.3.1,theuseofpoolingdoesnotchangetheparam-
+eters and training time but reduces memory and FLOPs, while the use of large convolution kernels brings additional
+parameters, memory, FLOPs, and training time. Since SMS-LSTM brings down the training cost (memory (most
+tricky) and FLOPs) while TMS-LSTM brings up the training cost (all), we combine SMS-LSTM and TMS-LSTM to
+construct MS-LSTM to obtain optimal performance without causing excessive training cost.
+5.2.3. Comparison with RNN Models
+From Table 4, we can see that MS-LSTM has the same amount of parameters as MotionRNN, but the training
+resourcesrequiredtotrainMS-LSTMaremuchlowerthanMotionRNN.Specifically,thememoryoccupation,FLOPs,
+andtrainingtimeofMS-LSTMisabout1/2,1/2,and1/6ofMotionRNNrespectively,whichisalmostlessthanthoseof
+PredRNN.Inaddition,thequantitativeexperimentsofMS-LSTMalsosurpassedMotionRNN(Table5),whichproves
+the significance of the introduction of spatiotemporal multi-scale structure. For example, compared to MotionRNN,
+the mean square error (MSE) of MS-LSTM is reduced by 11.7% from 59.62 to 52.63.
+ThepredictiontaskinFig.6becomesextremelydifficultduetotheheavyoverlapofdigits3and9ininputframes.
+The mean and variance of the video undergo drastic changes upon occlusion, indicating the presence of high-order
+non-stationarityinthesequence[19]. TheimagegeneratedbyMS-LSTMismoresatisfactorythanothermodels,and
+the ambiguity is not obvious. In fact, we can’t even tell the numbers in the last frame generated by other models.
+WecanconcludethatMS-LSTMshowsgreatabilityincapturingthenon-stationarydynamicsofcomplextime-space
+sequences.
+Ma et al.: Preprint submitted to Elsevier Page 12 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+t=0              5               9              11             13             15              17             19Input Frames
+ConvLSTMPredRNNMIMMotionRNN
+PredRNN++MS-LSTM
+Ground Truth & Predicted Frames
+Fig. 6:Qualitative comparison on the Moving MNIST dataset.
+Table 6
+Comparison with competing multiscale non-RNN models on the Moving MNIST dataset.
+Models Basics Params ↓Memory ↓FLOPs ↓Time ↓SSIM ↑MSE ↓
+SimVP [38] CNN 43.2M 4.4G 68.5G 29.4H 0.734 129.2
+Earthformer [57] Attention 6.7M 38.8G 519.5G 3.9H 0.787 71.0
+MS-LSTM RNN 1.9M 5.2G 64.5G 5.0H 0.879 52.6
+5.2.4. Comparison with Competing Multiscale Non-RNN Models
+Atfirstglance,theCNN-basedSimVP[38]ismostsimilartoourMS-LSTM,whichusedtheUNetarchitectureand
+usedconvolutionkernelsofdifferentsizes. However,SimVPimplicitlyassumedthatconvolutionscansimultaneously
+learnspatiotemporaldynamics,whileMS-LSTMexplicitlyadoptsConvRNNtosimultaneouslycapturespatiotemporal
+dynamics. In addition, Earthformer [57] also used a UNet-like multi-scale architecture and explicitly used cuboid
+attention to capture local and global spatiotemporal dynamics. We compare these two competitors with MS-LSTM
+in Table 6. It should be pointed out that we use their official optimal experimental settings. First, MS-LSTM has
+the fewest parameters and FLOPs, and has the second least memory and training time, both of which are close to
+the minimum. That is, the training cost of MS-LSTM is almost optimal. Second, MS-LSTM has the largest SSIM
+(structural similarity, [74]) and the smallest MSE, both of which are optimal. Finally, SimVP needs to be trained for
+2000 epochs and suffers from severe overfitting. The complex structure of Earthformer requires nearly a thousand
+lines of code to reproduce, which brings difficulties to its dissemination. In conclusion, MS-LSTM shows superiority
+intrainingcost,performance,andtrainingdifficulty,andthefundamentalreasonisitseffectivemulti-scaledesignand
+reasonable inductive bias.
+5.3. TaxiBJ Traffic Flow
+The TaxiBJ traffic flow dataset, as described in Zhang et al. [66], features meteorological and taxicab trajectory
+data from four time phases in Beijing, gathered by sensors installed in the cars. The trajectory data encompasses two
+kinds of crowd flows, which are depicted through an 8 × 32 × 32 × 2 heat map, where the final dimension indicating
+the intensity of entering and leaving traffic flow in the same region. For our analysis, we employ the entering traffic
+flowdata. Specifically,weuse4historicalframestoforecast4futureframes,whichrepresentstrafficsituationsforthe
+Ma et al.: Preprint submitted to Elsevier Page 13 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+Table 7
+Training cost comparison on the TaxiBJ dataset.
+Model Params ↓Memory ↓FLOPs ↓Time ↓
+ConvLSTM [39] 0.4M 2.1G 3.2G 0.8H
+TrajGRU [17] 0.5M 2.3G 3.6G 8.1H
+PredRNN [16] 0.9M 2.4G 6.4G 1.9H
+PredRNN++ [18] 1.4M 2.7G 8.7G 1.8H
+MIM [19] 1.8M 2.8G 13.2G 3.7H
+MotionRNN [20] 1.9M 2.9G 13.5G 11.8H
+CMS-LSTM [59] 1.1M 5.6G 11.5G 9.4H
+MoDeRNN [60] 1.5M 4.9G 21.4G 3.8H
+MS-LSTM 1.9M 2.3G 5.9G 2.0H
+Table 8
+Framewise MSE comparison on the TaxiBJ dataset.
+Model Frame 1 ↓Frame 2 ↓Frame 3 ↓Frame 4 ↓
+ConvLSTM [39] 0.199 0.268 0.315 0.356
+TrajGRU [17] 0.193 0.264 0.305 0.352
+PredRNN [16] 0.170 0.222 0.257 0.287
+PredRNN++ [18] 0.162 0.200 0.234 0.268
+MIM [19] 0.164 0.208 0.251 0.288
+MotionRNN [20] 0.147 0.188 0.228 0.263
+CMS-LSTM [59] 0.169 0.210 0.249 0.289
+MoDeRNN [60] 0.166 0.205 0.240 0.277
+MS-LSTM 0.141 0.173 0.199 0.230
+followingtwohours. Thedatasetissplitintotwoparts,followingsettingsoutlinedinMIMbyWangetal.[19],where
+the training set encompasses 19,560 sequences, while the testing set possesses 1,344 sequences.
+5.3.1. Comparison of the Training Cost and Performance
+Table 7 and Table 8 show the quantitative experimental result. We can get the same conclusions as above. MS-
+LSTMrequireslesstrainingcostbuthashigheraccuracy. ThequalitativeexperimentalresultisshowninFig.7,which
+compares the absolute difference between true and predicted images. Obviously, the prediction of MS-LSTM is the
+most accurate among all compared models.
+5.3.2. Comparison with Competing Multiscale RNN Models
+Lately,twocompetingmulti-scaleRNNmodelshavebeenintroducedin2022,namelyCMS-LSTM[59]andMoD-
+eRNN [60]. These models have opted for different approaches when it comes to designing multiscale architectures,
+with CMS-LSTM incorporating multi-patch attention and MoDeRNN utilizing multi-scale convolution kernels. Un-
+luckily, as can be seen from Table 7 and Table 8, both of these multiscale designs are quite expensive and inefficient.
+Even though they have few parameters than MS-LSTM, their FLOPs and memory consumption are nearly more than
+twice that of MS-LSTM. The attention mechanism with the quadratic complexity used by CMS-LSTM and the over-
+sizedconvolutionkernels(3,5,and7)employedbyMoDeRNNcontributetothissituation. Thisalsoconfinesthemto
+low-resolution tasks, making it impossible to run them on other high-resolution datasets, such as KTH and Germany.
+Additionally, both CMS-LSTM and MoDeRNN achieve poor metrics on the TaxiBJ dataset, failing to surpass the
+performance of PredRNN++, which indicates that their multiscale designs are ineffective.
+5.4. KTH Human Action
+The KTH dataset [65] features footage of six human actions (boxing, running, jogging, walking, hand clapping,
+andhandwaving)performedby25subjectsacrossfourdifferentsettings: indoorscenarios,outdoorscenarios,outdoor
+scenarios with different clothing, and outdoor scenarios with scaling variations. All sequences are captured using a
+static camera with a 25fps frame rate. The footage is then downsampled to a spatial resolution of 160 × 120 pixels,
+Ma et al.: Preprint submitted to Elsevier Page 14 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+MotionRNNPredRNN
+MS-LSTMConvLSTM |GT-P|
+|GT-P|
+|GT-P|
+|GT-P|
+t=0            3              4              5              6              7Input Frames Ground Truth & Difference Frames
+Fig. 7:Qualitative comparison on the TaxiBJ dataset. The difference frames between the ground truth and predicted
+frames are represented by |GT-P |, where the prediction is optimal when the difference frame is empty.
+Table 9
+Training cost comparison on the KTH dataset.
+Model Params ↓Memory ↓FLOPs ↓Time ↓
+ConvLSTM [39] 0.4M 8.3G 137.7G 1.0H
+TrajGRU [17] 0.5M 18.1G 154.2G 9.4H
+PredRNN [16] 0.9M 18.4G 279.3G 2.2H
+PredRNN++ [18] 1.4M 27.7G 378.7G 2.8H
+MIM [19] 1.8M 35.7G 571.9G 4.3H
+MotionRNN [20] 1.9M 38.7G 584.8G 12.1H
+MS-LSTM 1.9M 14.5G 257.9G 2.1H
+withanaveragedurationoffourseconds. Forourstudy,wefocusonthecategoriesofrunning,jogging,andwalking,
+which primarily involve varying lower body movements. To ensure that human subjects are always visible, we crop
+frames based on the relevant text in the dataset. We interpolate frames into 128 ×128 pixels to sustain the running
+of all models. We use subjects 1-16 for training and subjects 17-25 for testing. During both the training and testing
+stages,weuseaslidingwindowof20forallactionsandpredictthenext10framesbasedonthepreceding10frames.
+The stride is set to 10 for jogging and walking, while it is set to 3 for running.
+5.4.1. Comparison of the Training Cost and Performance
+Table 9 depicts the training cost comparison on the KTH dataset, demonstrating again that MS-LSTM requires
+less training cost. We rely on quantitative metrics, including peak signal to noise ratio (PSNR) and SSIM, to gauge
+the performance of models. Fig. 8 shows the framewise comparisons of SSIM and PSNR, which are obtained by
+calculating the average of all test sequences at each time step. Apparently, MS-LSTM yields better results than other
+competing models. Fig. 9 also demonstrates this. TrajGRU, PredRNN, PredRNN++, MIM, and MotionRNN only
+focus on the motion of the left leg, and the right leg is lost in subsequent predictions. Moreover, their predictions are
+ambiguous, and we can’t tell the head from the torso. In contrast, MS-LSTM produces the best predictions, which
+benefit from the application of multi-scale techniques. The large scales concern the movement of the human body
+details like legs while the small scales care about the contour of the human body.
+Ma et al.: Preprint submitted to Elsevier Page 15 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+/uni00000014/uni00000015/uni00000016/uni00000017/uni00000018/uni00000019/uni0000001a/uni0000001b/uni0000001c/uni00000014/uni00000013/uni00000013/uni00000011/uni0000001b/uni00000015/uni00000018/uni00000013/uni00000011/uni0000001b/uni00000018/uni00000013/uni00000013/uni00000011/uni0000001b/uni0000001a/uni00000018/uni00000013/uni00000011/uni0000001c/uni00000013/uni00000013/uni00000013/uni00000011/uni0000001c/uni00000015/uni00000018/uni00000013/uni00000011/uni0000001c/uni00000018/uni00000013
+/uni00000026/uni00000052/uni00000051/uni00000059/uni0000002f/uni00000036/uni00000037/uni00000030
+/uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031
+/uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031/uni0000000e/uni0000000e
+/uni00000030/uni0000002c/uni00000030
+/uni00000030/uni00000052/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000035/uni00000031/uni00000031
+/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030
+(a) SSIM
+/uni00000014/uni00000015/uni00000016/uni00000017/uni00000018/uni00000019/uni0000001a/uni0000001b/uni0000001c/uni00000014/uni00000013/uni00000015/uni00000017/uni00000015/uni00000019/uni00000015/uni0000001b/uni00000016/uni00000013/uni00000016/uni00000015/uni00000016/uni00000017/uni00000016/uni00000019
+/uni00000026/uni00000052/uni00000051/uni00000059/uni0000002f/uni00000036/uni00000037/uni00000030
+/uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031
+/uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031/uni0000000e/uni0000000e
+/uni00000030/uni0000002c/uni00000030
+/uni00000030/uni00000052/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000035/uni00000031/uni00000031
+/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030 (b) PSNR
+Fig. 8:Framewise SSIM and PSNR comparison on the KTH dataset. The bigger SSIM and PSNR, the better.
+TrajGRUPredRNNMIMMotionRNN
+PredRNN++
+ConvLSTMt=0              5               9              11             13             15              17             19Input Frames
+Ground Truth & Predicted Frames
+MS-LSTM
+Fig. 9:Qualitative comparison on the KTH dataset.
+Ma et al.: Preprint submitted to Elsevier Page 16 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+Table 10
+Training cost comparison on the Germany radar dataset.
+Model Params ↓Memory ↓FLOPs ↓Time ↓
+ConvLSTM [39] 0.4M 6.8G 100.3G 0.8H
+TrajGRU [17] 0.5M 14.0G 112.4G 7.7H
+PredRNN [16] 0.9M 14.3G 203.5G 1.9H
+PredRNN++ [18] 1.4M 21.1G 275.9G 2.3H
+MIM [19] 1.8M 27.1G 416.7G 3.8H
+MotionRNN [20] 1.9M 29.4G 426.1G 10.4H
+PrecipLSTM [22] 1.8M 38.3G 398.5G 14.8H
+MS-LSTM 1.9M 14.8G 260.6G 1.8H
+Table 11
+Quantitative comparison on the Germany radar dataset.
+Model CSI-0.5 ↑CSI-2 ↑CSI-5 ↑HSS-0.5 ↑HSS-2 ↑HSS-5 ↑
+ConvLSTM [39] 0.341 0.199 0.079 0.490 0.315 0.138
+TrajGRU [17] 0.378 0.210 0.082 0.531 0.331 0.144
+PredRNN [16] 0.380 0.231 0.092 0.533 0.358 0.158
+PredRNN++ [18] 0.382 0.234 0.091 0.536 0.364 0.158
+MIM [19] 0.380 0.225 0.087 0.534 0.352 0.153
+MotionRNN [20] 0.387 0.229 0.085 0.541 0.357 0.149
+PrecipLSTM [22] 0.392 0.234 0.088 0.556 0.364 0.152
+MS-LSTM 0.405 0.243 0.096 0.562 0.378 0.164
+5.5. Precipitation Nowcasting
+TheGermanradardataset[34]containsradarechomapscapturedevery5minutesrecordedby17Dopplerradars
+between2006and2017. TheradarmapcoverstheentireGermanywitharesolutionof900 ×900,whichweinterpolate
+to 180 ×180. Data between 2006 and 2014 are used to optimize the model parameters, while data between 2015 and
+2017 are reserved for testing purposes. To make extrapolation more challenging, we sample one radar map every 30
+minutes. The model is trained to predict four future frames based on four historical ones, which denote precipitation
+fluctuations over the next two hours.
+5.5.1. Comparison of the Training Cost and Performance
+We report comparisons of training cost and precipitation metrics between our model and competing models in
+Table 10, Table 11, and Fig. 10, and the results all demonstrate one thing: MS-LSTM is optimal. It is worth noting
+thatweonlyreportthecriticalsuccessindex(CSI)[17]andHeidkeskillscore(HSS)metrics[17]ofmodelsatthe0.5,
+2,and5mm/hthresholds. ThisismainlybecauseGermanyhasatemperatemaritimeclimate,wheretheprecipitation
+is mostly light rain and light showers, with almost no heavy rain. Fig. 11 depicts one precipitation movement process
+that diffuses from northwestern to central Germany. As can be seen from the figure, each model predicts differently
+for the last frame (precipitation after 2 hours). Among them, the prediction of MS-LSTM is closest to the true value,
+which is thanks to the usage of the large convolution kernel to strengthen the multi-scale architecture to capture fast
+motion. Inaddition,althoughprecipitationexhibitslong-taildistributionandheavyrainisrare,MS-LSTMstillfocuses
+on heavier rain.
+6. Conclusion and Future Work
+In order to refresh the performance on the video prediction task, the previous RNN model becomes wider and
+deeper, which brings unbearable training cost. Different from these practices, this paper proposes a new model MS-
+LSTM from the perspective of scale. MS-LSTM is based on three orthogonal multi-scale designs, namely depth,
+downsampling, and multi-kernel. We theoretically analyze the training cost and performance of MS-LSTM and its
+components to enrich the interpretability of MS-LSTM, which is demonstrated in experiments on Moving MNIST.
+In order to verify the superiority of MS-LSTM over other models, we conducted extensive comparative experiments
+Ma et al.: Preprint submitted to Elsevier Page 17 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+/uni00000026/uni00000052/uni00000051/uni00000059/uni0000002f/uni00000036/uni00000037/uni00000030/uni00000037/uni00000055/uni00000044/uni0000004d/uni0000002a/uni00000035/uni00000038 /uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031/uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031/uni0000000e/uni0000000e/uni00000030/uni0000002c/uni00000030
+/uni00000030/uni00000052/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000035/uni00000031/uni00000031 /uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000053/uni0000002f/uni00000036/uni00000037/uni00000030/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000014/uni00000013/uni00000011/uni00000015/uni00000013/uni00000011/uni00000016/uni00000013/uni00000011/uni00000017/uni00000013/uni00000011/uni00000018/uni00000013/uni00000011/uni00000019/uni00000013/uni00000011/uni0000001a
+/uni00000026/uni00000036/uni0000002c/uni00000010/uni00000013/uni00000011/uni00000018
+/uni00000026/uni00000036/uni0000002c/uni00000010/uni00000015
+/uni00000026/uni00000036/uni0000002c/uni00000010/uni00000018
+(a) CSI
+/uni00000026/uni00000052/uni00000051/uni00000059/uni0000002f/uni00000036/uni00000037/uni00000030/uni00000037/uni00000055/uni00000044/uni0000004d/uni0000002a/uni00000035/uni00000038 /uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031/uni00000033/uni00000055/uni00000048/uni00000047/uni00000035/uni00000031/uni00000031/uni0000000e/uni0000000e/uni00000030/uni0000002c/uni00000030
+/uni00000030/uni00000052/uni00000057/uni0000004c/uni00000052/uni00000051/uni00000035/uni00000031/uni00000031 /uni00000033/uni00000055/uni00000048/uni00000046/uni0000004c/uni00000053/uni0000002f/uni00000036/uni00000037/uni00000030/uni00000030/uni00000036/uni00000010/uni0000002f/uni00000036/uni00000037/uni00000030/uni00000013/uni00000011/uni00000013/uni00000013/uni00000011/uni00000015/uni00000013/uni00000011/uni00000017/uni00000013/uni00000011/uni00000019/uni00000013/uni00000011/uni0000001b/uni00000014/uni00000011/uni00000013
+/uni0000002b/uni00000036/uni00000036/uni00000010/uni00000013/uni00000011/uni00000018
+/uni0000002b/uni00000036/uni00000036/uni00000010/uni00000015
+/uni0000002b/uni00000036/uni00000036/uni00000010/uni00000018 (b) HSS
+Fig. 10:Accumulate CSI and HSS comparison on the Germany radar dataset.
+PrecipLSTMMotionRNN
+TrajGRU
+PredRNN++
+MIM
+t=0            3              4              5             6              7Input Frames Ground Truth & Predicted Frames
+ConvLSTM
+dBZ
+60
+50
+40
+30
+20
+10
+0MS-LSTM
+Fig. 11:Qualitative comparison on the Germany radar dataset.
+Ma et al.: Preprint submitted to Elsevier Page 18 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+on four video datasets. The comparison models include advanced common ConvRNN models, competitive multi-
+scale ConvRNN models, and competitive multiscale non-RNN models. The results show that MS-LSTM has higher
+performance but less training cost.
+In addition to using pooling to build a efficient multi-scale structure, another technique to reduce training costs
+(mainly video memory) is to use patch, which divides the image into small blocks of the same size. These patches
+are stitched together in the channel dimension as a tensor input into the neural network, and restored to the original
+image resolution when output. ConvLSTM first used this approach, mainly due to the backwardness of the training
+equipment at that time. Although the patch brings a large drop in training cost, it also leads to a significant drop in
+model performance and may cause raster effects in the predicted image. Therefore, this design is not considered in
+this paper. However, the use of patch is the fundamental reason why the Transformer architecture can be transferred
+from natural language processing to vision. ViT used patch to greatly reduce the quadratic complexity of attention.
+MaskViT attempted to perform cloze tasks on patches to force the model to predict new frames. In short, patch can
+reducetrainingusageandmaybecomeanewparadigmforvideoprediction,butfurtherimprovementandresearchare
+needed in the future.
+7. Acknowledgments
+This work is partly supported by the National Key R&D Program of China under Grant No. 2021ZD0110900,
+the National Natural Science Foundation of China under Grant No. 62106061, 61972114, the Fundamental Re-
+search Funds for the Central Universities under Grant No. FRFCU5710010521, the Research and Application of
+KeyTechnologiesforIntelligentFarmingDecisionPlatform,AnOpenCompetitionProjectofHeilongjiangProvince
+(China) under Grant No. 2021ZXJ05A03, the Key Research and Development Program of Heilongjiang Province
+under Grant No. 2022ZX01A22, the National Natural Science Foundation of Heilongjiang Province under Grant No.
+YQ2019F007.
+References
+[1] J. Xu, B. Ni, X. Yang, Video prediction via selective sampling, Advances in Neural Information Processing Systems 31 (2018).
+[2] B. Wu, S. Nair, R. Martin-Martin, L. Fei-Fei, C. Finn, Greedy hierarchical variational autoencoders for large-scale video prediction, in:
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2021, pp. 2318–2328.
+[3] C.-C. Wei, Soft computing techniques in ensemble precipitation nowcast, Applied Soft Computing 13 (2) (2013) 793–805.
+[4] X. Yang, F. Zhang, P. Sun, X. Li, Z. Du, R. Liu, A spatio-temporal graph-guided convolutional lstm for tropical cyclones precipitation
+nowcasting, Applied Soft Computing 124 (2022) 109003.
+[5] Z.Ma,H.Zhang,J.Liu,Focalframeloss: Asimplebuteffectivelossforprecipitationnowcasting,IEEEJournalofSelectedTopicsinApplied
+Earth Observations and Remote Sensing 15 (2022) 6781–6788.
+[6] L. Espeholt, S. Agrawal, C. Sønderby, M. Kumar, J. Heek, C. Bromberg, C. Gazen, R. Carver, M. Andrychowicz, J. Hickey, et al., Deep
+learning for twelve hour precipitation forecasts, Nature Communications 13 (1) (2022) 1–10.
+[7] Z.Ma,H.Zhang,J.Liu,Mm-rnn: Amultimodalrnnforprecipitationnowcasting,IEEETransactionsonGeoscienceandRemoteSensing61
+(2023) 1–14.
+[8] Y.Wang,J.Wu,M.Long,J.B.Tenenbaum,Probabilisticvideopredictionfromnoisydatawithaposteriorconfidence,in: Proceedingsofthe
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020, pp. 10830–10839.
+[9] M. Chatterjee, N. Ahuja, A. Cherian, A hierarchical variational neural uncertainty model for stochastic video prediction, in: Proceedings of
+the IEEE/CVF International Conference on Computer Vision, 2021, pp. 9751–9761.
+[10] Z. Chang, X. Zhang, S. Wang, S. Ma, W. Gao, Strpm: A spatiotemporal residual predictive model for high-resolution video prediction, in:
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2022, pp. 13946–13955.
+[11] S.Deng,S.Jia,J.Chen,Exploringspatial–temporalrelationsviadeepconvolutionalneuralnetworksfortrafficflowpredictionwithincomplete
+data, Applied Soft Computing 78 (2019) 712–721.
+[12] V. L. Guen, N. Thome, Disentangling physical dynamics from unknown factors for unsupervised video prediction, in: Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020, pp. 11474–11484.
+[13] T. Qi, L. Chen, G. Li, Y. Li, C. Wang, Fedagcn: A traffic flow prediction framework based on federated learning and asynchronous graph
+convolutional network, Applied Soft Computing (2023) 110175.
+[14] L. Castrejon, N. Ballas, A. Courville, Improved conditional vrnns for video prediction, in: Proceedings of the IEEE/CVF International Con-
+ference on Computer Vision, 2019, pp. 7608–7617.
+[15] S.Oprea,P.Martinez-Gonzalez,A.Garcia-Garcia,J.A.Castro-Vargas,S.Orts-Escolano,J.Garcia-Rodriguez,A.Argyros,Areviewondeep
+learning techniques for video prediction, IEEE Transactions on Pattern Analysis and Machine Intelligence (2020).
+[16] Y.Wang,M.Long,J.Wang,Z.Gao,P.S.Yu,Predrnn: Recurrentneuralnetworksforpredictivelearningusingspatiotemporallstms,Advances
+in Neural Information Processing Systems 30 (2017).
+[17] X. Shi, Z. Gao, L. Lausen, H. Wang, D.-Y. Yeung, W.-k. Wong, W.-c. Woo, Deep learning for precipitation nowcasting: A benchmark and a
+new model, Advances in Neural Information Processing Systems 30 (2017).
+Ma et al.: Preprint submitted to Elsevier Page 19 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+[18] Y.Wang,Z.Gao,M.Long,J.Wang,S.Y.Philip,Predrnn++: Towardsaresolutionofthedeep-in-timedilemmainspatiotemporalpredictive
+learning, in: International Conference on Machine Learning, PMLR, 2018, pp. 5123–5132.
+[19] Y. Wang, J. Zhang, H. Zhu, M. Long, J. Wang, P. S. Yu, Memory in memory: A predictive neural network for learning higher-order non-
+stationarityfromspatiotemporaldynamics,in: ProceedingsoftheIEEE/CVFConferenceonComputerVisionandPatternRecognition,2019,
+pp. 9154–9162.
+[20] H.Wu, Z.Yao, J.Wang, M.Long, Motionrnn: A flexiblemodel forvideoprediction withspacetime-varyingmotions, in: Proceedingsof the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2021, pp. 15435–15444.
+[21] Y. Wang, H. Wu, J. Zhang, Z. Gao, J. Wang, P. Yu, M. Long, Predrnn: A recurrent neural network for spatiotemporal predictive learning,
+IEEE Transactions on Pattern Analysis and Machine Intelligence (2022).
+[22] Z. Ma, H. Zhang, J. Liu, Preciplstm: A meteorological spatiotemporal lstm for precipitation nowcasting, IEEE Transactions on Geoscience
+and Remote Sensing 60 (2022) 1–8.
+[23] S.-H.Gao,M.-M.Cheng,K.Zhao,X.-Y.Zhang,M.-H.Yang,P.Torr,Res2net: Anewmulti-scalebackbonearchitecture,IEEETransactions
+on Pattern Analysis and Machine Intelligence 43 (2) (2019) 652–662.
+[24] S.Xie,R.Girshick,P.Dollár,Z.Tu,K.He,Aggregatedresidualtransformationsfordeepneuralnetworks,in: IEEEConferenceonComputer
+Vision and Pattern Recognition, 2017, pp. 1492–1500.
+[25] K. Simonyan, A. Zisserman, Very deep convolutional networks for large-scale image recognition, in: International Conference on Learning
+Representations, 2014.
+[26] K. He, X. Zhang, S. Ren, J. Sun, Deep residual learning for image recognition, in: Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition, 2016, pp. 770–778.
+[27] C. Szegedy, W. Liu, Y. Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan, V. Vanhoucke, A. Rabinovich, Going deeper with convolutions, in:
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2015, pp. 1–9.
+[28] X. Li, W. Wang, X. Hu, J. Yang, Selective kernel networks, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 2019, pp. 510–519.
+[29] W. Luo, Y. Li, R. Urtasun, R. Zemel, Understanding the effective receptive field in deep convolutional neural networks, Advances in Neural
+Information Processing Systems 29 (2016).
+[30] Y.LeCun,L.Bottou,Y.Bengio,P.Haffner,Gradient-basedlearningappliedtodocumentrecognition,ProceedingsoftheIEEE86(11)(1998)
+2278–2324.
+[31] A. Krizhevsky, I. Sutskever, G. E. Hinton, Imagenet classification with deep convolutional neural networks, Advances in Neural Information
+Processing Systems 25 (2012) 1097—-1105.
+[32] O. Ronneberger, P. Fischer, T. Brox, U-net: Convolutional networks for biomedical image segmentation, in: International Conference on
+Medical Image Computing and Aomputer-assisted Intervention, Springer, 2015, pp. 234–241.
+[33] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, I. Polosukhin, Attention is all you need, Advances in
+Neural Information Processing Systems 30 (2017).
+[34] G. Ayzel, T. Scheffer, M. Heistermann, Rainnet v1.0: a convolutional neural network for radar-based precipitation nowcasting, Geoscientific
+Model Development 13 (6) (2020) 2631–2644.
+[35] X.Pan,Y.Lu,K.Zhao,H.Huang,M.Wang,H.Chen,Improvingnowcastingofconvectivedevelopmentbyincorporatingpolarimetricradar
+variables into a deep-learning model, Geophysical Research Letters 48 (21) (2021) e2021GL095302.
+[36] L. Han, H. Liang, H. Chen, W. Zhang, Y. Ge, Convective precipitation nowcasting using u-net model, IEEE Transactions on Geoscience and
+Remote Sensing 60 (2021) 1–8.
+[37] J. G. Fernández, S. Mehrkanoon, Broad-unet: Multi-scale feature learning for nowcasting tasks, Neural Networks 144 (2021) 419–427.
+[38] Z. Gao, C. Tan, L. Wu, S. Z. Li, Simvp: Simpler yet better video prediction, in: Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2022, pp. 3170–3180.
+[39] X.Shi,Z.Chen,H.Wang,D.-Y.Yeung,W.-K.Wong,W.-c.Woo,Convolutionallstmnetwork: Amachinelearningapproachforprecipitation
+nowcasting, Advances in Neural Information Processing Systems 28 (2015).
+[40] R. Villegas, J. Yang, S. Hong, X. Lin, H. Lee, Decomposing motion and content for natural video sequence prediction, in: International
+Conference on Learning Representations, 2017.
+[41] Y. Wang, L. Jiang, M.-H. Yang, L.-J. Li, M. Long, L. Fei-Fei, Eidetic 3d lstm: A model for video prediction and beyond, in: International
+Conference on Learning Representations, 2018.
+[42] H. Fan, L. Zhu, Y. Yang, Cubic lstms for video prediction, in: Proceedings of the AAAI conference on Artificial Intelligence, Vol. 33, 2019,
+pp. 8263–8270.
+[43] Z. Yao, Y. Wang, M. Long, J. Wang, Unsupervised transfer learning for spatiotemporal predictive networks, in: International Conference on
+Machine Learning, PMLR, 2020, pp. 10778–10788.
+[44] Z. Lin, M. Li, Z. Zheng, Y. Cheng, C. Yuan, Self-attention convlstm for spatiotemporal prediction, in: Proceedings of the AAAI Conference
+on Artificial Intelligence, Vol. 34, 2020, pp. 11531–11538.
+[45] S.Lee,H.G.Kim,D.H.Choi,H.-I.Kim,Y.M.Ro,Videopredictionrecallinglong-termmotioncontextviamemoryalignmentlearning,in:
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2021, pp. 3054–3063.
+[46] Z.Chang,X.Zhang,S.Wang,S.Ma,Y.Ye,X.Xinguang,W.Gao,Mau: Amotion-awareunitforvideopredictionandbeyond,Advancesin
+Neural Information Processing Systems 34 (2021) 26950–26962.
+[47] M. Mathieu, C. Couprie, Y. LeCun, Deep multi-scale video prediction beyond mean square error, in: International Conference on Learning
+Representations, 2016.
+[48] Y. Wang, P. Bilinski, F. Bremond, A. Dantcheva, G3an: Disentangling appearance and motion for video generation, in: Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020, pp. 5264–5273.
+[49] S. Ravuri, K. Lenc, M. Willson, D. Kangin, R. Lam, P. Mirowski, M. Fitzsimons, M. Athanassiadou, S. Kashem, S. Madge, et al., Skilful
+Ma et al.: Preprint submitted to Elsevier Page 20 of 21MS-LSTM: Exploring Spatiotemporal Multiscale Representations in Video Prediction Domain
+precipitation nowcasting using deep generative models of radar, Nature 597 (7878) (2021) 672–677.
+[50] Q.Huang,Z.Li,L.Zheng,T.Yang,Videoframepredictionwithdual-streamdeepnetworkemphasizingmotionsandcontentdetails,Applied
+Soft Computing 125 (2022) 109170.
+[51] C. Li, X. Chen, Future video frame prediction based on generative motion-assistant discriminative network, Applied Soft Computing (2023)
+110028.
+[52] E. Denton, R. Fergus, Stochastic video generation with a learned prior, in: International Conference on Machine Learning, PMLR, 2018, pp.
+1174–1183.
+[53] A. K. Akan, E. Erdem, A. Erdem, F. Güney, Slamp: Stochastic latent appearance and motion prediction, in: Proceedings of the IEEE/CVF
+International Conference on Computer Vision, 2021, pp. 14728–14737.
+[54] W. Yan, Y. Zhang, P. Abbeel, A. Srinivas, Videogpt: Video generation using vq-vae and transformers, arXiv preprint arXiv:2104.10157
+(2021).
+[55] S. Ge, T. Hayes, H. Yang, X. Yin, G. Pang, D. Jacobs, J.-B. Huang, D. Parikh, Long video generation with time-agnostic vqgan and time-
+sensitive transformer, arXiv preprint arXiv:2204.03638 (2022).
+[56] A. Gupta, S. Tian, Y. Zhang, J. Wu, R. Martín-Martín, L. Fei-Fei, Maskvit: Masked visual pre-training for video prediction, arXiv preprint
+arXiv:2206.11894 (2022).
+[57] Z.Gao,X.Shi,H.Wang,Y.Zhu,Y.Wang,M.Li,D.-Y.Yeung,Earthformer: Exploringspace-timetransformersforearthsystemforecasting,
+Advances in Neural Information Processing Systems (2022).
+[58] S. Ning, M. Lan, Y. Li, C. Chen, Q. Chen, X. Chen, X. Han, S. Cui, Mimo is all you need: A strong multi-in-multi-out baseline for video
+prediction, in: Proceedings of the AAAI Conference on Artificial Intelligence, 2023.
+[59] Z.Chai,Z.Xu,Y.Bail,Z.Lin,C.Yuan,Cms-lstm: Contextembeddingandmulti-scalespatiotemporalexpressionlstmforpredictivelearning,
+in: IEEE International Conference on Multimedia and Expo, IEEE, 2022, pp. 01–06.
+[60] Z. Chai, Z. Xu, C. Yuan, Modernn: Towards fine-grained motion details for spatiotemporal predictive learning, in: IEEE International Con-
+ference on Acoustics, Speech, and Signal Processing, IEEE, 2022, pp. 4658–4662.
+[61] S. Hochreiter, J. Schmidhuber, Long short-term memory, Neural Computation 9 (8) (1997) 1735–1780.
+[62] A. Pfeuffer, K. Dietmayer, Separable convolutional lstms for faster video segmentation, in: IEEE Intelligent Transportation Systems Confer-
+ence, IEEE, 2019, pp. 1072–1078.
+[63] N. S. Sohoni, C. R. Aberger, M. Leszczynski, J. Zhang, C. Ré, Low-memory neural network training: A technical report, arXiv preprint
+arXiv:1904.10631 (2019).
+[64] N. Srivastava, E. Mansimov, R. Salakhudinov, Unsupervised learning of video representations using lstms, in: International Conference on
+Machine Learning, PMLR, 2015, pp. 843–852.
+[65] C.Schuldt,I.Laptev,B.Caputo,Recognizinghumanactions: alocalsvmapproach,in: ProceedingsoftheInternationalConferenceonPattern
+Recognition, Vol. 3, IEEE, 2004, pp. 32–36.
+[66] J.Zhang,Y.Zheng,D.Qi,Deepspatio-temporalresidualnetworksforcitywidecrowdflowsprediction,in: ProceedingsoftheAAAIConfer-
+ence on Artificial Intelligence, Vol. 31, 2017.
+[67] D. P. Kingma, J. Ba, Adam: A method for stochastic optimization, in: International Conference on Learning Representations, 2015.
+[68] Y. Gao, Y. Liu, H. Zhang, Z. Li, Y. Zhu, H. Lin, M. Yang, Estimating gpu memory consumption of deep learning models, in: ACM Joint
+MeetingonEuropeanSoftwareEngineeringConferenceandSymposiumontheFoundationsofSoftwareEngineering,2020,pp.1342–1352.
+[69] Y. Jia, E. Shelhamer, J. Donahue, S. Karayev, J. Long, R. Girshick, S. Guadarrama, T. Darrell, Caffe: Convolutional architecture for fast
+feature embedding, in: Proceedings of the ACM International Conference on Multimedia, 2014, pp. 675–678.
+[70] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein, L. Antiga, et al., Pytorch: An imperative
+style, high-performance deep learning library, Advances in Neural Information Processing Systems 32 (2019) 8026–8037.
+[71] X.Huang,X.Li,Y.Ye,S.Feng,C.Luo,B.Zhang,Onunderstandingofspatiotemporalpredictionmodel,IEEETransactionsonCircuitsand
+Systems for Video Technology (2022).
+[72] X.Ding,X.Zhang,J.Han,G.Ding,Scalingupyourkernelsto31x31: Revisitinglargekerneldesignincnns,in: ProceedingsoftheIEEE/CVF
+Conference on Computer Vision and Pattern Recognition, 2022, pp. 11963–11975.
+[73] J.Gu,C.Dong,Interpretingsuper-resolutionnetworkswithlocalattributionmaps,in: ProceedingsoftheIEEE/CVFConferenceonComputer
+Vision and Pattern Recognition, 2021, pp. 9199–9208.
+[74] Z.Wang,A.C.Bovik,H.R.Sheikh,E.P.Simoncelli,Imagequalityassessment: Fromerrorvisibilitytostructuralsimilarity,IEEETransac-
+tions on Image Processing 13 (4) (2004) 600–612.
+Ma et al.: Preprint submitted to Elsevier Page 21 of 21

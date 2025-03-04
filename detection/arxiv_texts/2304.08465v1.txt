@@ -1,0 +1,971 @@
+MasaCtrl: Tuning-Free M utual Self-A ttention Control for Consistent
+Image Synthesis and Editing
+Mingdeng Cao1;2Xintao Wang2Zhongang Qi2Ying Shan2Xiaohu Qie2Yinqiang Zheng1
+1The University of Tokyo2ARC Lab, Tencent PCG
+https://github.com/TencentARC/MasaCtrl
+Teaser V3
+“A standing bird” →“…spreading wings …”
+“…giving a thumbs up …”
+ “A sitting boy” →“…standing …”
+“An apple” →“…two …”“… jumping…”
+“Elon Musk →…side view …”
+Input real image Input real image
+Figure 1: Our method MasaCtrl can perform text-based non-rigid image synthesis and real image editing without ﬁnetuning.
+Meanwhile, our method can be easily integrated into controllable diffusion models, like T2I-Adapter [17] or ControlNet [44],
+to perform more consistent and faithful synthesis and editing (last column).
+Abstract
+Despite the success in large-scale text-to-image gener-
+ation and text-conditioned image editing, existing methods
+still struggle to produce consistent generation and editing
+results. For example, generation approaches usually fail to
+synthesize multiple images of the same objects/characters
+but with different views or poses. Meanwhile, existing edit-
+ing methods either fail to achieve effective complex non-
+rigid editing while maintaining the overall textures and
+identity, or require time-consuming ﬁne-tuning to capture
+the image-speciﬁc appearance. In this paper, we develop
+MasaCtrl , a tuning-free method to achieve consistent im-
+age generation and complex non-rigid image editing si-
+multaneously. Speciﬁcally, MasaCtrl converts existing self-
+attention in diffusion models into mutual self-attention, so
+that it can query correlated local contents and textures from
+source images for consistency. To further alleviate the query
+*Work done during an internship at ARC Lab, Tencent PCG.confusion between foreground and background, we pro-
+pose a mask-guided mutual self-attention strategy, where
+the mask can be easily extracted from the cross-attention
+maps. Extensive experiments show that the proposed Mas-
+aCtrl can produce impressive results in both consistent im-
+age generation and complex non-rigid real image editing.
+1. Introduction
+Recent advances in text-to-image (T2I) generation [25,
+19, 40, 24, 27] have achieved great success. Those large-
+scale T2I models, such as Stable Diffusion [27], can gen-
+erate diverse and high-quality images conforming to given
+text prompts. When leveraging the T2I models, we can also
+perform promising text-conditioned image editing [19, 10,
+34, 21]. However, there is still a large gap between our
+needs and existing methods in terms of consistent genera-
+1arXiv:2304.08465v1  [cs.CV]  17 Apr 2023tion and editing.
+For the text-to-image generation, we usually want to
+generate several images of the same objects/characters but
+with different views or complex non-rigid variances ( e.g.,
+the changes of posture). Such capabilities are urgently
+needed for creating comic books and generating short
+videos using existing powerful T2I image models. How-
+ever, this requirement is highly challenging. Even if we ﬁx
+the random input noise and use very similar prompts ( e.g.,
+‘a sitting cat’ vs. ‘a laying cat’, see Fig. 2), the two gener-
+ated images are very different in both structures and iden-
+tity.
+For text-conditioned image editing, existing meth-
+ods [10, 34, 21] achieve impressive editing effects in im-
+age translation, style transfer, and appearance replacement
+while keeping the input structure and scene layout un-
+changed. However, those methods usually fail to change
+poses or views while maintaining the overall textures and
+identity, leading to inconsistent editing results. The lat-
+ter editing way is a more complicated non-rigid editing for
+practical use. Imagic [12] is then proposed to address this
+challenge. It allows complex non-rigid edits while preserv-
+ing its original characteristics. It can make a standing dog
+sit down, cause a bird to spread its wings, etc. Nevertheless,
+it requires ﬁne-tuning the entire T2I diffusion model and
+then optimizing the textual embedding to capture the image-
+speciﬁc appearance for each edit, which is time-consuming
+and impractical for real-world applications.
+In this paper, we aim to develop a tuning-free method
+to address the above challenges, enabling a more consis-
+tent generation of multiple images and complex non-rigid
+editing without ﬁne-tuning1. The core question is how to
+keep consistent. Unlike previous works [10, 21, 3] that usu-
+ally operate on cross-attention in T2I models, we propose
+to convert existing self-attention to mutual self-attention,
+so that it can query correlated local structures and textures
+from a source image for consistency. Speciﬁcally, we ﬁrst
+generate an image or invert a real image, resulting in the
+diffusion process (DP1) for the source image synthesis. In
+the new diffusion process (DP2) of generating a new image
+or editing an existing one, we can use the Query features
+in DP2 self-attentions to query the corresponding Key and
+Value features in DP1 self-attentions. In other words, we
+transform the existing self-attention into ‘cross-attention’,
+where the crossing operation happens in the self-attentions
+of two related diffusion processes, rather than between the
+U-Net feature and text embeddings. We call this ‘cross-
+ing self-attention as mutual self-attention . However, di-
+1In fact, we can also regard the process of image editing as a kind of
+generating multiple consistent images simultaneously. We can invert one
+image and then perform consistent synthesis based on it with the pose,
+view, and non-rigid variance while maintaining the overall characteristics,
+textures, and identity. For simplicity, we mainly describe the synthesis
+process, but our method can be directly applied to editing.
+Motivation Figure
+“…sitting… ” “ …laying… ”(Ours) “…laying… ”
+Source w/o mask guidance with mask guidance
+Figure 2: First row: images synthesized from ﬁxed ran-
+dom seed (middle, changed identity) and our method (right,
+maintained identity). Second row: image synthesized with-
+out mask guidance (middle) and with mask guidance (right).
+rectly applying this strategy can only generate images al-
+most identical to the source image and cannot comply with
+the target text prompt (as analyzed in Fig. 12). Thus we fur-
+ther control the denoising time step and the layer position in
+U-Net for performing mutual self-attention to achieve con-
+sistent synthesis and editing. More analyses are in Sec. 4.1
+and Sec. 5.5. In this way, we can use contents in the source
+image as the generation material to better maintain the tex-
+ture and identity. Meanwhile, its structure, pose, and non-
+rigid variances can be controlled by target text, or guided by
+recent controllable T2I-Adapters [17] or ControlNet [44].
+The proposed mutual self-attention control can work
+well for images with disentangled foreground and back-
+ground, but often fails in the synthesis and editing process
+where the foreground and background have similar patterns
+and colors. In these cases, mutual self-attention tends to
+confuse the foreground and background, leading to a messy
+result (Fig. 2, 2nd row). To address this problem, we further
+propose a mask-guided mutual self-attention. Speciﬁcally,
+we ﬁrst utilize the cross attention in T2I diffusion models to
+extract a mask associated with the main object in the image.
+This mask can successfully separate foreground and back-
+ground, and restrict the new foreground/background fea-
+tures to query only foreground/background features of the
+source image, respectively. Such an operation can effec-
+tively alleviate the query confusion between the foreground
+and background.
+Our contributions can be summarized as follows. 1)
+We propose a tuning-free method, namely, MasaCtrl, to si-
+multaneously achieve consistent image synthesis and com-
+plex non-rigid image editing. 2)An effective mutual self-
+2attention mechanism with delicate designs is proposed to
+change pose, view, structures, and non-rigid variances while
+maintaining the characteristics, texture, and identity. 3)To
+alleviate the query confusion between foreground and back-
+ground, we further propose a masked-guided mutual self-
+attention, where the mask can be easily computed from the
+cross-attentions. 4)Experimental results have shown the ef-
+fectiveness of our proposed MasaCtrl in both consistent im-
+age generation and complex non-rigid real image editing.
+2. Related Work
+2.1. Text-to-Image Generation
+Early image generation methods conditioned on text de-
+scription mainly based on GANs [26, 42, 43, 38, 14, 2,
+45, 39, 41, 33], due to their powerful capability of high-
+ﬁdelity image synthesis. These models try to align the
+text descriptions and synthesized image contents via multi-
+modal vision-language learning and have achieved cheer-
+ful synthesis results on domain-speciﬁc datasets. Text-to-
+image generation with auto-regressive and diffusion mod-
+els has obtained impressive diversity results. DALL·E [25],
+CogView [6] and Parti [40], large-scale text-to-image mod-
+els trained with a large amount of data, enable generat-
+ing images from open-domain text descriptions. However,
+the auto-regressive generation nature attributes to the slow
+generation process defect. Most recently, diffusion mod-
+els [31, 11, 20, 5] have shown superior generative power
+and achieved state-of-the-art synthesis results in terms of
+image quality and diversity than previous GAN-based and
+auto-regressive image generation models. By condition-
+ing the text prompt into the diffusion model, various text-
+to-image diffusion models GLIDE [19], VQ-Diffusion [8],
+LDM [27], DALL·E 2 [24], and Imagen [29] have been
+developed. They can synthesize high-quality images that
+highly comply with the given text description.
+2.2. Text-guided Image Editing.
+Text-guided image editing is a challenging task that aims
+to manipulate images according to natural language de-
+scriptions. Previous methods based on generative adversar-
+ial networks (GANs) [18, 15, 37, 22] have achieved some
+success on domain-speciﬁc datasets ( e.g., face datasets),
+but they have limited applicability and generality. A re-
+cent approach based on auto-regressive models, VQGAN-
+CLIP [4], combines VQGAN [7] and CLIP [23] to produce
+high-quality images and precise edits with diverse and con-
+trollable results. However, this approach suffers from slow
+generation speed and high computational cost.
+Different from previous methods based on GANs or
+auto-regressive models, diffusion models offer a fast and
+efﬁcient way to synthesize and edit images conditioned on
+text prompts. However, existing diffusion-based methodshave some limitations in terms of local and global editing.
+For example, the works [19, 1] require extra masks to edit
+local regions of the image; [13] can edit global aspects of
+the image by changing the text prompt directly, but cannot
+modify local details; [10, 34] use cross-attention or spatial
+features to edit both global and local aspects of the image
+by changing the text prompt directly, but they tend to pre-
+serve the original layout of the source image and fail to han-
+dle non-rigid transformations ( e.g., changing object pose).
+In contrast, we propose a novel approach that leverages the
+self-attention mechanism to achieve consistent and complex
+non-rigid image synthesis and editing. Our approach can
+modify various object attributes ( e.g., pose, shape, color)
+by changing the text prompt accordingly. The most related
+work to ours is Imagic [12], which also enables various non-
+rigid image editing by changing the prompts directly. How-
+ever, unlike our approach which can edit images on the ﬂy,
+Imagic requires careful optimization of the textual embed-
+ding and ﬁne-tuning of the model, which is time-consuming
+and unfriendly for ordinary users.
+3. Preliminaries
+3.1. Latent Diffusion Models
+Diffusion models [11, 30, 20] are generative models that
+can synthesize desired data samples from Gaussian noise
+via iteratively removing the noise. A diffusion model de-
+ﬁnes a forward process and a corresponding reverse pro-
+cess. The forward process adds the noise to the data sample
+x0to generate the noisy sample xtwith a predeﬁned noise
+adding schedule tat time-step t:
+q(xtjx0) =N(xt;p
+;(1 )tI); (1)
+where t=Qt
+i=1i. AfterTsteps, the data sample x0
+is transformed into Gaussian noise xTN (0;1). The re-
+verse process tries to remove the noise and generate a clean
+samplext 1from the previous sample xt:
+p(xt 1jxt) =N(xt 1;(xt;t);t); (2)
+whereandtare the corresponding mean and variance.
+The variance is a time-dependent constant, and the mean
+(xt;t) =1pt(xt 1 t
+1 t)can be solved by using a neu-
+ral network (xt;t)to predict the noise . To train such a
+noise estimation network , the object is a simpliﬁed mean-
+squared error:
+Lsimple = Ex0;;t(k (xt;t)k): (3)
+Therefore, by sampling xt 1iteratively, a data sample x0
+can be synthesized from random Gaussian noise xT. In ad-
+dition, text prompts Pcan be conditioned into the predicted
+noise(xt;t;P)so that the diffusion models can synthe-
+size text-complied images.
+3Main Architecture V5
+InversionDenoising
+U-Net
+×(𝑇−𝑆−1)
+𝑧்ିௌିଵ௦
+Encoder
+𝑧்
+𝑧்𝑧଴௦
+×(𝑇−𝑆−1)
+𝑧்ିௌିଵ 𝑧଴
+Decoder Decoder
+Real image or 
+synthesized with 𝑃௦Recontructed
+Synthesized“A photo of a dog”
+“dog”𝑃௦Mask
+Extraction
+“A photo of a running dog”𝑃𝐼𝐼௦𝐼௦∗
+Cross-
+Attention×𝑆
+𝑧்ିௌ௦
+×𝑆
+𝑧்ିௌMutual Self-
+AttentionSelf-
+AttentionCross-
+AttentionInput source image and target prompt 𝑃Initial layout synthesis Source image content querying with mutual self-attention Output synthesized image
+Copy
+testFigure 3: Pipeline of the proposed MasaCtrl. Our method tries to perform complex non-rigid image editing and synthesize
+content-consistent images. The source image is either real or synthesized with source text prompt Ps. During the denoising
+process for image synthesis, we convert the self-attention into mutual self-attention to query image contents from source
+imageIs, so that we can synthesize content-consist images under the modiﬁed target prompt P.
+Our method is based on the recent state-of-the-art text-
+conditioned model Stable Diffusion (SD) [27], which fur-
+ther performs the diffusion-denoising process in the latent
+space rather than image space. A pretrained image au-
+toencoder network encodes the image into latent represen-
+tationsz. We then train the denoising network in the
+latent space. After training, we can sample a random noise
+zT N (0;1)and perform the latent denoising process.
+The denoised latent representation z0can be decoded into
+an image using the pretrained autoencoder. The structure of
+the denoising backbone is realized as a time-conditional
+U-Net [28].
+3.2. Attention Mechanism in Stable Diffusion
+The denoising U-Net in the SD model, consists of
+a series of basic blocks, and each basic block contains a
+residual block [9], a self-attention module, and a cross-
+attention [35] module. At denoising step t, the features
+from the previous (l 1)-th basic block ﬁrst pass through
+the residual block to generate intermediate features fl
+t; then
+they are reorganized by a self-attention layer, and receive
+textual information from the given text prompt Pby the fol-
+lowing cross-attention layer. The attention mechanism can
+be formulated as follows:
+Attention (Q;K;V ) =Softmax (QKT
+p
+d)V; (4)whereQis the query features projected from the spatial fea-
+tures, andK;V are the key and value features projected
+from the spatial features (in self-attention layers) or the tex-
+tual embedding (in cross-attention layers) with correspond-
+ing projection matrices. A=Softmax (QKT
+p
+d)is the atten-
+tion map used to aggregate the value V.
+These attention layers in the SD model contain much in-
+formation for the overall structure/layout and content for-
+mation of the synthesized image [10, 34]. The internal
+cross-attention maps are high-dimensional tensors that bind
+the spatial pixels and text embedding extracted from the
+prompt text [10], and they are explored for image edit-
+ing [10] and faithful image synthesis [3]. Meanwhile, the
+features in the self-attention layer are employed as plug-
+and-play features to be injected into speciﬁed layers in U-
+Net to perform image translation. However, these controls
+cannot perform non-rigid editing ( e.g., pose change) since
+they maintain the semantic layout and structures. Inspired
+by the phenomenon that performing self-attention across
+batches can generate similar image contents, which is also
+observed in Tune-A-Video [36], we adapt the self-attention
+mechanism in T2I model to query contents from source im-
+ages with delicate designs. Thus we can perform various
+consistent synthesis and non-rigid editing that change the
+layout and structure of the source image while preserving
+image contents.
+44. Tuning-Free Mutual Self-Attention Control
+Given a source image Isand the corresponding text
+promptPs, our goal is to synthesize the desired image Ithat
+complies with the target edited text prompt P(directly mod-
+iﬁed fromPs). Note that the edited target image Iis spa-
+tially edited from Isand should preserve the object contents
+(e.g., textures and identity) in Is. For instance, consider a
+photo (corresponding to Ps) where a dog is sitting, and we
+want the dog to be in the running pose with the edited text
+promptP(by adding the ‘running’ into the source prompt
+Ps) (see Fig. 3). This task is highly challenging, and previ-
+ous diffusion-based tuning-free methods can hardly handle
+it [10, 34]. Directly utilizing Pfor the synthesis will gener-
+ate an image Icomplied with the input prompt. Neverthe-
+less, the objects in it are probably different from the ones in
+source image Is(see an example in Fig. 2), even with the
+ﬁxed random seeds [10].
+Our core idea is to combine the semantic layout synthe-
+sized with the target prompt Pand the contents in the source
+imageIsto synthesize the desired image I. To achieve so,
+we propose MasaCtrl, which adapts the self-attention mech-
+anism in the SD model into a cross one to query semanti-
+cally similar contents from the source image. Therefore, we
+can synthesize the target image Iby querying the contents
+fromIswith the modiﬁed self-attention mechanism during
+the denoising process. We can achieve so for the following
+reasons: 1) the image layout is formed in the early denois-
+ing steps (shown in Fig. 4(a)); 2) in addition, as shown in
+Fig. 4(b), the encoded query features in the self-attention
+layer are semantically similar ( e.g., the horses are in the
+same color), thus one can query content information from
+another.
+The overall architecture of the proposed pipeline to per-
+form synthesis and editing is shown in Fig. 3, and the al-
+gorithm is summarized in Alg. 1. The input source image
+Isis either a real image or a generated one from the SD
+model with text prompt Ps2. During each denoising step
+tof synthesizing target image I, we assemble the inputs of
+the self-attention by 1)keeping the current Query features
+Qunchanged, and 2)obtaining the Key and Value features
+Ks,Vsfrom the self-attention layer in the process of syn-
+thesizing source image Is. We dub this strategy mutual self-
+attention, and more details are in Sec. 4.1.
+Meanwhile, we also observe the edited image often suf-
+fers from the problem of confusion between the foreground
+objects and background. Thus, we propose a mask-aware
+mutual self-attention strategy guided by the masks obtained
+from the cross-attention mechanism. The object mask is au-
+tomatically generated from the cross-attention maps of the
+text token associated with the foreground object. Please re-
+2WhenIsis a real image, we set the text prompt Psas null and utilize
+the deterministic DDIM inversion [30] to invert the image into a noise map.Algorithm 1 MasaCtrl: Tuning-Free Mutual Self-Attention
+Control
+Input: A source prompt Ps, a modiﬁed prompt P, the
+source and target initial latent noise maps zs
+TandzT.
+Output: Latent mapzs
+0, edited latent map z0corresponding
+toPsandP.
+1:fort=T;T 1;:::;1do
+2:s;fQs;Ks;Vsg (zs
+t;Ps;t);
+3:zs
+t 1 Sample (zs
+t;s);
+4:fQ;K;Vg (zt;P;t);
+5:fQ;K;Vg EDIT (fQ;K;Vg;fQs;Ks;Vsg);
+6:=(zt;P;t;fQ;K;Vg);
+7:zt 1 Sample (zt;);
+8:end for
+Returnzs
+0;z0
+fer to Sec. 4.2 for more details.
+In addition, since the edited prompt Pmay not yield de-
+sired spatial layouts due to the inner limitations of the SD
+model, our method MasaCtrl can be easily integrated into
+existing controllable image synthesis method ( e.g., T2I-
+Adapter [17] and ControlNet [44]) for more faithful non-
+rigid image editing. Please refer to Sec. 4.3 for more de-
+tails.
+4.1. Mutual Self-Attention
+To obtain image contents from the source image Is, we
+propose mutual self-attention, which converts the existing
+self-attention in T2I models into ‘cross-attention’, where
+the crossing operation happens in the self-attentions of two
+related diffusion processes. Speciﬁcally, as shown in the
+left part of Fig. 5(a), at denoising step tand layerl, the
+query features are deﬁned as the projected query features
+Qlin the self-attention layer, and the content features are the
+key features Kl
+sand value features Vl
+sfrom the correspond-
+ing self-attention layer in the process of reconstructing the
+source image Is. After that, we perform attention according
+to Eq. 4 to aggregate the contents from the source image.
+However, intuitively performing such attention control
+on all layers among all denoising steps will result in an im-
+ageIthat is nearly the same as the reconstructed image Is.
+We argue the reason is that performing self-attention con-
+trol in the early steps can disrupt the layout formation of
+the target image. In the premature step, the target image
+layout has not yet been formed (shown in Fig. 4(a)), and
+we further observe the Query features in the shallow layers
+of U-Net ( e.g., encoder part) cannot obtain clear layout and
+structure corresponding to the modiﬁed prompt (shown in
+Fig. 4(b)). Thus we cannot obtain the image with the de-
+sired spatial layout.
+Therefore, we propose to control the mutual self-
+attention only in the decoder part of the U-Net after several
+5Observation
+“A running horse”
+“A standing horse”
+Encoder Decoder 
+𝑥்
+𝑥଴Step
+(a) Intermediate results in denoising process 
+(b) Queryfeature visualizationFigure 4: (a) The intermediate results during the iterative
+denoising process, and (b) visualization of the projected
+Query featuresQin the self-attention layers of the U-Net
+at the 15th sampling step.
+denoising steps , due to the formed clear target image lay-
+out and semantically similar features (see Fig. 4). We can
+change the original layout into the target one with edited
+promptPand keep the main objects unchanged with proper
+starting denoising step Sand layerLfor synthesis and edit-
+ing. Thus the EDIT function in Alg. 1 can be formulated as
+follows:
+EDIT :=(
+fQ;Ks;Vsg;ift>S andl>L;
+fQ;K;Vg;otherwise;(5)
+whereSandLare the time step and layer index to start
+attention control, respectively.
+In the early steps, the composition and the shape of the
+object can be roughly generated complying with the target
+promptP. Then the content information from the source
+imageIsis queried by the mutual self-attention mechanism
+to ﬁll the generated layout of I. After iterative denoising,
+we can obtain the synthesized image with similar contents
+in the source image and structure of Ithat conforms to
+the input prompt. Note that our algorithm does not require
+ﬁnetuning or optimization, bringing many conveniences for
+ordinary users for content creation.
+4.2. Mask-Guided Mutual Self-Attention
+We also observed the above synthesis/editing would fail
+since the object and background are too similar to be con-
+fused. To tackle this problem, one feasible way to is to
+segment the image into the foreground and the background
+parts and query contents only from the corresponding part.
+Mutual Self-Attention V2
+Project
+ProjectSource image 
+Target image𝑄௦𝐾௦𝑉௦
+𝑄𝐾௦𝑉௦
+𝑉𝐾softmax𝑄௦𝐾௦்
+𝑑𝑉௦
+softmax𝑸𝐾௦்
+𝑑𝑉௦Mutual Self-Attention
+(a) Mutual self-attention control
+(b) Mask extraction from cross-attention mapsMutual Self-
+Attention
+Figure 5: (a) The mutual self-attention control to query
+contents from the source image in the decoder part of de-
+noising U-Net; and (b) mask extraction strategy from cross-
+attention maps.
+Inspired by previous work [10, 32], the cross-attention maps
+correlating to the prompt tokens contain most information
+of the shape and structure. Therefore, we utilize the seman-
+tic cross-attention maps to create a mask to distinguish the
+foreground and background in both source and target im-
+agesIsandI.
+Speciﬁcally, at step t, we ﬁrst perform a forward pass
+with the ﬁxed U-Net backbone with prompt Psand edited
+promptP, respectively, to generate intermediate cross-
+attention maps. Then we average the cross-attention maps
+across all heads and layers with the spatial resolution 16
+16. The resulting cross-attention maps are denoted as Ac
+t2
+R1616N, whereNis the number of the textual tokens.
+We then obtain the averaged cross-attention map for the to-
+ken correlated to the foreground object. We denote Msand
+Mas masks extracted for the foreground objects in Isand
+I, respectively. With these masks, we can restrict the ob-
+ject inIto query contents information only from the object
+region inIs:
+fl
+o=Attention (Ql;Kl
+s;Vl
+s;Ms); (6)
+fl
+b=Attention (Ql;Kl
+s;Vl
+s; 1 Ms); (7)
+fl=fl
+oM+fl
+b(1 M); (8)
+where flis the ﬁnal attention output. The object region and
+the background region query the content information from
+6Synthetic Results
+Generated Image Ours P2P SDEdit(0.5) SDEdit(0.8) PnP
+“An apple on the table ”→“Two apples …”
+“A kitten is sitting on the floor ”→“…laying…”
+Fixed SeedFigure 6: Synthesis results of different methods on the synthetic images. Our method enables consistent synthesis by com-
+bining the layout of the target prompt and the contents of source generated image. From left to right: the source generated
+source image with source prompt, synthesis results with the proposed MasaCtrl method, synthesis results from target prompt
+with the same random seed of source image, synthesis results with existing methods P2P [10], SDEdit [16], and PnP [34].
+Real Results
+“A photo of a running corgi”
+“A photo of a person, black t-shirt, raising hand ”Input Real Image Ours P2P SDEdit(0.5) SDEdit(0.8) PnP
+ Fixed Seed
+Figure 7: Real image editing results of different editing methods on real images. From left to right: the input real image,
+synthesis results with the proposed MasaCtrl method, synthesis results from target prompt with the same random seed of
+source image, synthesis results with existing methods P2P [10], SDEdit [16], and PnP [34].
+corresponding restricted areas rather than all features.
+4.3. Integration to Controllable Diffusion Models
+Our method can be easily integrated into existing con-
+trollable image synthesis method ( e.g., T2I-Adapter [17]
+and ControlNet [44]) for more faithful non-rigid image syn-
+thesis and editing. These methods enable more control-
+lable ( e.g., pose, sketch, segmentation map) image synthe-
+sis to the original Stable Diffusion model. Thus we can use
+them to synthesize images with desired poses, shapes, and
+views. Nevertheless, they still cannot synthesize images
+with similar contents in a reference source image. Since
+our method can query image contents ( e.g., textures, color)from a reference image, we can easily integrate our ap-
+proach into these models to generate more coherent images
+without ﬁne-tuning the SD model or optimizing the textual
+embedding [12].
+Speciﬁcally, we follow the same process shown in
+Alg. 1, and the desired target image synthesis process
+changes from the original SD model to using these con-
+trollable models instead. In the following experiment part,
+we demonstrate the effectiveness of such a combination that
+can synthesize images coherently.
+7MasaCtrlwith Adapter
+“A bear is walking in forest ”+ → “…standing …”+
+“A photo of a dog, standing in 
+Times Square, highly detailed ”→“…sitting…”+ +
+“A realistic photo of a sitting cat, camera view, 
+masterpiece, best quality ”
++
+“A realistic photo of a horse, standing on its 
+hind legs, grassland ”
++
+Generated Image Ours Fixed seed Input Real Image Ours Fixed seedFigure 8: Consistent synthesis results (left part) and real image editing results (right part) with MasaCtrl integrated into
+T2I-Adapter [17].
+Anythingv4 Results - Synthetic
+“A boy, indoors, sitting, coffee shop ”→“…standing …” “A boy, standing, street, long pants ”→“…running …”
+“A girl, beautiful dress, photo from camera view ”→
+“side view ”Generated Image Ours Fixed seed
+“a boy, standing on the beach, 
+t-shirt, sunset, full body ”“…hands in 
+hands…” → +“1girl, white medium hair, looking at 
+viewer, jacket, outdoors, full body ”→“…raising 
+hands…”+Generated Image Ours Fixed seed
+Figure 9: Synthesis results with Anything-V4 checkpoint. We see that consistent images can be synthesized by directly
+modifying the text prompts with the proposed MasaCtrl.
+5. Experiments
+Setup. We apply the proposed method to the state-of-the-
+art text-to-image Stable Diffusion [27] model with publicly
+available checkpoints v1.4. We also validate the proposed
+method on the pre-trained anime-style model Anything-V4.
+Meanwhile, we perform editing on both synthetic images
+and real images. For real image editing, we ﬁrst invert the
+image into the initial noise map with DDIM deterministic
+inversion [30]. Note that we set the starting noise map thesame for source prompt Psand the desired prompt Punless
+otherwise speciﬁed. During sampling, we perform DDIM
+sampling [30] with 50 denoising steps, and the classiﬁer-
+free guidance is set to 7.5. The step and layer to start atten-
+tion control is set to S= 4;L= 10 as default. Note that it
+may be changed for speciﬁc checkpoints.
+8Anythingv4 Results -Synthetic
+“A boy, casual, 
+outdoors, standing”Generated Image
+“…, raising hangs ”
+“…, giving a 
+thumbs up ”
+“…, side view ”
+ “…, running ”
+“…, laughing ”
+“…, from 
+behind”
+“…, sitting”Results with MasaCtrlFigure 10: Multiple consistent synthesis results with proposed MasaCtrl on Anything-V4 checkpoint.
+Consistent Results -Synthetic
+“A boy, casual, 
+outdoors, standing”Generated Image
+“…, raising hangs ”
+“…, giving a 
+thumbs up ”
+“…, side view ”
+ “…, running ”
+“…, laughing ”
+“…, from 
+behind”
+“…, sitting”Results with MasaCtrl
+“A bear dancing on the street, realistic photo, masterpiece, best quality” +
+Generated Image Results with MasaCtrl
+“A car is moving on the road, realistic photo, masterpiece, best quality” +
+Figure 11: Video synthesis results of proposed MasaCtrl with T2I-Adapter [17] (key-pose and canny guidance).
+5.1. Comparisons with Previous Works
+We mainly compare the proposed tuning-free method
+to the current prompt-based editing methods with diffu-
+sion models, including tuning-free methods SDEdit [16],
+P2P [10], PnP [34]. We use their open-sourced codes to
+produce the editing results3.
+The synthesis results are shown in Fig. 6. By directly
+modifying the text prompt, our method can synthesize
+content-consistent images. These synthesized images (1)
+contain contents (foreground objects and background) that
+are highly similar to those in the generated source images
+(ﬁrst column of Fig. 6) and (2) highly comply with the tar-
+get promptP(shown in the third column of Fig. 6). While
+existing methods fail to synthesize desired images conform-
+ing to the target text prompt.
+Our method also achieves good results in editing real
+images (shown in Fig. 7). Note that performing non-rigid
+editing on real images is very challenging. We see that the
+contents (foreground objects and background) in the images
+edited by the proposed method are much similar to the input
+image. These results demonstrate the effectiveness of the
+proposed method. Meanwhile, unlike the previous method
+3SD model utilizes SDEdit for img2img synthesis. Thus, we directly
+utilize the script in SD to synthesize results.Imagic [12] that requires ﬁnetuning the network, optimizing
+the textual embedding, and interpolation between the opti-
+mized embedding for a single edit, our tuning-free method
+provides the users a simple and convenient way for non-
+rigid image editing.
+We further analyze the reasons attributed to the failure of
+existing methods ( i.e., P2P, SDEdit, and PnP). These meth-
+ods try to keep the original layout or object shape and pose
+unchanged by leveraging the layout information encoded in
+the cross-attention maps (P2P), features (PnP), and origi-
+nal input images (SDEdit). Meanwhile, the contents in the
+formed image mainly come from the encoded text embed-
+ding. As a result, the images synthesized by these methods
+have similar layouts to the source image but have different
+contents. In our proposed method MasaCtrl, the structure of
+the desired image is ﬁrst determined by the former iteration
+in the denoising process, and the ﬁnal image is formed by
+obtaining the image content from the source image. Thus
+we can perform various types of non-rigid image editing.
+5.2. Results with T2I-Adapter
+The initial layout controlled by modifying the text
+prompt usually fails due to the inherent drawbacks of the
+Stable Diffusion model. Therefore, we further integrate
+9Decoder Mutual Self-Attention V2
+(b) Results of mutual self-attention control in different U-Net layers
+“a sitting dog”
+layer 0~15
+ layer 0~3 layer 4~7
+ layer 8~10 layer 10~15
+ “a duck” →“…sitting …”
+synthesis with 𝑃௦ synthesis with 𝑃
+Encoder Whole U-Net standing
+“A horse facing camera” →“…side view…”
+ step 0 step 5 step 15 step 30 step 45
+(a) Results of mutual self-attention control starting from different denoising stepsDecoder 
+Denoising steps 
+synthesis with 𝑃௦ synthesis with 𝑃Figure 12: Results of mutual self-attention control in different denoising steps (a) and different U-Net layers (b). We see that
+only performing mutual self-attention control after several denoising steps ( e.g., step 5), and in the decoder part ( e.g., layer
+1015) can preserve the shape and structure information from target prompt Pand query contents from the source image
+with prompt Ps.
+our method into existing controllable synthesis pipelines to
+obtain stable synthesis and editing results. The synthesis
+and real image editing results with the T2I-Adapter [17] are
+shown in Fig. 8. We see that T2I-Adapter can generate an
+image with desired target layout, yet with different contents
+in the source image. While our method can effectively com-
+bine the layout synthesized by T2I-Adapter with the target
+prompt and contents in the source image. Therefore, more
+faithful and ﬁne-grained synthesis and editing results can
+be obtained. Note that we may change the attention strat-
+egy of starting denoising step Sand U-Net layer Lto obtain
+faithful results ( S= 2,L= 8in our experiment), since the
+target layout is strongly controlled by extra guidance (thus
+we can perform attention control in early steps and layers
+to query faithful contents in the source image, refer to the
+ablation study Sec. 5.5 for the analysis).
+5.3. Robustness to Other Models: Anything-V4
+We also apply our method to the domain-speciﬁc mod-
+els,i.e., the amine-style model Anything-V4. Fig. 9 shows
+the synthesis results of our method and the model with ﬁxed
+random seeds. The proposed method MasaCtrl can faith-
+fully synthesize images while preserving the object iden-
+tity and background in original anime-style images, further
+demonstrating the generalizability of the proposed method.
+Meanwhile, we further perform consistent image synthesis
+in Fig. 10. We can control the pose and action, even ex-
+pression, with the proposed method by directly modifyingthe text prompt, demonstrating the consistent synthesis ca-
+pability of MasaCtrl.
+5.4. Extension to Video Synthesis
+Although our method is designed for image synthesis
+and editing, we can easily extend our method for the video
+synthesis task using T2I-Adapter and ControlNet with a se-
+ries of dense coherent guidance ( e.g., pose, edge). Specif-
+ically, we ﬁrst generate a source image with the prompt P
+and guidance (shown in the ﬁrst column of Fig. 11). In
+the following frame synthesis process, we perform MasaC-
+trl on each frame to generate the target frame that is content-
+consistent with the source frame. Fig. 11 shows the video
+synthesis results with coherent dense guidance. The pro-
+posed method successfully synthesizes consistent frames
+with highly similar content (please visit the project page for
+more video results). However, our method can only ani-
+mate the foreground objects (such as the bear in Fig. 11)
+and hardly bring the background alive. Therefore, video-
+based approaches still need to be explored since the current
+MasaCtrl has a signiﬁcant limitation in synthesizing scenes
+with background dynamics.
+5.5. Ablation Study
+The results of both synthetic image synthesis and real
+image editing can demonstrate the effectiveness of the pro-
+posed mutual self-attention. We further analyze the control
+strategy in terms of different starting steps at the denois-
+10ing process and the layers in the denoising U-Net. From
+Fig. 12(a), we see that performing mutual self-attention in
+the premature step can only synthesize an image identical to
+the source image, conveying all source image contents and
+ignoring the layout from the target prompt. As the step in-
+creases, the synthesized desired image can maintain the lay-
+out from the target prompt and the contents from the source
+image. While the image would gradually lose the source
+image contents and eventually becomes the image synthe-
+sized images without mutual self-attention control. We also
+observe a similar phenomenon when performing control in
+different U-Net layers shown in Fig. 12(b). Performing con-
+trol among all layers can only generate an image identical
+to the source image. Performing control in low-resolution
+layers ( e.g., layer 410) cannot preserve the source im-
+age contents and target layouts. While in high-resolution
+layers ( e.g., layer 03,1015), the target layout can
+be maintained, and the source image contents can only be
+transformed when controlled in the decoder part. As a re-
+sult, the proposed method performs control in the decoder
+part of U-Net after several denoising steps.
+6. Limitations and Discussion
+Our method inherits most of the limitations of Stable
+Diffusion in generating desired images, and suffers from
+the following main aspects. First, since our method heav-
+MasaCtrlFailure Case
+“A photograph of a goose, standing ”→“…,sitting”Synthesis with 𝑃௦ Synthesis with ours Synthesis with 𝑃
+“A person with white t-shirt, facing camera ”→
+“…,clapping hands ”
+“A photo of a white horse, laying, street ”→“…,standing ”
+“Realistic photo of a beautiful bird ”→“…,spreading wings ”
+Figure 13: Different types of failure cases.ily relies on the image layout synthesized from the target
+promptP, it would fail if the SD model could not generate
+a desired layout or shape, as shown in Fig. 13(1). Although
+recently proposed controllable strategies [17, 44] can allevi-
+ate this on the pre-trained SD model with various guidance,
+it still may fail. In addition, even if the SD model can gen-
+erate the corresponding image layout, our method will fail
+when the target image contains unseen content or the tar-
+get image layout/structure changes drastically. As shown in
+Fig. 13(2), the SD model can synthesize the target layout
+that complies with the target prompt Pwhile with differ-
+ent contents ( i.e., the identity of the person and the back-
+ground) from the source image. MasaCtrl can generate an
+image consistent with the source image but suffer from the
+artifact (the palm marked by the red circle). This is because
+the source image does not contain any contents related to
+the palm, thus the desired image cannot query the contents
+of the palm. Meanwhile, as shown in Fig. 13(3), although
+our method can synthesize desired image that is highly sim-
+ilar to the source image, we also found there still are some
+slight differences (the color of the bird’s beak marked by the
+red circle) between the source image and the edited image.
+How to tackle these problems is our future work.
+7. Conclusion
+We propose MasaCtrl, a tuning-free mutual self-
+attention control method applied to T2I diffusion models for
+non-rigid consistent image synthesis and editing. We con-
+vert the self-attention mechanism in diffusion models into a
+cross one, dubbed mutual self-attention, enabling effective
+structure and appearance query from the source image when
+applied to speciﬁc denoising steps and U-Net layers. We
+further consider the confusion problem of the foreground
+objects and background during the querying process and
+alleviate it with a mask-guided strategy. Meanwhile, our
+method can be easily integrated into recently proposed con-
+trollable strategies over diffusion models and perform con-
+sistent image synthesis and editing without ﬁnetuning the
+model and textural embedding. We believe such a method
+provides ordinary users with a convenient and effective way
+for content creation under text description.
+11References
+[1] Omri Avrahami, Ohad Fried, and Dani Lischinski. Blended
+latent diffusion. arXiv preprint arXiv:2206.02779 , 2022.
+[2] Andrew Brock, Jeff Donahue, and Karen Simonyan. Large
+scale gan training for high ﬁdelity natural image synthesis.
+arXiv preprint arXiv:1809.11096 , 2018.
+[3] Hila Chefer, Yuval Alaluf, Yael Vinker, Lior Wolf, and
+Daniel Cohen-Or. Attend-and-excite: Attention-based se-
+mantic guidance for text-to-image diffusion models. arXiv
+preprint arXiv:2301.13826 , 2023.
+[4] Katherine Crowson, Stella Biderman, Daniel Kornis,
+Dashiell Stander, Eric Hallahan, Louis Castricato, and Ed-
+ward Raff. Vqgan-clip: Open domain image generation and
+editing with natural language guidance. In ECCV , pages 88–
+105. Springer, 2022.
+[5] Prafulla Dhariwal and Alexander Nichol. Diffusion mod-
+els beat gans on image synthesis. NeurIPS , 34:8780–8794,
+2021.
+[6] Ming Ding, Zhuoyi Yang, Wenyi Hong, Wendi Zheng,
+Chang Zhou, Da Yin, Junyang Lin, Xu Zou, Zhou Shao,
+Hongxia Yang, et al. Cogview: Mastering text-to-image gen-
+eration via transformers. NeurIPS , 34:19822–19835, 2021.
+[7] Patrick Esser, Robin Rombach, and Bjorn Ommer. Taming
+transformers for high-resolution image synthesis. In CVPR ,
+pages 12873–12883, 2021.
+[8] Shuyang Gu, Dong Chen, Jianmin Bao, Fang Wen, Bo
+Zhang, Dongdong Chen, Lu Yuan, and Baining Guo. Vec-
+tor quantized diffusion model for text-to-image synthesis. In
+CVPR , pages 10696–10706, 2022.
+[9] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In CVPR ,
+pages 770–778, 2016.
+[10] Amir Hertz, Ron Mokady, Jay Tenenbaum, Kﬁr Aberman,
+Yael Pritch, and Daniel Cohen-Or. Prompt-to-prompt im-
+age editing with cross attention control. arXiv preprint
+arXiv:2208.01626 , 2022.
+[11] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffu-
+sion probabilistic models. NeurIPS , 33:6840–6851, 2020.
+[12] Bahjat Kawar, Shiran Zada, Oran Lang, Omer Tov, Huiwen
+Chang, Tali Dekel, Inbar Mosseri, and Michal Irani. Imagic:
+Text-based real image editing with diffusion models. arXiv
+preprint arXiv:2210.09276 , 2022.
+[13] Gwanghyun Kim, Taesung Kwon, and Jong Chul Ye. Dif-
+fusionclip: Text-guided diffusion models for robust image
+manipulation. In CVPR , pages 2426–2435, 2022.
+[14] Bowen Li, Xiaojuan Qi, Thomas Lukasiewicz, and Philip
+Torr. Controllable text-to-image generation. NeurIPS , 32,
+2019.
+[15] Bowen Li, Xiaojuan Qi, Thomas Lukasiewicz, and Philip HS
+Torr. Manigan: Text-guided image manipulation. In CVPR ,
+pages 7880–7889, 2020.
+[16] Chenlin Meng, Yang Song, Jiaming Song, Jiajun Wu, Jun-
+Yan Zhu, and Stefano Ermon. Sdedit: Image synthesis and
+editing with stochastic differential equations. arXiv preprint
+arXiv:2108.01073 , 2021.
+[17] Chong Mou, Xintao Wang, Liangbin Xie, Jian Zhang, Zhon-
+gang Qi, Ying Shan, and Xiaohu Qie. T2i-adapter: Learningadapters to dig out more controllable ability for text-to-image
+diffusion models. arXiv preprint arXiv:2302.08453 , 2023.
+[18] Seonghyeon Nam, Yunji Kim, and Seon Joo Kim. Text-
+adaptive generative adversarial networks: manipulating im-
+ages with natural language. NeurIPS , 31, 2018.
+[19] Alex Nichol, Prafulla Dhariwal, Aditya Ramesh, Pranav
+Shyam, Pamela Mishkin, Bob McGrew, Ilya Sutskever, and
+Mark Chen. Glide: Towards photorealistic image generation
+and editing with text-guided diffusion models. arXiv preprint
+arXiv:2112.10741 , 2021.
+[20] Alexander Quinn Nichol and Prafulla Dhariwal. Improved
+denoising diffusion probabilistic models. In ICML , pages
+8162–8171. PMLR, 2021.
+[21] Gaurav Parmar, Krishna Kumar Singh, Richard Zhang, Yijun
+Li, Jingwan Lu, and Jun-Yan Zhu. Zero-shot image-to-image
+translation. arXiv preprint arXiv:2302.03027 , 2023.
+[22] Or Patashnik, Zongze Wu, Eli Shechtman, Daniel Cohen-Or,
+and Dani Lischinski. Styleclip: Text-driven manipulation of
+stylegan imagery. In ICCV , pages 2085–2094, 2021.
+[23] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learn-
+ing transferable visual models from natural language super-
+vision. In ICML , pages 8748–8763. PMLR, 2021.
+[24] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu,
+and Mark Chen. Hierarchical text-conditional image gen-
+eration with clip latents. arXiv preprint arXiv:2204.06125 ,
+2022.
+[25] Aditya Ramesh, Mikhail Pavlov, Gabriel Goh, Scott Gray,
+Chelsea V oss, Alec Radford, Mark Chen, and Ilya Sutskever.
+Zero-shot text-to-image generation. In ICML , pages 8821–
+8831. PMLR, 2021.
+[26] Scott Reed, Zeynep Akata, Xinchen Yan, Lajanugen Lo-
+geswaran, Bernt Schiele, and Honglak Lee. Generative ad-
+versarial text to image synthesis. In ICML , pages 1060–1069.
+PMLR, 2016.
+[27] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Bj ¨orn Ommer. High-resolution image syn-
+thesis with latent diffusion models. In CVPR , pages 10684–
+10695, 2022.
+[28] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net:
+Convolutional networks for biomedical image segmentation.
+InMICCAI , pages 234–241. Springer, 2015.
+[29] Chitwan Saharia, William Chan, Saurabh Saxena, Lala
+Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed
+Ghasemipour, Burcu Karagol Ayan, S Sara Mahdavi,
+Rapha Gontijo Lopes, et al. Photorealistic text-to-image
+diffusion models with deep language understanding. arXiv
+preprint arXiv:2205.11487 , 2022.
+[30] Jiaming Song, Chenlin Meng, and Stefano Ermon.
+Denoising diffusion implicit models. arXiv preprint
+arXiv:2010.02502 , 2020.
+[31] Yang Song and Stefano Ermon. Generative modeling by esti-
+mating gradients of the data distribution. NeurIPS , 32, 2019.
+[32] Raphael Tang, Akshat Pandey, Zhiying Jiang, Gefei Yang,
+Karun Kumar, Jimmy Lin, and Ferhan Ture. What the daam:
+Interpreting stable diffusion using cross attention. arXiv
+preprint arXiv:2210.04885 , 2022.
+12[33] Ming Tao, Hao Tang, Fei Wu, Xiao-Yuan Jing, Bing-Kun
+Bao, and Changsheng Xu. Df-gan: A simple and effective
+baseline for text-to-image synthesis. In CVPR , pages 16515–
+16525, 2022.
+[34] Narek Tumanyan, Michal Geyer, Shai Bagon, and
+Tali Dekel. Plug-and-play diffusion features for text-
+driven image-to-image translation. arXiv preprint
+arXiv:2211.12572 , 2022.
+[35] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. NeurIPS , 30, 2017.
+[36] Jay Zhangjie Wu, Yixiao Ge, Xintao Wang, Weixian Lei,
+Yuchao Gu, Wynne Hsu, Ying Shan, Xiaohu Qie, and
+Mike Zheng Shou. Tune-a-video: One-shot tuning of image
+diffusion models for text-to-video generation. arXiv preprint
+arXiv:2212.11565 , 2022.
+[37] Weihao Xia, Yujiu Yang, Jing-Hao Xue, and Baoyuan Wu.
+Tedigan: Text-guided diverse face image generation and ma-
+nipulation. In CVPR , pages 2256–2265, 2021.
+[38] Tao Xu, Pengchuan Zhang, Qiuyuan Huang, Han Zhang,
+Zhe Gan, Xiaolei Huang, and Xiaodong He. Attngan: Fine-
+grained text to image generation with attentional generative
+adversarial networks. In CVPR , pages 1316–1324, 2018.
+[39] Hui Ye, Xiulong Yang, Martin Takac, Rajshekhar Sunderra-
+man, and Shihao Ji. Improving text-to-image synthesis us-
+ing contrastive learning. arXiv preprint arXiv:2107.02423 ,
+2021.
+[40] Jiahui Yu, Yuanzhong Xu, Jing Yu Koh, Thang Luong, Gun-
+jan Baid, Zirui Wang, Vijay Vasudevan, Alexander Ku, Yin-
+fei Yang, Burcu Karagol Ayan, et al. Scaling autoregres-
+sive models for content-rich text-to-image generation. arXiv
+preprint arXiv:2206.10789 , 2022.
+[41] Han Zhang, Jing Yu Koh, Jason Baldridge, Honglak Lee, and
+Yinfei Yang. Cross-modal contrastive learning for text-to-
+image generation. In CVPR , pages 833–842, 2021.
+[42] Han Zhang, Tao Xu, Hongsheng Li, Shaoting Zhang, Xiao-
+gang Wang, Xiaolei Huang, and Dimitris N Metaxas. Stack-
+gan: Text to photo-realistic image synthesis with stacked
+generative adversarial networks. In ICCV , pages 5907–5915,
+2017.
+[43] Han Zhang, Tao Xu, Hongsheng Li, Shaoting Zhang, Xiao-
+gang Wang, Xiaolei Huang, and Dimitris N Metaxas. Stack-
+gan++: Realistic image synthesis with stacked generative ad-
+versarial networks. IEEE TPAMI , 41(8):1947–1962, 2018.
+[44] Lvmin Zhang and Maneesh Agrawala. Adding conditional
+control to text-to-image diffusion models. arXiv preprint
+arXiv:2302.05543 , 2023.
+[45] Minfeng Zhu, Pingbo Pan, Wei Chen, and Yi Yang. Dm-
+gan: Dynamic memory generative adversarial networks for
+text-to-image synthesis. In CVPR , pages 5802–5810, 2019.
+13

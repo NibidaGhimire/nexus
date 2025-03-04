@@ -1,0 +1,905 @@
+BAYESIAN OPTIMIZATION OF CATALYSTS WITHIN-CONTEXT
+LEARNING
+A P REPRINT
+Mayk Caldas Ramos
+Department of Chemical Engineering
+University of Rochester
+mcaldasr@ur.rochester.edu
+Shane S. Michtavy
+Department of Chemical Engineering
+University of Rochester
+smichtav@che.rochester.edu
+Marc D. Porosoff
+Department of Chemical Engineering
+University of Rochester
+marc.porosoff@rochester.edu
+Andrew D. White
+Department of Chemical Engineering
+University of Rochester
+andrew.white@rochester.edu
+April 12, 2023
+ABSTRACT
+Large language models (LLMs) are able to do accurate classiﬁcation with zero or only a few
+examples (in-context learning). We show a prompting system that enables regression with uncertainty
+for in-context learning with frozen LLMs (GPT-3, GPT-3.5, and GPT-4), allowing predictions
+without features or architecture tuning. By incorporating uncertainty, our approach enables Bayesian
+optimization for catalyst or molecule optimization using natural language, eliminating the need for
+training or simulation. Here, we performed the optimization using the synthesis procedure of catalysts
+to predict properties. Working with natural language mitigates the challenges of synthesizability
+since the literal synthesis procedure is the model’s input. We show that in-context learning improves
+past a model context window (maximum number of tokens the model can process at once) as data
+is gathered via example selection, allowing the model to scale better. Although our method does
+not outperform all baselines, it requires zero training, feature selection, and minimal computing
+while maintaining satisfactory performance. We also ﬁnd Gaussian Process Regression on text
+embeddings is strong at Bayesian optimization. The code is available in our GitHub repository:
+https://github.com/ur-whitelab/BO-LIFT.
+Keywords Bayesian Optimization, large language model, in-context learning, catalysis, materials design, AI
+1 Introduction
+Large language models (LLMs) are revolutionizing a wide range of domains across various ﬁelds of knowledge. While
+their most prominent applications lie in computational areas (such as natural language processing[ 1], text transla-
+tion, classiﬁcation[ 2–4] and summarization[ 5], question answering[ 6], sentiment analysis[ 7], code generation[ 8–10]),
+LLMs have also made signiﬁcant contributions in diverse areas including legal analysis[ 11], biomedical research[ 12],
+ﬁnance[13], education[14, 15], social sciences[16], medicine[17], and entertainment[18–20].
+In chemistry, LLMs have been employed to support research efforts in the areas of material design[ 21–24], reaction
+design[ 25,26] and prediction[ 27–30], property prediction[ 31–34], and drug design[ 35–37]. Most of these applications
+are based on training a model using the transformer[ 38] architecture on a speciﬁc dataset. Recent advances have also led
+to the development of pre-trained models like the generative pre-trained transformer (GPT)[ 39] that are task-agnostic
+models capable of learning from a few examples shown to the model during inference time, termed in-context learning
+Corresponding authorarXiv:2304.05341v1  [physics.chem-ph]  11 Apr 2023Catalysts With In-context Learning A P REPRINT
+(ICL)[ 40]. These models can even perform classiﬁcation, and to a lesser extent regression, from tabular data, without
+needing any changes to their architecture or training methods[41].
+Jablonka et al. [34] recently showed that it is possible to predict material and chemical properties with decoder-only
+models like GPT-3[ 40] using Language-Interfaced Fine-Tuning (LIFT)[ 41]. LIFT is the process of converting features
+and labels into a complete sentence, followed by ﬁne-tuning. For example, using mapped experimental conditions
+“Oxidative coupling of methane using Mn-Na2WO4/ZSM-5 was ran at 750 C, with a total reactant ﬂow rate of 20
+mL/min (Ar: 8.0 mL/min, CH4: 8.0 mL/min, O2: 4.0 mL/min). The resultant C2 yield is 4.81 percent” as a training
+example and at inference, "Oxidative coupling of methane using Co-Na2WO4/SiO2 was ran at 775 C, with a total
+reactant ﬂow rate of 20 mL/min (Ar: 3.0 mL/min, CH4: 12.8 mL/min, O2: 4.3 mL/min). The resultant C2 yield is "
+will be prompted for completion." An overview of this process and our prompts is shown in Figure 1.
+Figure 1: Our approach uses a Language-Interfaced Fine-Tuning (LIFT) framework with a Generative Pre-trained
+Transformer (GPT) to generate tokens that represent the reaction conditions that include a synthesis procedure. The
+catalyst synthesis and testing data is converted to an embedding vector and mapped to an objective function, e.g.C2
+yield. We create prompts involving multiple-choice options ("Multi", left panel) and single context completions ("Topk",
+right panel). In this scheme, multi selects only one example ( k= 1) from the list, while topk selects two. The prompt
+starts with an instruction to the LLM of what the generated completion should resemble. Following this, the formatted
+examples for in-context learning are created. While multi generates ﬁve alternatives around the label, topk only uses the
+label. Finally, the sequence for which the model should respond is added to both prompts. The two lower panels show
+actual prompts generated by using Multi (left panel) and Topk (right panel) templates. Both examples illustrate the
+string to the LLM when selecting k= 1to create the prompt. For multi, the model generates all ﬁve options, whereas
+for topk the model only generates the numerical value of the prediction.
+ICL is preﬁxing the prompt with examples to “train” without actually modifying the LLM parameters[ 40]. ICL has been
+found to be less accurate than ﬁne-tuning for LIFT-style regression or classiﬁcation of materials and molecules[ 34]. Our
+2Catalysts With In-context Learning A P REPRINT
+goal in this paper is to obtain prediction uncertainty from the LLM to optimize materials and molecules using Bayesian
+optimization (BO), which is iterative cycles of training and proposing new points to label[ 42]. ICL is preferred because
+it simply requires changing the prompt at each iteration, but limited context windows of the underlying LLM prevent
+ICL from being directly applied past a certain training amount.
+The main contributions of our work are to show: (1) ICL can scale and improve accuracy up to 1,000s of examples by
+context selection; (2) regression with uncertainty is possible via token scores and prompts; (3) uncertainties enable BO
+to design catalysts and reaction conditions.
+To evaluate our methodology, we employed it for predicting two properties: aqueous solubility of drug-like molecules
+and reaction yield. Speciﬁcally, we used the ESOL dataset[ 43] and catalyst dataset for oxidative coupling of methane
+derived from the work of Nguyen et al. [44].
+Designing new catalysts is a critical challenge to address climate change. About one-third of the global gross domestic
+product (GDP) relies on catalytic processes to produce value-added chemicals and fuels from fossil-based resources[ 45].
+One of the main challenges is navigating the complex experimental space to identify materials capable of converting
+carbon-neutral or negative feed stocks into value-added products.[46–48] Here we represent catalysts with the natural
+language used in their synthesis recipes, which makes zero assumptions about catalyst structure and mechanism, with
+implicit synthesizability embedded into the experiments proposed by the model. The way we represent materials
+is obviously critical for the ability to predict properties and is challenging in complex materials, such as inorganic
+zeolites.[ 49,50]. The idea of using natural language has been explored in predicting materials properties, where the
+materials description is embedded into a vector via a model trained with unsupervised learning [ 1,21,51,52]. In
+contrast, we are using decoder-only models – the LLMs are directly predicting the catalyst property from reaction
+conditions and synthesis procedures. Such decoder-only models are highly saught after in catalysis, because they can
+also be used to do inverse design and suggest an actionable experiment[24].
+Aqueous solubility is a fundamental physicochemical property of chemical compounds, deﬁned as the maximum
+concentration of a solute that can dissolve in water at a given temperature and pressure.[ 53] It plays a crucial role in
+various ﬁelds, including drug design, environmental studies, and chemical engineering [ 54–58]. Accurate prediction
+of solubility is essential for the development of efﬁcient pharmaceuticals, understanding the fate of chemicals in
+the environment, and optimizing industrial processes. However, its accurate prediction remains a challenge.[ 59,60]
+Traditional methods for predicting solubility have been based on experimental measurements, quantitative structure-
+activity relationships (QSAR), and molecular simulations[ 61,62]. However, these approaches can be time-consuming,
+expensive, and sometimes inaccurate, especially for large and diverse sets of compounds[ 63]. In this context, LLMs
+have shown promising results in predicting chemical properties, reaction outcomes, and synthesizability[25–27, 34].
+There has been much more work in exploring language in the related ﬁelds of molecules and bio-macromolecules[ 21–
+23,28–30,34,64,65]. Speciﬁcally, the use of pre-trained LLMs with Bayesian optimization has been done in Yang
+et al. [66]. In chemistry, Frey et al. [67] have explored using decoder-only GPT models for molecular design. There has
+also been multiple encoder-decoder models as well, which can produce novel compounds and be used to do ﬁne-tuning
+for property predictions[ 68–70]. However, there is to our knowledge no work on regression with ICL and Bayesian
+optimization.
+There has been recent work exploring what is possible with ICL, and improving its accuracy. ICL[ 40] combined with
+chain of thought techniques[ 71–73] or symbolic tools (e.g., programming languages) has been explored for improving
+accuracy[ 74,75]. The order and identity of the examples are important[ 76] and can be arranged. Dai et al. [77] also
+showed that ICL may be viewed as a kind of gradient-descent like process.
+2 Methods
+IUPAC names of molecules were used to predict aqueous solubility (from ESOL[ 43] dataset), and natural language
+descriptions of synthesis procedures were used to predict C 2yield for oxidative coupling of methane (2CH 4+ O 2!
+C2H4+ 2H 2O). Nguyen et al. [44] evaluated 12,708 different experimental conﬁgurations for a range of parameters,
+including catalyst composition, temperature, and ﬂow rate. The conditions were converted to natural language with the
+following prompt: “Given {x}, what is {property_name}?” An example prompt for querying the C 2yield of the reaction
+is “To synthesize Mn-Na2WO4/BN , BN (1.0 g) was impregnated with 4.5 mL of an aqueous solution consisting of Mn
+( 0.37 mol) , Na ( 0.37 mol) , W ( 0.185 mol) , at 50 ºC for 6 h. Once activated the reaction is ran at 900 ºC. The total
+ﬂow rate was 20 mL/min (Ar: 14.0 mL/min, CH4: 4.8 mL/min, O2: 1.2 mL/min), leading to a contact time of 0.38 s.”
+BO of materials can be reviewed in Shahriari et al. [78], Liang et al. [79], Baird et al. [80], and Valleti et al. [81].
+BO is a black-box optimization method where we seek to maximize a function that is expensive, noisy and/or has
+unknown analytical form.[ 82] By incorporating uncertainty information, BO guides the exploration-exploitation trade-
+3Catalysts With In-context Learning A P REPRINT
+off, selecting the most informative points for evaluating the true objective function.[ 83] Consequently, it enables a
+more efﬁcient search for optimal materials and chemical systems, minimizing the number of expensive experimental
+evaluations required [ 84]. In the case of our two problems, we are trying to maximize C 2yield and solubility. BO
+reduces the amount of experimental conditions and catalysts synthesis needed to optimize yield[ 85]. BO requires
+uncertainty in model predictions, usually achieved via Gaussian process regression (GPR)[42].
+We used LangChain[ 86] to call the GPT-3[ 40] and the GPT-4 [ 87] models, trained and maintained by the OpenAI
+company. We apply the LIFT[ 41] approach to create the prompts to be fed into the LLMs (see Figure 1). In the
+LIFT procedure, features are incorporated into natural language sequences to allow LLM to address non-language
+downstream tasks. To do ICL, we preﬁx previous examples. To enable ICL beyond a few examples, instead of preﬁxing
+all examples, we down-sample our in-context examples to solve the problem of ICL past the LLM context window using
+max marginal relevance (MMR) selection[ 88,89]. MMR combines the search for the most similar examples to a speciﬁc
+sequence while maximizing diversity. We compute similarity via Euclidean distance between Ada embeddings[ 90].
+Given the features (prompt) that we want to predict, we ﬁnd the most relevant examples and preﬁx them at inference
+time. This prompt creation procedure is implemented in LangChain[ 86] using the FAISS library[ 91] and Ada-002
+embeddings[90].
+We do regression with uncertainty by using token probabilities, similar to the action selection process used in Ahn
+et al. [92] (Figure 1). To get uncertainty, we devised two prompting strategies: ( i) multiple choice option template and
+(ii) Top k completions template. Those templates are referred to as “multi” and “topk” throughout this study. The
+rationale for multi was that only a single token (the option letter) indicated the choice so that the probability of that one
+token could succinctly give a range of choices. Topk requires generating kcompletions and then the logprobs of the
+entire completion are marginalized to compare. This produces discrete probability distributions, which can then be used
+directly with acquisition functions for BO[ 42]. Finally, these two methods are combined into a BO loop for optimizing
+catalysts and reaction conditions. This is advantageous because the BO approach requires no training with minimal
+computing required for LLM inference.
+Figure 1 illustrates how each template is constructed by selecting k= 1 examples as context. Both templates
+follow the same general prompt structure: “ {prefix}{few-shot template}{suffix} ”. The {prefix} gives
+context on how the structure of the LLM’s response to avoid hallucinations. {few-shot template} creates
+the context by concatenating kexamples using the following structure: “ Given {representation}. What
+is {property_name}? {completion} ”. Since the {prefix} is ﬁxed and the {suffix} uses the same struc-
+ture: “ Given {representation}. What is {property_name}? ”, multi and topk differ on how they build
+{completion} . When using multi, ﬁve options (A, B, C, D, and E) are considered. We used ﬁve options because that
+is the number of token probabilities returned in the OpenAI API. The correct label is randomly placed as one option,
+and the four options are ﬁlled via sampling from ys; sN(1;0:1), whereNis a normal distribution.
+Examples of prompts created using each template are shown in the bottom panels of Figure 1. Hence, the LLM
+completes all ﬁve alternatives, generating ﬁve possible completions. On the other hand, topk simply uses the label as
+{completion} , and then it requests generating n= 5completions. For “chat” type models (e.g., GPT-4), logprobs are
+not provided and we weight each completion as equally probable – a strong limitation.
+The above prompting creates a discrete probability distribution. The completions are converted into real numbers and
+their associated probabilities describe the distribution. The usual BO acquisition functions expected improvement (EI),
+and upper conﬁdence bound (UCB) can be reformulated for discrete distributions. EI, uei(x), balances exploration and
+exploitation and is deﬁned for discrete probability distributions as follows:
+uei(x) =E[max(0;y yi)] =X
+pimax(0;y yi) (1)
+Wherepi;yiare the pairs of predicted values/probabilities at xusing the model and yis the maximum known measured
+yvalue. The other acquisition functions can be similarly deﬁned.
+Sometimes we observe only one value from topk because the additional completions differ in a whitespace token,
+punctuation, or number formatting. When this occurs, we replace the discrete distribution with a normal distribution
+centered at the value with a standard deviation equal to the sample standard deviation of all yiin training data.
+For our baselines, we employed LIFT (ﬁne-tuning), Kernel Ridge Regression[ 93] (KRR), Gaussian Process
+Regressor[ 94] (GPR), and k-Nearest Neighbors[ 95] (KNN). LIFT, based on the text-ada-001 model, utilized
+the topk template and was trained for eight epochs with a learning rate multiplier of 0.02, following the parameters
+established by Jablonka et al. [34]. For KRR, we embedded the prompts generated by the topk approach using the
+text-embedding-ada-002 model. Both the embedded input and the labels were normalized during the training, and
+we employed a regularization strength of = 0:5. In contrast, we trained GPR using three types of inputs: (1) LIFT
+4Catalysts With In-context Learning A P REPRINT
+prompts embedded with the "text-embedding-ada-002" model, (2) the same prompt using the Material BERT [ 21]
+model, and (3) the numerical features vector employed in crafting the natural language prompts. Due to the high
+dimensionality of these embeddings (e.g., 1536 dimensions for the ada embeddings), training GPR models with a large
+number of data points proved to be computationally challenging. To avoid these limitations, we applied isometric
+mapping with 32 components for dimensionality reduction[ 96], facilitating more efﬁcient model training for GPR.
+Lastly, we implemented KNN using the SemanticSimilarityExampleSelector from the LangChain [ 86] library.
+In this work, we focused on only k= 1nearest neighbor for our analysis.
+The ICL and the GPR baseline model predict uncertainty and are used as surrogate models in BO[ 79,97]. Unless
+otherwise stated, all examples are with a ﬁnite pool of data and the goal of the Bayesian optimization is to ﬁnd the point
+with the maximum label. We implemented an ask-tell interface for our methods. Firstly, a random example is taken
+from the pool of possible elements. This example is used to initialize the ICL or GPR model. Since ﬁne-tuning takes
+signiﬁcant GPU resources and time, it is infeasible to ﬁne-tune repeatedly throughout the BO. For that reason, we did
+not use the ﬁne-tuned models as surrogate models. Secondly, the model goes through repeated ask (ﬁnding the pool
+member that maximizes u(x)) and tells (labeling the point chosen). To increase efﬁciency, rather than evaluate all pool
+members on the acquisition function, we used a Hyde[ 98] like strategy of inversely designing predicting a hypothetical
+^xfrom 1:5y(a point 50% larger than current maximum) by inverting the prompts. This ^xis then used with above
+prompt selection strategy to choose 16 pool examples.
+All Bayesian optimization plots show y
+N– the current best at sample count N. The random baseline was estimated via
+a quantiling of the datapoints. Namely, for random sampling y
+Nis estimated with:
+E[y
+N] =KX
+iyiP(sm=yi) ;sm=max(y1;y2;::: y N) (2)
+QX
+j 
+jN (j 1)N1
+QN
+qj
+whereqiis theith quantile of y(out ofQ) andKis the number of datapoints in the pool.
+The datasets are divided into training/test groups using a split of 80/20. The ICL model can select from all training
+examples and the training data is used for the LIFT/GPR training.
+Unless otherwise stated, we use the text-curie-001 model for hyperparameter selection, which has only 6.7B
+parameters[ 40] due to the cost and time of larger models. We did experiments up to GPT-4[ 87] on select tasks and
+observed consistent improvement. Thus, we expect our conclusions about comparing prompting strategies and datasets
+to hold for text-curie-001 and above.
+3 Results and discussion
+First we consider the effect of available examples on ICL in Figure 2. At zero shot ( N= 0) the model is relying on
+potential pre-training on the tasks. The difference between topk and multi prompts in zero-shot is the preﬁx prompt
+that explicitly speciﬁes the desired format for predictions. Zero-shot did poorly. For the solubility data, only the multi
+method produced valid responses, though the accuracy of these predictions was poor. The ESOL[ 43] dataset, published
+in 2004, has since served as a benchmark for solubility models; however, despite potential contamination there was
+poor zero-shot accuracy. The C 2dataset generated constant values for each prompt (refer to the initial panel in Figures
+A.13 and A.16). The C 2dataset was published after text-curie-001 training, and thus cannot be part of the model’s
+pre-training data.
+The model can choose data from Ntraining points to create context, but only with kexamples. As kincreases from 1
+to 10, improvements in mean absolute error (MAE) and Pearson correlation (r) can be observed, with subtle differences
+between the multi and topk methods. Parity plots are in Figures A.3 and A.6. However, we kept kat 5 due to the large
+context window required for C 2results.
+WhenN >k , examples were selected using the max marginal relevance[ 89] as implemented in LangChain[ 86]. This
+gives the ability to improve accuracy beyond N=k, as shown in Figure 2. Parity plots are shown in Figures A.2 and A.5.
+The multi method exhibits a stronger dependence on the number of points, indicating its larger sensitivity to the examples
+chosen for context creation and a reduced ability to leverage pre-training information. Using text-curie-001 with
+topk prompt shows good results in a low-data regime, with an MAE of 1.1 and a correlation of 0.6 with few data
+points. In comparison, using multi requires 500 data points to reach similar performance.
+5Catalysts With In-context Learning A P REPRINT
+The nearest neighbor prediction (KNN) baseline shows how much accuracy comes from just choosing the closest
+example (via text embeddings). The kernel ridge regression (KRR) baseline shows how much accuracy comes from
+averaging around nearby examples. The conclusions from Figure 2 are topk is better than multi, ICL is less accurate
+than trained baselines relying on text embeddings, and ICL has good likelihoods – meaning they are suited to Bayesian
+Optimization.
+Figure 2: Dependence of the six models considered in this work as a function of the number of training points Nfrom
+where the model could select examples to create the context (for ICL models) or to train (for baseline models). In
+these experiments, our ICL models have a ﬁxed example selector size of k= 5, temperature of T= 1:0, and used the
+text-curie-001 model. The negative log-likelihood (neg-ll) does not follow a trend on changes in Ndespite the
+improvement in the other metrics. The arrows in y-axes indicate the direction of improvement. The results show that
+using in-context learning (ICL) is enough to be comparable to the ﬁne-tuned model for the solubility dataset.
+The C 2yield dataset was assembled from text and tables fromNguyen et al. [44] and could not have been in any
+pre-training data from the models considered here. The C 2dataset exhibits greater complexity than solubility data, as
+it contains natural language descriptions of catalyst synthesis processes instead of explicit molecular representations.
+The experimental measurements in the C 2dataset also likely have larger error because catalysts are both synthesized
+and tested in a high throughput apparatus, potentially leading to the lower accuracy. Among both examples, topk gave
+good likelihoods but relatively poor correlation or standard deviations. Parity plots for all experiments can be found in
+Figures A.13 and A.16.
+Analogous to solubility dataset, both multi and topk methods beneﬁted from increasing the number of training points
+N. However, as illustrated in Figure 2, performance appears to plateau and does not improve beyond N= 200 in this
+instance. Unlike the solubility dataset, we did not observe signiﬁcant improvements as korTvalues were increased in
+the C 2dataset (See Figure A.11).
+The ranking of model performance in the C 2dataset is similar to the solubility dataset. However, the baselines performed
+signiﬁcantly better. We hypothesize that the higher complexity of the C 2dataset, along with the pronounced similarity
+between data points, made the text-curie-001 model incapable of effectively learning from context alone. As a
+result, incorporating additional context may inadvertently distract the model and diminish the quality of its predictions.
+Figure A.11 provides a visual summary of our ﬁndings.
+Figure 3 shows the effect of larger and more recent models for the C 2catalyst dataset. Table 1 contains the hyperparam-
+eters used in each experiment depicted in Figure 3 (see Supporting Information for justiﬁcation of hyperparameters).
+Speciﬁcally, we provided N= 1000 training points to the model and constructed a context with a size of k= 5. The
+6Catalysts With In-context Learning A P REPRINT
+text-curie-001 model, which was trained using data collected up to October 2019, yielded an MAE of 2.333 and a
+correlation of 0.530. In contrast, the more recent gpt-4 model, resulted in an MAE of 1.854 and a correlation of 0.613.
+The observed enhancement in performance from text-curie-001 togpt-4 cannot be attributed to contamination
+in the training set, as C 2is ﬁrst assembled in this work. Instead, it is likely associated with the multi-benchmark
+continued improvement in accuracy with model size[ 99]. Figure 3 also display parity plots for KNN, KRR, and ﬁnetune.
+GPT-4 outperformed the KNN baseline, which had an MAE of 2.366 and a correlation of 0.547, but not all baselines.
+Although GPT-4 has better performance, it has no logprobs and thus we assign equal probability to all outputs. Thus,
+we continued to use text-davinci-003 in our analysis.
+Figure 3: Parity plots with uncalibrated uncertainties comparing the performance of different large language models
+(LLM) evaluated on the C 2yield dataset. In the ﬁrst row, from left to right, we show our results for the topk
+approach employing the following LLMs: text-curie-001 ,text-davinci-003 , and gpt-4 . We can observe that
+the predictions improved over time as newer models were released. In the second row, we show the results for our
+baselines: nearest neighbor (KNN), kernel ridge regression (KRR), and ﬁne-tuning using text-ada-001 as base model.
+Notably, curie struggled to learn from the context for the C 2dataset. Nevertheless, GPT-4’s results are comparable to
+those of KRR. Hyperparameters are available in Table 1.
+The models were found to be over-conﬁdent in their calibration [ 100,101]. For some data points, the language models
+predicted only one value with logprobs equal to 1.0. The standard deviation of the training data population was
+substituted for these examples. We recalibrated the models by introducing an uncertainty scaling factor expected to
+minimize the miscalibration area associated with each model via the optimize_recalibration_ratio from the
+Uncertainty-Toolbox[101, 102] as shown in Figure A.22.
+Figure 4 displays the parity plots after recalibration for the text-davinci-003 andgpt-4 models, as well as the
+baselines for which uncertainties could be computed. Remarkably, ICL outperforms all considered baselines (see
+the ﬁrst row in Figure 4 and Table A.1) — with the additional beneﬁt of not requiring a supervised training process,
+which can be time-consuming and expensive. Table A.1 presents the metrics obtained in this study and compares them
+with state-of-the-art (SOTA) models. SOTA models consist of transformers that have been speciﬁcally trained for the
+solubility dataset. We showed that a considerably simpler process — prompt engineering to create the context for ICL
+7Catalysts With In-context Learning A P REPRINT
+Figure 4: Parity plots with recalibrated uncertainties comparing the performance of in-context learning (ICL), ﬁne-
+tuning, and training a Gaussian Process Regressor (GPR) for solubility and C 2yield datasets. We observe that ICL
+outperformed the baselines considered in this work for the solubility dataset. However, for the C 2yield dataset, ICL
+obtained a performance comparable to GPR but was unable to outperform the ﬁne-tuned model.
+— could yield comparable performance. On the other hand, ICL could not surpass ﬁne-tuning in the C 2dataset (refer to
+the second row in Figure 4). ICL cannot provide sufﬁcient context for the model to effectively learn the complexities of
+the C 2yield dataset. Furthermore, the prompts are larger in this case, and we could not increase the context size to
+enhance performance. Nevertheless, ICL models still demonstrated performance comparable to that of GPR.
+model prompt RMSE#MAE# r" neg-ll#
+text-curie-001 multi 13.487 3.878 0.051 8.139
+text-curie-001 topk 3.016 2.271 0.499 16.985
+text-davinci-003 multi 3.615 2.576 0.411 15.031
+text-davinci-003 topk 2.652 1.996 0.603 4.842
+gpt-4 topk 2.683 1.854 0.613 7.629
+Fine-tuned text-ada-001 topk 1.936 1.325 0.824 9.775
+Kernel Ridge Regression (KRR) topk 2.114 1.648 0.781 -
+Nearest Neighbor (KNN) topk 3.247 2.366 0.547 -
+GPR with ada embeddings topk 4.173 1.573 0.774 3.160
+GPR with MatBERT embeddings - 5.303 1.786 0.741 2.776
+GPR with numerical feature vector - 4.913 1.722 0.738 3.351
+Table 1: Performance metrics associated with predictions on the C 2dataset with optimal values highlighted in bold.
+Displayed models represent instances for each model type using the hyperparameters selected by the study varying each
+parameter. For all LLMs, we deﬁned temperature T= 0:7, context size k= 5, andN= 1000 training points. All
+baselines were trained also considering N= 1000 training points. Displayed metrics were calculated after recalibration.
+3.1 Bayesian Optimization
+After evaluating the models’ performance in regression tasks, we did Bayesian optimization to maximize LogS solubility
+and the C 2yield. The expected maximum of randomly sampling sequence of values was analytically calculated (refer to
+Section 2) and used as a baseline for the BO experiments. Fine-tuning for each iteration is impractical, since it requires
+hours of compute at each iteration. Therefore, LIFT was not included in the BO experiments. An ask-tell interface was
+used to examine a pool of samples, select the subsequent sample based on an acquisition function, and provide that
+point to the model with the respective label. These points contributed to constructing the context for future predictions
+8Catalysts With In-context Learning A P REPRINT
+in ICL or training the GPR model. Five independent trials were carried out for each model, and the average results were
+computed (Figure 5). Faded lines represent individual trials. Each BO run was started with 100 training data points.
+The initial training data is used to compute the scaling factor to recalibrate the predicted uncertainty that was used in
+the BO run.
+Figure 5: Bayesian optimization (BO) history. We implemented BO using an ask-tell interface. At each new sample, we
+plotted the maximum label found up to that point. Initially, 100 points were fed to the model to compute the scaling
+factor to calibrate uncertainty predictions. We employed expected improvement (EI) and upper conﬁdence bound
+(UCB) as acquisition functions. Experiments with greedy and probability of improvement were also conducted, but we
+observed that the results do not strongly depend on the acquisition function. The curve labeled “Random” illustrates
+the expected value of the distribution S=max(y0;y1;y2;:::;y N)for a sequence of size N, representing the scenario
+whenNsamples are selected randomly. Optimizing on the solubility dataset outperforms random selection and the
+GPR baseline, reaching the 99% percentile and identifying the maximum in one of the ﬁve replicates. On the other
+hand, the C 2dataset exhibits increased complexity. Therefore, although in-context learning (ICL) reached the 99%
+percentile after 15 samples, it failed to locate the maximum value within the pool. It is noteworthy that GPR, while also
+unable to ﬁnd the maximum, approached it more closely.
+Figure 5 is the progression of BO. Each curve starts from a randomly chosen sample (the same sample was selected for
+each model in every run to minimize its effect on comparisons). The curves are the maximum value identiﬁed up to that
+point. All models reached the 95% percentile solubility around 5 examples in BO. Notably, both text-davinci-003
+andgpt-4 converged to the same maximum value after labeling 15 new samples (beyond initial 100). On average, a
+maximum of1.2 logS was identiﬁed. This value is lower than only three other values in a pool of 882 molecules.
+Individually, text-davinci-003 found maximum values of LogS 1.11, 1.58, 1.11, 1.11, and 1.11, gpt-4 obtained
+1.12, 1.58, 1.09, 1.09, and 1.11. Both models could identify the maximum (1.58) in at least one of the ﬁve replicates.
+These experiments did not strongly depend on the acquisition functions. Training the GPR model with additional
+samples (beyond the initial 100) did not improve our experiments. The left panel in Figure 6 illustrates the histogram of
+the solubility dataset, with the average values procured for each model, represented as vertical lines.
+9Catalysts With In-context Learning A P REPRINT
+Figure 6: Histograms illustrating the data distribution for the solubility dataset (left panel) and the C 2dataset (right
+panel). Dashed lines indicate the mean of 5 BO runs identiﬁed by each model during the BO process, utilizing
+the expected improvement acquisition function. Although gpt-4 andtext-davinci-003 outperform GPR in the
+solubility dataset, their performance in the C 2dataset is slightly inferior in comparison to GPR.
+C2showed better performance for GPR with text embeddings than ICL. The ICL models reached the 99th percentile
+after 15 samples, but their performance did not improve substantially after that. Surprisingly, while text-davinci-003
+managed to capture some of the top 66 values in the dataset, gpt-4 was only successful in reaching the top 180. This
+may be because of the lack of token probabilities in gpt-4 , since OpenAI does not expose logprobs for chat models.
+GPR managed to identify the 18th-best example from a pool of 12,708 procedures.
+We demonstrated that BO using ICL is feasible in low-data regimes. For the solubility dataset, both text-davinci-003
+andgpt-4 using topk outperformed GPR. However, although it did not outperform GPR in our experiments in the C 2
+yield dataset, we should note that we restricted the number of examples used in the context to mitigate expenses —
+which could decrease performance — and that LLMs are continuously being enhanced, as discussed earlier. The GPR
+baseline presented here is also novel to the best of our knowledge, and provides a compelling approach. ICL still may
+be preferred because it does not require training, can be used for inverse design, and will see continued improvement.
+3.2 Inverse design
+We employed our approach to achieve the inverse design of experimental procedures, building upon the study conducted
+by Jablonska et al. [34]. For inverse design, we utilized the same ICL concept discussed in previous sections of this work.
+The prompt for direct prediction was structured as: “ Given {representation}. What is {property_name}?
+{completion} ”, which was used to generate the context. A similar structure was used as a sufﬁx to the prompt,
+removing the {completion} ﬁeld. Conversely, the inverse design involved reversing the prompt order and request-
+ing the LLM to complete the following prompt structure: “ If {property_name} is {property_value}, then
+{representation} is {completion} ”.
+To explore inverse design, we considered an in-house dataset[ 103] of CO yield over tungsten carbide catalysts for the
+reverse water-gas shift reaction (CO 2+ H2$CO + H 2O). CO yield was experimentally measured for 37 conﬁgurations
+that varied a dopant metal and concentration, tungsten loading, carburization temperature and reaction temperature. We
+adopted two approaches to predict which experimental procedure should be tested next in the laboratory: (1) feeding
+all 37 data points to the model and subsequently using the model to select the optimal experiment from a pool of
+2158 synthetic data points, and (2) employing the inverse design prompt to inquire which tungsten carbide preparation
+procedure would result in a CO yield of 20%.
+We applied gpt-4 to both tasks. Through BO on the existing data, the following procedure was proposed to maximize
+the EI acquisition function with a CO yield of 19.93 0.69%: “A 15 wt% tungsten carbide catalyst was prepared with a
+Cu dopant metal at 5 wt% and carburized at 950 ºC. The reaction was run at 350 ºC." We abbreviate this sample proposed
+by the EI function as 5Cu-WC(950). Alternatively, when asking gpt-4 to generate an experimental procedure with a
+CO yield of 20% using ICL and the inverse prompt, it produced the following procedure: “Synthesis procedure: A 25
+wt% tungsten carbide catalyst was prepared with an Ni dopant metal at 1.0 wt% and carburized at 900 ºC. The reaction
+was run at 375ºC." We abbreviate the sample proposed by ICL as 1Ni-WC(900).
+10Catalysts With In-context Learning A P REPRINT
+For the 1Ni-WC(900) experiment at a reaction temperature of 375 ºC predicted by ICL, we obtained a CO yield of
+3.2%, which was also lower than expected. Upon inspecting the dataset in an attempt to interpret the prediction by ICL,
+we observe that the tungsten carbide pool includes three experiments over Ni-WC, two with Ni loading at 0.5 wt% and
+one with Ni loading of 0.25 wt%, all carburized at 835 ºC. The highest CO yield of the Ni-based samples in the dataset
+is the 0.25Ni-WC(835) run at 350 ºC, which reached 9.54%.
+The Ni-based experiments are another important example that demonstrates the limitations of the BO technique for
+inverse design. Although CO is the desired product from reverse water-gas shift, there is a methanation side reaction
+that becomes more active with increasing temperature over the Ni-based catalysts as shown in Figure B.23. The
+CH4selectivity increases from 59% at 325 ºC up to 84% at 375 ºC, decreasing the CO yield from 4.7% to 3.2%,
+even though the CO 2conversion increases from 11.9% to 22.7% over the same temperature interval. Because we
+classiﬁed the catalyst with CO yield, which is the product of CO 2conversion and CO selectivity, the model likely
+could not distinguish between high conversion and CO selectivity and was therefore unable to predict the existence of
+the methanation side-reaction at elevated temperatures. Upon updating the model with the result of the 1Ni-WC(900)
+experiment, we anticipate it will become privy to the side reaction over Ni-based catalysts at elevated temperatures, and
+therefore, avoid the Ni dopant at high temperature in future iterations.
+Looking back to the C 2dataset from Nguyen et al. [44], it is possible that BO could not predict C 2yields above 20%
+because the experiments were outliers or anomalies. Out of the 12,708 experiments, only 12 reach C 2yields above
+19%. Therefore, there is a distinct possibility that in a pool of 12,708 high throughput experiments, that at least 0.1%
+are outliers or contain signiﬁcant measurement error. While inverse design using LLMs is possible, it remains crucial to
+validate the proposed experimental procedures in the lab to conﬁrm their feasibility, accuracy and reproducibility.
+4 Conclusion
+We showed that using example selection for in-context learning (ICL) enables frozen Large language models (LLM)
+to learn past their context window size without retraining. The prompting approach developed in the current study
+enables LLMs to make predictions with uncertainties. Hence, techniques such Bayesian optimization (BO) which use
+uncertainties are used on the two datasets.
+In this study, we explored the use of LLMs for downstream regression tasks in chemistry and materials. We applied our
+models to the prediction of LogS solubility data and C 2yield in catalyst reactions In addition, we carried out BO and
+inverse design for proposing new experimental procedures to synthesize innovative catalysts.
+Using well-designed prompts to enable uncertainty prediction from LLMs is a powerful tool for techniques such
+as Bayesian optimization (BO). Despite the catalyst experimental space’s complexity, ICL-enabled BO performs
+comparably to BO using Gaussian Process Regression (GPR) with minimal samples. While for more simple prompts,
+such as the IUPAC names used in the solubility dataset, ICL outperformed GPR.
+Additionally, LLMs are suitable for inverse design by inverting the prompt order, allowing them to propose new
+experimental procedures using ICL. LLMs can suggest new plausible experiments.
+Acknowledgments
+This research is supported by the National Science Foundation under Grant No. 1764415 and the National Institute of
+General Medical Sciences of the National Institutes of Health (NIH) under award number R35GM137966. The authors
+also thank the computational resource and structure provided by the Center for Integrated Research Computing (CIRC)
+at the University of Rochester.
+References
+[1]Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. Bert: Pre-training of deep bidirectional
+transformers for language understanding. arXiv preprint arXiv:1810.04805 , 2018.
+[2] Jibing Gong, Zhiyong Teng, Qi Teng, Hekai Zhang, Linfeng Du, Shuai Chen, Md Zakirul Alam Bhuiyan, Jian-
+hua Li, Mingsheng Liu, and Hongyuan Ma. Hierarchical graph Transformer-Based deep learning model
+for Large-Scale Multi-Label text classiﬁcation. IEEE Access , 8:30885–30896, 2020. ISSN 2169-3536.
+doi:10.1109/ACCESS.2020.2972751.
+[3]Ilias Chalkidis, Manos Fergadiotis, Sotiris Kotitsas, Prodromos Malakasiotis, Nikolaos Aletras, and Ion Androut-
+sopoulos. An empirical study on Large-Scale Multi-Label text classiﬁcation including few and Zero-Shot labels.
+October 2020.
+11Catalysts With In-context Learning A P REPRINT
+[4]Jiong Zhang, Wei-Cheng Chang, Hsiang-Fu Yu, and Inderjit Dhillon. Fast multi-resolution transformer ﬁne-
+tuning for extreme multi-label text classiﬁcation. Adv. Neural Inf. Process. Syst. , 34:7267–7280, 2021. ISSN
+1049-5258.
+[5] Yang Liu and Mirella Lapata. Text summarization with pretrained encoders. August 2019.
+[6]Pranav Rajpurkar, Robin Jia, and Percy Liang. Know what you don’t know: Unanswerable questions for SQuAD.
+June 2018.
+[7]Chi Sun, Luyao Huang, and Xipeng Qiu. Utilizing BERT for Aspect-Based sentiment analysis via constructing
+auxiliary sentence. March 2019.
+[8]Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri
+Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri, Gretchen Krueger, Michael
+Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov,
+Alethea Power, Lukasz Kaiser, Mohammad Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such,
+Dave Cummings, Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-V oss, William Hebgen
+Guss, Alex Nichol, Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William
+Saunders, Christopher Hesse, Andrew N Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan Morikawa, Alec
+Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario
+Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language models trained on
+code. July 2021.
+[9]Jingxuan He and Martin Vechev. Controlling large language models to generate secure and vulnerable code.
+February 2023.
+[10] Andrew D White, Glen M Hocky, Heta A Gandhi, Mehrad Ansari, Sam Cox, Geemi P Wellawatte, Subarna
+Sasmal, Ziyue Yang, Kangxin Liu, Yuvraj Singh, et al. Assessment of chemistry knowledge in large language
+models that generate code. Digital Discovery , 2023.
+[11] Ilias Chalkidis, Ion Androutsopoulos, and Nikolaos Aletras. Neural legal judgment prediction in english. June
+2019.
+[12] Tiffany H Kung, Morgan Cheatham, Arielle Medenilla, Czarina Sillos, Lorie De Leon, Camille Elepaño, Maria
+Madriaga, Rimel Aggabao, Giezel Diaz-Candido, James Maningo, and Victor Tseng. Performance of ChatGPT
+on USMLE: Potential for AI-assisted medical education using large language models. PLOS Digit Health , 2(2):
+e0000198, February 2023. ISSN 2767-3170. doi:10.1371/journal.pdig.0000198.
+[13] Johan Bollen, Huina Mao, and Xiaojun Zeng. Twitter mood predicts the stock market. J. Comput. Sci. , 2(1):1–8,
+March 2011. ISSN 1877-7503. doi:10.1016/j.jocs.2010.12.007.
+[14] Gunther Eysenbach. The role of ChatGPT, generative language models, and artiﬁcial intelligence in medical
+education: A conversation with ChatGPT and a call for papers. JMIR Med Educ , 9:e46885, March 2023. ISSN
+2369-3762. doi:10.2196/46885.
+[15] Enkelejda Kasneci, Kathrin Sessler, Stefan Küchemann, Maria Bannert, Daryna Dementieva, Frank Fischer, Urs
+Gasser, Georg Groh, Stephan Günnemann, Eyke Hüllermeier, Stepha Krusche, Gitta Kutyniok, Tilman Michaeli,
+Claudia Nerdel, Jürgen Pfeffer, Oleksandra Poquet, Michael Sailer, Albrecht Schmidt, Tina Seidel, Matthias
+Stadler, Jochen Weller, Jochen Kuhn, and Gjergji Kasneci. ChatGPT for good? on opportunities and challenges
+of large language models for education. Learn. Individ. Differ. , 103:102274, April 2023. ISSN 1041-6080.
+doi:10.1016/j.lindif.2023.102274.
+[16] Emilio Ferrara. What types of COVID-19 conspiracies are populated by twitter bots? April 2020.
+[17] Glen Coppersmith, Mark Dredze, and Craig Harman. Quantifying mental health signals in twitter. In Proceedings
+of the Workshop on Computational Linguistics and Clinical Psychology: From Linguistic Signal to Clinical
+Reality , Stroudsburg, PA, USA, 2014. Association for Computational Linguistics. doi:10.3115/v1/w14-3207.
+[18] Elizabeth Clark, Yangfeng Ji, and Noah A Smith. Neural text generation in stories using entity representations
+as context. In Proceedings of the 2018 Conference of the North American Chapter of the Association for
+Computational Linguistics: Human Language Technologies, Volume 1 (Long Papers) , pages 2250–2260, New
+Orleans, Louisiana, June 2018. Association for Computational Linguistics. doi:10.18653/v1/N18-1204.
+[19] Cheng-Zhi Anna Huang, Ashish Vaswani, Jakob Uszkoreit, Noam Shazeer, Ian Simon, Curtis Hawthorne,
+Andrew M Dai, Matthew D Hoffman, Monica Dinculescu, and Douglas Eck. Music transformer. September
+2018.
+[20] Yunqiu Xu, Ling Chen, Meng Fang, Yang Wang, and Chengqi Zhang. Deep reinforcement learning with
+transformers for text adventure games. In 2020 IEEE Conference on Games (CoG) , pages 65–72, August 2020.
+doi:10.1109/CoG47356.2020.9231622.
+12Catalysts With In-context Learning A P REPRINT
+[21] Michiko Yoshitake, Fumitaka Sato, Hiroyuki Kawano, and Hiroshi Teraoka. MaterialBERT for natural language
+processing of materials science texts. Science and Technology of Advanced Materials: Methods , 2(1):372–380,
+December 2022. doi:10.1080/27660400.2022.2124831.
+[22] Nihang Fu, Lai Wei, Yuqi Song, Qinyang Li, Rui Xin, Sadman Sadeed Omee, Rongzhi Dong, Edirisuriya M
+Dilanga Siriwardane, and Jianjun Hu. Materials transformers language models for generative materials design: a
+benchmark study. June 2022.
+[23] Lai Wei, Qinyang Li, Yuqi Song, Stanislav Stefanov, Edirisuriya M D Siriwardane, Fanglin Chen, and Jianjun
+Hu. Crystal transformer: Self-learning neural language model for generative and tinkering design of materials.
+April 2022.
+[24] Rongzhi Dong, Yuqi Song, Edirisuriya M D Siriwardane, and Jianjun Hu. Discovery of 2D materials using
+transformer network based generative design. January 2023.
+[25] Philippe Schwaller, Daniel Probst, Alain C Vaucher, Vishnu H Nair, David Kreutter, Teodoro Laino, and Jean-
+Louis Reymond. Mapping the space of chemical reactions using attention-based neural networks. Nature Machine
+Intelligence , 3(2):144–152, January 2021. ISSN 2522-5839, 2522-5839. doi:10.1038/s42256-020-00284-w.
+[26] Philippe Schwaller, Alain C Vaucher, Ruben Laplaza, Charlotte Bunne, Andreas Krause, Clemence Corminboeuf,
+and Teodoro Laino. Machine intelligence for chemical reaction space. Wiley Interdiscip. Rev. Comput. Mol. Sci. ,
+12(5), September 2022. ISSN 1759-0876, 1759-0884. doi:10.1002/wcms.1604.
+[27] Philippe Schwaller, Teodoro Laino, Théophile Gaudin, Peter Bolgar, Christopher A Hunter, Costas Bekas, and
+Alpha A Lee. Molecular transformer: A model for Uncertainty-Calibrated chemical reaction prediction. ACS
+Cent Sci , 5(9):1572–1583, September 2019. ISSN 2374-7943. doi:10.1021/acscentsci.9b00576.
+[28] Sheng Wang, Yuzhi Guo, Yuhong Wang, Hongmao Sun, and Junzhou Huang. SMILES-BERT: Large scale
+unsupervised Pre-Training for molecular property prediction. In Proceedings of the 10th ACM International
+Conference on Bioinformatics, Computational Biology and Health Informatics , BCB ’19, pages 429–436,
+New York, NY , USA, September 2019. Association for Computing Machinery. ISBN 9781450366663.
+doi:10.1145/3307339.3342186.
+[29] Paul G Francoeur and David R Koes. SolTranNet-A machine learning tool for fast aqueous solubility prediction.
+J. Chem. Inf. Model. , 61(6):2530–2536, June 2021. ISSN 1549-9596, 1549-960X. doi:10.1021/acs.jcim.1c00331.
+[30] Jiahui Yu, Chengwei Zhang, Yingying Cheng, Yun-Fang Yang, Yuan-Bin She, Fengfan Liu, Weike Su, and
+An Su. SolvBERT for solvation free energy and solubility prediction: a demonstration of an NLP model for
+predicting the properties of molecular complexes. ChemRxiv , July 2022. doi:10.26434/chemrxiv-2022-0hl5p.
+[31] Andrew E Blanchard, John Gounley, Debsindhu Bhowmik, Mayanka Chandra Shekar, Isaac Lyngaas, Shang
+Gao, Junqi Yin, Aristeidis Tsaris, Feiyi Wang, and Jens Glaser. Language models for the prediction of SARS-
+CoV-2 inhibitors. Int. J. High Perform. Comput. Appl. , 36(5-6):587–602, November 2022. ISSN 1094-3420.
+doi:10.1177/10943420221121804.
+[32] Changwen Xu, Yuyang Wang, and Amir Barati Farimani. TransPolymer: a transformer-based language model
+for polymer property predictions. September 2022.
+[33] Jerret Ross, Brian Belgodere, Vijil Chenthamarakshan, Inkit Padhi, Youssef Mroueh, and Payel Das. Molformer:
+Large scale chemical language representations capture molecular structure and properties. May 2022.
+[34] Kevin Maik Jablonka, Philippe Schwaller, Andres Ortega-Guerrero, and Berend Smit. Is GPT-3 all you need for
+low-data discovery in chemistry? ChemRxiv , February 2023. doi:10.26434/chemrxiv-2023-fw8n4.
+[35] Shion Honda, Shoi Shi, and Hiroki R Ueda. SMILES transformer: Pre-trained molecular ﬁngerprint for low data
+drug discovery. November 2019.
+[36] Hakime Öztürk, Arzucan Özgür, Philippe Schwaller, Teodoro Laino, and Elif Ozkirimli. Exploring chemical
+space using natural language processing methodologies for drug discovery. Drug Discov. Today , 25(4):689–705,
+April 2020. ISSN 1359-6446, 1878-5832. doi:10.1016/j.drudis.2020.01.020.
+[37] Zhichao Liu, Ruth A Roberts, Madhu Lal-Nag, Xi Chen, Ruili Huang, and Weida Tong. AI-based language
+models powering drug discovery and development. Drug Discov. Today , 26(11):2593–2607, November 2021.
+ISSN 1359-6446, 1878-5832. doi:10.1016/j.drudis.2021.06.009.
+[38] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser,
+and Illia Polosukhin. Attention is all you need. June 2017.
+[39] Alec Radford, Jeff Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. Language models are
+unsupervised multitask learners. 2019.
+13Catalysts With In-context Learning A P REPRINT
+[40] Tom B Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-V oss, Gretchen
+Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M Ziegler, Jeffrey Wu, Clemens Winter,
+Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher
+Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. Language models are Few-Shot
+learners. May 2020.
+[41] Tuan Dinh, Yuchen Zeng, Ruisu Zhang, Ziqian Lin, Michael Gira, Shashank Rajput, Jy-Yong Sohn, Dimitris
+Papailiopoulos, and Kangwook Lee. LIFT: Language-Interfaced Fine-Tuning for Non-Language machine
+learning tasks. June 2022.
+[42] Peter I Frazier. A tutorial on bayesian optimization. July 2018.
+[43] John S Delaney. ESOL: estimating aqueous solubility directly from molecular structure. J. Chem. Inf. Comput.
+Sci., 44(3):1000–1005, 2004. ISSN 0095-2338. doi:10.1021/ci034243x.
+[44] Thanh Nhat Nguyen, Thuy Tran Phuong Nhat, Ken Takimoto, Ashutosh Thakur, Shun Nishimura, Junya Ohyama,
+Itsuki Miyazato, Lauren Takahashi, Jun Fujima, Keisuke Takahashi, and Toshiaki Taniike. High-Throughput
+experimentation and catalyst informatics for oxidative coupling of methane. ACS Catal. , 10(2):921–932, January
+2020. doi:10.1021/acscatal.9b04293.
+[45] Ryan J Witzke, Alon Chapovetsky, Matthew P Conley, David M Kaphan, and Massimiliano Delferro. Nontradi-
+tional catalyst supports in surface organometallic chemistry. ACS Catal. , 10(20):11822–11840, October 2020.
+doi:10.1021/acscatal.0c03350.
+[46] Manuel Moliner, Yuriy Román-Leshkov, and Avelino Corma. Machine learning applied to zeolite synthesis:
+The missing link for realizing High-Throughput discovery. Acc. Chem. Res. , 52(10):2971–2980, October 2019.
+ISSN 0001-4842, 1520-4898. doi:10.1021/acs.accounts.9b00399.
+[47] Wenhong Yang, Timothy Tizhe Fidelis, and Wen-Hua Sun. Machine learning in catalysis, from proposal to
+practicing. ACS Omega , 5(1):83–88, January 2020. ISSN 2470-1343. doi:10.1021/acsomega.9b03673.
+[48] Jacques A Esterhuizen, Bryan R Goldsmith, and Suljo Linic. Interpretable machine learning for knowledge
+generation in heterogeneous catalysis. Nature Catalysis , 5(3):175–184, March 2022. ISSN 2520-1158, 2520-
+1158. doi:10.1038/s41929-022-00744-z.
+[49] Felix Musil, Andrea Grisaﬁ, Albert P Bartók, Christoph Ortner, Gábor Csányi, and Michele Ceriotti. Physics-
+Inspired structural representations for molecules and materials. Chem. Rev. , 121(16):9759–9815, August 2021.
+ISSN 0009-2665, 1520-6890. doi:10.1021/acs.chemrev.1c00021.
+[50] Simon Axelrod, Daniel Schwalbe-Koda, Somesh Mohapatra, James Damewood, Kevin P Greenman, and Rafael
+Gómez-Bombarelli. Learning matter: Materials design with machine learning and atomistic simulations. Acc.
+Mater. Res. , 3(3):343–357, March 2022. doi:10.1021/accountsmr.1c00238.
+[51] Vahe Tshitoyan, John Dagdelen, Leigh Weston, Alexander Dunn, Ziqin Rong, Olga Kononova, Kristin A Persson,
+Gerbrand Ceder, and Anubhav Jain. Unsupervised word embeddings capture latent knowledge from materials
+science literature. Nature , 571(7763):95–98, 2019.
+[52] Hasan M Sayeed, Sterling G Baird, and Taylor D Sparks. Structure feature vectors derived from robocrystallog-
+rapher text descriptions of crystal structures using word embeddings. 2023.
+[53] Murat Cihan Sorkun, Abhishek Khetan, and Süleyman Er. AqSolDB, a curated reference set of aqueous
+solubility and 2D descriptors for a diverse set of compounds. Sci Data , 6(1):143, August 2019. ISSN 2052-4463.
+doi:10.1038/s41597-019-0151-1.
+[54] Andrew P Abbott, Glen Capper, David L Davies, Raymond K Rasheed, and Vasuki Tambyrajah. Novel solvent
+properties of choline chloride/urea mixtures. Chem. Commun. , (1):70–71, January 2003. ISSN 1359-7345.
+doi:10.1039/b210714g.
+[55] Ulf Norinder and Christel A S Bergström. Prediction of ADMET properties. ChemMedChem , 1(9):920–937,
+September 2006. ISSN 1860-7179. doi:10.1002/cmdc.200600155.
+[56] Robert Docherty, Klimentina Pencheva, and Yuriy A Abramov. Low solubility in drug development: de-
+convoluting the relative importance of solvation and crystal packing. J. Pharm. Pharmacol. , 67(6):847–856,
+June 2015. ISSN 0022-3573, 2042-7158. doi:10.1111/jphp.12393.
+[57] Jaclyn A Barrett, Wenzhan Yang, Suzanne M Skolnik, Lisa M Belliveau, and Kellyn M Patros. Discovery
+solubility measurement and assessment of small molecules with drug development in mind. Drug Discov. Today ,
+27(5):1315–1325, May 2022. ISSN 1359-6446, 1878-5832. doi:10.1016/j.drudis.2022.01.017.
+14Catalysts With In-context Learning A P REPRINT
+[58] Pietro Sormanni, Francesco A Aprile, and Michele Vendruscolo. The CamSol method of rational design of
+protein mutants with enhanced solubility. J. Mol. Biol. , 427(2):478–490, January 2015. ISSN 0022-2836,
+1089-8638. doi:10.1016/j.jmb.2014.09.026.
+[59] Antonio Llinàs, Robert C Glen, and Jonathan M Goodman. Solubility challenge: can you predict solubilities of
+32 molecules using a database of 100 reliable measurements? J. Chem. Inf. Model. , 48(7):1289–1303, July 2008.
+ISSN 1549-9596. doi:10.1021/ci800058v.
+[60] Antonio Llinas and Alex Avdeef. Solubility challenge revisited after ten years, with multilab Shake-Flask data,
+using tight (SD 0.17 log) and loose (SD 0.62 log) test sets. J. Chem. Inf. Model. , 59(6):3036–3040, June 2019.
+ISSN 1549-9596, 1549-960X. doi:10.1021/acs.jcim.9b00345.
+[61] David S Palmer and John B O Mitchell. Is experimental data quality the limiting factor in predicting the aqueous
+solubility of druglike molecules? Mol. Pharm. , 11(8):2962–2972, August 2014. ISSN 1543-8384, 1543-8392.
+doi:10.1021/mp500103r.
+[62] R E Skyner, J L McDonagh, C R Groom, T van Mourik, and J B O Mitchell. A review of methods for the
+calculation of solution free energies and the modelling of systems in solution. Phys. Chem. Chem. Phys. , 17(9):
+6174–6191, March 2015. ISSN 1463-9076, 1463-9084. doi:10.1039/c5cp00288e.
+[63] James L McDonagh, Neetika Nath, Luna De Ferrari, Tanja van Mourik, and John B O Mitchell. Uniting
+cheminformatics and chemical theory to predict the intrinsic aqueous solubility of crystalline druglike molecules.
+J. Chem. Inf. Model. , 54(3):844–856, March 2014. ISSN 1549-9596, 1549-960X. doi:10.1021/ci4005805.
+[64] Wenlu Wang, Ye Wang, Honggang Zhao, and Simone Sciabola. A transformer-based generative model for DE
+novo molecular design. October 2022. doi:10.48550/ARXIV .2210.08749.
+[65] Łukasz Maziarka, Tomasz Danel, Sławomir Mucha, Krzysztof Rataj, Jacek Tabor, and Stanisław Jastrz˛ ebski.
+Molecule attention transformer. arXiv preprint arXiv:2002.08264 , 2020.
+[66] Ziyue Yang, Katarina A Milas, and Andrew D White. Now what sequence? pre-trained ensembles for bayesian
+optimization of protein sequences. bioRxiv , pages 2022–08, 2022.
+[67] Nathan Frey, Ryan Soklaski, Simon Axelrod, Siddharth Samsi, Rafael Gomez-Bombarelli, Connor Coley, and
+Vijay Gadepally. Neural scaling of deep chemical models. 2022.
+[68] Gayane Chilingaryan, Hovhannes Tamoyan, Ani Tevosyan, Nelly Babayan, Lusine Khondkaryan, Karen
+Hambardzumyan, Zaven Navoyan, Hrant Khachatrian, and Armen Aghajanyan. Bartsmiles: Generative masked
+language models for molecular representations. arXiv preprint arXiv:2211.16349 , 2022.
+[69] Ross Irwin, Spyridon Dimitriadis, Jiazhen He, and Esben Jannik Bjerrum. Chemformer: a pre-trained transformer
+for computational chemistry. Machine Learning: Science and Technology , 3(1):015022, 2022.
+[70] Philippe Schwaller, Alain C Vaucher, Teodoro Laino, and Jean-Louis Reymond. Prediction of chemical reaction
+yields using deep learning. Machine learning: science and technology , 2(1):015016, 2021.
+[71] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Ed Chi, Quoc Le, and Denny Zhou. Chain of
+thought prompting elicits reasoning in large language models. arXiv preprint arXiv:2201.11903 , 2022.
+[72] Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language models
+are zero-shot reasoners. arXiv preprint arXiv:2205.11916 , 2022.
+[73] Jaehun Jung, Lianhui Qin, Sean Welleck, Faeze Brahman, Chandra Bhagavatula, Ronan Le Bras, and Yejin
+Choi. Maieutic prompting: Logically consistent reasoning with recursive explanations. arXiv preprint
+arXiv:2205.11822 , 2022.
+[74] Hattie Zhou, Azade Nova, Hugo Larochelle, Aaron Courville, Behnam Neyshabur, and Hanie Sedghi. Teaching
+algorithmic reasoning via in-context learning. arXiv preprint arXiv:2211.09066 , 2022.
+[75] Qing Lyu, Shreya Havaldar, Adam Stein, Li Zhang, Delip Rao, Eric Wong, Marianna Apidianaki, and Chris
+Callison-Burch. Faithful chain-of-thought reasoning. arXiv preprint arXiv:2301.13379 , 2023.
+[76] Denny Zhou, Nathanael Schärli, Le Hou, Jason Wei, Nathan Scales, Xuezhi Wang, Dale Schuurmans, Olivier
+Bousquet, Quoc Le, and Ed Chi. Least-to-most prompting enables complex reasoning in large language models.
+arXiv preprint arXiv:2205.10625 , 2022.
+[77] Damai Dai, Yutao Sun, Li Dong, Yaru Hao, Zhifang Sui, and Furu Wei. Why can gpt learn in-context? language
+models secretly perform gradient descent as meta optimizers. arXiv preprint arXiv:2212.10559 , 2022.
+[78] Bobak Shahriari, Kevin Swersky, Ziyu Wang, Ryan P Adams, and Nando de Freitas. Taking the human out of
+the loop: A review of bayesian optimization. Proceedings of the IEEE , 104(1):148–175, 2015.
+15Catalysts With In-context Learning A P REPRINT
+[79] Qiaohao Liang, Aldair E Gongora, Zekun Ren, Armi Tiihonen, Zhe Liu, Shijing Sun, James R Deneault,
+Daniil Bash, Flore Mekki-Berrada, Saif A Khan, Kedar Hippalgaonkar, Benji Maruyama, Keith A Brown, John
+Fisher, III, and Tonio Buonassisi. Benchmarking the performance of bayesian optimization across multiple
+experimental materials science domains. npj Computational Materials , 7(1):1–10, November 2021. ISSN
+2057-3960, 2057-3960. doi:10.1038/s41524-021-00656-9.
+[80] Sterling G. Baird, Marianne Liu, and Taylor D. Sparks. High-dimensional bayesian optimization of 23 hy-
+perparameters over 100 iterations for an attention-based network to predict materials property: A case study
+on CrabNet using ax platform and SAASBO. Computational Materials Science , 211:111505, August 2022.
+doi:10.1016/j.commatsci.2022.111505. URL https://doi.org/10.1016/j.commatsci.2022.111505 .
+[81] Mani Valleti, Rama K. Vasudevan, Maxim A. Ziatdinov, and Sergei V . Kalinin. Bayesian optimization in contin-
+uous spaces viavirtual process embeddings. Digital Discovery , 1(6):910–925, 2022. doi:10.1039/d2dd00065b.
+URL https://doi.org/10.1039/d2dd00065b .
+[82] Edward O Pyzer-Knapp, Jed W Pitera, Peter W J Staar, Seiji Takeda, Teodoro Laino, Daniel P Sanders, James
+Sexton, John R Smith, and Alessandro Curioni. Accelerating materials discovery using artiﬁcial intelligence,
+high performance computing and robotics. npj Computational Materials , 8(1):84, 2022.
+[83] Turab Lookman, Prasanna V Balachandran, Dezhen Xue, John Hogden, and James Theiler. Statistical inference
+and adaptive design for materials discovery. Curr. Opin. Solid State Mater. Sci. , 21(3):121–128, June 2017.
+ISSN 1359-0286. doi:10.1016/j.cossms.2016.10.002.
+[84] Jose Miguel Hernandez-Lobato, Daniel Reagen, Ryan P Adams, David Duvenaud, Zoubin Ghahramani, Matt J
+Kusner, Andreas Scherer, Edward Snelson, Jasper Snoek, Steven Swift, et al. Predictive materials design with
+high-throughput screening and online optimization. Machine Learning for Materials Discovery workshop at
+NIPS , 2017.
+[85] Natalie S Eyke, William H Green, and Klavs F Jensen. Iterative experimental design based on active machine
+learning reduces the experimental burden associated with reaction screening. Reaction Chemistry & Engineering ,
+5(10):1963–1972, 2020.
+[86] Harrison Chase. LangChain, 10 2022. URL https://github.com/hwchase17/langchain .
+[87] OpenAI. GPT-4 technical report. March 2023.
+[88] Gabriel Murray, Steve Renals, and Jean Carletta. Extractive summarization of meeting recordings. 2005.
+[89] Shengbo Guo and Scott Sanner. Probabilistic latent maximal marginal relevance. In Proceedings of the 33rd
+international ACM SIGIR conference on Research and development in information retrieval , SIGIR ’10, pages
+833–834, New York, NY , USA, July 2010. Association for Computing Machinery. ISBN 9781450301534.
+doi:10.1145/1835449.1835639.
+[90] Arvind Neelakantan, Tao Xu, Raul Puri, Alec Radford, Jesse Michael Han, Jerry Tworek, Qiming Yuan, Nikolas
+Tezak, Jong Wook Kim, Chris Hallacy, et al. Text and code embeddings by contrastive pre-training. arXiv
+preprint arXiv:2201.10005 , 2022.
+[91] Jeff Johnson, Matthijs Douze, and Hervé Jégou. Billion-scale similarity search with gpus. IEEE Transactions on
+Big Data , 7(3):535–547, 2019.
+[92] Michael Ahn, Anthony Brohan, Noah Brown, Yevgen Chebotar, Omar Cortes, Byron David, Chelsea Finn,
+Keerthana Gopalakrishnan, Karol Hausman, Alex Herzog, et al. Do as i can, not as i say: Grounding language in
+robotic affordances. arXiv preprint arXiv:2204.01691 , 2022.
+[93] C. Saunders, A. Gammerman, and V . V ovk. Ridge regression learning algorithm in dual variables. ICML , 1998.
+[94] Carl Edward Rasmussen and Christopher K I Williams. Gaussian Processes for Machine Learning . MIT Press,
+November 2005. ISBN 9780262182539.
+[95] Naomi S Altman. An introduction to kernel and nearest-neighbor nonparametric regression. The American
+Statistician , 46(3):175–185, 1992.
+[96] Mukund Balasubramanian and Eric L Schwartz. The isomap algorithm and topological stability. Science , 295
+(5552):7–7, 2002.
+[97] Riley J Hickman, Matteo Aldeghi, Florian Häse, and Alán Aspuru-Guzik. Bayesian optimization with known
+experimental and design constraints for chemistry applications. Digital Discovery , 1(5):732–744, October 2022.
+ISSN 2635-098X. doi:10.1039/D2DD00028H.
+[98] Luyu Gao, Xueguang Ma, Jimmy Lin, and Jamie Callan. Precise zero-shot dense retrieval without relevance
+labels. arXiv preprint arXiv:2212.10496 , 2022.
+16Catalysts With In-context Learning A P REPRINT
+[99] Aarohi Srivastava, Abhinav Rastogi, Abhishek Rao, Abu Awal Md Shoeb, Abubakar Abid, Adam Fisch, Adam R
+Brown, Adam Santoro, Aditya Gupta, Adrià Garriga-Alonso, et al. Beyond the imitation game: Quantifying and
+extrapolating the capabilities of language models. arXiv preprint arXiv:2206.04615 , 2022.
+[100] Balaji Lakshminarayanan, Alexander Pritzel, and Charles Blundell. Simple and scalable predictive uncertainty
+estimation using deep ensembles. December 2016.
+[101] V olodymyr Kuleshov, Nathan Fenner, and Stefano Ermon. Accurate uncertainties for deep learning using
+calibrated regression. In Jennifer Dy and Andreas Krause, editors, Proceedings of the 35th International
+Conference on Machine Learning , volume 80 of Proceedings of Machine Learning Research , pages 2796–2804.
+PMLR, 2018.
+[102] Youngseog Chung, Ian Char, Han Guo, Jeff Schneider, and Willie Neiswanger. Uncertainty toolbox: an
+Open-Source library for assessing, visualizing, and improving uncertainty quantiﬁcation. September 2021.
+[103] Mitchell Juneau, Daphna Yaffe, Renjie Liu, Jane N. Agwara, and Marc D. Porosoff. Establishing
+tungsten carbides as active catalysts for CO 2hydrogenation. Nanoscale , 14(44):16458–16466, 2022.
+doi:10.1039/d2nr03281c. URL https://doi.org/10.1039/d2nr03281c .
+[104] Benedek Fabian, Thomas Edlich, Héléna Gaspar, Marwin Segler, Joshua Meyers, Marco Fiscato, and Mohamed
+Ahmed. Molecular representation learning with language models and domain-relevant auxiliary tasks. November
+2020.
+[105] Jannis Born and Matteo Manica. Regression transformer: Concurrent sequence regression and generation for
+molecular language modeling. February 2022.
+17Catalysts With In-context Learning A P REPRINT
+A Supp. Material
+A.1 Solubility
+model prompt RMSE#MAE# r" neg-ll#
+text-curie-001 multi 1.791 1.245 0.613 2.218
+text-curie-001 topk 1.811 1.245 0.613 2.218
+text-davinci-003 topk 1.185 0.814 0.805 1.901
+gpt-4 topk 0.773 0.578 0.921 2.564
+Fine-tuned (text-ada-001) topk 1.558 0.852 0.779 4.166
+GPR with ada embeddings topk 2.652 1.129 0.620 1.795
+KNN - 2.443 1.739 0.456 -
+SolTranNet[29] - 2.99
+SMILES-BERT[28] - 0.47
+MolBERT[104] - 0.531
+Regression Transformer[105] - 0.73
+MolFormer[33] - 0.278
+ESOL[43] - 0.83 0.74
+Table A.1: Comparison of our ICL models against state-of-the-art(SOTA) models for the solubility dataset. All SOTA
+models are a kind of transformers model trained from scratch to reproduce solubility on ESOL dataset. Missing data in
+the table means that the authors did not report the metric in their study. The best value for each metric is displayed
+in bold. Displayed ICL models represent instances for each model type using the hyperparameters selected by the
+investigation in which we systematically varied each hyperparameter. For all LLMs, we deﬁned temperature T= 0:7,
+context size k= 5, andN= 700 training points. All baselines were trained also considering N= 700 training points.
+Displayed metrics were calculated after recalibration.
+18Catalysts With In-context Learning A P REPRINT
+Figure A.1: Metrics with respect to N, k, and T using the text-curie-001 model on the solubility dataset. The left
+panel displays The number of training points N, varying from 1 to 700, while keeping the number of examples k= 5
+and temperature T= 0:05constant. The middle panel illustrates the relationship between the number of examples k
+used in the context and model performance, with kranging from 0 to 10, and ﬁxed values of N= 700 andT= 0:05.
+The right panel demonstrates the effect of varying the temperature Tbetween 0 and 1, while maintaining N= 700 and
+k= 5constant.
+19Catalysts With In-context Learning A P REPRINT
+A.1.1 Multi-options prompt
+Figure A.2: Calibrated parity plots using text-curie-001 with Multi-options prompt on the solubility dataset. Those
+experiments were made by deﬁning the number of examples used as k= 5and temperature T= 0:05. The number of
+training points Nfrom which the model can select the examples was varied in a range from 1 to 700
+Figure A.3: Calibrated parity plots using text-curie-001 with Multi-options prompt on the solubility dataset. Those
+experiments were made by deﬁning the size of the training set as N= 700 and temperature T= 0:05. The number of
+selected examples kto create the context was studied. We varied it in a range from 0 to 10. For k= 0(zero-shot), the
+model generated the same values out of the range independent of the request. Therefore, data for k=0 is not shown.
+Figure A.4: Calibrated parity plots using text-curie-001 with Multi-options prompt on the solubility dataset. Those
+experiments were made by deﬁning the size of the training set as N= 700 and context size k= 5. The temperature T
+was varied in a range from 0 to 10.
+20Catalysts With In-context Learning A P REPRINT
+A.1.2 Top k completions prompt
+Figure A.5: Calibrated parity plots using text-curie-001 with topk completions prompt on the solubility dataset.
+Those experiments were made by deﬁning the number of examples used as k= 5and temperature T= 0:05. The
+number of training points Nfrom which the model can select the examples was varied in a range from 1 to 700
+Figure A.6: Calibrated parity plots using text-curie-001 with topk completions prompt on the solubility dataset.
+Those experiments were made by deﬁning the number of examples used as N= 700 and temperature T= 0:05. The
+number of selected examples kto create the context varied in a range from 0 to 10. For k= 0(zero-shot), the model
+mostly hallucinated and generated non-numeric tokens. Therefore, data for k=0 is not shown.
+Figure A.7: Calibrated parity plots using text-curie-001 with topk completions prompt on the solubility dataset.
+Those experiments were made by deﬁning the size of the training set as N= 700 and context size k= 5. The
+temperature Twas varied in a range from 0 to 1.0.
+21Catalysts With In-context Learning A P REPRINT
+A.1.3 Finetuning
+Figure A.8: Calibrated parity plots using ﬁne-tuned text-ada-001 with topk completions prompt on the solubility
+dataset. Those experiments were made by deﬁning the number of examples used as k= 0and temperature T= 0:05.
+The number of training points Nfrom which the model can select the examples was varied in a range from 50 to 700
+A.1.4 GPR
+Figure A.9: Metrics with respect to N using Gaussian process regressor(GPR) with topk completions prompt on the
+solubility dataset. To generate the inputs for the GPR, we used text-embeding-ada-002 to embed the prompt. Those
+experiments were made by deﬁning the number of examples used as k= 0and temperature T= 0:05. The number of
+training points Nfrom which the model can select the examples was varied in a range from 1 to 700
+22Catalysts With In-context Learning A P REPRINT
+A.1.5 KNN
+Figure A.10: Metrics with respect to N using Nearest Neighbors(KNN) with topk completions prompt on the solubility
+dataset. To generate the vectors to select the neares neighbor, we used text-embeding-ada-002 to embed the prompt.
+Those experiments were made by deﬁning the number of examples used as k= 0and temperature T= 0:05. The
+number of training points Nfrom which the model can select the examples was varied in a range from 1 to 700
+23Catalysts With In-context Learning A P REPRINT
+A.2 C2 yield
+Figure A.11: Metrics with respect to N, k, and T using the text-curie-001 model on the C 2yield dataset. The left
+panel displays the number of training points N, varying from 1 to 1000, while keeping the number of examples k= 5
+and temperature T= 0:05constant. The middle panel illustrates the relationship between the number of examples k
+used in the context and model performance, with kranging from 0 to 5, and ﬁxed values of N= 1000 andT= 0:05.
+The right panel demonstrates the effect of varying the temperature Tbetween 0 and 1, while maintaining N= 1000
+andk= 5constant.
+24Catalysts With In-context Learning A P REPRINT
+A.2.1 Multi-option prompt
+Figure A.12: Calibrated parity plots using text-curie-001 with Multi-options prompt on the C 2catalyst dataset.
+Those experiments were made by deﬁning the number of examples used as k= 5and temperature T= 0:05. The
+number of training points Nfrom which the model can select the examples was varied in a range from 1 to 1000
+Figure A.13: Calibrated parity plots using text-curie-001 with Multi-options prompt on the C 2catalyst dataset.
+Those experiments were made by deﬁning the number of examples used as N= 700 and temperature T= 0:05. The
+number of selected examples k to create the context was varied in a range from 1 to 10.
+Figure A.14: Calibrated parity plots using text-curie-001 with Multi-options prompt on the C 2catalyst dataset.
+Those experiments were made by deﬁning the number of examples used as N= 700 and the number of examples
+k= 5. The temperature Tto generate the completions was varied in a range from 0.05 to 1.0.
+25Catalysts With In-context Learning A P REPRINT
+A.2.2 Top k completions prompt
+Figure A.15: Calibrated parity plots using text-curie-001 with Topk completions prompt on the C 2catalyst dataset.
+Those experiments were made by deﬁning the number of examples used as k= 5and temperature T= 0:05. The
+number of training points Nfrom which the model can select the examples was varied in a range from 1 to 1000
+Figure A.16: Calibrated parity plots using text-curie-001 with Topk completions prompt on the C 2catalyst dataset.
+Those experiments were made by deﬁning the number of examples used as N= 700 and temperature T= 0:05. The
+number of selected examples k to create the context was varied in a range from 1 to 10.
+Figure A.17: Calibrated parity plots using text-curie-001 with Topk completions prompt on the C 2catalyst dataset.
+Those experiments were made by deﬁning the number of examples used as N= 700 and the number of examples
+k= 5. The temperature Tto generate the completions was varied in a range from 0.05 to 1.0.
+26Catalysts With In-context Learning A P REPRINT
+Figure A.18: Calibrated parity plots using different models with Multi-options prompt on the C 2catalyst dataset. We
+considered text-curie-001 ,text-davinci-003 , and gpt-4 deﬁning the number of examples used as N= 1000 ,
+the number of examples k= 5and temperature T= 0:7.
+27Catalysts With In-context Learning A P REPRINT
+A.2.3 Finetuning
+Figure A.19: Calibrated parity plots using ﬁne-tuned text-ada-001 with topk completions prompt on the C 2catalyst
+dataset. Those experiments were made by deﬁning the number of examples used as k= 0and temperature T= 0:05.
+The number of training points Nfrom which the model can select the examples was varied in a range from 50 to 1000
+A.2.4 GPR
+Figure A.20: Metrics with respect to N using Gaussian process regressor(GPR) with topk completions prompt on the C 2
+catalyst dataset. To generate the inputs for the GPR, we used text-embeding-ada-002 to embed the prompt. Those
+experiments were made by deﬁning the number of examples used as k= 0and temperature T= 0:05. The number of
+training points Nfrom which the model can select the examples was varied in a range from 1 to 500
+28Catalysts With In-context Learning A P REPRINT
+A.2.5 GPR
+Figure A.21: Metrics with respect to N using NearestNeighbor (KNN) with topk completions prompt on the C 2catalyst
+dataset. To generate embedding to select the nearest neighbors, we used text-embeding-ada-002 to embed the
+prompt. Those experiments were made by deﬁning the number of examples used as k= 0and temperature T= 0:05.
+The number of training points Nfrom which the model can select the examples was varied in a range from 1 to 500
+29Catalysts With In-context Learning A P REPRINT
+A.3 Calibration
+Figure A.22: Miscalibration analysis and correction using Uncertainty-toolbox to introduce a corrective scaling-factor
+used for regression tasks: davinci | topk (3.783), gpt-4 | topk (4.330), ada | gpr (2.110)
+30Catalysts With In-context Learning A P REPRINT
+B Inverse design
+B.1 Reaction Results
+Figure B.23: Reverse water-gas shift performance of 1Ni-WC(900). The reaction temperature is ramped at a rate of
+0.25 ºC/min at a gas hourly space velocity of 27,000 mL/h/gcat with a 3:1 H 2:CO 2reactant ratio at 2.1 MPa.
+31Catalysts With In-context Learning A P REPRINT
+B.2 In-House Reaction Dataset
+Table B.2: CO Yield Dataset for Reverse-Water-Gas-Shift Reaction Inverse Catalyst Design
+Tungsten Loading (wt%) Dopant Dopant (wt.%) Carburization Temp (°C) Reaction Temperature (°C) CO yield (%)
+15 Fe 0.5 835 280 1.66
+15 Fe 0.5 835 350 3.03
+15 Fe 5 835 280 1.61
+15 Fe 5 835 350 4.12
+15 Cu 0.5 835 280 0.52
+15 Cu 0.5 835 350 3.36
+15 Cu 5 835 280 9.80
+15 Cu 5 835 350 18.98
+15 Co 0.5 835 280 6.21
+15 Co 0.5 835 350 16.35
+15 Co 5 835 280 1.73
+15 Co 5 835 350 2.85
+4.25 – – 600 350 2.23
+4.25 – – 835 350 5.14
+4.25 – – 1000 350 4.63
+15 – – 600 350 5.72
+15 – – 835 350 8.73
+15 – – 1000 350 5.09
+15 Pt 0.5 835 280 2.32
+15 Pt 0.5 835 350 7.59
+15 Ni 0.5 835 280 2.67
+15 Ni 0.5 835 350 7.85
+15 Ni 0.25 835 350 9.54
+15 Cu 0.25 835 350 4.55
+15 Co 0.25 835 350 5.66
+15 Fe 0.25 835 350 0.78
+15 – – 680 280 1.47
+15 – – 680 350 10.43
+15 – – 600 350 5.72
+15 – – 835 350 8.73
+15 – – 1000 350 5.09
+15 – – 600 350 5.72
+15 – – 700 350 6.79
+15 – – 800 350 6.87
+30 – – 600 350 7.24
+30 – – 700 350 10.38
+30 – – 800 350 10.89
+32Catalysts With In-context Learning A P REPRINT
+B.3 MaxMarginalRelevance vs SamanticSimilarity (Context Selection Methods)
+Figure B.24: These are the results of applying topk and multi using the SamanticsSimilarity (SS) function from
+Langchain as opposed to our selected approach of using MMR for context selection. SS uses cosine similarity to select
+the next context point, whereas MMR offers a more diverse selection of context for robustness. This ﬁgure elucidates
+the importance of distinct context for ICL. These results may be compared to the other regression ﬁgures that used the
+MMR in the rest of the experiments.
+33

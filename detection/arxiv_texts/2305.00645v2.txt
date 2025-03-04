@@ -1,0 +1,1475 @@
+arXiv:2305.00645v2  [cs.CR]  14 Aug 2024GTree : GPU-Friendly Privacy-preserving Decision
+Tree Training and Inference
+Qifan Wang∗†, Shujie Cui‡, Lei Zhou§, Ye Dong¶, Jianli Bai/bardbl, Yun Sing Koh∗, and Giovanni Russello∗
+∗University of Auckland, New Zealand
+†University of Birmingham, United Kingdom
+‡Monash University, Australia
+§National University of Defense Technology, China
+¶Singapore University of Technology and Design, Singapore
+/bardblSingapore Management University, Singapore
+Abstract —Outsourcing Decision tree (DT) training and infer-
+ence to cloud platforms raises privacy concerns. Recent Sec ure
+Multi-Party Computation (MPC)-based methods are hindered by
+heavy overhead. Few recent studies explored GPUs to improve
+MPC-protected deep learning, yet integrating GPUs into MPC -
+protected DT with massive data-dependent operations remai ns
+challenging, raising question: can MPC-protected DT training and
+inference fully leverage GPUs for optimal performance?
+We present GTree , the ﬁrst scheme that exploits GPU to
+accelerate MPC-protected secure DT training and inference .
+GTree is built across 3 parties who jointly perform DT training
+and inference with GPUs. GTree is secure against semi-honest
+adversaries, ensuring that no sensitive information is dis closed.
+GTree offers enhanced security than prior solutions, which only
+reveal tree depth and data size while prior solutions also le ak
+tree structure. With our oblivious array access , access patterns on
+GPU are also protected. To harness the full potential of GPUs , we
+design a novel tree encoding method and craft our MPC protoco ls
+into GPU-friendly versions. GTree achieves ∼11×and∼21×
+improvements in training SPECT and Adult datasets, compare d
+to prior most efﬁcient CPU-based work. For inference, GTree
+outperforms the prior most efﬁcient work by 126×when inferring
+104instances with a 7-level tree.
+I. I NTRODUCTION
+The decision tree (DT) is a powerful and versatile Machine
+learning (ML) model. Its excellent interpretability makes it
+a popular choice for various applications, such as medical
+diagnosis [1] and weather prediction [2]. To efﬁciently tra in a
+DT and make predictions, a common solution is outsourcing
+the tasks to cloud platforms. However, this poses privacy ri sks,
+as the underlying data may be sensitive. For privacy-sensit ive
+applications like healthcare, all data samples, trained mo dels,
+inference results, and any intermediate data generated dur ing
+the training and inference should be protected from the Clou d
+Service Provider (CSP). This need has driven the developmen t
+of privacy-preserving DT training and inference (PPDT).
+Emails: Qifan Wang (qwan301@aucklanduni.ac.nz,
+q.wang.3@bham.ac.uk) , Shujie Cui (shujie.cui@monash.edu) ,
+Lei Zhou (cszhoulei@gmail.com) , Jianli Bai
+(jianlibai@smu.edu.sg) , Ye Dong (ye_dong@sutd.edu.sg) ,
+Yun Sing Koh and Giovanni Russello ({y.koh,
+g.russello}@auckland.ac.nz) .The typical way to develop PPDT is employing crypto-
+graphic primitives, such as Secure Multi-Party Computatio n
+(MPC/SMC) [3], [4], [5], [6], [7], [8], [9] and Homomorphic
+Encryption (HE) [10], [11], [12], [13], or a combination of
+both [14]. MPC enables multiple CSPs to jointly compute
+without revealing any party’s private inputs, and HE allows
+the CSP to perform computations over ciphertexts without
+decryption. Nevertheless, most existing approaches are st ill not
+secure enough. Earlier works [5], [7] focus mainly on the inp ut
+data privacy while not considering the model. Some works [6] ,
+[14], [8], leak statistical information and tree structure s from
+which the adversary could infer sensitive information [4],
+[15]. Existing approaches also suffer from heavy computati on
+and communication overheads. For instance, the recent PPDT
+method proposed in [14] takes over 20 minutes and ∼2GB
+communication cost to train a tree of depth 7 with 958 samples
+and 9 categorical features.
+Some recent works [16], [17], [18] show that Trusted
+Execution Environment (TEE) is more efﬁcient for designing
+PPDT. With TEE’s protection, the data can be processed in
+plaintext. However, TEEs such as Intel SGX [19] have limited
+computational power compared with Graphic Processing Unit s
+(GPUs). Processing all the DT tasks inside the TEE still cann ot
+achieve ideal performance. Recent NVIDIA H100 GPU [20]
+extending TEE into GPU has a low performance-to-price ratio
+in most applications due to the high price.
+Hardware acceleration is crucial in the evolution of modern
+ML. Recent works [21], [22], [23], [24] have used GPUs
+to accelerate secure deep learning. They can take full ad-
+vantage of GPU due to massive GPU-friendly operations
+(e.g., convolutions and matrix multiplications). This rai ses the
+question: can secure DT training and inference beneﬁt from
+GPU acceleration?
+Our goals and challenges. In this work, we aim to design a
+GPU-based system to securely train a DT model and make
+predictions. Speciﬁcally, our approach does not reveal any
+information other than the input size and tree depth.
+GPUs are especially effective when processing grid-like
+structures such as arrays and matrices [25]. To better utili ze
+GPU acceleration, GTree represents the DT and data structures
+as arrays and performs training and inference on arrays.However, processing them securely on GPU is non-trivial
+because it suffers from access pattern leakage, which enabl es
+an adversary to infer tree shape [16], [18]. Thus, the ﬁrst
+challenge is to protect access patterns on GPU .
+To protect the data and DT, we employ MPC in training
+and inference. However, inappropriate MPC protocols could
+impede GPU acceleration. GPU will be sufﬁciently used when
+performing a large number of simple arithmetic computation s
+(e.g., addition and multiplication) on massive data in par-
+allel. The operations involve a large number of conditional
+statements, modular reduction, and non-linear functions, e.g.,
+exponentiation and division are less well-suited for GPU.
+For instance, CryptGPU [22] shows that GPU achieves much
+less performance gain when evaluating non-linear function s in
+private neural network training. Thus, the second challenge is
+to design GPU-friendly MPC protocols for DT training and
+inference so as to take full advantage of GPU parallelism .
+Our contributions. In this work, we introduce GTree , a GPU-
+based privacy-preserving DT training and inference addres sing
+the aforementioned challenges. Rather than focusing solel y on
+improving MPC protocols, GTree primarily explores the possi-
+bility of combining GPU and MPC-based DT , as done in recent
+GPU-based neural network schemes such as CryptGPU [22],
+Piranha [23], and Orca [24]. To the best of our knowledge,
+GTree is the ﬁrst to deploy secure DT training and inference on
+GPU. Furthermore, GTree achieves better security guarantees
+than existing solutions. Particularly, GTree conceals all data
+items, the tree shape, statistical information, and the acc ess
+pattern for both DT training and inference.
+GTree relies on secret-sharing-based MPC protocols, which
+are better suited to GPU than garbled circuits (GC) [26].
+ABY3[27] and Piranha [23] show that, in the presence of
+a semi-honest adversary with an honest majority, 3-Party
+Computation (3PC) with 2-out-of-3 replicated secret sharing
+(RSS) [28] is more efﬁcient than 2/N-PC (N >3) in
+runtime and communication cost. Thus, GTree involves 3 non-
+colluding CSPs to securely share data and model via 2-out-of-3
+RSS. The main contributions are summarized as follows:
+Access pattern protection. For both training and infer-
+ence, access patterns to an array should be protected, even
+when encrypted. Otherwise, adversaries could deduce sensi tive
+information. For example, data similarities can be inferre d
+from tree access patterns, and if an adversary knows some
+patterns, they could further uncover more tree information . We
+design a GPU-friendly Oblivious Array Access protocol which
+accesses every element of the array and uses a secret-sharin g-
+based select function (i.e., SelectShare [29]) to ensure that
+only the desired element is actually read or written.
+GPU-friendly design. To make DT training and infer-
+ence GPU-friendly, our main idea is to parallelize as many
+operations as possible. Firstly, in addition to ensuring th at
+the tree is always complete, GTree trains layer-wisely based
+on our novel tree encoding method. In doing so, adversaries
+can only learn the tree depth. Such design also allows for
+extensive parallelization. Secondly, all the designed pro tocols
+mainly involve simple arithmetic operations and minimized
+conditional statements so that they are highly parallelabl e.
+During DT training, GTree calculates Gini Index to select
+the best feature. The designed MPC-based protocol uses thescaling function [23] and secure division [29], potentiall y
+leading to accuracy loss. To mitigate this, we introduce a TE E-
+assisted method that enables the oblivious computation of t he
+Gini Index within TEE using oblivious primitives [16].
+Extensive experimental evaluations. We implemented
+GTree based on GPU-based MPC platform, Piranha [23], and
+evaluated it on a server with 3 NVIDIA Tesla V100 GPUs. In
+this work, we focus on processing binary categorical featur es.
+The results show that GTree takes about 0.31 and 4.32 seconds
+to train with SPECT and Adult datasets, respectively, which
+is∼11×and∼21×faster than the previous work [6] ( GTree
+also provides a stronger security guarantee than it). We als o
+compare GTree with a TEE-only baseline that processes all
+tasks within an enclave (baseline uses one of the common
+TEEs, Intel SGX, as the underlying TEE). To train 5×104
+data samples with 64 features, GTree outperforms TEE-only by
+∼27×. For DT inference, GTree excels when the tree has less
+than 10 levels, surpassing the prior most efﬁcient solution [30]
+by∼126×for inferring 104instances with a depth-7 tree.
+Compared to TEE-only, GTree is more efﬁcient in inferring a
+batch of instances when the tree depth is less than 6.
+II. B ACKGROUND
+A. Decision Tree
+A decision tree consists of internal nodes and leaves, where
+each internal node is associated with a test on a feature,
+each branch represents the outcome of the test, and each leaf
+represents a label which is the decision taken after testing all
+the features on the corresponding path.
+Training. During training, the DT algorithm learns from a
+dataset with labeled data samples, where each data contains
+a set of feature values and a label. Basically, building a DT
+includes 3 steps: (1) Learning phase : when a leaf becomes
+an internal node, partition its data samples into new leaves
+according to the assigned feature. Then, for each new leaf,
+count the number of each possible (value,label )pair among
+its data samples. (2) Heuristic computation (HC) : if all data
+samples on a new leaf have the same label, assign that label to
+the leaf. Otherwise, calculate heuristic measurements ( GTree
+uses gini index [31]) for each feature and choose the best
+feature to split the leaf. For a feature sand dataset D, the gini
+index is deﬁned as follows: G(D) = 1−/summationtext|Vsd−1|
+k=1(|Dk|
+|D|)2
+andG(D,s) =/summationtext|Vs|−1
+i=0|Dvs,i|
+|D|G(Dvs,i), where|Dk|is the
+number of samples containing k-th label and k∈[1,|Vsd−1|],
+|Vs|is the number of values of feature s(s= 2 for binary
+tree and sd−1is the label) and Dvs,irepresents a subset of
+Dcontaining feature swith value of vs,i. (3) Node split (NS) :
+convert the leaf into an internal node using the best feature .
+Inference To infer an unlabelled data sample (or instance),
+from the root node, we check whether the corresponding
+feature value of the instance is v0orv1, and continue the
+test with its left or right child respectively, until a leaf n ode.
+The label value of the accessed leaf is the inference result.
+B. Secret Sharing
+InGTree , anl-bit value x∈Z2lis secretly shared among
+three parties (say P1,P2,P3) with 2-out-of-3 replicated secretsharing (RSS) [28]. GTree leverages Arithmetic/Boolean shar-
+ing, denoted as/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htAand/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htB, respectively. Without special
+declaration, we compute in Z2land omit (mod 2l) for brevity.
+Arithmetic Sharing. We deﬁne the following operations:
+•ShareA(x)→(x1,x2,x3): Given input x∈Z2l, it
+samplesx1,x2,x3∈Z2lsuch that x1+x2+x3=x.
+Piholds(xi,xi+1). We denote/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htA= (x1,x2,x3).
+•RecA(/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htA)→x: Given input/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htA= (x1,x2,x3),
+it outputs x=x1+x2+x3.Pireceivesxi−1from
+Pi−1and reconstructs xlocally.
+• Linear operation : Given public constants α,β∈Z2l,
+Picomputes their respective shares of /an}⌊rack⌉tl⌉{tαx+β/an}⌊rack⌉tri}htA=
+(αx1+β,αx2,αx3)locally.
+• Multiplication :/an}⌊rack⌉tl⌉{tz/an}⌊rack⌉tri}htA=/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htA·/an}⌊rack⌉tl⌉{ty/an}⌊rack⌉tri}htA:zi=xiyi+
+xi+1yi+xiyi+1. With(xi,xi+1)and(yi,yi+1),Pi
+compute zilocally and get the additive shares of z.
+To ensure parties hold replicated shares of z,Pisends
+Pi+1a blinded share zi+αi, whereα1,α2,α3∈Z2l
+andα1+α2+α3= 0 [27].
+Boolean Sharing. Boolean sharing uses an XOR-based secret
+sharing. For simplicity, given l-bit values, we assume each
+operation is performed ltimes in parallel. The semantics and
+operations are the same as the arithmetic shares except that +
+and·are respectively replaced by bit-wise ⊕and∧.
+III. T HREAT MODEL OF GTree
+GTree consists of 3 types of entities: Data Owner (DO),
+Query User (QU), and Cloud Service Provider (CSP). GTree
+employs 3 independent CSPs, such as Facebook, Google, and
+Microsoft, and they should be equipped with GPUs. The DO
+outsources data samples to the three CSPs securely with RSS
+for training the DT, and the QU queries after the training for
+data classiﬁcation or prediction.
+Following with other three-party-based systems [27], [22] ,
+[29], GTree resists a semi-honest adversary with an honest
+majority among three CSPs. Speciﬁcally, two of them are
+fully honest, and the third one is semi-honest, i.e., follow s
+the protocol but may try to learn sensitive information, e.g .,
+tree structure, by analyzing the access patterns and other
+leakages. The DO and QU are fully trusted. We assume three
+CSPs possess shared point-to-point communication channel s
+and pairwise shared seeds, which are used by AES as a
+PRNG to generate secure randomness [29]. Attacks [32], [33]
+show that GPUs can be shared between multiple applications,
+enabling spy applications to monitor and infer the behaviou r of
+victims. For instance, recent work [34] introduced a trace t ool
+to observe the memory traces of the application running on th e
+GPU. In this work, we assume adversaries possess this abilit y
+to mount similar attacks on GPU and observe the victim’s
+access pattern over the GPU’s on-chip memory. Additionally ,
+GTree does not protect against denial-of-service attacks and
+other attacks based on physical channels.
+In the sub-protocol using TEE, the TEE enclave can reside
+on any of the three CSPs. The TEE enclave is fully trusted.
+Components beyond the enclave are considered untrusted,
+as they may infer secrets by observing the memory accessTABLE I: Notations
+Notation Description
+D Data samples array where |D|=ND
+d Number of features
+S A sequence of dfeatures, S= (s0,s1,···,sd−1)
+VsiValues of feature si,Vsi= (vi,0,vi,1)(binary)
+nh Number of nodes at level h,nh= 2h
+ΨriNumber of data samples at a leaf containing the i-th
+label, where i∈[0,1]
+G(·) Heuristic measurement, e.g., Gini Index
+TTree array stores tree nodes (i.e., internal, leaf and
+dummy nodes). T[2i+1] andT[2i+2] are the left
+and right children of T[i], respectively
+FNode type array indicates the node type of T[i]where
+|F|=|T|andF[i] = 0,1,2corresponds to internal,
+leaf and dummy node
+MAn array indicating the leaf each data sample D[i]
+currently belongs to, where |M|=|D|
+c(value,label ) Frequency of each (value,label )
+C2D-counter array has 3 rows and 2(d−1)columns,
+storing the frequency of each feature
+γAn array indicating if each feature has been assigned
+to a leaf node or not, where |γ|=d−1
+patterns. In setup, secure channels are established betwee n
+three CSPs and the enclave using secret keys. All shares
+transmitted between the CSP and the enclave are encrypted
+with their respective keys, employing AES-GCM.
+The security proof can be found in Section VII.
+IV. D ATA AND MODEL REPRESENTATION
+This section presents data and DT representation in GTree .
+In the rest of this paper, we will use the notation in Table I.
+A. Data Representation
+We stress that GTree focuses on training categorical fea-
+tures. We assume that S= (s0,s1,···,sd−1)represents a
+sequence of dfeatures, where each feature sihaving two
+possible values (i.e., binary features): Vsi= (vi,0,vi,1). In
+GTree , we convert vi,0andvi,1to 0 and 1, respectively, for
+alli∈[0,d−1]. A labeled data sample is represented with d
+feature values, e.g., {1,0,...,1}, and the last feature value is
+the label, and unlabelled data samples only have d−1feature
+values. For clarity, we use r0andr1to represent the two
+label values. We denote an array of NDdata samples as D,
+and each data sample D[i]is an array containing dord−1
+elements, where 0≤i≤ND−1. The DO computes ShareA(D)
+and distributes replicated shares to the 3 CSPs.
+B. Model Representation
+Our tree encoding method is presented in Fig. 1. Such
+design enables GTree to train and infer data in a highly
+parallelised manner. By padding the model into a complete
+binary tree with dummy nodes, all the paths have the same
+length. As a result, no matter which path is taken during the
+training and inference, the processing time will always be t he
+same. Since the model is a complete binary tree, the size of T
+is determined by the depth. The depth of the tree is normally
+unknown before the training, yet |T|should be determined. To
+address this issue, we initialize |T|with the maximum value,s0s1
+s1s0s2r0r0r1r0
+Decision trees2
+r1 r0Tree array T
+0 1 0 2 2 1 1 Flag array F
+r0 r0Level 1 Level 2 Level 3 s
+s/r
+s/rInternal node
+Leaf node
+Dummy node
+Tree representations0, s1, s2: features
+r0, r1: labels
+Fig. 1: Representation of an example tree in GTree . The tree
+is represented with two arrays TandF, where|T|=|F|.
+T[i]is an internal, leaf, or dummy node, corresponding to
+F[i] = 0,1, or2, respectively. T[i]is the assigned feature if
+it is an internal node, e.g., T[0] =s1andT[2] =s2. For the
+dummy and leaf nodes in the last level, T[i]is the label of
+the path, e.g., T[3] =r0andT[5] =r1; otherwise, T[i]is a
+random feature, e.g., T[1] =s0(it is indeed a leaf). Although
+T[3]andT[4]are dummy nodes, they play the role of a leaf
+and store the label of their paths since they are in the last le vel.
+Such design not only protects tree shape but also allows for
+training and inference in a highly parallelized manner.
+i.e.,|T|= 2d−1. In case the tree depth his predeﬁned,
+|T|= 2h−1.Tis initialized with |T|leaves. Both TandF
+are shared among the three CSPs with RSS.
+V. C ONSTRUCTION DETAILS OF GTree
+In this section, we ﬁrst present one basic block about
+how CSPs access arrays without learning access patterns. We
+then describe how GTree obliviously performs 3 steps of DT
+training: learning phase, heuristic computation, and node split .
+Finally, we present the details of secure DT inference.
+A. Oblivious Array Access
+To take advantage of GPU’s parallelism, GTree represents
+both the tree and data samples with arrays. Although they
+are all protected under RSS, the CSPs can observe the ac-
+cess patterns. There are two common techniques to conceal
+access patterns: linear scan and ORAM. Considering the basi c
+construction of linear scan involves a majority of highly
+parallelizable operations like vectorized arithmetic ope rations,
+we construct our Oblivious Array Access protocol/producttext
+OAAbased on linear scan, where three CSPs jointly scan the whole
+array and obliviously retrieve the target element.
+Equality test:/producttext
+OAAneeds to obliviously check the equality
+between two operands or arrays with their shares. We mod-
+iﬁed the Less Than protocol in Rabbit [35] to achieve that,
+denoted as/an}⌊rack⌉tl⌉{te/an}⌊rack⌉tri}htB←/producttext
+EQ(/an}⌊rack⌉tl⌉{tx/an}⌊rack⌉tri}htA,/an}⌊rack⌉tl⌉{ty/an}⌊rack⌉tri}htA). Speciﬁcally, e= 1
+ifx=y; otherwise e= 0. It also applies to arrays, i.e.,
+/an}⌊rack⌉tl⌉{tE/an}⌊rack⌉tri}htB←/producttext
+EQ(/an}⌊rack⌉tl⌉{tX/an}⌊rack⌉tri}htA,/an}⌊rack⌉tl⌉{tY/an}⌊rack⌉tri}htA).E[i] = 1 ifX[i] =Y[i],
+otherwise E[i] = 0 , wherei∈[0,|X|−1]. Notably, one
+of the inputs can be public (e.g., yorY).
+Oblivious Array Access: Algorithm 1 illustrates our/producttext
+OAA.
+Given the shares of the array Wand the shares of a set
+of target indices U, it outputs the shares of all the target
+elements. When|U|>1, the target elements are accessed
+independently. Here we introduce how the three parties acce ss
+one target element obliviously. Assume the target index is
+/an}⌊rack⌉tl⌉{tu/an}⌊rack⌉tri}htA, parties ﬁrst compare it with each index of Wusing/producttext
+EQand get Boolean shares of the |W|comparison results:Algorithm 1: Oblivious Array Access,/producttext
+OAA
+Input :/an}bracketle{tW/an}bracketri}htAand/an}bracketle{tU/an}bracketri}htA(stores the target indices)
+Output: All parties learn the shares of target elements
+/an}bracketle{tZ/an}bracketri}htA={/an}bracketle{tW[u]/an}bracketri}htA}∀u∈U
+1Parties initialize an array /an}bracketle{tO/an}bracketri}htAwith|W|zero values
+2foreach/an}bracketle{tu/an}bracketri}htA∈/an}bracketle{tU/an}bracketri}htAdo
+3/an}bracketle{tE/an}bracketri}htB←/producttext
+EQ({/an}bracketle{tu/an}bracketri}htA}|W|,{0,···,|W|−1})
+4/an}bracketle{tO/an}bracketri}htA←SelectShare (/an}bracketle{tO/an}bracketri}htA,/an}bracketle{tW/an}bracketri}htA,/an}bracketle{tE/an}bracketri}htB)
+5 Compute/an}bracketle{tzu/an}bracketri}htA=/summationtext|W|−1
+k=0/an}bracketle{tO[k]/an}bracketri}htA
+6Output/an}bracketle{tZ/an}bracketri}htA={/an}bracketle{tzu/an}bracketri}htA}∀u∈U
+/an}⌊rack⌉tl⌉{tE/an}⌊rack⌉tri}htB(Line 3). According to/producttext
+EQ, onlyE[u] = 1 , whereas
+that is hidden from the three parties as they only have the
+shares of E. Second, the three parties use SelectShare1
+to obliviously select elements from two arrays WandO
+based on/an}⌊rack⌉tl⌉{tE/an}⌊rack⌉tri}htB(Line 4), where Ois an assistant array and
+contains|W|zeros. Since only E[u] = 1 , after executing
+SelectShare , we have O[u] =W[u]and all the other
+elements of Oare still 0. Finally, each party locally adds
+all the elements in /an}⌊rack⌉tl⌉{tO/an}⌊rack⌉tri}htAand gets/an}⌊rack⌉tl⌉{tzu/an}⌊rack⌉tri}htA, wherezu=W[u]
+(Line 5). All the for-loops (and in the following protocols) can
+be parallelized since array values are handled independent ly.
+To fully leverage GPUs, GTree mainly exploits the par-
+allelism of protocols. The communication overhead is the
+performance bottleneck of GTree . Precisely, given Ninputs,/producttext
+EQtotally incurs N·(2l−1)bits communication overhead
+inlogl+1rounds. The communication overhead of/producttext
+OAAis
+N·(4l−1)bits inlogl+ 3 rounds. We can further improve
+this by using more communication-efﬁcient primitives, e.g .,
+ORAM [36]. We will explore that in future work.
+B. Oblivious DT Training
+We summarise 3 steps for DT training in Section II-A.
+Here we present how GTree constructs oblivious protocols for
+them.
+1)Oblivious Learning: Data Partition :Algorithm 2 il-
+lustrates details of the learning phase. The ﬁrst step is to
+partition the data samples into new leaves (Line 1-5). We nee d
+to conceal data distribution, ensuring that the execution ﬂ ow
+remains independent of the input data. Speciﬁcally, GTree uses
+an array Mto indicate the leaf each data sample currently
+belongs to, where M[i]is the leaf identiﬁer of D[i]and
+|M|=|D|, e.g.,M[i] =nifD[i]is atT[n]. Assume the
+new internal node is T[n](which was a leaf with previously
+partitioned data samples) and the feature assigned to it is sj.
+The main operation of data partition is to check if D[i][j] = 0
+for each data sample at T[n]. If yes, D[i]should be parti-
+tioned to the left child and M[i]←2M[i] + 1 ; otherwise
+M[i]←2M[i] + 2 . That is, M[i]←2M[i] +D[i][j] + 1
+(Line 5). To avoid leaking which leaf each data sample belong s
+to,GTree performs it obliviously.
+GTree processes the leaves at the same level in parallel. So
+for the data partition, we ﬁrst get the features assigned to n ew
+internal nodes at level h−1fromT, the identiﬁers of which are
+1/an}bracketle{tW3/an}bracketri}htA←SelectShare (/an}bracketle{tW1/an}bracketri}htA,/an}bracketle{tW2/an}bracketri}htA,/an}bracketle{tI/an}bracketri}htB)is a function which
+select shares from either array /an}bracketle{tW1/an}bracketri}htAor/an}bracketle{tW2/an}bracketri}htAbased on/an}bracketle{tI/an}bracketri}htB. Speciﬁ-
+cally,W3[i] =W1[i]whenI[i] = 0 , andW3[i] =W2[i]whenI[i] = 1
+for alli∈[0,|I|−1].Algorithm 2: Oblivious Learning,/producttext
+OL
+Input :/an}bracketle{tD/an}bracketri}htA,/an}bracketle{tT/an}bracketri}htA,/an}bracketle{tF/an}bracketri}htA,/an}bracketle{tM/an}bracketri}htA,{/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1]and
+current tree level h, wherenh= 2his the number of
+leaves at level h
+Output: Updated{/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1]
+1ifh/ne}ationslash= 0 then
+2/an}bracketle{tTval/an}bracketri}htA←/producttext
+OAA(/an}bracketle{tT/an}bracketri}htA,/an}bracketle{tM/an}bracketri}htA)
+3 fori={0,···,ND−1}do
+4/an}bracketle{tDval[i]/an}bracketri}htA←/producttext
+OAA(/an}bracketle{tD[i]/an}bracketri}htA,/an}bracketle{tTval/an}bracketri}htA)
+5 Compute/an}bracketle{tM/an}bracketri}htA= 2/an}bracketle{tM/an}bracketri}htA+/an}bracketle{tDval/an}bracketri}htA+1
+6Initialize LCidx←{0,···,nh−1}
+7/an}bracketle{tisLeaf/an}bracketri}htB←/producttext
+EQ({/an}bracketle{tF[2h−1]/an}bracketri}htA,···,/an}bracketle{tF[nh+2h−1]/an}bracketri}htA},{1}nh)
+8fori={0,···,ND−1}do
+9/an}bracketle{tLCF/an}bracketri}htB←/producttext
+EQ({/an}bracketle{tM[i]/an}bracketri}htA−(2h−1)}nh,LCidx )
+10/an}bracketle{tLCF/an}bracketri}htB∧=/an}bracketle{tisLeaf/an}bracketri}htB
+11 Initialize nharrays:/an}bracketle{tC′
+Di/an}bracketri}htA←{/an}bracketle{tC′
+ρ/an}bracketri}htA}ρ∈[0,nh−1]
+12 forρ={0,···,nh−1}do
+13 fork={0,···,d−2}do
+14/an}bracketle{tC′
+ρ[0][2k]/an}bracketri}htA= (1−/an}bracketle{tD[i][k]/an}bracketri}htA)
+15/an}bracketle{tC′
+ρ[0][2k+1]/an}bracketri}htA=/an}bracketle{tD[i][k]/an}bracketri}htA
+16/an}bracketle{tC′
+ρ[1][2k]/an}bracketri}htA=
+(1−/an}bracketle{tD[i][k]/an}bracketri}htA)·(1−/an}bracketle{tD[i][d−1]/an}bracketri}htA)
+17/an}bracketle{tC′
+ρ[1][2k+1]/an}bracketri}htA=/an}bracketle{tD[i][k]/an}bracketri}htA·(1−/an}bracketle{tD[i][d−1]/an}bracketri}htA)
+18/an}bracketle{tC′
+ρ[2][2k]/an}bracketri}htA= (1−/an}bracketle{tD[i][k]/an}bracketri}htA)·/an}bracketle{tD[i][d−1]/an}bracketri}htA
+19/an}bracketle{tC′
+ρ[2][2k+1]/an}bracketri}htA=/an}bracketle{tD[i][k]/an}bracketri}htA·/an}bracketle{tD[i][d−1]/an}bracketri}htA
+20/an}bracketle{tC′
+Di/an}bracketri}htA←SelectShare ({/an}bracketle{t0/an}bracketri}htA}nh,/an}bracketle{tC′
+Di/an}bracketri}htA,/an}bracketle{tLCF/an}bracketri}htB)
+21Accumulate all{/an}bracketle{tC′
+Di/an}bracketri}htA}i∈[0,ND−1]to{/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1].
+stored in Mas they previously were leaves. Parties thus run/producttext
+OAA(/an}⌊rack⌉tl⌉{tT/an}⌊rack⌉tri}htA,/an}⌊rack⌉tl⌉{tM/an}⌊rack⌉tri}htA)to get all such features (Line 2). The
+second step is to get the corresponding feature values from
+each data sample (Line 4), and then assign Mwith the new
+leaf identiﬁers based on the fetched feature values (Line 5) .
+Notably, the values of Mshould be 0 if h= 0.
+Fig. 2: Counter array in GTree , denoted as C. The array
+contains 3 rows and 2(d−1)columns. C[0][2k+j]in the ﬁrst
+row stores the number of data samples containing vk,j, where
+k∈[0,d−2]andj∈{0,1}. In the last two rows, C[1][2k+j]
+andC[2][2k+j]stores counts of (vk,j,0)and(vk,j,1)pairs,
+respectively. Such design also helps to take better advanta ge
+of GPU’s parallelism.
+2)Oblivious Learning: Statistics Counting :Statistics in-
+formation of the data samples at each leaf is required for
+heuristic measurement. Speciﬁcally, for each real leaf, it re-
+quires the number of data samples containing each feature
+value and the number of data samples containing each (value,
+label) pair. GTree uses a 2D-array Cto store such statistics
+for each leaf. As shown in Fig. 2, Chas 3 rows and 2(d−1)
+columns (i.e., the total number of feature values). Particu larly,
+the2k-th and(2k+1)-th elements of each row are the statisticsof feature sk, where0≤k≤(d−2). Each element in the ﬁrst
+rowC[0][2k+j]stores the number of data samples containing
+the corresponding feature value vk,j, wherej∈{0,1}. In the
+last two rows, C[1][2k+j]andC[2][2k+j]stores counts of
+(vk,j,0)and(vk,j,1)pairs, respectively.
+After assigning data samples to new leaves, GTree updates
+Cof all leaves by scanning the partitioned data samples
+(Line 6-21). To hide the data samples’ distribution over lea ves
+(i.e., the statistical information), GTree obliviously updates C
+of all leaves when processing each D[i]. Indeed, only the real
+leaf that really contains D[i]should update its C. To ensure
+the correctness of the ﬁnal C, a ﬂag array LCF is used to
+indicate which Cshould be updated, and LCF contains two
+points: which leaf D[i]belongs to (Line 9), and if this leaf is
+real (Line 7, 10). Whether each element of Cincreases 1 or not
+depends on the feature values of D[i](see Line 14-19), and
+GTree stores such information in a temporary counter array
+C′
+ρand ﬁnally accumulates them in batch (Line 21). Note that
+there is no need to recompute the multiplications in Line 17
+and 19 as they have been previously calculated.
+3)Oblivious Heuristic Computation :We next need to
+convert each leaf into an internal node using the best featur e.
+For each path, a feature can only be assigned once, and GTree
+uses an array γof sized−1to indicate if each feature has
+been assigned or not. Speciﬁcally, γ[i] = 0 ifsihas been
+assigned; otherwise γ[i] = 1 .
+We adopt gini index due to its integer-arithmetic-friendly
+operations, e.g., addition and multiplication. The Equati on in
+Section II-A can be distilled into the following equation ba sed
+onC, wheremk=C[k+1][2i+vi,0]+C[k+1][2i+vi,1]:
+G(C,si) =/summationdisplay|Vsi|−1
+j=0P
+Q
+P= (C[0][2i+vi,j])2−/summationdisplay|Vsd−1|−1
+k=0mk2
+Q=C[0][2i+vi,j]·(C[0][2i+vi,0]+C[0][2i+vi,1])(1)
+We represent gini index as a rational number, where
+PandQare the numerator and denominator, respectively.
+We observe that minimizing the gini index is equivalent to
+minimizingP
+Q. To ﬁnd the best feature, we need to select the
+feature with the smallest gini index value by comparingP
+Qof
+different features. Na¨ ıvely, we can avoid expensive divis ion
+by comparing the fractions of two features directly [6]: giv en
+non-negative a,b,c,d , we have thata
+b<c
+diffa·d < b·c.
+Nevertheless, such a solution imposes the restrictions on t he
+modulus2land the dataset size. Speciﬁcally, given all features
+are binary, the numerator and denominator are upper bounded
+byN3
+D/8andN2
+D/4, respectively. The modulus must be at
+least5·(logND−1)bits long. Therefore, NDcan be at most
+213= 8,192 for the modulus 264, which means we can
+process at most 8,192 samples. Moreover, a larger modulus
+results in performance degradation.
+To our knowledge, this restriction is still an open obstacle
+to secret-sharing-based secure DT training. Recently, Abs poel
+et al. [3] use the random forest instead of DT to bypass this
+limitation. To avoid the limitation of dataset size, we prov ide
+an MPC-only solution, namely MPC-based HC :/producttextmpc
+OHC.Algorithm 3: Oblivious Heuristic Computation via
+MPC,/producttextmpc
+OHC
+Input :{/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1],{/an}bracketle{tγn/an}bracketri}htA}n∈[0,nh−1],/an}bracketle{tF/an}bracketri}htAand
+current tree level h
+Output: Split decisions array /an}bracketle{tSD/an}bracketri}htA, updated
+{/an}bracketle{tγn/an}bracketri}htA}n∈[0,nh−1],/an}bracketle{tF/an}bracketri}htA
+1forρ={0,···,nh−1}do
+2 fori={0,···,d−2}do
+3 Compute/an}bracketle{tP[i]/an}bracketri}htAand/an}bracketle{tQ[i]/an}bracketri}htAusing/an}bracketle{tCt/an}bracketri}htAaccording
+to Equation 1
+4/an}bracketle{tgini[i]/an}bracketri}htA←Division (/an}bracketle{tP[i]/an}bracketri}htA,/an}bracketle{tQ[i]/an}bracketri}htA)
+5/an}bracketle{tgini/an}bracketri}htA←
+SelectShare (/an}bracketle{tO/an}bracketri}htA,/an}bracketle{tgini/an}bracketri}htA,/producttext
+EQ(/an}bracketle{tγρ/an}bracketri}htA,{1}d−1))
+// return the indices of the best features
+6/an}bracketle{tSD[ρ]/an}bracketri}htA←Maxpool(/an}bracketle{tgini/an}bracketri}htA)
+// selectively update γρ,F.Ois initialized with zeros
+7/an}bracketle{tγρ/an}bracketri}htA←
+SelectShare (/an}bracketle{tγρ/an}bracketri}htA,/an}bracketle{tO/an}bracketri}htA,/producttext
+EQ(/an}bracketle{tγρ/an}bracketri}htA,{/an}bracketle{tSD[ρ]/an}bracketri}htA}d−1))
+8/an}bracketle{tF[2ρ+2h+1]/an}bracketri}htA,/an}bracketle{tF[2ρ+2h+1−1]/an}bracketri}htA←
+SelectShare (/an}bracketle{t2/an}bracketri}htA,/an}bracketle{t1/an}bracketri}htA,/producttext
+EQ(/an}bracketle{tF[ρ+2h−1]/an}bracketri}htA,2))
+9/an}bracketle{tF[ρ+2h−1]/an}bracketri}htA←
+SelectShare (/an}bracketle{t0/an}bracketri}htA,/an}bracketle{t1/an}bracketri}htA,/producttext
+EQ(/an}bracketle{tΨr0/an}bracketri}htA,0)∧/producttext
+EQ(/an}bracketle{tΨr1/an}bracketri}htA,0)∧/producttext
+EQ(/an}bracketle{tF[ρ+2h−1]/an}bracketri}htA,1))
+MPC-based HC./producttextmpc
+OHCuses the relatively expensive MPC
+protocolDivision to computeP
+Q, and then uses Maxpool to
+compare the division results and select the best feature wit h
+the smallest gini index. We use the Division andMaxpool
+proposed in Falcon [29].
+The Gini index value is typically a ﬂoating-point value,
+while our MPC protocols operate over discrete domains like
+rings and ﬁnite ﬁelds. To address this, we use a ﬁxed-point
+encoding strategy [22], [21], [29]. In details, a real value x∈R
+is converted into an integer ⌊x·2τ⌉(i.e., the nearest integer
+tox·2τ) withτbits of precision. The value of τaffects both
+the performance and accuracy. A smaller ﬁxed-point precisi on
+enables the shares over a 32-bit ring instead of 64-bit, thus re-
+ducing communication and computation costs. However, lowe r
+precision may cause Gini index values to appear identical,
+potentially leading to incorrect feature selection. There fore,
+selecting the proper τrequires careful experimentation.
+/producttextmpc
+OHCis given in Algorithm 3. The main steps are division
+(Line 4) and selecting the best feature (Line 5-7).
+As shown in CryptGPU [22], Division is GPU-unfriendly.
+How to make Division GPU-friendly and avoid division in
+DT training remain open challenges. To enhance performance ,
+we alternatively propose to outsource the HC phase to TEEs,
+i.e., TEE-based HC:/producttexttee
+OHC. We discuss the trade-offs between/producttextmpc
+OHCand/producttexttee
+OHCin Section VI-B.
+TEE-based HC. Algorithm 4 shows/producttexttee
+OHC. Basically, parties
+send the shares of all current {Cn,γn}n∈[0,nh−1]andF
+to the co-located TEE enclave. The enclave reconstructs the
+inputs, generates/updates the outputs using similar steps as/producttextmpc
+OHC, and ﬁnally sends the respective shares to each CSP. To
+hide access patterns, the enclave uses the oblivious primit ives
+(as used in [16], [17], [37]): oless(vec,cond), return the
+index of the minimum value in vec.cond indicates the
+compared elements; oselect(a,b,cond ), selectaorbbasedAlgorithm 4: Oblivious Heuristic Computation via
+TEE,/producttexttee
+OHC
+Input :{/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1],{/an}bracketle{tγn/an}bracketri}htA}n∈[0,nh−1],/an}bracketle{tF/an}bracketri}htA,h
+Output: Split decisions array /an}bracketle{tSD/an}bracketri}htA, updated
+{/an}bracketle{tγn/an}bracketri}htA}n∈[0,nh−1],/an}bracketle{tF/an}bracketri}htA
+1{Cn}n∈[0,nh−1]=ReconstructA({/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1])
+2{γn}n∈[0,nh−1]=ReconstructA({/an}bracketle{tγn/an}bracketri}htA}n∈[0,nh−1])
+3F=ReconstructA(/an}bracketle{tF/an}bracketri}htA)
+4forρ={0,···,nh−1}do
+5 fori={0,···,d−2}do
+6 gini[i] =G(Cρ,si)
+// select the indices of the best features with oless
+7SD[ρ] =oless(gini,γρ)
+8oassign(γρ,0,SD[ρ])
+9F[2ρ+2h+1],F[2ρ+2h+1−1] =
+oselect(2,1,F[ρ+2h−1] == 2)
+10CheckLeaf indicates if ρ-th node contains only one label
+11F[ρ+2h−1] =
+oselect(0,1,(¬CheckLeaf∧(F[ρ+2h−1] == 1)))
+12/an}bracketle{tSD/an}bracketri}htA=ShareA(SD)
+13/an}bracketle{tF/an}bracketri}htA=ShareA(F)
+14/an}bracketle{t{γn}n∈[0,nh−1]/an}bracketri}htA=ShareA({γn}n∈[0,nh−1])
+15TEE sends the respective shares of the outputs to the three GP Us
+on condition cond ;oassign(vec,a,idx): assign the value of
+vec at indexidxwitha. These oblivious primitives operate
+on registers, making the instructions immune to memory-
+access-based pattern leakage once the operands are loaded i nto
+registers.
+Algorithm 5: Oblivious Node Split,/producttext
+ONS
+Input :/an}bracketle{tSD/an}bracketri}htA,/an}bracketle{tF/an}bracketri}htA,{/an}bracketle{tCn/an}bracketri}htA}n∈[0,nh−1]at levelh
+Output: Updated/an}bracketle{tT/an}bracketri}htA, new arrays{/an}bracketle{tCn/an}bracketri}htA}n∈[0,Nc−1]at level
+h+1 whereNc= 2nh
+1forρ={0,···,nh−1}do
+2/an}bracketle{tisInternal/an}bracketri}htB←/producttext
+EQ(/an}bracketle{tF[ρ+2h−1]/an}bracketri}htA,0)
+3 foreach/an}bracketle{tCi/an}bracketri}htAin/an}bracketle{tC′
+ρ/an}bracketri}htA={/an}bracketle{tCi/an}bracketri}htA}i∈[0,1]}do
+4/an}bracketle{tCi/an}bracketri}htA←SelectShare (/an}bracketle{tCρ/an}bracketri}htA,/an}bracketle{t0/an}bracketri}htA,/an}bracketle{tisInternal/an}bracketri}htB)
+5Concatenate all{/an}bracketle{tC′
+ρ/an}bracketri}htA}ρ∈[0,nh−1]into{/an}bracketle{tCn/an}bracketri}htA}n∈[0,Nc−1]
+6Replace the values of /an}bracketle{tT/an}bracketri}htAat levelhwith/an}bracketle{tSD/an}bracketri}htA
+4)Oblivious Node Split :The next step is to convert each
+leaf into an internal node using the best feature and generat e
+new leaves at the next level (Algorithm 5). Recall that GTree
+builds the DT in layer-wise. GTree updatesCof all new leaves
+(Line 1-4) and T(Line 6) in parallel. Array Cof a new leaf
+inherits from its parent node if the parent node is a dummy or
+leaf node; otherwise, set all values to zeros (Line 4). Notab ly,
+γof each new leaf inherits from its parent node no matter
+which type the parent node is.
+5)Oblivious Decision Tree Training :Our training proce-
+dure is composed of the aforementioned protocols. As a resul t
+of our level-wise tree construction, GTree always builds a full
+binary tree with depth H.Hcould be: (1) a pre-deﬁned public
+depth; (2) a depth where all nodes at this level are leaf or
+dummy nodes; (3) a depth which is the number of features
+d(including the label). Such design has a trade-off between
+privacy and performance, since we may add many dummy
+nodes as the tree grows, especially in the sparse DT.C.Oblivious DT Inference
+Algorithm 6: Oblivious DT Inference,/producttext
+ODTI
+Input : Unlabelled input/an}bracketle{tI/an}bracketri}htAof length NI,/an}bracketle{tT/an}bracketri}htA, tree depth H
+Output: Inference result/an}bracketle{tR/an}bracketri}htAof length NI
+1Initialize/an}bracketle{tTidx/an}bracketri}htA,/an}bracketle{tTval/an}bracketri}htA,/an}bracketle{tDval/an}bracketri}htAof length NI,
+niter= 0
+2whileniter< H do
+3/an}bracketle{tTval/an}bracketri}htA←/producttext
+OAA(/an}bracketle{tT/an}bracketri}htA,/an}bracketle{tTidx/an}bracketri}htA)
+4 fori={0,···,NI−1}do
+5/an}bracketle{tDval[i]/an}bracketri}htA←/producttext
+OAA(/an}bracketle{tI[i]/an}bracketri}htA,/an}bracketle{tTval/an}bracketri}htA)
+6 Compute/an}bracketle{tTidx/an}bracketri}htA= 2/an}bracketle{tTidx/an}bracketri}htA+/an}bracketle{tDval/an}bracketri}htA+1
+7 Compute niter++
+8/an}bracketle{tR/an}bracketri}htA=/an}bracketle{tTval/an}bracketri}htA
+/producttext
+ODTIprotocol is shown in Algorithm 6. The main opera-
+tion is to obliviously access TandI(Line 3-5). The values of
+Tat the last level Hare the inference results (Line 8). Notably,
+due to the beneﬁts of GPU-friendly property in GTree , we can
+process a large number of concurrent queries.
+VI. P ERFORMANCE EVALUATION
+We build GTree on top of Piranha [23], a platform for
+accelerating secret sharing-based MPC protocols using GPU s.
+Piranha provides some state-of-the-art secret-sharing MP C
+protocols that allow us to easily leverage GPU. Particularl y,
+some of these protocols such as SelectShare ,Division
+andMaxpool [29] are used in GTree . Following with Piranha,
+our main focus is on evaluating GTree ’s performance in the
+data-dependent online phase, as ofﬂine generation of data-
+independent components, such as edaBits [35], can be easily
+parallelized independently from a speciﬁc computation.
+In this section, we evaluate the performance of GTree
+training and inference. We also compare the performance of
+GTree with previous CPU-based solutions and two baselines.
+A. Experiment Setup
+Testbed. We evaluate the prototype on a server equipped with
+3 NVIDIA Tesla V100 GPUs, each of which has 32 GB
+of GPU memory. The server runs Ubuntu 20.04 with kernel
+version 5.4.0 and has 10-core Intel Xeon Silver 4210 CPUs
+(2.20GHz) and 125GB of memory. We implement GTree in
+C++ and marshal GPU operations via CUDA 11.6. Since the
+GPU server does not support Intel SGX, we use a desktop with
+SGX support to test SGX-based protocol/producttexttee
+OHC. The desktop
+contains 8 Intel i9-9900 3.1GHZ cores and 32GB of memory
+(∼93MB EPC memory) and runs OpenEnclave 0.16.0 [38].
+Network Latency. As done in previous work [3], [4], [6], we
+test all the protocols on the same machine. Piranha provides the
+functionality to emulate the network connection and measur e
+network latency based on the communication overhead and
+the bandwidth. Our test uses a local area network (LAN)
+environment with a bandwidth of 10 Gbps and ping time of
+0.07 ms (same setting as [3], [6]) to simulate three independ ent
+CSPs. Communication between GPUs is bridged via CPU in
+Piranha [23] and GTree inherits this property. The time for
+transferring data between GPU and CPU on the same machine
+is negligible in GTree . All the following results are average
+over at least 10 runs.TABLE II: Datasets
+Dataset #Features #Labels #Samples Tree Depth
+SPECT 22 2 267 6
+KRKPA7 35 2 3,196 9
+Adult 14 2 48,842 5
+B. Performance of GTree Training
+TABLE III: Performance of three steps (in seconds).
+/producttext
+OL/producttext
+OHC/producttext
+ONSTotal
+tee mpc tee mpc
+(a)(d,H) = (8,6), vary data samples
+1×1041.63 0.01 1.35 0.07 1.71 3.05
+2×1043.04 0.01 1.35 0.07 3.12 4.46
+3×1044.45 0.01 1.36 0.07 4.53 5.88
+4×1045.95 0.02 1.36 0.07 6.04 7.38
+5×1047.42 0.02 1.38 0.07 7.51 8.87
+(b)(ND,H) = (50000 ,5), vary features
+4 2.99 0.01 1.06 0.05 3.05 4.10
+8 3.83 0.01 1.08 0.05 3.89 4.96
+16 5.37 0.01 1.11 0.05 5.43 6.53
+32 8.16 0.02 1.15 0.05 8.24 9.37
+64 14.26 0.02 1.21 0.06 14.34 15.53
+(c)(ND,d) = (50000 ,8), vary depth
+4 2.01 0.01 0.85 0.04 2.06 2.90
+5 3.78 0.01 1.10 0.05 3.83 4.93
+6 7.53 0.01 1.40 0.07 7.59 8.68
+7 15.46 0.01 1.65 0.08 15.53 16.62
+8 33.30 0.03 1.96 0.10 33.39 35.36
+We ﬁrst evaluate the performance of the protocols used in
+DT training:/producttext
+OL,/producttextmpc
+OHC,/producttexttee
+OHC, and/producttext
+ONS. For this test,
+we use a synthetic dataset which allows us to ﬂexibly change
+the number of samples, features, and depths so as to better
+show the performance of GTree under different conditions.
+The results are shown in Table. III.
+Table. III shows that the learning phase is the most expen-
+sive step. For training 5×104data samples with depth 8, GTree
+spends 33.24 seconds, taking up about 98% of the overall
+training runtime on average. The main reason is that this ste p
+uses/producttext
+OAAandSelectShare with a large input size ( e.g.
+ND) multiple times, incurring high communication costs.
+Heuristic Computation:/producttextmpc
+OHCvs./producttexttee
+OHC.For the heuristic
+computation phase, as discussed in Section V-B3, in/producttextmpc
+OHC,
+the value of τaffects both the performance of/producttextmpc
+OHCand
+the model accuracy. From our experiment results, we observe
+that when setting τ= 10 and working over the ring Z232, the
+model accuracy trained using/producttextmpc
+OHCis acceptable. Thus, for
+evaluating/producttextmpc
+OHC, we setτ= 10 .
+For the accuracy of GTree when setting τ= 10 , here
+we present the results tested with 3 UCI datasets that are
+widely used in the literature: SPECT Heart (SPECT) dataset,
+Chess (King-Rook vs. King-Pawn) (KRKPA7) dataset, Adult
+dataset (see details in Table II). We split the dataset into 80%
+for training and 20% for inference. We adjust various hyper-
+parameters (e.g., depth and minimum samples per leaf [31])
+to obtain the best accuracy for comparisons2. The DT model
+2Note that techniques for improving accuracy such as DT pruni ng [31] are
+not considered in our teststrained by GTree using/producttexttee
+OHCachieves the same inference
+accuracy as the plaintext model. However, the DT model
+trained with/producttextmpc
+OHCexperiences an accuracy drop of 1%−4%.
+The ﬁndings reveal that, even with sufﬁcient precision,
+accuracy loss can still occur since the feature assigned to e ach
+node might not be the best one. This is primarily attributed
+to the following factors: (i) With relatively large precisi on and
+datasets, the numerator and denominator, represented by P
+andQin Equation 1, become sizable. To prevent overﬂow,
+we use the scaling function from Piranha [23] to scale P
+andQ, introducing potential accuracy loss. (ii) The Division
+operation employs an approximation technique (i.e., Taylo r
+expansion [22], [29], [23]), which may introduce a certain
+degree of accuracy loss. (iii) The Gini index values of diffe rent
+features can be very close, leading to incorrect selections
+when compared under MPC. Additionally, controlling preci-
+sion proves challenging as it necessitates varying precisi ons at
+each node and remains unpredictable. Note that in different
+datasets, this may not always result in accuracy drop, as
+features with similar Gini indices may explain the model wel l.
+Whenτ= 10 , Table III shows that/producttexttee
+OHCoutperforms/producttextmpc
+OHCby136×. Compared with/producttext
+OL, the time taken by/producttexttee
+OHCis almost negligible. Therefore, for training 5×104
+data samples, training with/producttexttee
+OHCis only∼1.3×faster.
+Remark./producttexttee
+OHC surpasses/producttextmpc
+OHC in both accuracy and per-
+formance. Nevertheless, employing/producttexttee
+OHCalso comes with
+certain limitations. For example, utilizing TEE such as Int el
+SGX necessitates dependence on Intel’s security mechanism s
+and incurs the overhead of mitigating side-channel attacks ,
+e.g., access-pattern-based attacks (see the comparison of GTree
+and TEE-only baseline in Fig. 5). Overall, a trade-off exist s
+between these two approaches. While/producttexttee
+OHCoffers better
+performance,/producttextmpc
+OHChas the potential for future optimization
+through more advanced MPC protocols.
+TABLE IV: Comm. cost (MB) for different depths (8 features)
+#Depths 4 5 6 7 8/producttext
+OL460.1 936.6 1924.9 3998.2 8363.4/producttexttee
+OHC0.004 0.008 0.017 0.034 0.070/producttextmpc
+OHC0.258 0.553 1.14 2.32 4.68/producttext
+ONS0.009 0.020 0.041 0.084 0.170/producttext
+ODTTwith/producttexttee
+OHC460.1 936.6 1925 3998.4 8363.6/producttext
+ODTTwith/producttextmpc
+OHC460.4 937.1 1926.1 4000.6 8368.3
+Communication Overhead. We measure the communication
+overhead during training in GTree with different tree depths
+(5×104data samples) in Table IV (overhead varies more
+with tree depth). Not surprisingly, the learning phase incu rs
+the highest communication cost due to the large volume of
+data processed. Additionally,/producttexttee
+OHCis more communication-
+efﬁcient than/producttextmpc
+OHC.
+In Fig. 3, we split the training time into the time spent on
+communicating and computing. With our LAN setting, about
+69%−90% (also varies with the network bandwidth) overhead
+ofGTree training is the communication, which is similar
+to CryptGPU [22] and Piranha [23]. We will optimize the
+communication overhead in our future work (see Section IX).
+It is worth noting that even with such communication overhea d,GTree is still highly more efﬁcient than CPU-based and TEE-
+based solutions (see Section VI-D).
+C. Performance of GTree Inference
+To test inference, we input 104instances and measure the
+amortized time, which is broken down into computation and
+communication times in Fig. 4. Note that Fig. 4 only illustra tes
+the costs among CSPs, excluding the latency between QU and
+CSP. The main overhead of inference is also the communica-
+tion, which takes about 69%−90%.
+Comparing Fig. 4a and Fig. 4b, we can see tree depth has
+a greater impact on inference performance than the number
+of features, and when the tree depth ≥10,GTree ’s inference
+time increases sharply. Algorithm 6 shows that DT inference
+primarily relies on multiple invocations of/producttext
+OAA, which
+depends on the tree depth H(NIinputs are inferred in
+parallel). Thus, for inference, GTree is better suited for trees
+with small or medium depths. For deeper trees, using random
+forests may be more effective than a single DT.
+D. Performance Comparisons with Others
+TABLE V: Time of training with UCI datasets (in seconds)
+Scheme SPECT KRKPA7 Adult
+SID3T 3.55 6.45 (not secure) 89.07
+GTree 0.31 8.63 4.32
+Comparisons with Prior Work. We also compare the perfor-
+mance of GTree against Hoogh et al. [6] and Liu et al. [14].
+To the best of our knowledge, these are the only private DT
+works that demonstrated the ability to train the dataset wit h
+categorical features in a relatively efﬁcient manner. Seve ral
+recent works [3], [4], [39] focus on designing speciﬁed MPC
+protocols (e.g., sorting) to process continuous features. We
+recognize that both GTree and this line of research can handle
+both types of features by integrating additional MPC-based
+data-processing protocols (e.g., MPC-based discretizati on [4]).
+In this experiment, we primarily compare our approach with
+schemes that also concentrate on categorical features.
+As described in most recent works [3], [4], Hoogh et al. [6]
+is still the most state-of-the-art approach to process cate gorical
+features. They provide three protocols with different leve ls of
+security. We implement their protocol with the highest secu rity
+level based on their latest MPC framework, referring to this
+baseline as SID3T . However, SID3T is less secure because it
+does not protect the tree shape, which is typically one of the
+most expensive aspects of secure DT training.
+In Table V, we ﬁrst evaluated the performance of DT
+training using the three commonly used UCI datasets from
+other DT schemes [6], [4], [3]. Table II shows the dataset
+details. The DT depths trained over these datasets are 6, 9,
+and 5.SID3T is tested on the CPU of the same machine
+used in GTree . The results are shown in Table V. For SPECT
+and Adult, GTree outperforms SID3T by∼11×and∼21×,
+respectively. When training with KRKPA7, GTree ’s perfor-
+mance is slightly worse than SID3T . This is because GTree
+trains a full binary tree up to the depth to protect the tree
+structure. Nevertheless, SID3T avoids this expensive part at1× 104
+2× 104
+3× 104
+4× 104
+5× 104
+Number of Data Samples0246810T ime (s)Comm. of /productdisplay
+ODTT with /productdisplay
+tee
+OHC
+Comp. of /productdisplay
+ODTT with /productdisplay
+tee
+OHC
+Comm. of /productdisplay
+ODTT with /productdisplay
+mpc
+OHC
+Comp. of /productdisplay
+ODTT with /productdisplay
+mpc
+OHC
+(a) With 8features and 6 levels4 8 16 32 64
+Number of Features05101520T ime (s)Comm. of /productdisplay
+ODTT with /productdisplay
+tee
+OHC
+Comp. of /productdisplay
+ODTT with /productdisplay
+tee
+OHC
+Comm. of /productdisplay
+ODTT with /productdisplay
+mpc
+OHC
+Comp. of /productdisplay
+ODTT with /productdisplay
+mpc
+OHC
+(b) With 50,000 samples and 5 levels4 5 6 7 8
+T ree Depth0510152025303540T ime (s)Comm. of /productdisplay
+ODTT with /productdisplay
+tee
+OHC
+Comp. of /productdisplay
+ODTT with /productdisplay
+tee
+OHC
+Comm. of /productdisplay
+ODTT with /productdisplay
+mpc
+OHC
+Comp. of /productdisplay
+ODTT with /productdisplay
+mpc
+OHC
+(c) With 8features and 50,000 samples
+Fig. 3: Computation (Comp.) and Communication (Comm.) time of training.
+4 8 16 32 64
+Number of Features0.000.020.040.060.08T ime (ms)Amortized comm. over 104
+ instances
+Amortized comp. over 104
+ instances
+(a) With 5 tree depth2 4 6 8 10
+T ree Depth0.00.51.01.52.0T ime (ms)Amortized comm. over 104
+ instances
+Amortized comp. over 104
+ instances
+(b) With 10 features
+Fig. 4: Comp. and comm. time of inference. The results are
+amortized over 104instances, i.e., infer 104inferences at once.
+the cost of security loss. Overall, GTree demonstrates superior
+performance while providing stronger security.
+We compare GTree with Liu et al. [14] based on their
+reported results since their code is not publicly available at
+the time of writing. The largest dataset they used is the
+Tic-tac-toe dataset with 958 data samples and 9 features.
+Training with this dataset, GTree takes 0.43 seconds and
+39.61 MB communication cost, yielding ∼3,112×and∼49×
+improvements, respectively. Notably, Liu et al. [14] also d o
+not protect the tree structure.
+TABLE VI: Inference time (in milliseconds)
+Dataset d H GGH [30] JZL [40] GTree Sp.GGH Sp.JZL
+Wine 7 5 14 8 0.05 280×160×
+Breast 12 7 24 17 0.19 126×90×
+Digits 47 15 115 34 102.7 1.1×0.33×
+d,H: the number of features, depth. Sp.GGH andSp.JZL represent the
+speedup that GTree achieves, compared to GGH and JZL, respectively.
+For DT inference, Kiss et al. [30] compare most of existing
+2PC private inference schemes and identiﬁed GGH as the most
+efﬁcient in terms of online runtime. Additionally, JZL [40] ’s
+approach stands out as the most efﬁcient 3PC scheme to date.
+In Table VI, we provide an online runtime comparison of
+GTree with GGH and JZL [40] based on the runtimes reported
+in their respective papers. We perform the preprocessing fo r
+discretization on these datasets for GTree . The inference times
+ofGTree for the three datasets in Table VI are amortized over
+104,104, and103instances (due to GPU memory constraints),respectively. Notably, GTree incurs a low ofﬂine cost since
+only edaBits [35] need to be generated, compared to GGH and
+JZL [40]. Basically, GTree achieves remarkable performance
+gains for small and medium-sized trees. This is because when
+the tree depth is small, the beneﬁts of high parallelism in GTree
+fully offset the increased communication overhead. Howeve r,
+as the tree depth increases, the communication overhead in
+GTree does not scale linearly, leading to suboptimal perfor-
+mance in deep trees. This calls for future optimizations for
+deeper trees (see discussions in Section IX).
+Comparisons with TEE-only Solution. As mentioned, pro-
+tecting data processes with TEE is another research line in
+the literature. Although GPU itself cannot provide protect ion,
+due to its powerful parallelism capability, GPU is a better
+option. Another reason is that existing TEEs (e.g., Intel
+SGX [19]) suffer from side-channel attacks. To protect the
+model effectively from attacks, the tasks performed within
+TEEs should be oblivious, which is expensive. Here, we use
+Intel SGX as an example and implement secure DT that
+processes everything inside an SGX enclave using oblivious
+primitives, e.g., oassign andoaccess [16], [17], [37] (denote
+it as SGX-only ). The evaluation results are given in Fig. 5.
+For training, Fig. 5a and 5b show that GTree outperforms
+the SGX-only solution almost for all cases. Note that we omit
+the case for different tree depths since it has a similar tren d
+as in Fig. 5b. For inference (Fig. 5c), SGX-only is much
+more efﬁcient than GTree when inferring only one instance.
+However, the performance of GTree improves as the number
+of instances increases, thanks to better utilization of GPU
+parallelism. When tree depth reaches 10, GPU resources are
+fully utilized with concurrent inference of 103instances. For
+a tree depth of 6, GTree outperforms the SGX-only solution
+when inferring more than 104instances concurrently, with the
+advantage becoming more pronounced at shallower tree depth s.
+Additionally, GTree ’s performance will improve further with
+more powerful GPUs.
+Comparisons with Plaintext Training. As done in Crypt-
+GPU [22], we report the comparison results between
+Insecure baseline and GTree , whereInsecure baseline
+trains the same datasets in plaintext with one GPU. For
+CNN training, CryptGPU still adds roughly 2000×overhead
+compared with the insecure training. For DT training with
+GTree , the gap is less than 1673×. However, the gap between
+them is still large, which highlights the need to develop mor e1× 104
+2× 104
+3× 104
+4× 104
+5× 104
+Number of Data Samples02468101214Time (s)SGX-only
+GTree with /productdisplay
+mpc
+OHC
+GTree with /productdisplay
+tee
+OHC
+(a) Training, 8 features and 6 levels4 8 16 32 64
+Number of Features050100150200250300350400Time (s)SGX-only
+GTree with /productdisplay
+mpc
+OHC
+GTree with /productdisplay
+tee
+OHC
+(b) Training, 50,000 data and 5 levels2 4 6 8 10
+T ree Depth10−310−210−1100101102T ime (ms)
+SGX -only
+Amortized  ( 100
+ instances)
+Amortized ( 101
+ instances)
+Amortized ( 102
+ instances)  
+Amortized ( 103
+ instances)
+Amortized ( 104
+ instances)
+Amortized ( 105
+ instances)
+(c) Inference, 10 features
+Fig. 5: Performance of SGX only andGTree for training and inference. Note that y-axis in Fig. 5c is in logarithm scale.
+GPU-friendly cryptographic primitives in the future.
+VII. S ECURITY ANALYSIS
+We prove the security of our protocols using the real-
+world/ideal-world simulation paradigm [41]. We deﬁne the
+entities as follows: A: Astatic semi-honest probabilistic poly-
+nomial time (PPT) real-world adversary; S: The corresponding
+ideal-world adversary (simulator); F: The ideal functionality.
+The adversaryAcan corrupt at most one party at the beginning
+and follows the protocol honestly. In the real world, the
+parties interact with Aand the environment Z, executing
+the protocol as speciﬁed. In the ideal world, parties send
+their inputs to a trusted party that computes the functional ity
+accurately. For every real-world adversary A, there exists a
+simulatorSin the ideal world such that no environment Z
+can distinguish between the real and ideal worlds. This ensu res
+that any information Acan extract in the real world can
+also be extracted by Sin the ideal world. We use multiple
+sub-protocols in the sequential model and employ the hybrid
+model for security proofs. The hybrid model simpliﬁes proof
+analysis by replacing sub-protocols with their correspond ing
+ideal functionalities. A protocol that invokes a functiona lityF
+is said to be in an “ F-hybrid model”.
+We deﬁne the respective simulators FEQ,FOAA,FOL,
+Fmpc
+OHC,Fsgx
+OHC,FONS andFODTI for protocols/producttext
+EQ,/producttext
+OAA,/producttext
+OL,/producttextmpc
+OHC,/producttextsgx
+OHC,/producttext
+ONS and/producttext
+ODTI . The ideal function-
+alities forFMult andFReconst are identical to prior works [29].
+We prove security using the standard indistinguishability ar-
+gument. By setting up hybrid interactions where their ideal
+functionalities replace sub-protocols, these interactio ns can be
+simulated as indistinguishable from real ones.
+The following analysis and theorems demonstrate this
+indistinguishability.
+Security of/producttext
+EQ.In/producttext
+EQ, we mainly modify from Rab-
+bit [35], where the involved computations are all local. The re-
+fore, the simulator for FEQfollows easily from the original
+protocol, which has been proved secure.
+Security of/producttext
+OAA.We capture the security of/producttext
+OAAas
+Theorem 1 and give the detailed proof as follows.
+Theorem 1./producttext
+OAAsecurely realizesFOAA, in the presence
+of one semi-honest party in the ( FMult,FEQ,FSelectShare )-
+hybrid model.Proof: The simulation follows easily from the protocol
+and the hybrid argument. The simulator runs the ﬁrst iterati on
+of the loop (Step 2) and in the process extracts the inputs.
+Then it proceeds to complete all the iterations of the loop.
+The simulator forFEQcan be used to simulate the transcripts
+from Step 3. The simulator for FSelectShare follows from the
+protocol in Falcon [29]. Steps 1 and 5 are all local operation s
+and do not need simulation. Therefore,/producttext
+OAAis secure in the
+(FMult,FEQ,FSelectShare )-hybrid model.
+Security of/producttext
+OL.We capture the security of/producttext
+OLas Theo-
+rem 2 and give the detailed proof as follows.
+Theorem 2./producttext
+OLsecurely realizes FOL, in the pres-
+ence of one semi-honest party in the ( FMult,FEQ,FOAA,
+FSelectShare )-hybrid model.
+Proof: The simulator for FMult can be used to simulate
+the transcripts from Steps 10, 16- 19./producttext
+OLare sequential
+combinations of local computations (Steps 5, 6, 11, 14, 15, 2 1)
+and invocations of FMult,FEQ(Steps 7, 9),FOAA (Steps 2, 4)
+andFSelectShare (Step 20). The simulation follows directly
+from composing the simulators.
+Security of/producttextmpc
+OHC.Protocol/producttextmpc
+OHCis composed of proto-
+cols such as Division andMaxpool from Falcon [29]. The
+security statement and proof of/producttextmpc
+OHCare as follows:
+Theorem 3./producttextmpc
+OHCsecurely realizesFmpc
+OHC , in the presence
+of one semi-honest party in the ( FMult,FEQ,FSelectShare ,
+FMaxpool ,FDivision )-hybrid model.
+Proof: The simulators for FMaxpool ,FDivision and
+FSelectShare follow from Falcon [29]./producttextmpc
+OHCis sequential
+combinations of local computations and the corresponding
+simulators.
+Security of/producttextsgx
+OHC.We explain the ideal functionality for/producttextsgx
+OHC according to the proof of Fattest in CRYPTFLOW [42].
+Fsgx
+OHC is realized as follows: Intel SGX guarantees conﬁden-
+tiality by creating a secure enclave where code and data can
+be securely executed and stored. Initially, when SGX receiv es
+a command for computing/producttext
+OHC, it performs a remote
+attestation with the party. Once attested, the data transmi tted
+between the party and the enclave will be encrypted with
+a secret key sk. Upon receiving input from the parties, the
+enclave executes the code and produces secret-shared outpu tsencrypted under sk. When running inside the enclave, even
+if an adversary compromises the host system, he cannot learn
+the data from the enclave.
+Security of/producttext
+ONS.We capture the security of/producttext
+ONSas
+Theorem 4 and give the detailed proof as follows.
+Theorem 4./producttext
+ONSsecurely realizesFONS, in the presence of
+one semi-honest party in the ( FEQ,FSelectShare )-hybrid model.
+Proof: Similar to the proof of Theorem 2, simulation
+works by sequentially composing the simulators for FEQand
+FSelectShare .
+Security of/producttext
+ODTI.We capture the security of/producttext
+ODTIin
+Theorem 5, and give their formal proofs as follows:
+Theorem 5./producttext
+ODTIsecurely realizesFODTI , in the presence
+of one semi-honest party in the FOAA-hybrid model.
+Proof: The simulation follows easily from the hybrid
+argument. Simulation works by sequentially composing FOAA
+and hence is simulated using the corresponding simulator.
+VIII. R ELATED WORK
+In this section, we review existing privacy-preserving ap-
+proaches for general ML algorithms and explore the most
+recent works that leverage GPU acceleration. We ﬁnally surv ey
+the work for privacy-preserving DT training and inference.
+A. Private machine learning using GPU
+Privacy-preserving ML has received considerable attentio n
+over recent years. Recent works operate in different models
+such as deep learning [29], [16] and tree-based models [3],
+[4], [14], [17], [7], [5], [6], [9], [12]. These works rely on
+different privacy-preserving techniques, such as MPC [29] , [3],
+[4], [7], [5], [6], [9], HE [14], [12], TEE [16], [17]. Howeve r,
+most of them demonstrate a CPU-only implementation and
+focus mainly on improving the performance of their speciﬁed
+protocols. There is an urgent need to further improve practi cal
+performance when deploying these in real-world applicatio ns.
+Recently, few works explored GPU-based MPC in private
+deep learning. CryptGPU [22] shows the beneﬁts of GPU
+acceleration for both training and inference on top of the
+CrypTen framework. GForce [21] proposes an online/ofﬂine
+GPU/CPU design for inference with GPU-friendly protocols.
+Visor [37] is the ﬁrst to combine the CPU TEE with GPU
+TEE in video analytics, yet it is closed-source. Moreover,
+it requires hardware modiﬁcation which would adversely af-
+fect compatibility. Overall, all of these works focus on dee p
+learning including massive GPU-friendly computations (i. e.,
+convolutions and matrix multiplications). GTree is the ﬁrst to
+support secure DT training and inference on the GPU.
+B. Privacy-preserving Decision Tree
+Inference. Most of the existing works [10], [11], [43], [9],
+[12], [44], [16] focus mainly on DT inference. Given a pre-
+trained DT model, they ensure that the QU (or say client)
+learns as little as possible about the model and the CSP
+learns nothing about the queries. SGX-based approaches [16 ]
+have demonstrated that they are orders of magnitude fasterthan cryptography-based approaches [10], [11], [43], [9], [12].
+However, all of these works only consider the scenario of
+a single query from the QU. When encountering a large
+number of concurrent queries, the performance of the above
+approaches degrades signiﬁcantly. GTree is superior due to
+GPU parallelism.
+Training. Privacy-preserving training [3], [4], [14], [17], [7],
+[5], [6] is naturally more difﬁcult than inference. This is
+because the training phase involves more information leaka ge
+and more complex functions. Since Lindell et al. [7] initial ize
+the study of privacy-preserving data mining, there has been
+a lot of research [5], [6] on DT training. However, most of
+them focus only on data privacy while do not consider the
+model (e.g., tree structures). In more recent work, Liu et
+al. [14] design the protocols for both training and inferenc e on
+categorical data by leveraging additive HE and secret shari ng.
+However, they do not protect the patterns of building the tre e
+and take over 20 minutes to train a tree of depth 7 with
+958 samples. More recently, schemes [3], [4] propose new
+training algorithms for processing continuous data using M PC.
+However, Abspoel et al. [3] have to train the random forest
+instead of a single DT when processing a large dataset. Adams
+et al. [4] train other models (e.g., random forest and extra-
+trees classiﬁer) to bypass some expensive computations in t he
+original DT. All in all, they do not explore the use of GPU in
+private DT domain.
+IX. C ONCLUSION AND FUTURE WORK
+In this work, we propose GTree , the ﬁrst framework
+that combines privacy-preserving decision tree training a nd
+inference with GPU acceleration. GTree achieves a stronger
+security guarantee than previous work, where both the acces s
+pattern and the tree shape are also hidden from adversaries, in
+addition to the data samples and tree nodes. GTree is designed
+in a GPU-friendly manner that can take full advantage of
+GPU parallelism. Our experimental results show that GTree
+outperforms previous CPU-based solutions by at least 11×for
+training. Overall, GTree shows that GPU is also suitable to
+accelerate privacy-preserving DT training and inference. For
+future work, we will investigate the following directions.
+ORAM-based Array Access. ORAM exhibits sub-linear com-
+munication costs in comparison to linear scans. Existing DO -
+RAM approaches such as Floram [36] rely heavily on garbled
+circuits, which are unlikely to yield optimal performance g ains.
+We will design a new GPU-friendly ORAM structure. Further-
+more, FSS-based protocols are communication-efﬁcient [24 ],
+and we plan to use them to optimize GTree .
+A General-Purpose Framework for Various Data Types.
+GTree primarily targets categorical features. However, when
+dealing with continuous features, we can either apply dis-
+cretization techniques [4] to convert them into categorica l data
+or utilize MPC-based permutation and sorting methods [3]
+for direct processing. It would be valuable to investigate t he
+GPU compatibility of these protocols within a hybrid secure
+DT framework and explore the potential performance gains
+through GPU acceleration.REFERENCES
+[1] A. T. Azar, S. M. El-Metwally, Decision tree classiﬁers f or automated
+medical diagnosis, Neural Computing and Applications 23 (2 013)
+2387–2403.
+[2] J. Wang, P. Li, R. Ran, Y . Che, Y . Zhou, A short-term photov oltaic
+power prediction model based on the gradient boost decision tree,
+Applied Sciences 8 (5) (2018) 689.
+[3] M. Abspoel, D. Escudero, N. V olgushev, Secure training o f decision
+trees with continuous attributes, Cryptology ePrint Archi ve (2020).
+[4] S. Adams, C. Choudhary, M. De Cock, R. Dowsley, D. Melanso n,
+A. Nascimento, D. Railsback, J. Shen, Privacy-preserving t raining of
+tree ensembles over continuous data, Proceedings on Privac y Enhancing
+Technologies (2022).
+[5] F. Emekc ¸i, O. D. Sahin, D. Agrawal, A. El Abbadi, Privacy preserving
+decision tree learning over multiple parties, Data & Knowle dge Engi-
+neering 63 (2) (2007) 348–361.
+[6] S. d. Hoogh, B. Schoenmakers, P. Chen, et al., Practical s ecure decision
+tree learning in a teletreatment application, in: Internat ional Conference
+on Financial Cryptography and Data Security, Springer, 201 4, pp. 179–
+194.
+[7] Y . Lindell, B. Pinkas, Privacy preserving data mining, i n: Annual
+International Cryptology Conference, Springer, 2000, pp. 36–54.
+[8] S. Samet, A. Miri, Privacy preserving id3 using gini inde x over hori-
+zontally partitioned data, in: 2008 IEEE/ACS Internationa l Conference
+on Computer Systems and Applications, IEEE, 2008, pp. 645–6 51.
+[9] A. Tueno, F. Kerschbaum, S. Katzenbeisser, Private eval uation of
+decision trees using sublinear cost, Proceedings on Privac y Enhancing
+Technologies 2019 (1) (2019) 266–286.
+[10] R. Bost, R. A. Popa, S. Tu, S. Goldwasser, Machine learni ng classiﬁ-
+cation over encrypted data., in: NDSS, V ol. 4324, 2015, p. 43 25.
+[11] D. J. Wu, T. Feng, M. Naehrig, K. Lauter, Privately evalu ating decision
+trees and random forests, Proceedings on Privacy Enhancing Technolo-
+gies 2016 (4) (2016) 335–355.
+[12] R. K. Tai, J. P. Ma, Y . Zhao, S. S. Chow, Privacy-preservi ng decision
+trees evaluation via linear functions, in: European Sympos ium on
+Research in Computer Security, Springer, 2017, pp. 494–512 .
+[13] A. Akavia, M. Leibovich, Y . S. Resheff, R. Ron, M. Shahar , M. Vald,
+Privacy-preserving decision trees training and predictio n, ACM Trans-
+actions on Privacy and Security 25 (3) (2022) 1–30.
+[14] L. Liu, R. Chen, X. Liu, J. Su, L. Qiao, Towards practical privacy-
+preserving decision tree training and evaluation in the clo ud, IEEE
+Transactions on Information Forensics and Security 15 (202 0) 2914–
+2929.
+[15] S. Chatel, A. Pyrgelis, J. R. Troncoso-Pastoriza, J.-P . Hubaux, Sok:
+Privacy-preserving collaborative tree-based model learn ing, Proceedings
+on Privacy Enhancing Technologies 2021 (3) (2021) 182–203.
+[16] O. Ohrimenko, F. Schuster, C. Fournet, A. Mehta, S. Nowo zin,
+K. Vaswani, M. Costa, Oblivious multi-party machine learni ng
+on trusted processors, in: 25th {USENIX}Security Symposium
+({USENIX}Security 16), 2016, pp. 619–636.
+[17] A. Law, C. Leung, R. Poddar, R. A. Popa, C. Shi, O. Sima, C. Yu,
+X. Zhang, W. Zheng, Secure collaborative training and infer ence for
+xgboost, in: Proceedings of the 2020 workshop on privacy-pr eserving
+machine learning in practice, 2020, pp. 21–26.
+[18] Q. Wang, S. Cui, L. Zhou, O. Wu, Y . Zhu, G. Russello, Encla vetree:
+Privacy-preserving data stream training and inference usi ng tee, in:
+Proceedings of the 2022 ACM on Asia Conference on Computer an d
+Communications Security, 2022, pp. 741–755.
+[19] V . Costan, S. Devadas, Intel sgx explained., IACR Crypt ol. ePrint Arch.
+2016 (86) (2016) 1–118.
+[20] NVIDIA, NVIDIA DATA CENTER GPUs,
+https://www.nvidia.com/en-us/data-center/solutions/ conﬁdential-computing/
+(2022).
+[21] L. K. Ng, S. S. Chow, {GForce}:{GPU-Friendly}oblivious and
+rapid neural network inference, in: 30th USENIX Security Sy mposium
+(USENIX Security 21), 2021, pp. 2147–2164.
+[22] S. Tan, B. Knott, Y . Tian, D. J. Wu, Cryptgpu: Fast privac y-preserving
+machine learning on the gpu, in: 2021 IEEE Symposium on Secur ity
+and Privacy (SP), IEEE, 2021, pp. 1021–1038.[23] J.-L. Watson, S. Wagh, R. A. Popa, Piranha: A {GPU}platform for
+secure computation, in: 31st USENIX Security Symposium (US ENIX
+Security 22), 2022, pp. 827–844.
+[24] N. Jawalkar, K. Gupta, A. Basu, N. Chandran, D. Gupta, R. Sharma,
+Orca: Fss-based secure training and inference with gpus, in : 2024 IEEE
+Symposium on Security and Privacy (SP), IEEE Computer Socie ty,
+2023, pp. 63–63.
+[25] CUDA, Cuda c++ programming guide (2022).
+[26] A. C.-C. Yao, How to generate and exchange secrets, in: 2 7th Annual
+Symposium on Foundations of Computer Science (sfcs 1986), I EEE,
+1986, pp. 162–167.
+[27] P. Mohassel, P. Rindal, Aby3: A mixed protocol framewor k for machine
+learning, in: Proceedings of the 2018 ACM SIGSAC conference on
+computer and communications security, 2018, pp. 35–52.
+[28] T. Araki, J. Furukawa, Y . Lindell, A. Nof, K. Ohara, High -throughput
+semi-honest secure three-party computation with an honest majority, in:
+Proceedings of the 2016 ACM SIGSAC Conference on Computer an d
+Communications Security, 2016, pp. 805–817.
+[29] S. Wagh, S. Tople, F. Benhamouda, E. Kushilevitz, P. Mit tal, T. Rabin,
+Falcon: Honest-majority maliciously secure framework for private deep
+learning, arXiv preprint arXiv:2004.02229 (2020).
+[30] ´A. Kiss, M. Naderpour, J. Liu, N. Asokan, T. Schneider, Sok: M odular
+and efﬁcient private decision tree evaluation, Proceeding s on Privacy
+Enhancing Technologies 2019 (2) (2019) 187–208.
+[31] J. R. Quinlan, C4. 5: programs for machine learning, Els evier, 2014.
+[32] H. Naghibijouybari, A. Neupane, Z. Qian, N. Abu-Ghazal eh, Rendered
+insecure: Gpu side channel attacks are practical, in: Proce edings of
+the 2018 ACM SIGSAC conference on computer and communicatio ns
+security, 2018, pp. 2139–2153.
+[33] Z. H. Jiang, Memory-based side-channel attacks and cou ntermeasure,
+Ph.D. thesis, Northeastern University (2019).
+[34] M. Khairy, Z. Shen, T. M. Aamodt, T. G. Rogers, Accel-sim : An
+extensible simulation framework for validated gpu modelin g, in: 2020
+ACM/IEEE 47th Annual International Symposium on Computer A rchi-
+tecture (ISCA), IEEE, 2020, pp. 473–486.
+[35] E. Makri, D. Rotaru, F. Vercauteren, S. Wagh, Rabbit: Ef ﬁcient compar-
+ison for secure multi-party computation, in: Internationa l Conference on
+Financial Cryptography and Data Security, Springer, 2021, pp. 249–270.
+[36] J. Doerner, A. Shelat, Scaling oram for secure computat ion, in: Pro-
+ceedings of the 2017 ACM SIGSAC Conference on Computer and
+Communications Security, 2017, pp. 523–535.
+[37] R. Poddar, G. Ananthanarayanan, S. Setty, S. V olos, R. A . Popa,
+Visor: Privacy-preserving video analytics as a cloud servi ce, in: 29th
+{USENIX}Security Symposium ( {USENIX}Security 20), 2020, pp.
+1039–1056.
+[38] Microsoft, Open Enclave SDK, https://openenclave.io Accessed July 1,
+2021 (2021).
+[39] K. Hamada, D. Ikarashi, R. Kikuchi, K. Chida, Efﬁcient d ecision tree
+training with new data structure for secure multi-party com putation,
+arXiv preprint arXiv:2112.12906 (2021).
+[40] K. Ji, B. Zhang, T. Lu, L. Li, K. Ren, Uc secure private bra nching
+program and decision tree evaluation, IEEE Transactions on Dependable
+and Secure Computing (2022).
+[41] O. Goldreich, S. Micali, A. Wigderson, How to play any me ntal game,
+or a completeness theorem for protocols with honest majorit y, in:
+Providing Sound Foundations for Cryptography: On the Work o f Shaﬁ
+Goldwasser and Silvio Micali, 2019, pp. 307–328.
+[42] N. Kumar, M. Rathee, N. Chandran, D. Gupta, A. Rastogi, R . Sharma,
+Cryptﬂow: Secure tensorﬂow inference, in: 2020 IEEE Sympos ium on
+Security and Privacy (SP), IEEE, 2020, pp. 336–353.
+[43] M. De Cock, R. Dowsley, C. Horst, R. Katti, A. C. Nascimen to, W.-
+S. Poon, S. Truex, Efﬁcient and private scoring of decision t rees,
+support vector machines and logistic regression models bas ed on pre-
+computation, IEEE Transactions on Dependable and Secure Co mputing
+16 (2) (2017) 217–230.
+[44] J. Bai, X. Song, S. Cui, E.-C. Chang, G. Russello, Scalab le private de-
+cision tree evaluation with sublinear communication, in: P roceedings of
+the 2022 ACM on Asia Conference on Computer and Communicatio ns
+Security, 2022, pp. 843–857.

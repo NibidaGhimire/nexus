@@ -1,0 +1,864 @@
+DRackSim: Simulator for Rack-Scale Disaggregated Memory
+Systems
+AMIT PURI, JOHN JOSE, and TAMARAPALLI VENKATESH, Indian Institute of Technology
+Guwahati, INDIA
+VIJAYKRISHNAN NARAYANA, The Pennsylvania State University, USA
+Memory disaggregation has emerged as an alternative to traditional server architecture in data centers
+that targets improved memory utilization and higher scalability. Disaggregated memory systems involve
+multiple independent compute and memory pools that are expected to get dedicated hardware support for
+memory expansion through high-speed cache-coherent interconnects such as CXL. However, CXL memory
+access is slower compared to local memory, which can significantly impact the system’s performance, and
+requires a series of optimizations to make suitable use of expandable memory. Research in disaggregated
+systems generates the need for a simulator to evaluate new designs in the practical configurations of hardware
+disaggregated memory systems.
+This paper introduces DRackSim, a simulation infrastructure to model scalable hardware disaggregated
+memory systems. It models multiple compute nodes, memory pools, and a common interconnect for coherent
+memory access. An application-level simulation approach simulates an out-of-order x86 multi-core processor
+with a multi-level cache hierarchy at compute nodes. DRackSim uses a queue-based simulation to model the
+network interface at the end nodes and the central switch, which simulates remote memory access at both
+cache block and page granularity. DRackSim also models a centralized memory manager to manage address
+space in the memory pools. We integrate community-accepted DRAMSim2 to perform memory simulation at
+local and remote memory locations by using multiple DRAMSim2 instances. Finally, an incremental approach
+is followed to validate the core and cache subsystems of DRackSim against Gem5. Further, we model various
+use-case scenarios for disaggregated memory systems and evaluate their performance over various HPC
+and cloud benchmarks. We rigorously evaluate DRackSim for a wide range of configurations that simulate
+real-world deployment models and their impact on system performance.
+CCS Concepts: •Computer systems organization →Heterogeneous (hybrid) systems .
+Additional Key Words and Phrases: Disaggregated memory systems, Remote memory, Data Centers, Perfor-
+mance measurement
+ACM Reference Format:
+Amit Puri, John Jose, Tamarapalli Venkatesh, and Vijaykrishnan Narayana. 2018. DRackSim: Simulator for Rack-
+Scale Disaggregated Memory Systems. In .ACM, New York, NY, USA, 23 pages. https://doi.org/XXXXXXX.
+XXXXXXX
+1 INTRODUCTION
+Data center workloads are increasingly becoming larger in their memory footprints, and traditional
+server architectures with fixed memory resources no longer remain sustainable for memory re-
+source allocation. With increasing core count, current memory technologies have already reached
+their scaling limits for bandwidth requirements. Further, the allocation based on peak memory
+Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee
+provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and
+the full citation on the first page. Copyrights for components of this work owned by others than ACM must be honored.
+Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires
+prior specific permission and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+©2018 Association for Computing Machinery.
+ACM ISBN 978-1-4503-XXXX-X/18/06. . . $15.00
+https://doi.org/XXXXXXX.XXXXXXX
+1arXiv:2305.09977v2  [cs.DC]  19 Sep 2023Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+Fig. 1. Hardware Disaggregated Memory System
+requirements introduces memory under-utilization, and other workloads running on the same
+server cannot get enough resources to fulfill their memory demands [ 25]. Due to this, a significant
+imbalance exists in memory usage across servers, while small fragments of memory get stranded
+within each server node. To overcome this, researchers explored software/virtual disaggregation
+in the past, which supports free memory at server nodes to be shared among other servers using
+RDMA (Remote direct memory access) operations over a supported network [ 3,8]. The pages are
+swapped out to remote memory rather than a slow disk to realize the in-memory processing of the
+workloads. However, software disaggregation involves complex scheduling or load-balancing oper-
+ations that require large data movement across servers [ 3,15] and allows remote memory access
+only at the page granularity, which is a latency-intensive task. Hardware memory disaggregation
+is an emerging approach that allows on-demand memory allocation to compute nodes from large
+capacity on-network memory pools, as shown in Fig.1. The compute nodes (servers) primarily rely
+on remote memory for their memory requirements but also have a small amount of local onboard
+memory. The local and remote memory address space is organized in a flat-address structure at
+compute nodes, where the remote memory can be accessed through a memory-centric interconnect
+integrated on-chip at cache block granularity on a last-level cache (LLC) miss. Such interconnects
+have been proposed earlier for low latency and high bandwidth access to remote memory [ 5,29,39].
+CXL 3.0 [ 9,35] presents similar memory binding fabric specifications for coherent access to pooled
+memory systems using CXL.memory protocol. It also includes a CXL switch supporting multiple
+hosts and CXL devices through the CXL (PCIe 6.0) interface and memory-semantic protocols for
+cache-based access to remote memory. The host interface holds the memory access logic controller
+and is integrated into the on-chip interconnect (OCI) bus.
+Considering the lack of commercial availability of disaggregated memory systems, a simulation
+framework is required to translate research ideas into working models by getting enough insight
+into the system’s performance and trade-offs. The focus of disaggregated memory is towards cloud
+data centers and high-performance computing (HPC) facilities where the disaggregated systems
+are expected to be configured at rack-scale with multiple compute and memory nodes. Even though
+rack-scale scalability is not possible presently, it is possible to configure [ 4,23,24,30–32,37]. A rack-
+scale disaggregated simulation primarily requires modeling compute nodes, memory pools, and
+other components like memory managers and an interconnect. An interconnect ties the compute
+nodes and remote memory pools to allow cache-based remote access to remote memory through
+network packets.
+This paper introduces a simulation framework that models an environment similar to rack-scale
+memory disaggregation with all the required components mentioned above. DRackSim follows
+an application-level simulation approach that uses Intel’s PIN platform [ 28] and introduces two
+modes of simulation: a trace-based and a cycle-level simulation model. The trace-based simulation
+2DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+uses main memory access traces with approximate timing information generated through a pintool
+with an implicit simulation of a multi-level cache hierarchy. Even though memory trace simulation
+is fast and easily scalable, trace-based simulations usually lack the modeling details and restrict
+design space exploration. Therefore we also build a cycle-level simulation model that rely on
+an execution-driven approach for which an instruction stream is produced by instrumenting a
+workload with pintool. The instructions execution is then simulated on a detailed x86-based out-
+of-order simulation at compute nodes. Both simulation modes support a full spectrum of single
+to multi-core processor architecture and a multilevel cache hierarchy. DRackSim also models all
+the necessary system-level components to explore the system research space for disaggregated
+memory systems and provides an opportunity to evaluate new designs rapidly. The compute node
+model includes a memory-management unit (MMU) for address translation and an address space
+management unit similar to an OS memory manager with 4-level page tables for allocating memory
+pages at local or remote memory. The interconnect is based on a queue simulation model and can
+be configured to meet the bandwidth and latency of the target interconnect hardware by mapping
+its network parameters. We modify and integrate an open-source cycle-accurate memory simulator,
+DRAMSim2 [ 33], for simulating DRAM at compute nodes locally and at remote memory pools. The
+simulator is designed from the top down to simulate multiple compute and memory nodes where
+a global clock maintains the time ordering of global events such as network access and remote
+memory access. It uses a multi-threaded approach (one for each compute node) to perform fast
+and scalable simulations even with many multi-core nodes and memory pools. As real hardware
+disaggregated memory systems are still in the prototype stage, we use gem5 to perform incremental
+validation of different components in the simulation framework and perform rigorous testing for
+the reproducibility of results and portability. The main contribution of our work is as follows:
+•We introduce DRackSim , an application-level simulation framework for rack-scale disaggre-
+gated memory systems that can model multiple compute nodes and memory pools with
+necessary memory management and interconnect simulation.
+•We present two simulation modes in DRackSim with different levels of details that can be
+used wherever appropriate.
+•We perform incremental validation of all the components over a range of single and multi-
+threaded benchmarks. Finally, we compare the performance of large in-memory workloads
+onDRackSim over various configurations and use cases to show the impact of memory
+disaggregation and slowdowns due to congestion and contention.
+The rest of the paper is organized as follows: In the next section, we discuss the prior related work
+for simulating such systems with their limitations. Next, we discuss the disaggregated memory
+systems based on which we model different components of DRackSim . Section-4 discusses the
+design and operations of DRackSim . We discuss the validation aspect in section-5 and use case
+experiments over vast configurations in section-6.
+2 RELATED WORK
+The first question that arises while building a new simulator is: why yet another simulator?
+Hardware memory disaggregation is a relatively new research area and an emerging memory
+architecture. Although software disaggregation and its real-world implementations [ 8,12,15] have
+been there for a while now. These systems differ from hardware disaggregation and only support
+page access to remote memory. The concept of remote memory pools (or memory blades/ memory
+nodes) with coherent access over memory-semantic fabrics is new and yet to be commercialized.
+Some simulation/emulation environments exist for hardware memory disaggregation, but all are
+limited to evaluating only a single node. Lim et al. emulated hardware memory disaggregation on
+3Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+Fig. 2. Overview of Disaggregated Memory System and its Interface with Host Compute Nodes; "IF" Interface
+top of the XEN hypervisor [ 26] by marking some allocated memory pages as remote in VMM page
+tables while adding fixed network latency on memory access. However, emulation platforms cannot
+predict true memory latency, as local and remote accesses both use the same physical memory. On
+the other hand, some hardware prototypes were also built using FPGA’s [ 4,5,23,39], but evaluation
+on scale is an issue. Some proprietary disaggregated memory implementations exist, such as Intel
+RSD [ 20], Facebook’s Open Compute architecture [ 37], etc, for which not much details are available.
+Modifying open-source architectural simulators such as Gem5, MARSSx86, Sniper, etc., requires a
+vast effort to simulate disaggregated memory models while considering their inability to model
+multiple compute nodes. Further, it will also require the modeling of remote memory managers
+for remote address space and significant modifications to existing memory managers in compute
+nodes. In Daemon [ 13], authors heavily modify Gem5 to model memory disaggregation but test a
+scaled-up environment with artificial network traffic. Also, the code is not made publically available.
+Hence, we put extra effort into building a dedicated simulator with good enough accuracy, as it
+is necessary to model disaggregated memory at a large scale to study various factors impacting
+performance. With more compute nodes, memory access traffic will generate congestion on the
+network and contention in queues at remote memory pools. Memory access latency and bandwidth
+are critical for application performance, and both network congestion and memory contention are
+significant for performance evaluation. It will also allow for a deeper study of memory management
+in a scaled-up environment. To our knowledge, no other simulator models such requirements,
+which is the primary reason behind proposing DRackSim .
+3 HARDWARE DISAGGREGATED MEMORY SYSTEMS
+Fig.2 shows the abstract view of a hardware disaggregated memory system consisting of compute
+nodes, memory nodes, interconnect, and a global memory manager/controller. Compute nodes are
+the primary focus for performance evaluation, have a small amount of local memory, and rely on
+remote memory for most application requirements. Remote memory pools are the memory-only
+nodes (or memory blades) from which a central manager allocates memory to compute nodes
+on demand. Global memory manager is an in-network centralized remote memory manager and
+controller that performs memory-related activities such as memory allocation, revocation, etc., in
+the remote memory address space. An Interconnect is the binding fabric for supporting memory
+access by the compute nodes in remote address space. The compute nodes are interfaced to the
+network interconnect through a remote memory controller, an addressable hardware module
+similar to a local DRAM controller. The last-level cache misses belonging to the remote memory
+4DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+(a)
+ (b)
+ (c)
+Fig. 3. Remote Memory Exposure to Compute Nodes (a) Shared Organization (b) Distributed Organization
+(c) Address Translation at Remote Memory Controller
+are forwarded to the remote memory controller, which then performs address translation and
+implements network protocol in hardware before sending it to the physical layer interface (root
+port in CXL). A similar controller is present at the memory nodes to decode the network memory
+request packets and send back the responses to CPU nodes.
+3.1 Remote Memory Organization
+The scalability in hardware disaggregated memory will largely depend on the remote memory
+organization schemes and the way remote memory is exposed to the system at compute nodes.
+Remote memory can be organized using a shared memory or as a distributed approach, as shown in
+Fig.3a and 3b, respectively. In the shared memory approach, all the remote memory address space
+is visible to the OS at compute nodes with a single global address. The application can be allocated
+a page at any address while supporting page sharing between nodes, with the owner node acting
+as a home agent for that page. Such memory organization will still generate excessive memory
+coherence traffic (to memory nodes and other compute nodes) in the network due to shared pages,
+limiting the system’s scalability. The compute nodes will also require frequent communication
+with a central authority (global memory manager) to prevent an address conflict during a remote
+page allocation, creating a bottleneck in the global memory manager while serving page allocation
+requests. But the advantages are that the applications can also span across multiple servers to meet
+the computing requirements.
+However, unlike software-disaggregated systems, which rely on memory sharing across the
+servers for scalability, hardware memory disaggregation does not need to do so for two reasons.
+Firstly, scalability can be achieved through sufficiently large pools of memory, and the compute
+nodes can directly request remote memory from the memory nodes whenever required. Secondly,
+high-end multi-processor systems support tens of cores, and most data-center applications can
+fulfill their computing requirements within a single node. Even if the workflows get spanned across
+multiple nodes, they run independently with occasional communication. The distributed memory
+organization can fulfill such requirements. In this organization, remote memory address space
+is not initially visible to compute nodes. The remote memory can be reserved in chunks of size,
+say 4MB-16MB (easy to evict and deallocate chunks), whenever a node requests. This approach
+will also require a global memory manager to reserve remote memory for a compute node, but
+allocation in larger chunks will not create a bottleneck. Considering these benefits, DRackSim
+models distributed approach and uses an extra layer for address mapping at compute node’s remote
+memory controller, as shown in Fig.3c. This mapping is required for translating the local physical
+5Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+Fig. 4. DRackSim infrastructure overview; "LM" Local memory, "MMU" Memory management unit, "NIC"
+Network Interface
+addresses to the remote physical address for the allocated remote memory chunks, which differs
+from virtual to physical address translation at TLBs. Frequently used addresses can be kept in the
+cache at the remote memory controller, which will add a few extra cycles on each remote memory
+access. The Linux memory hot-plug and hot-unplug service supports adding or removing memory
+to the compute node’s address space during run-time. Once initialized, the new memory is available
+as an extension of the local address space that can be used for regular page allocation.
+With the distributed approach, compute node will have exclusive access to remote memory
+chunks allocated to it. The coherency traffic is limited between compute and memory nodes, and
+the need to maintain inter-compute node coherence is eliminated while enhancing scalability.
+Further, the major part of compute node’s cache capacity will consist of remote memory data, and
+the types of caches (write allocate/no-allocate, write-through/write-back) is a crucial factor for the
+extent of coherence traffic between compute and memory nodes. The outward coherency traffic to
+memory pools can be minimized using write-back caches at compute nodes.
+4 DRACKSIM DESIGN AND OPERATIONS
+The objective of DRackSim is to enable researchers to explore new hardware structures (efficient
+page migrations or prefetching mechanisms) and system-level designs (memory management at
+compute nodes and globally) for disaggregated memory systems. Therefore, we carefully model the
+required components to gain enough insights for performance evaluation. Fig.4 gives an overview
+of the complete simulation process in DRackSim with its two-phase design: a front-end and a
+back-end. A Pin-based front-end performs the application analysis, whose output is fed to the
+back end for scalable multi-node simulation with disaggregated memory. DRackSim supports two
+different modes of operation: a trace-based simulation model and a cycle-level detailed simulation
+model.
+4.1 Trace-Based Model
+The trace-based simulation is fast but less accurate and can quickly evaluate disaggregated systems
+on a large scale for billions of local and remote memory accesses. Pin provides with its package
+a tool named Allcache that performs a functional simulation of the single-core cache hierarchy.
+We extend this tool to support multi-core TLB and a 3-level cache hierarchy (private I/D-L1, L2,
+and shared L3) and add support to instrument multi-threaded workloads. The instrumentation is
+done at the instruction-level granularity, and each thread is mapped to one of the cores based on
+its thread ID. The tool generates memory references whenever an instrumented instruction has a
+6DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+(a)
+ (b)
+ (c)
+Fig. 5. Trace Generation (a) Recording Main-memory access (b) Final Multi-Threaded Trace ; Cycle-level
+Simulation (c) Out-of-Order Core Modeling Subsystem
+memory operand. The memory references are passed through the TLB/cache model to generate an
+approximate cycle number for each LLC miss. With the help of access latency at each cache level
+and the hit/miss status of all the memory accesses, an aggregate counter is maintained to determine
+the clock cycle number. If the memory access is a miss at LLC, it is recorded in a trace file with
+the aggregate counter. Fig.5a shows an example of generating main memory traces on a single
+cache level with 4-cycle latency. A similar process is followed to collect LLC misses at different
+cores which are sorted and merged together to generate a single trace file representing all the main
+memory accesses while also maintaining the workload’s multi-threaded nature, as shown in Fig.5b.
+Even though main memory traces are less accurate than a real CPU model driving the memory
+model, they are convenient to use and consume significantly less disk space than CPU-generated
+memory traces. However, traces are static and do not allow system-level optimizations like hot-page
+migration, page-swapping systems, cache prefetching, etc., that change the state of TLBs and caches
+during the simulation.
+4.2 Cycle-Level Simulation Model
+Due to some known limitations of the trace-based model, we present a cycle-level simulation
+model for the multi-core out-of-order x86 processor architecture at the compute node. In this mode,
+the pintool scope is restricted to producing an instruction stream by intercepting each executed
+instruction in the workload. The trace consists of instruction type (int/x87 ALU, int/x87 mul/div,
+SSE (vector), branch, nop, etc.), instruction address, memory operand address/size, and register
+dependencies for each instruction. The core and cache subsystem modeling is handled at the back
+end in this simulation mode.
+4.2.1 Out-of-Order Core Modeling. Fig.5c shows the details of the OOO pipeline core modeling
+subsystem. The core architecture implements multiple pipeline stages (fetch, decode, issue, execute,
+write-back, and commit) at a higher level of abstraction with detailed modeling of hardware
+structures such as instruction queue, reservation stations, re-order buffer, architecture register
+file (ARF), register-alias table (RAT), and load-store queue. The instructions are read from the
+instruction stream generated by Pin, after which a fetch unit simulates the instruction fetch for
+7Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+multiple instructions within a cache line rather than fetching them individually. This is also pointed
+out in the previous work as many other academic simulators fetch each instruction separately
+[1,27]. The decode unit decodes the instruction, puts it into a buffer, and checks for the branch
+and its prediction result. The instruction waits in the decode buffer until the hardware resources
+are allocated. A limitation of performing binary instrumentation is that the execution of a process
+is decoupled, and it never goes down the wrong branch path in simulation. But the Pin API can
+tell whether an instruction is a branch. A branch predictor matches the prediction result with the
+information passed by the pin, and a penalty is added in case of misprediction, during which the
+CPU remains stalled. The issue unit allocates an entry for the instruction in the reservation station
+(RS) and re-order buffer (ROB) or stalls it if no free entry is available. The incoming instruction in
+the RS clears its register dependencies by accessing the register file (ARF) or from the register alias
+table (RAT), which points to a ROB entry. The instruction waits if some previous instruction does
+not yet free a register. The memory read operands (if present) are sent to an address generation unit
+(AGU) to simulate effective address calculation and forward the address to the load-store queue for
+memory access. If the same load address is already present in the queue as a store, it is forwarded
+without waiting. Once the dependencies are clear, instructions are moved to a ready queue. The
+dispatch unit selects and allocates execution units based on the instruction type and opcode. The
+execution latency can simply be configured for each type of instruction and its operation based
+on the number of cycles it takes to execute in the target processor model. Finally, the result gets
+broadcast among all the hardware structures: the waiting RS entries clear their memory or register
+dependency, instruction status changes to ’executed’ in ROB, and a write-back is performed to
+memory if there is a write operand. Only in the commit stage is the ROB entry released, and
+updates to the register file are performed to make it available globally. DRackSim allows the user to
+conFig.all the CPU parameters to simulate target hardware.
+The cache model comprises a multi-level hierarchy with private L1 I-D, L2, and shared L3
+cache. The non-blocking caches support multiple outstanding misses using miss-status handling
+registers (MSHRs) with a configurable number of entries. The memory access for instruction fetch or
+load/store queue starts at the TLB for virtual to physical address translation and uses 4KB fixed-size
+pages. Once the memory access reaches LLC MSHR, it is queued for the main memory access and
+DRAM simulation. The caches can be configured to be either write-allocate or no-write-allocate.
+Finally, the cache subsystem notifies the corresponding entry in the load/store queue on completing
+a memory request, which is then broadcast to the waiting instructions in the pipeline.
+4.3 Back-end Modeling
+The back-end of DRackSim simulates an environment similar to a large-scale disaggregated memory
+system with multiple compute nodes running simultaneously on different simulation threads.
+The memory accesses produced by the compute nodes drive the DRAM simulation at local or
+remote memory. The local memory requests are directly simulated at the node’s local memory,
+and remote memory requests are passed through an interconnect model before being simulated
+for memory access at the remote memory pool. We explain here all the simulated components to
+model disaggregated memory behavior.
+4.3.1 Compute Nodes. Besides CPU and cache simulation, compute nodes models a local memory
+unit and a memory manager to make memory allocation decisions and manage address space.
+The memory manager is an abstraction of processor MMU for address translation and an OS-like
+memory manager for address space management and memory allocation at the compute node.
+A memory request reaches MMU on a TLB miss and performs a page-table walk with a defined
+latency. If the page is not in memory, the request is forwarded to the page-fault handler for memory
+8DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+allocation and creates a page-table entry (PTE). DRackSim models 4-level page tables for mapping
+virtual addresses to the physical pages. The memory manager allocates a new page in local or
+remote memory based on the allocation policy and availability of free memory space. The page-fault
+service stalls the CPU and incurs fixed latency, which can be configured to model the OS page-fault
+latency. The page allocation in disaggregated memory is crucial, and the memory manager should
+carefully decide the footprint ratio in local and remote memory for different applications running
+at compute node. The response time of latency-sensitive applications can be significantly impacted
+compared to a less latency-bound application, and an uninformed page allocation policy can be
+responsible for high tail latency. The memory allocation at compute node in DRackSim can be
+configured to allocate memory pages in any ratio from local and remote memory. The modeling of
+these components allows for exploring memory management policies that can make such decisions.
+4.3.2 Global Memory Manager. The global memory manager (and controller) takes care of the
+remote memory address space in all the memory pools and reserves remote memory from one
+of the pools on receiving a request from compute nodes. The global manager handles conflicts
+during remote memory reservations to different nodes and acts as a load balancer while choosing a
+memory pool for allocation. On reservation of a memory chunk, it will share chunk details (pool-id,
+remote base address, size, etc.) with the requesting compute node, creating an entry in its mapping
+table as shown in section 3. The memory pools are bound to face contention in their queues when
+several compute nodes access the same pool simultaneously. To avoid contention and tail latency,
+memory pool selection should be done so that all pools face almost similar amounts of memory
+request traffic. It should also ensure Quality of Service (QOS) to different applications running on
+compute nodes with different sensitivities towards memory latency (compute vs memory bound
+applications) using request scheduling mechanisms. DRackSim follows a round-robin pool selection
+while reserving a memory chunk and allows further exploration of similar pool selection policies.
+4.3.3 Interconnect Model. The interconnect model in DRackSim is based on a queue simulation
+that simulates the behavior of memory-semantic fabrics such as CXL or other similar interconnects
+proposed for disaggregated memory. The interface (similar to NIC) at the compute nodes (memory
+requestor) and memory pools (memory responder) allows access to remote memory through the
+network. The on-chip integration of the fabric and lightweight network protocol implementation in
+the hardware allows low-latency cache line access from remote memory during an LLC miss. The
+CXL specification allows cache-based access to remote memory from compute nodes with a latency
+of around 170-250ns. Similarly, a 4KB remote page (64 cache lines of 64B each) can be accessed
+in around 1.2-1.5 µs. The remote memory accesses from multiple compute nodes pass through a
+central switch before accessing the pooled memory.
+DRackSim simulates both types of memory accesses from the compute nodes to remote memory
+pools for design space exploration. If an LLC miss refers to remote memory address space, it accesses
+the local-to-remote address map (discussed above) at the compute node’s remote memory controller.
+The memory access is encapsulated into a network packet containing the destination memory
+pool-id and its remote physical address, as shown in Fig.6b. The model uses fixed 64-byte packets
+for a memory request, as the payload consists of only a memory address. The packet is then pushed
+into the queue structure at the controller’s network interface after adding a delay for packetization.
+While the packet transmits from compute node to the switch, it incurs transmission and propagation
+delays based on configured bandwidths at the nodes and hop distance. It is then added to the switch
+input port queue and faces a processing delay. The interconnect model implements a crossbar
+topology that supports single-hop communication between compute and memory nodes. It supports
+virtual queues at switch ports to avoid head-of-line blocking, and a 2-stage switch arbitrator selects
+the packet for forwarding in each cycle. The first stage arbitrator selects one of the input ports, and
+9Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+(a)
+ (b)
+Fig. 6. (a) Interconnect Simulation Model detail (b) Packet Structure for Remote Memory Access
+the second stage selects from one of the virtual queues at the selected input port. The packet is
+added to the buffer at the destination output port after adding a switching delay. Finally, it reaches
+the network interface of the destination memory pool to simulate the remote memory access. A
+similar way is followed at the memory pool to send back the response to a compute node using the
+source address of the memory access packet. The response packet holds a cache line of data as a
+payload for block accesses, and its size can be configured accordingly based on cache block size.
+Similarly, write-backs from compute nodes to remote memory also use a packet size capable of
+storing a cache line.
+Further, page requests are also simulated from compute nodes to remote memory. Memory pools
+can differentiate between block or page request packets through the additional information present
+in the header. The response from the memory pool can be sent as single or multiple small-sized
+packets that the user can configure. The reassembly logic collects all the response packets at
+compute node to form a memory page and notify on receiving a complete page. This functionality
+can be used to implement hot-page migration systems to reduce average memory latency. However,
+poorly scheduled page access can starve the critical block accesses and should only be used to
+supplement cache line accesses for utilizing locality in hot pages. Further, the network interface
+and the ports at the switch support configurable size buffers at both ends and implements a reliable
+network with back-pressure flow control in case a buffer gets full. The interconnect model latency
+ofDRackSim can be mapped to simulate target hardware (CXL/GenZ) for cache line and page
+transfer. Fig.6 shows a complete view of interconnect simulation model in DRackSim .
+4.3.4 Memory Simulation. We integrate cycle-accurate DRAMSim2 for DDR4 simulation of local
+and remote memory. We initialize multiple instances of DRAMSim2 memory units using its Memory
+System interface, each representing either the local memory at a compute node or remote memory
+at a memory pool. DRAMSim2 provides a callback functionality to notify the CPU driving the
+memory model on completing every memory access. We modify the MemorySystem interface and
+callback functionality so that each memory unit (at a node or remote pool) can have a separate
+identity. We further modify the addtransaction function, which is used to add a memory request to
+a memory unit, to include a node-id of the requester, a transaction-id, and some other metadata
+for stats collection. The modifications allow tracking the completion of memory accesses at each
+memory unit separately and correctly sending back a response to the requesting node.
+4.3.5 Simulator Implementation and Clock Management. The back end of DRackSim handles the
+scalable disaggregated memory simulations of multiple compute and memory nodes. In the trace-
+based model, multiple traces are collected (one for each node) and parsed in parallel to perform
+memory and network simulation. The memory requests are split across local and remote memory
+10DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+based on their access address and the location of respective pages. In the cycle-level simulation,
+multiple instruction streams are generated simultaneously by different Pintool instances (one
+for each node). All the instruction streams are continuously fed to the back end for multi-node
+disaggregated memory simulation. We also add support for instrumenting multiple applications to
+create workload mixes for a single compute node. The user can skip any number of instructions to
+jump to the region of interest in a workload. As the back-end, DRackSim model consists of multiple
+independent components such as compute nodes, memory pools, interconnect, etc., which are
+synchronized with a single global clock. This is necessary to maintain the time-ordering of global
+events, such as simultaneous network and remote memory accesses from different compute nodes.
+However, the frequencies of individual components can be configured separately, and the global
+clock only provides a common reference time for the functional correctness of the simulation. We
+utilize thread-barriers for synchronization that controls the simulation flow for multiple nodes
+(with each node being simulated by a separate simulation thread), allowing scalable simulation
+without much slowdown.
+5 VALIDATION
+It is important to cover different validation aspects while developing a new architectural simulator.
+The first one is the functional correctness of the program. In our case, application functionality
+is decoupled from the actual simulation process, where Pin runs it natively. Pintool only adds
+some instrumentation primitives and does not change the application’s functionality or execution
+flow. The second aspect is the accuracy of performance metrics. While it is important to validate
+the simulator with actual hardware or with another standard open-source simulator, the vast
+performance gap between various community-accepted architectural simulators is also a reality.
+Table 1. Validation Parameters
+Element Parameter
+CPU 3.6GHz, 8-width, 64-InsQ, 64-RS, 192-ROB, 128-LSQ
+L1 Cache 32KB(I/D), 8-Way, 2-Cyc, 64B block
+L2 Cache 256KB, 4-Way, 20-Cyc, 64B block
+L3 Cache 2MB per core shared, 16-Way, 32-Cyc, 64B block
+Cache Type Write-Back/Write-Allocate, Round-Robin
+Due to the unavailability of a full-scale hardware disaggregated system, we incrementally validate
+different components of our simulator. The integrated on-chip interconnects, such as CXL, are
+either commercially unavailable or only have been tested with small-scale prototypes using FPGAs
+[5,18,39]. Therefore, it is a best-effort approach to validate the core and cache subsystems of
+DRackSim against Gem5 system emulation mode (SE). At the same time, we show the impact of
+network interconnect separately through our wide set of experiments in the next section. We set
+the processor width and instructions latency for different instruction types to the same values
+for calibrated validation and used the same size structures for all the hardware resources (such as
+InsQ,RS,ROB,LSQ). We further fix our simulator’s page fault and TLB-miss latency as per Gem5,
+which only adds 1 or 2 cycles on each such event in SE mode. Table 1 shows the system configuration
+for CPU validation. We extensively validate the cache subsystem using the last-level cache misses,
+which can represent the behavior of the complete cache hierarchy.
+We perform the CPU validation for 1, 2, and 4-cores over SPLASH-[ 34] benchmarks by spanning
+same number of threads as the number of cores. Figure 7a shows the CPU validation results with
+11Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+(a)
+ (b)
+Fig. 7. Validation on Splash-3 benchmarks (a) variation in IPC values (b) variation in L3 Cache Misses
+Fig. 8. Normalized L3 Cache Misses over different cache configurations
+normalized IPC values of our simulator compared to the IPC values of Gem5. The IPC numbers of
+DRackSim are close to Gem5 IPC for most of the benchmarks and show a mean absolute percentage
+error of 15% across all core configurations. Similarly, we validated LLC misses for all the workloads,
+as shown in figure 7b. We only observe an unexpectedly large error in the case of contiguous_ocean
+with a 1-core CPU. Besides this, the mean absolute percentage error is around 3% across all
+benchmarks on 1, 2, or 4 cores CPU. However, the variation observed is common among different
+simulators, as shown for the validation efforts in the past work [ 1,2]. Ayaz et al. surveyed all
+the major architectural simulators, such as Gem5, MARSSx86, Sniper, etc., and observed their
+performance against real x86 hardware. It was found that a significant variation exists between the
+IPC values and LLC misses on all benchmarks. The main source of inaccuracies could be due to
+the lack of support for fused micro-operations ( 𝜇𝑜𝑝𝑠 ), the pipeline depth, lack of modeling for all
+hardware optimizations, and the abstraction of actions performed during branch misprediction.
+However, the simulator can be calibrated to match the performance of real hardware and should
+provide enough insight into actual hardware performance.
+We further perform an in-depth validation for the LLC misses with fft, fmm, and barnes over
+a range of L3 configurations on a 4-core CPU, shown in figure 8. We also reduce the L2 size to
+64KB to maximize the misses at LLC. Here also, we observe a slight variation in the LLC misses
+for DRackSim compared to Gem5. We observe a mean absolute percentage error of 11% over all
+the configurations. The LLC misses are slightly inflated or deflated for some configurations, which
+could be due to the implementation details of the cache hierarchy. We do not implement a separate
+write buffer, so the caches must evict a block during the write-backs. Another reason can be using
+separate load and store queues in Gem5, whereas DRackSim has a unified load/store queue that can
+create a small difference in the total number of non-redundant loads and stores. These differences
+can generate variation in cache accesses, and inaccuracies can accumulate from lower-level caches
+to LLC.
+12DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+6 EVALUATION
+In this section, we demonstrate the working of DRackSim over various configurations and provide
+use case evaluation by modeling different data movement schemes in disaggregated memory
+systems. We also show the impact of the network by changing the latency and bandwidth parameters
+at the nodes interface and the switch.
+Table 2. Benchmarks
+Application Domain Input LLC Miss
+(Millions)
+Stream Cluster (SC) [6] Data Mining Pts:65536 Dim:256 3.67
+Needleman Wunsch (NW) [6] Bio-informatics Rows/Col:4096 Pen:4 6.68
+Block Tri-diagonal (BT) [14] CFD Class C 2.97
+3D Fast Fourier (FT) [14] CFD Class C 28.63
+High Perf. Conj. Grad. (HPCG) [19] HPC 104 ×104×104 2.71
+K-core Decomposition (KD) [36] Graph Proc. V:1M E:10M 0.95
+K-means Clustering (KC) [6] Data Mining kdd_cup 0.62
+Lulesh (LU) [22] HPC Cube Mesh Size:120 5.29
+Multi-Grid (MG) [14] CFD Class C 37.95
+miniFE (FE) [7] HPC 140 ×140×140 14.89
+PageRank (PR) [36] Graph Proc. V:1M E:10M 0.95
+Particle Filter (PF) [6] HPC 2K ×2K 20K Particles 33.13
+Pennant (PEN) [10] HPC leblancx4.pnt 8.02
+SimpleMOC (SM) [17] HPC small 1.75
+SRAD (SR) [6] Image Proc. 4K ×4K Data Points 3.19
+XSBench (XSB) [38] HPC small 8.32
+We evaluate the performance using various multi-threaded benchmarks shown in Table 2. We
+chose five workloads from the Rodinia heterogeneous benchmark suite: SC, NW, KC, PF, and SR, that
+simulate applications from different domains such as data mining, bio-informatics, image processing,
+etc. Two graph processing workloads, KD and PR, were chosen from the Liagra framework. Three
+workloads, BT, FT, and MG, are selected from the NASA parallel benchmark suite that mimics
+the computation and data movement in computational fluid dynamics applications. Further, we
+use six more multi-threaded workloads and mini-apps from the domain of HPC: HPCG, LU, FE,
+PEN, SM, and XSB. The selected workloads have a wide range of memory footprints, ranging
+from 38MB to 3.2GB, and vary in memory access patterns. We run openMP versions of all the
+workloads and only simulate the multi-threaded regions of the workloads (except PF, which has
+a significantly large single-threaded phase) using 4-threads with each thread spanning one of
+the cores (no hyper-threading). The simulations were run for at least 400 million instructions for
+each multi-threaded workload and 100 million for PF, which was slow and took a long time. The
+last column of the table shows the total number of LLC misses or main memory accesses for all
+workloads during the simulation period.
+Finally, table 3 shows the network and memory parameters for the simulation, while we use the
+same CPU and cache parameters mentioned earlier in section 5. We assume a 64B data packet for
+the remote memory request packet from the compute node. On the other hand, the response packet
+from the memory pool and remote memory write-backs will contain a cache block of data and have
+13Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+Table 3. Simulation Parameters
+Element Parameter
+Memory (Loc/Rem) 2400MHz DRAM (19.2GB/s)
+Switch 100/400Gbps, 4MB port Buffer, 5/10ns for processing and switching
+Network Interface 40/100Gbps, 1MB buffer, 15/30ns for (de)packetization and processing
+Packet Size 64B Request, 128B Response/Write-Backs, 4KB for Page Access
+a packet size of 128B. The remote page request is also 64B, whereas the page access is performed by
+adding 64 cache block requests to the memory unit, and the response is sent as a single 4KB packet.
+For interconnect, we consider 100/400 Gbps bandwidth for the switch and 50/100 Gbps bandwidth
+at node interfaces. We also vary the latency, which is 15 or 30 ns at nodes for (de)packetization and
+processing and 5 or 10 ns for processing and switching at the switch. Each remote memory access
+will pass four times through the node interfaces (request/response at compute node and memory
+pool) and two times through the switch (request/response), bringing the total latency factor to 70
+or 140 ns.
+6.1 Design Space Exploration
+To understand the impact of memory disaggregation with traditional server systems, we modeled
+four use case scenarios with DRackSim :1○Block: The first is our baseline hardware disaggregated
+memory system in which all the remote memory accesses are made at the cache block granularity
+on an LLC miss. The pages are allocated alternatively in local and remote memory, each having 50%
+of memory footprint. 2○Page: Next, we model a software disaggregated memory where the remote
+memory accesses are always made at page granularity as in an RDMA-based memory sharing
+servers. The page allocation is performed in the same manner with 50% of the workload footprint at
+remote memory and is migrated to local memory on the first reference to it. 3○Block+Page: Next,
+we model a very simplistic page migration on top of the baseline hardware disaggregated system
+that only migrates some of the hot pages in remote memory to local and utilize locality for future
+accesses. The memory requests to other remote pages are still made at cache block granularity.
+The page migration threshold is set through a simple training phase and is fixed at 20% access
+count of total accesses to predicted hot pages during training. Further, no special support is added
+for scheduling page migrations. 4○Local: Finally, we model a local-only system that assumes big
+enough local memory to fit the entire workload footprint. This system will have no remote page
+allocation, and all memory accesses are performed in local memory at block granularity.
+The systems described in 2○and 3○require an update to system page tables on every remote
+page migration and invalidate TLB entries on all the cores. This introduces long CPU stalls and may
+further take around 4𝜇𝑠−13𝜇𝑠(depending on the core count) [ 21] for TLB-shootdown after every
+migration. Therefore, for a fair comparison, we perform page table updates in large batches of 1024
+pages and use a remap table to delay page migrations by temporarily storing the new physical
+address of a migrated page.
+We start our evaluation with a single compute node with one memory pool to show the per-
+formance impact of all three configurations compared to local. With a single compute node, all
+the network and remote memory bandwidth is available only for that node. In Fig.9, we show the
+performance slowdown and increase in memory access cost for all the workloads at bandwidth and
+latency combination of 100/400 Gbps and 15/5 ns, respectively. As expected, we saw a significant
+performance slowdown that ranges from 10% to 120% for Block compared to Local . The variation
+14DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fig. 9. Impact on system performance (top) and memory cost (bottom) on all the workloads over all four
+configurations
+in the slowdown for different workloads is due to changing memory access patterns, memory
+sensitivity, and the number of memory accesses. SC and PF are more sensitive to increased memory
+latency and face maximum slowdown. HPCG, KD, KC, and PR are less sensitive to memory latency
+and observe slowdowns between 5%-18% even after facing a significant increase in memory access
+cost. Although most workloads have similar average memory latency with Block , some show more
+variation when compared to Local . For instance, NW, BT, FT, MG, and FE face the least increase
+in memory cost, as these workloads already have large memory latency with Local (ranging
+between 70-100 ns) due to a streaming access pattern as the memory bandwidth is limited. With
+disaggregated memory, the requests are first distributed across two separate memory units (local
+and remote), thereby eliminating some contention due to more bandwidth. However, FT, MG, and
+FE still face a 25% to 30% performance slowdown due to a significantly high memory access count,
+unlike NW and BT, which have fewer memory accesses and did not face much impact from having
+50% of memory footprint in remote memory. MG and PF have large memory accesses, but PF being
+single-threaded, could not use as much memory parallelism to hide memory latency and face a 2x
+slowdown.
+With Block+Page , there was an expectation to observe a significant performance improvement
+compared to baseline Block . However, migrating remote pages to local memory shows no significant
+benefits. Only five out of all the evaluated workloads: SC, BT, LU, SM, and XSB, could get any
+benefits, if at all, and faces 5% to 50% lesser slowdown than baseline. On the other hand, Page faces
+the maximum slowdowns compared to all the other scenarios. Firstly, the trend clearly explains the
+reason behind the performance slowdown with Page , which only accesses remote memory at page
+granularity and migrates a complete remote page on every LLC miss belonging to a remote address.
+Remote page accesses are costly as they read multiple cache blocks within a memory page (64 for
+4KB page in our case) and add significant transmission delays at the network due to the large packet
+size (4KB). In the case of Block+Page , only a few hot pages are migrated to local memory and do
+not see the same performance drop as in Page. Most of the memory accesses are still performed at
+block granularity. We observed that SC, BT, and SM all have small memory footprints and fewer
+memory accesses, so it has only a few pages to migrate. It does not add severe delay to the critical
+block memory accesses to remote memory while accessing a page. It also allows completing a good
+15Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+percentage of memory accesses in local memory, utilizing the locality in hot pages. For LU and
+XSB, even though they migrate more pages, more than 90% of the memory accesses are completed
+in local memory as the result of migration and hence observe better performance. KD, KC, and PR
+have a few memory accesses and face a small slowdown due to remote page accesses compared to
+Block . FT, MG, FE, and PF have enormous memory access traffic and migrate many pages due to
+their large memory footprints. The performance only gets impacted due to extra delays added by
+page accesses to regular demand remote memory accesses, which are in their critical path. Similar
+is the case for HPCG, which is more sensitive to page access delays, despite a small increase in
+average memory latency. NW and SR also could not benefit from migrating hot pages. Overall,
+the impact is lesser than Page for all workloads, as the regular block accesses are also performed
+simultaneously in remote memory. Further, KC, MG, PF, PEN, and SR also show less amount of
+spatial locality and could only get 20%, 15%, 25%, 23%, and 18% additional memory accesses in
+local memory even after migrating 66%, 65%, 48%, 38%, and 62% remote pages to local memory,
+respectively, out of the 50% of total pages that are placed in remote.
+Page migration has also been widely used in DRM-NVM hybrid memory systems; however, they
+do not present the same challenges as in disaggregated memory systems. A larger memory footprint
+on remote memory and the presence of an interconnection network make hot page migration
+more challenging in disaggregated environments to realize performance gains. We observed a few
+things that may help improve its performance with page migration. However, we leave it to future
+research work to explore optimized designs. The continuous access of a complete page for 64 blocks
+is problematic for two reasons. One is that the pending block memory requests to that page face
+long delays and are only served once the migration is complete. Two, the block memory requests
+to other pages in the same remote memory pool may get starved if multiple hot page requests are
+issued together. Further, optimal scheduling of page migrations becomes more critical due to the
+same reasons. An optimized hot page migration must consider all these issues for a viable solution.
+In Daemon [ 13], authors explored bandwidth partitioning, link compression, and schedules page
+access only when the utilization of the block request queue is less. However, page access is still
+completed as a whole, adding a delay of around 1.2-1.5 µs to subsequent block accesses even with an
+optimal scheduling policy. With truly disaggregated hardware and CXL interconnects, it is better
+to break down the page accesses into multiple cache line requests that can reduce most of the
+overhead with extra architectural support.
+Next, we show the performance impact over different network configurations described earlier.
+We reduced the node’s interface bandwidth by 1/2 to 50Gbps and the switch bandwidth by 1/4 to
+100Gbps. However, we kept the same latency at every point. The first graph in Fig. 10 shows that
+Block+Page andPage are significantly impacted by reducing the bandwidth. As both systems
+access remote memory pages with a response packet size of 4KB, therefore face an additional
+transmission delays of around 575ns per page during a response by the memory pool. However,
+workloads show different sensitivity to the increased page access time. On the other hand, the
+performance of Block is more or less the same as in the previous network configuration, as it
+only accesses remote memory at 64B block granularity. Although each memory access takes a few
+nano-seconds more, the continuous memory accesses hide some of these latencies and have no
+significant drop in performance.
+Next, we increase the latency parameter by 2x and use the same bandwidth of 100/400Gbps. The
+trend is the opposite in this case, as the packets with small sizes (block access) are most impacted
+and face almost two times remote memory latency for each access compared to initial network
+parameters. In contrast, page response packets get a slight increase in latency compared to their
+overall access time. Page is least impacted by increasing the latency, as each page access adds
+only 70ns extra for the request and response combined. The performance of Block+Page is also
+16DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fig. 10. Impact on system performance for all workloads on changing the network latency and bandwidth
+parameters
+comparatively better in those cases where the number of remote memory accesses was significantly
+reduced due to page migration. However, it still has to send many block accesses to remote memory,
+which increases the wait times. In the last case, we decrease both the latency and bandwidth, for
+which the performance can be seen in the bottom graph in Fig. 10. Overall, in all these cases, BT,
+KD, KC, LU, PR, and SR are least impacted by the memory disaggregation.
+6.2 Scalable Disaggregated Memory Systems
+As multiple memory pools are expected to be grouped with several compute nodes in a practical
+disaggregated environment, scalability remains a crucial aspect of disaggregated memory systems.
+Hence, we evaluate the performance impact of disaggregation in different compute node to memory
+pool configurations (xC:yM). We kept the memory footprint at a same ratio of 50:50 between
+local and remote in all the scalable configurations. The remote chunk allocation is done through
+round-robin pool selection whenever more than one memory pools are there.
+6.2.1 Sensitivity to Multiple Memory Pools. Fig. 11 (Top) shows the performance improvement of
+each workload when a single node is configured with multiple memory pools. The performance
+is shown for the baseline configuration Block . With 2-memory pools, we observe a maximum
+performance improvement of around 25% for SC and FE, while it varies from 2% to 15% for most of
+the workloads and none for NW and SR. The improvement can relate to the increased memory
+bandwidth with more memory pools, as the remote memory accesses are now distributed across
+multiple memory units. Thus reducing the chances of contention in the queue and tail latency
+compared to a single memory pool. However, a further increase in memory pools from 2 to 4 has
+17Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+Fig. 11. Impact on system performance for all the workloads on increasing the number of memory pools
+with a single compute pool (Top) or by increasing the number of compute nodes with a single memory pool
+(Bottom)
+Fig. 12. Impact on system performance with different compute-to-memory node configurations and workload
+combinations over 4 Compute Nodes (Top) and 16 Compute Nodes (Bottom)
+no additional benefits, as two memory pools could fulfill the maximum bandwidth requirements
+for all the workloads.
+6.2.2 Sensitivity to Multiple Compute Nodes. In Fig. 11 (Bottom), we show the impact of increasing
+the number of nodes running the same workload with a single memory pool. SC being more
+memory sensitive is significantly impacted in all configurations with more than one compute node.
+FT, MG, FE, and PF, due to their extensive memory requests, observe high contention in the memory
+queues. However, with a 100Gbps interface and 400Gbps network bandwidth, and large enough
+buffers, interconnect could still manage the high network traffic without much extra overhead.
+Finally, LU and PEN observed a server slowdown when the nodes were increased from 4 to 8.
+18DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fig. 13. Impact on system performance on changing the local memory footprint
+6.2.3 Sensitivity to Multiple Compute and Memory Nodes. Next, we increase the number of compute
+nodes and memory pools to evaluate the performance for expected configurations in a practical
+environment. Fig. 12 (Top) shows the performance impact when four nodes run simultaneously
+over 1 or 2 memory pools. The performance is shown for four different workload mixes, with one
+workload running at each node. The workload mixes were created so that the nodes have enough
+variation in their memory access rates. As expected, we observe a slowdown of 2% (PR, KC, KD) to
+35% (FE) when 4-compute nodes are configured with only one memory node (4c:1M) compared to a
+single compute and memory node (1C:1M). Subsequently, this slowdown is 10% to 125% compared
+to a system using only local memory. However, the performance difference is negligible for 4C:2M
+compared to 1C:4M, making the case strong for compute-to-memory ratio 2:1 (under the given
+memory bandwidth parameters). We even observe a performance improvement for XSB in 4C:2M
+compared to 1C:1M, as the distribution of memory accesses suits its access patterns.
+Similarly, we run all 16 workloads with an even bigger configuration by deploying them on 16
+compute nodes (one workload on each node) with 4 or 8 memory nodes. Fig. 12 (bottom) shows the
+performance impact for all the workloads in these configurations. We observed that the performance
+is more or less the same compared to 4 node configurations over similar compute-to-memory node
+ratios (2:1), with a slight difference for SC and FE.
+6.3 Sensitivity to Local Memory Footprint
+In a practical setting, the page allocation ratio in local and remote will be crucial in deciding the
+impact of disaggregation, which varies for different applications, as seen in the above experiments.
+Therefore we perform a sensitivity analysis on all the workloads with the changing local-to-remote
+memory footprint ratio. Fig. 13 shows the system IPC at two different network configurations with
+60%, 40%, and 20% local memory footprint normalized against 100% local memory. The findings
+motivate the requirement of such algorithms, which can decide the local/remote ratio if multiple
+applications are running on the same node.
+6.4 Network Latency and Bandwidth
+Next, we rigorously test the interconnect model for its correctness using the STREAM benchmark
+with an input stream array size of 50 million. The simulation is also run for 400 million instructions
+19Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+on the multi-threaded region and has a memory footprint of around 1.14GB. We start with the
+interface and switch bandwidth of 100 and 400 Gbps, respectively and reduce until up to one-eighth.
+Similarly, the initial latency is assumed as 15ns (nodes) and 5ns (switch) and increased up to 8
+times. Fig. 14 shows the change in IPC and average memory access delay over a range of network
+bandwidth and latency parameters, respectively.
+Fig. 14. IPC (Top) and Average memory access delay (Bottom) for STREAM benchmark on changing the
+network bandwidth and latency
+7 CONCLUSION AND FUTURE WORK
+Disaggregated memory systems are being widely studied for their use in data centers due to
+their significant advantages over traditional server systems, such as improved memory utilization,
+scalability, and decoupling of memory. These systems rely on memory-centric interconnects such as
+CXL to support coherent access to remote memory at block granularity. However, the unavailability
+of such interconnects hinders path-breaking research ideas from the systems research community.
+Therefore, we propose a simulator DRackSim that models highly scalable disaggregated memory
+systems and supports a wide range of user-defined configurations. We perform rigorous validation
+ofDRackSim against gem5 and conduct a broad set of experiments to demonstrate the working of
+our proposed simulator. We have already made the code1publicly available for the community, and
+we plan to provide a complete guide for its functionality and code flow once the paper is accepted.
+In future work, we plan to add support for shared memory organization and new memory
+technologies such as DDR5 and HBM. Further, studies are underway to support disaggregated
+accelerators in data centers [ 11,16]. Hence we also plan to extend our tool by integrating an
+accelerator simulator to move toward a complete simulation infrastructure for disaggregated
+systems.
+REFERENCES
+[1]Jung Ho Ahn, Sheng Li, Seongil O, and Norman P. Jouppi. 2013. McSimA+: A manycore simulator with application-
+level+ simulation and detailed microarchitecture modeling. In 2013 IEEE International Symposium on Performance
+Analysis of Systems and Software (ISPASS) . IEEE Computer Society, 74–85. https://doi.org/10.1109/ISPASS.2013.6557148
+[2]Ayaz Akram and Lina Sawalha. 2019. A Survey of Computer Architecture Simulation Techniques and Tools. IEEE
+Access 7 (2019), 78120–78145. https://doi.org/10.1109/ACCESS.2019.2917698
+1https://github.com/Amit-P89/-DRackSim
+20DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+[3]Hasan Al Maruf and Mosharaf Chowdhury. 2020. Effectively Prefetching Remote Memory with Leap. In Proceedings
+of the 2020 USENIX Conference on Usenix Annual Technical Conference (USENIX ATC’20) . USENIX Association, USA,
+Article 58, 15 pages.
+[4]M. Bielski, I. Syrigos, K. Katrinis, D. Syrivelis, A. Reale, D. Theodoropoulos, N. Alachiotis, D. Pnevmatikatos, E.H. Pap,
+G. Zervas, V. Mishra, A. Saljoghei, A. Rigo, J. Fernando Zazo, S. Lopez-Buedo, M. Torrents, F. Zyulkyarov, M. Enrico,
+and O. Gonzalez de Dios. 2018. dReDBox: Materializing a full-stack rack-scale system prototype of a next-generation
+disaggregated datacenter. In 2018 Design, Automation & Test in Europe Conference & Exhibition (DATE) . 1093–1098.
+https://doi.org/10.23919/DATE.2018.8342174
+[5] Yisong Chang, Ke Zhang, Sally A. McKee, Lixin Zhang, Mingyu Chen, Liqiang Ren, and Zhiwei Xu. 2016. Extending
+On-chip Interconnects for rack-level remote resource access. In 2016 IEEE 34th International Conference on Computer
+Design (ICCD) . 56–63. https://doi.org/10.1109/ICCD.2016.7753261
+[6]Shuai Che, Michael Boyer, Jiayuan Meng, David Tarjan, Jeremy W. Sheaffer, Sang-Ha Lee, and Kevin Skadron. 2009.
+Rodinia: A benchmark suite for heterogeneous computing. In 2009 IEEE International Symposium on Workload Charac-
+terization (IISWC) . 44–54. https://doi.org/10.1109/IISWC.2009.5306797
+[7]Paul Stewart Crozier, Heidi K Thornquist, Robert W Numrich, Alan B Williams, Harold Carter Edwards, Eric Richard
+Keiter, Mahesh Rajan, James M Willenbring, Douglas W Doerfler, and Michael Allen Heroux. 2009. Improving
+performance via mini-applications. (9 2009). https://doi.org/10.2172/993908
+[8]Aleksandar Dragojević, Dushyanth Narayanan, Orion Hodson, and Miguel Castro. 2014. FaRM: Fast Remote Memory.
+InProceedings of the 11th USENIX Conference on Networked Systems Design and Implementation (Seattle, WA) (NSDI’14) .
+USENIX Association, USA, 401–414.
+[9] CXL Express. [n. d.]. CXL specification . https://www.computeexpresslink.org/download-the-specification
+[10] Charles R. Ferenbaugh. 2015. PENNANT: an unstructured mesh mini-app for advanced architecture research.
+Concurrency and Computation: Practice and Experience 27, 17 (2015), 4555–4572. https://doi.org/10.1002/cpe.3422
+arXiv:https://onlinelibrary.wiley.com/doi/pdf/10.1002/cpe.3422
+[11] Henrique Fingler, Zhiting Zhu, Esther Yoon, Zhipeng Jia, Emmett Witchel, and Christopher J. Rossbach. 2022. DGSF:
+Disaggregated GPUs for Serverless Functions. In 2022 IEEE International Parallel and Distributed Processing Symposium
+(IPDPS) . 739–750. https://doi.org/10.1109/IPDPS53621.2022.00077
+[12] Peter X. Gao, Akshay Narayan, Sagar Karandikar, Joao Carreira, Sangjin Han, Rachit Agarwal, Sylvia Ratnasamy, and
+Scott Shenker. 2016. Network Requirements for Resource Disaggregation. In Proceedings of the 12th USENIX Conference
+on Operating Systems Design and Implementation (Savannah, GA, USA) (OSDI’16) . USENIX Association, USA, 249–264.
+[13] Christina Giannoula, Kailong Huang, Jonathan Tang, Nectarios Koziris, Georgios Goumas, Zeshan Chishti, and Nandita
+Vijaykumar. 2023. DaeMon: Architectural Support for Efficient Data Movement in Fully Disaggregated Systems. Proc.
+ACM Meas. Anal. Comput. Syst. 7, 1, Article 16 (mar 2023), 36 pages. https://doi.org/10.1145/3579445
+[14] Dalvan Griebler, Junior Loff, Gabriele Mencagli, Marco Danelutto, and Luiz Gustavo Fernandes. 2018. Efficient NAS
+Benchmark Kernels with C++ Parallel Programming. In 2018 26th Euromicro International Conference on Parallel,
+Distributed and Network-based Processing (PDP) . 733–740. https://doi.org/10.1109/PDP2018.2018.00120
+[15] Juncheng Gu, Youngmoon Lee, Yiwen Zhang, Mosharaf Chowdhury, and Kang G. Shin. 2017. Efficient Memory
+Disaggregation with INFINISWAP. In Proceedings of the 14th USENIX Conference on Networked Systems Design and
+Implementation (Boston, MA, USA) (NSDI’17) . USENIX Association, USA, 649–667.
+[16] Anubhav Guleria, J Lakshmi, and Chakri Padala. 2019. QuADD: QUantifying Accelerator Disaggregated Datacenter
+Efficiency. In 2019 IEEE 12th International Conference on Cloud Computing (CLOUD) . 349–357. https://doi.org/10.1109/
+CLOUD.2019.00064
+[17] Geoffrey Gunow, John Tramm, Benoit Forget, Kord Smith, and Tim He. 2015. SimpleMOC – A PERFORMANCE
+ABSTRACTION FOR 3D MOC. In ANS & M&C 2015 - Joint International Conference on Mathematics and Computation
+(M&C), Supercomputing in Nuclear Applications (SNA) and the Monte Carlo (MC) Method .
+[18] Seokbin Hong, Won-Ok Kwon, and Myeong-Hoon Oh. 2020. Hardware Implementation and Analysis of Gen-Z Protocol
+for Memory-Centric Architecture. IEEE Access 8 (2020), 127244–127253. https://doi.org/10.1109/ACCESS.2020.3008227
+[19] HPCG. 2019. GitHub - hpcg-benchmark/hpcg: Official HPCG benchmark source code — github.com. https://github.
+com/hpcg-benchmark/hpcg/. [Accessed 18-Jul-2023].
+[20] Intel. [n. d.]. Intel ®Rack Scale Design (Intel ®RSD) Architecture White Paper — intel.in. https://www.intel.in/content/
+www/in/en/architecture-and-technology/rack-scale-design/rack-scale-design-architecture-white-paper.html. [Ac-
+cessed 02-Jul-2023].
+[21] Mahzabeen Islam, Shashank Adavally, Marko Scrbak, and Krishna Kavi. 2020. On-the-Fly Page Migration and Address
+Reconciliation for Heterogeneous Memory Systems. J. Emerg. Technol. Comput. Syst. 16, 1, Article 10 (jan 2020),
+27 pages. https://doi.org/10.1145/3364179
+[22] I Karlin, J Keasler, and J R Neely. 2013. LULESH 2.0 Updates and Changes. (7 2013). https://doi.org/10.2172/1090032
+21Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Amit Puri, et al.
+[23] K. Katrinis, D. Syrivelis, D. Pnevmatikatos, G. Zervas, D. Theodoropoulos, I. Koutsopoulos, K. Hasharoni, D. Raho,
+C. Pinto, F. Espina, S. Lopez-Buedo, Q. Chen, M. Nemirovsky, D. Roca, H. Klos, and T. Berends. 2016. Rack-scale
+disaggregated cloud data centers: The dReDBox project vision. In 2016 Design, Automation & Test in Europe Conference
+& Exhibition (DATE) . 690–695.
+[24] Seung-seob Lee, Yanpeng Yu, Yupeng Tang, Anurag Khandelwal, Lin Zhong, and Abhishek Bhattacharjee. 2021. MIND:
+In-Network Memory Management for Disaggregated Data Centers. In Proceedings of the ACM SIGOPS 28th Symposium
+on Operating Systems Principles (Virtual Event, Germany) (SOSP ’21) . Association for Computing Machinery, New York,
+NY, USA, 488–504. https://doi.org/10.1145/3477132.3483561
+[25] Kevin Lim, Jichuan Chang, Trevor Mudge, Parthasarathy Ranganathan, Steven K. Reinhardt, and Thomas F. Wenisch.
+2009. Disaggregated Memory for Expansion and Sharing in Blade Servers. In Proceedings of the 36th Annual International
+Symposium on Computer Architecture (Austin, TX, USA) (ISCA ’09) . Association for Computing Machinery, New York,
+NY, USA, 267–278. https://doi.org/10.1145/1555754.1555789
+[26] Kevin Lim, Yoshio Turner, Jose Renato Santos, Alvin AuYoung, Jichuan Chang, Parthasarathy Ranganathan, and
+Thomas F. Wenisch. 2012. System-level implications of disaggregated memory. In IEEE International Symposium on
+High-Performance Comp Architecture . 1–12. https://doi.org/10.1109/HPCA.2012.6168955
+[27] Gabriel H. Loh, Samantika Subramaniam, and Yuejian Xie. 2009. Zesto: A cycle-level simulator for highly detailed
+microarchitecture exploration. In 2009 IEEE International Symposium on Performance Analysis of Systems and Software .
+53–64. https://doi.org/10.1109/ISPASS.2009.4919638
+[28] Chi-Keung Luk, Robert Cohn, Robert Muth, Harish Patil, Artur Klauser, Geoff Lowney, Steven Wallace, Vijay Janapa
+Reddi, and Kim Hazelwood. 2005. Pin: Building Customized Program Analysis Tools with Dynamic Instrumentation.
+SIGPLAN Not. 40, 6 (jun 2005), 190–200. https://doi.org/10.1145/1064978.1065034
+[29] Stanko Novakovic, Alexandros Daglis, Edouard Bugnion, Babak Falsafi, and Boris Grot. 2014. Scale-out NUMA. In
+Proceedings of the 19th International Conference on Architectural Support for Programming Languages and Operating
+Systems (Salt Lake City, Utah, USA) (ASPLOS ’14) . Association for Computing Machinery, New York, NY, USA, 3–18.
+https://doi.org/10.1145/2541940.2541965
+[30] Christian Pinto, Dimitris Syrivelis, Michele Gazzetti, Panos Koutsovasilis, Andrea Reale, Kostas Katrinis, and H. Peter
+Hofstee. 2020. ThymesisFlow: A Software-Defined, HW/SW co-Designed Interconnect Stack for Rack-Scale Memory
+Disaggregation. In 2020 53rd Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . 868–880.
+https://doi.org/10.1109/MICRO50266.2020.00075
+[31] Amit Puri, John Jose, and Tamarapalli Venkatesh. 2022. Design and Evaluation of a Rack-Scale Disaggregated Memory
+Architecture For Data Centers. In 2022 IEEE 24th Int Conf on High Performance Computing & Communications; 8th Int
+Conf on Data Science & Systems; 20th Int Conf on Smart City; 8th Int Conf on Dependability in Sensor, Cloud & Big Data
+Systems & Application (HPCC/DSS/SmartCity/DependSys) . 212–217. https://doi.org/10.1109/HPCC-DSS-SmartCity-
+DependSys57074.2022.00060
+[32] Josue V. Quiroga, Marti Torrents, Nehir Sonmez, Dimitris Theodoropoulos, Ferad Zyulkyarov, and Mario Nemirovsky.
+2019. Evaluation of a Rack-Scale Disaggregated Memory Prototype for Cloud Data Centers. In Proceedings of the
+30th International Workshop on Rapid System Prototyping (RSP’19) (New York, NY, USA) (RSP ’19) . Association for
+Computing Machinery, New York, NY, USA, 15–21. https://doi.org/10.1145/3339985.3358496
+[33] Paul Rosenfeld, Elliott Cooper-Balis, and Bruce Jacob. 2011. DRAMSim2: A Cycle Accurate Memory System Simulator.
+IEEE Comput. Archit. Lett. 10, 1 (jan 2011), 16–19. https://doi.org/10.1109/L-CA.2011.4
+[34] Christos Sakalis, Carl Leonardsson, Stefanos Kaxiras, and Alberto Ros. 2016. Splash-3: A properly synchronized
+benchmark suite for contemporary research. In 2016 IEEE International Symposium on Performance Analysis of Systems
+and Software (ISPASS) . 101–111. https://doi.org/10.1109/ISPASS.2016.7482078
+[35] Debendra Das Sharma. 2023. Compute Express Link (CXL): Enabling Heterogeneous Data-Centric Computing With
+Heterogeneous Memory Hierarchy. IEEE Micro 43, 2 (2023), 99–109. https://doi.org/10.1109/MM.2022.3228561
+[36] Julian Shun and Guy E. Blelloch. 2013. Ligra: A Lightweight Graph Processing Framework for Shared Memory. In
+Proceedings of the 18th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming (Shenzhen, China)
+(PPoPP ’13) . Association for Computing Machinery, New York, NY, USA, 135–146. https://doi.org/10.1145/2442516.
+2442530
+[37] Jason Taylor. 2015. Facebook’s Data Center Infrastructure: Open Compute, Disaggregated Rack, and Beyond, In Optical
+Fiber Communication Conference. Optical Fiber Communication Conference , W1D.5. https://doi.org/10.1364/OFC.2015.
+W1D.5
+[38] John R Tramm, Andrew R Siegel, Tanzima Islam, and Martin Schulz. 2014. XSBench - The Development and Verification
+of a Performance Abstraction for Monte Carlo Reactor Analysis. In PHYSOR 2014 - The Role of Reactor Physics toward a
+Sustainable Future . Kyoto. https://www.mcs.anl.gov/papers/P5064-0114.pdf
+[39] Boyan Zhao, Rui Hou, Jianbo Dong, Michael Huang, Sally A. Mckee, Qianlong Zhang, Yueji Liu, Ye Li, Lixin Zhang,
+and Dan Meng. 2019. Venice: An Effective Resource Sharing Architecture for Data Center Servers. ACM Trans. Comput.
+22DRackSim: Simulator for Rack-Scale Disaggregated Memory Systems Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Syst. 36, 1, Article 2 (mar 2019), 26 pages. https://doi.org/10.1145/3310360
+Received 20 February 2007; revised 12 March 2009; accepted 5 June 2009
+23

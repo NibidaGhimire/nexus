@@ -1,0 +1,1208 @@
+PIRLNav: Pretraining with Imitation and RL Finetuning for O BJECT NAV
+Ram Ramrakhya1Dhruv Batra1,2Erik Wijmans1Abhishek Das2
+1Georgia Institute of Technology2FAIR, Meta AI
+1{ram.ramrakhya,dbatra,etw}@gatech.edu2abhshkdz@meta.com
+Abstract
+We study ObjectGoal Navigation – where a virtual robot
+situated in a new environment is asked to navigate to an ob-
+ject. Prior work [1] has shown that imitation learning (IL)
+using behavior cloning (BC) on a dataset of human demon-
+strations achieves promising results. However, this has lim-
+itations – 1) BC policies generalize poorly to new states,
+since the training mimics actions not their consequences,
+and 2) collecting demonstrations is expensive. On the other
+hand, reinforcement learning (RL) is trivially scalable, but
+requires careful reward engineering to achieve desirable
+behavior. We present PIRLNav, a two-stage learning scheme
+for BC pretraining on human demonstrations followed by
+RL-finetuning. This leads to a policy that achieves a suc-
+cess rate of 65.0%onOBJECT NAV(+5.0%absolute over
+previous state-of-the-art).
+Using this BC →RL training recipe, we present a rigorous
+empirical analysis of design choices. First, we investigate
+whether human demonstrations can be replaced with ‘free’
+(automatically generated) sources of demonstrations, e.g.
+shortest paths (SP) or task-agnostic frontier exploration (FE)
+trajectories. We find that BC →RL on human demonstrations
+outperforms BC →RL on SP and FE trajectories, even when
+controlled for the same BC-pretraining success on TRAIN ,
+and even on a subset of VAL episodes where BC-pretraining
+success favors the SP or FE policies. Next, we study how
+RL-finetuning performance scales with the size of the BC
+pretraining dataset. We find that as we increase the size of
+the BC-pretraining dataset and get to high BC accuracies,
+the improvements from RL-finetuning are smaller, and that
+90% of the performance of our best BC →RL policy can be
+achieved with less than half the number of BC demonstra-
+tions. Finally, we analyze failure modes of our OBJECT NAV
+policies, and present guidelines for further improving them.
+Project page: ram81.github.io/projects/pirlnav .
+1. Introduction
+Since the seminal work of Winograd [2], designing embod-
+ied agents that have a rich understanding of the environment
+Figure 1. OBJECT NAVsuccess rates of agents trained using be-
+havior cloning (BC) vs. BC-pretraining followed by reinforcement
+learning (RL) (in blue). RL from scratch ( i.e. BC= 0) fails to get off-
+the-ground. With more BC demonstrations, BC success increases,
+and it transfers to even higher RL-finetuning success. But the differ-
+ence between RL-finetuning vs. BC-pretraining success (in orange)
+plateaus and starts to decrease beyond a certain point, indicating
+diminishing returns with each additional BC demonstration.
+they are situated in, can interact with humans (and other
+agents) via language, and the environment via actions has
+been a long-term goal in AI [3 –12]. We focus on Object-
+Goal Navigation [13, 14], wherein an agent situated in a
+new environment is asked to navigate to any instance of an
+object category (‘find a plant’, ‘find a bed’, etc.); see Fig. 2.
+OBJECT NAVis simple to explain but difficult for today’s
+techniques to accomplish. First, the agent needs to be able
+to ground the tokens in the language instruction to physical
+objects in the environment ( e.g. what does a ‘plant’ look
+like?). Second, the agent needs to have rich semantic priors
+to guide its navigation to avoid wasteful exploration ( e.g.
+the microwave is likely to be found in the kitchen, not the
+washroom). Finally, it has to keep track of where it has been
+in its internal memory to avoid redundant search.
+Humans are adept at OBJECT NAV. Prior work [1] collected
+a large-scale dataset of 80khuman demonstrations for OB-
+JECT NAV, where human subjects on Mechanical Turk tele-
+operated virtual robots and searched for objects in novel
+houses. This first provided a human baseline on OBJECT -
+NAVof88.9%success rate on the Matterport3D (MP3D)arXiv:2301.07302v2  [cs.LG]  26 Mar 2023Figure 2. OBJECT NAVtrajectories for policies trained with BC →RL on 1) Human Demonstrations, 2) Shortest Paths, and 3) Frontier
+Exploration Demonstrations.
+dataset [15]1compared to 35.4%success rate of the best
+performing method [1]. This dataset was then used to train
+agents via imitation learning (specifically, behavior cloning).
+While this approach achieved state-of-art results ( 35.4%suc-
+cess rate on MP3D VAL dataset), it has two clear limitations.
+First, behavior cloning (BC) is known to suffer from poor
+generalization to out-of-distribution states not seen during
+training, since the training emphasizes imitating actions not
+accomplishing their goals. Second and more importantly,
+it is expensive and thus not scalable. Specifically, Ram-
+rakhya et al. [1] collected 80kdemonstrations on 56scenes
+in Matterport3D Dataset, which took ∼2894 hours of hu-
+man teleoperation and $ 50kdollars. A few months after [1]
+was released, a new higher-quality dataset called HM3D-
+Semantics v0.1 [16] became available with 120annotated
+3D scenes, and a few months after that HM3D-Semantics
+v0.2 added 96additional scenes. Scaling Ramrakhya et al.’s
+approach to continuously incorporate new scenes involves
+replicating that entire effort again and again.
+On the other hand, training with reinforcement learning (RL)
+is trivially scalable once annotated 3D scans are available.
+However, as demonstrated in Maksymets et al . [17], RL
+requires careful reward engineering, the reward function typ-
+ically used for OBJECT NAVactually penalizes exploration
+(even though the task requires it), and the existing RL poli-
+cies overfit to the small number of available environments.
+Our primary technical contribution is PIRLNav, an approach
+for pretraining with BC and finetuning with RL for OBJECT -
+NAV. BC pretrained policies provide a reasonable starting
+point for ‘bootstrapping’ RL and make the optimization eas-
+ier than learning from scratch. In fact, we show that BC
+pretraining even unlocks RL with sparse rewards. Sparse
+rewards are simple (do not involve any reward engineer-
+ing) and do not suffer from the unintended consequences
+1OnVAL split, for 21 object categories, and a maximum of 500 steps.described above. However, learning from scratch with sparse
+rewards is typically out of reach since most random action
+trajectories result in no positive rewards.
+While combining IL and RL has been studied in prior
+work [18 –22], the main technical challenge in the context
+of modern neural networks is that imitation pretraining re-
+sults in weights for the policy (or actor), but not a value
+function (or critic). Thus, naively initializing a new RL pol-
+icy with these BC-pretrained policy weights often leads to
+catastrophic failures due to destructive policy updates early
+on during RL training, especially for actor-critic RL meth-
+ods [23]. To overcome this challenge, we present a two-stage
+learning scheme involving a critic-only learning phase first
+that gradually transitions over to training both the actor and
+critic. We also identify a set of practical recommendations
+for this recipe to be applied to OBJECT NAV. This leads to a
+PIRLNav policy that advances the state-the-art on OBJECT -
+NAVfrom 60.0%success rate (in [24]) to 65.0%(+5.0%,
+8.3%relative improvement).
+Next, using this BC →RL training recipe, we conduct an
+empirical analysis of design choices. Specifically, an ingre-
+dient we investigate is whether human demonstrations can
+be replaced with ‘free’ (automatically generated) sources
+of demonstrations for OBJECT NAV,e.g. (1) shortest paths
+(SP) between the agent’s start location and the closest object
+instance, or (2) task-agnostic frontier exploration [25] (FE)
+of the environment followed by shortest path to goal-object
+upon observing it. We ask and answer the following:
+1.‘Do human demonstrations capture any unique
+OBJECT NAV-specific behaviors that shortest paths and
+frontier exploration trajectories do not?’ Yes. We find
+that BC / BC →RL on human demonstrations outperforms
+BC / BC →RL on shortest paths and frontier exploration
+trajectories respectively. When we control the number of
+demonstrations from each source such that BC success on
+TRAIN is the same, RL-finetuning when initialized fromBC on human demonstrations still outperforms the other
+two.
+2.‘How does performance after RL scale with BC dataset
+size?’ We observe diminishing returns from RL-finetuning
+as we scale BC dataset size. This suggests, by effectively
+leveraging the trade-off curve between size of pretraining
+dataset size vs. performance after RL-Finetuning, we can
+achieve closer to state-of-the-art results without investing
+into a large dataset of BC demonstrations.
+3.‘Does BC on frontier exploration demonstrations present
+similar scaling behavior as BC on human demonstrations?’
+No. We find that as we scale frontier exploration demon-
+strations past 70ktrajectories, the performance plateaus.
+Finally, we present an analysis of the failure modes of our
+OBJECT NAVpolicies and present a set of guidelines for fur-
+ther improving them. Our policy’s primary failure modes
+are: a) Dataset issues: comprising of missing goal annota-
+tions, and navigation meshes blocking the path, b) Naviga-
+tion errors: primarily failure to navigate between floors, c)
+Recognition failures: where the agent does not identify the
+goal object during an episode, or confuses the specified goal
+with a semantically-similar object.
+2. Related Work
+ObjectGoal Navigation . Prior works on OBJECT NAVhave
+used end-to-end RL [17,26,27], modular learning [24,28,29],
+and imitation learning [1, 30]. Works that use end-to-end RL
+have proposed improved visual representations [26, 31], aux-
+iliary tasks [27], and data augmentation techniques [17] to
+improve generalization to unseen environments. Improved
+visual representations include object relation graphs [31]
+and semantic segmentations [26]. Ye et al. [27] use aux-
+iliary tasks like predicting environment dynamics, action
+distributions, and map coverage in addition to OBJECT NAV
+and achieve promising results. Maksymets et al. [17] im-
+prove generalization of RL agents by training with artificially
+inserted objects and proposing a reward to incentivize explo-
+ration.
+Modular learning methods for OBJECT NAVhave also
+emerged as a strong competitor [24, 28, 32]. These methods
+rely on separate modules for semantic mapping that build
+explicit structured map representations, a high-level seman-
+tic exploration module that is learned through RL to solve
+the ‘where to look?’ subproblem, and a low-level navigation
+policy that solves ‘how to navigate to (x, y)?’.
+The current state-of-the-art methods on OBJECT NAV[1, 30]
+make use of BC on a large dataset of 80khuman demon-
+strations. with a simple CNN+RNN policy architecture. In
+this work, we improve on them by developing an effective
+approach to finetune these imitation-pretrained policies with
+RL.
+Imitation Learning and RL Finetuning . Prior works have
+considered a special case of learning from demonstrationdata. These approaches initialize policies trained using be-
+havior cloning, and then fine-tune using on-policy reinforce-
+ment learning [18, 20 –22, 33, 34], On classical tasks like
+cart-pole swing-up [18], balance, hitting a baseball [33],
+and underactuated swing-up [34], demonstrations have been
+used to speed up learning by initializing policies pretrained
+on demonstrations for RL. Similar to these methods, we
+also use a on-policy RL algorithm for finetuning the pol-
+icy trained with behavior cloning. Rajeswaran et al. [20]
+(DAPG) pretrain a policy using behavior cloning and use
+an augmented RL finetuning objective to stay close to the
+demonstrations which helps reduce sample complexity. Un-
+fortunately DAPG is not feasible in our setting as it requires
+solving a systems research problem to efficiently incorpo-
+rate replaying demonstrations and collecting experience on-
+line at our scale. [20] show results of the approach on a
+dexterous hand manipulation task with a small number of
+demonstrations that can be loaded in system memory and
+therefore did not need to solve this system challenge. This
+is not possible in our setting, just the 256 ×256 RGB obser-
+vations for the 77kdemos we collect would occupy over
+2 TB memory, which is out of reach for all but the most
+exotic of today’s systems. There are many methods for
+incorporating demonstrations/imitation learning with off-
+policy RL [35 –39]. Unfortunately these methods were not
+designed to work with recurrent policies and adapting off-
+policy methods to work with recurrent policies is challeng-
+ing [40]. See the Appendix A for more details. The RL
+finetuning approach that demonstrates results with an actor-
+critic and high-dimensional visual observations, and is thus
+most closely related to our setup is proposed in VPT [21].
+Their approach uses Phasic Policy Gradients (PPG) [41]
+with a KL-divergence loss between the current policy and
+the frozen pretrained policy, and decays the KL loss weight ρ
+over time to enable exploration during RL finetuning. Our ap-
+proach uses Proximal Policy Gradients (PPO) [42] instead of
+PPG, and therefore does not require a KL constraint, which
+is compute-expensive, and performs better on OBJECT NAV.
+3. O BJECT NAVand Imitation Learning
+3.1. OBJECT NAV
+InOBJECT NAVan agent is tasked with searching for an in-
+stance of the specified object category ( e.g., ‘bed’) in an
+unseen environment. The agent must perform this task
+using only egocentric perceptions. Specifically, a RGB
+camera, Depth sensor2, and a GPS+Compass sensor that
+provides location and orientation relative to the start po-
+sition of the episode. The action space is discrete and
+consists of MOVE _FORWARD (0.25m),TURN _LEFT (30◦),
+TURN _RIGHT (30◦),LOOK _UP(30◦),LOOK _DOWN (30◦),
+and STOP actions. An episode is considered successful if the
+2We don’t use this sensor as we don’t find it helpful.agent stops within 1mEuclidean distance of the goal object
+within 500steps and is able to view the object by taking turn
+actions [14].
+We use scenes from the HM3D-Semantics v0.1 dataset [16].
+The dataset consists of 120scenes and 6unique goal object
+categories. We evaluate our agent using the train/val/test
+splits from the 2022 Habitat Challenge3.
+3.2. OBJECT NAVDemonstrations
+Ramrakhya et al. [1] collected OBJECT NAVdemonstrations
+for the Matterport3D dataset [15]. We begin our study by
+replicating this effort and collect demonstrations for the
+HM3D-Semantics v0.1 dataset [16]. We use Ramrakhya et
+al.’s Habitat-WebGL infrastructure to collect 77kdemon-
+strations, amounting to ∼2378 human annotation hours.
+3.3. Imitation Learning from Demonstrations
+We use behavior cloning to pretrain our OBJECT NAVpolicy
+on the human demonstrations we collect. Let πBC
+θ(at|ot)
+denote a policy parametrized by θthat maps observations
+otto a distribution over actions at. Let τdenote a trajec-
+tory consisting of state, observation, action tuples: τ= 
+s0, o0, a0, . . . , s T, oT, aT
+andT=
+τ(i)	N
+i=1denote a
+dataset of human demonstrations. The optimal parameters
+are
+θ∗=arg minθNX
+i=1X
+(ot,at)∈τ(i)−log
+πBC
+θ(at|ot)
+(1)
+We use inflection weighting [43] to adjust the loss function to
+upweight timesteps where actions change ( i.e.at−1̸=at).
+OurObjectNav policy architecture is a simple CNN+RNN
+model from [30]. To encode RGB input (it=CNN (It)),
+we use a ResNet50 [44]. Following [30], the CNN is first
+pre-trained on the Omnidata starter dataset [45] using the
+self-supervised pretraining method DINO [46] and then fine-
+tuned during OBJECT NAVtraining. The GPS+Compass
+inputs, Pt= (∆ x,∆y,∆z), and Rt= (∆ θ), are passed
+through fully-connected layers pt=FC(Pt), rt=FC(Rt)
+to embed them to 32-d vectors. Finally, we convert the
+object goal category to one-hot and pass it through a fully-
+connected layer gt=FC(Gt), resulting in a 32-d vector. All
+of these input features are concatenated to form an observa-
+tion embedding, and fed into a 2-layer, 2048-d GRU at every
+timestep to predict a distribution over actions at- formally,
+given current observations ot= [it, pt, rt, gt],(ht, at) =
+GRU(ot, ht−1). To reduce overfitting, we apply color-jitter
+and random shifts [47] to the RGB inputs.
+4. RL Finetuning
+Our motivation for RL-finetuning is two-fold. First, finetun-
+ing may allow for higher performance as behavior cloning
+3https://aihabitat.org/challenge/2022/is known to suffer from a train/test mismatch – when train-
+ing, the policy sees the result of taking ground-truth actions,
+while at test-time, it must contend with the consequences
+of its own actions. Second, collecting more human demon-
+strations on new scenes or simply to improve performance
+is time-consuming and expensive. On the other hand, RL-
+finetuning is trivially scalable (once annotated 3D scans are
+available) and has the potential to reduce the amount of
+human demonstrations needed.
+4.1. Setup
+The RL objective is to find a policy πθ(a|s)that maximizes
+expected sum of discounted future rewards. Let τbe a
+sequence of object, action, reward tuples ( ot,at,rt) where
+at∼πθ(· |ot)is the action sampled from the agent’s policy,
+andrtis the reward. For a discount factor γ, the optimal
+policy is
+π∗= argmax
+πEτ∼π[RT],where RT=TX
+t=1γt−1rt.(2)
+To solve this maximization problem, actor-critic RL methods
+learn a state-value function V(s)(also called a critic) in
+addition to the policy (also called an actor). The critic V(st)
+represents the expected value of returns Rtwhen starting
+from state stand acting under the policy π, where returns
+are defined as Rt=PT
+i=tγi−tri. We use DD-PPO [48], a
+distributed implementation of PPO [42], an on-policy RL
+algorithm. Given a θ-parameterized policy πθand a set of
+rollouts, PPO updates the policy as follows. Let ˆAt=Rt−
+V(st), be the advantage estimate and pt(θ) =πθ(at|ot)
+πθold(at|ot)be
+the ratio of the probability of action atunder current policy
+and under the policy used to collect rollouts. The parameters
+are updated by maximizing:
+JPPO(θ) =Et
+min 
+pt(θ)ˆAt,clip(pt(θ),1−ϵ,1+ϵ)ˆAt
+(3)
+We use a sparse success reward. Sparse success is sim-
+ple (does not require hyperparameter optimization) and has
+fewer unintended consequences ( e.g. Maksymets et al. [17]
+showed that typical dense rewards used in OBJECT NAVactu-
+allypenalize exploration, even though exploration is neces-
+sary for OBJECT NAVin new environments). Sparse rewards
+are desirable but typically difficult to use with RL (when ini-
+tializing training from scratch) because they result in nearly
+all trajectories achieving 0reward, making it difficult to learn.
+However, since we pretrain with BC, we do not observe any
+such pathologies.
+4.2. Finetuning Methodology
+We use the behavior cloned policy πBC
+θweights to initialize
+the actor parameters. However, notice that during behaviorFigure 3. Learning rate schedule for RL Finetuning.
+cloning we do not learn a critic nor is it easy to do so – a
+critic learned on human demonstrations (during behavior
+cloning) would be overly optimistic since all it sees are
+successes. Thus, we must learn the critic from scratch during
+RL. Naively finetuning the actor with a randomly-initialized
+critic leads to a rapid drop in performance4(see Fig. 8) since
+the critic provides poor value estimates which influence the
+actor’s gradient updates (see Eq. (3)). We address this issue
+by using a two-phase training regime:
+Phase 1: Critic Learning . In the first phase, we rollout
+trajectories using the frozen policy, pre-trained using BC,
+and use them to learn a critic. To ensure consistency of
+rollouts collected for critic learning with RL training, we
+sample actions (as opposed to using argmax actions) from the
+pre-trained BC policy: at∼πθ(st). We train the critic until
+its loss plateaus. In our experiments, we found 8Msteps to
+be sufficient. In addition, we also initialize the weights of the
+critic’s final linear layer close to zero to stabilize training.
+Phase 2: Interactive Learning . In the second phase, we
+unfreeze the actor RNN5and finetune both actor and critic
+weights. We find that naively switching from phase 1 to
+phase 2 leads to small improvements in policy performance
+at convergence. We gradually decay the critic learning rate
+from2.5×10−4to1.5×10−5while warming-up the policy
+learning rate from 0to1.5×10−5between 8Mto12Msteps,
+and then keeping both at 1.5×10−5through the course of
+training. See Fig. 3. We find that using this learning rate
+schedule helps improve policy performance. For parameters
+that are shared between the actor and critic ( i.e. the RNN), we
+use the lower of the two learning rates ( i.e. always the actor’s
+in our schedule). To summarize our finetuning methodology:
+–First, we initialize the weights of the policy network with
+the IL-pretrained policy and initialize critic weights close
+to zero. We freeze the actor and shared weights. The only
+learnable parameters are in the critic.
+4After the initial drop, the performance increases but the improvements
+on success are small.
+5The CNN and non-visual observation embedding layers remain frozen.
+We find this to be more stable.–Next, we learn the critic weights on rollouts collected
+from the pretrained, frozen policy.
+–After training the critic, we warmup the policy learning
+rate and decay the critic learning rate.
+–Once both critic and policy learning rate reach a fixed
+learning rate, we train the policy to convergence.
+4.3. Results
+Comparing with the RL-finetuning approach in
+VPT [21] . We start by comparing our proposed RL-
+finetuning approach with the approach used in VPT [21].
+Specifically, [21] proposed initializing the critic weights
+to zero, replacing entropy term with a KL-divergence loss
+between the frozen IL policy and the RL policy, and decay
+the KL divergence loss coefficient, ρ, by a fixed factor
+after every iteration. Notice that this prevents the actor
+from drifting too far too quickly from the IL policy, but
+does not solve uninitialized critic problem. To ensure fair
+comparison, we implement this method within our DD-PPO
+framework to ensure that any performance difference
+is due to the fine-tuning algorithm and not tangential
+implementation differences. Complete training details are
+in the Appendix C.3. We keep hyperparameters constant
+for our approach for all experiments. Table 1 reports results
+on HM3D VAL for the two approaches using 20khuman
+demonstrations. We find that PIRLNav achieves +2.2%
+Success compared to VPT and comparable SPL.
+Method Success (↑) SPL(↑)
+1) BC 52.0 20 .6
+2) BC→RL-FT w/ VPT 59.7±0.7028.6±0.89
+3) PIRLNav (Ours) 61.9±0.47 27.9±0.56
+Table 1. Comparison with VPT on HM3D VAL [16, 32]
+Method Success (↑) SPL(↑)
+1) BC 52.0 20 .6
+2) BC→RL-FT 53.6±1.0128.6±0.50
+3) BC→RL-FT (+ Critic Learning) 56.7±0.93 27.7±0.82
+4) BC→RL-FT (+ Critic Learning, Critic Decay) 59.4±0.42 26.9±0.38
+5) BC→RL-FT (+ Critic Learning, Actor Warmup) 58.2±0.55 26.7±0.69
+6) PIRLNav 61.9±0.47 27.9±0.56
+Table 2. RL-finetuning ablations on HM3D VAL [16, 32]
+Ablations . Next, we conduct ablation experiments to quan-
+tify the importance of each phase in our RL-finetuning ap-
+proach. Table 2 reports results on the HM3D VAL split for
+a policy BC-pretrained on 20khuman demonstrations and
+RL-finetuned for 300Msteps, complete training details are
+in Appendix C.4. First, without a gradual learning transition
+(row 2),i.e. without a critic learning and LR decay phase,
+the policy improves by 1.6%on success and 8.0%on SPL.
+Next, with only a critic learning phase (row 3), the policy
+improves by 4.7%on success and 7.1%on SPL. Using an
+LR decay schedule only for the critic after the critic learn-ing phase improves success by 7.4%and SPL by 6.3%, and
+using an LR warmup schedule for the actor (but no critic
+LR decay) after the critic learning phase improves success
+by6.2%and SPL by 6.1%. Finally, combining everything
+(critic-only learning, critic LR decay, actor LR warmup), our
+policy improves by 9.9%on success and 7.3%on SPL.
+TEST -STD TEST -CHALLENGE
+Method Success (↑)SPL(↑) Success (↑)SPL(↑)
+1) Stretch [24] 60.0% 34 .0% 56 .0% 29 .0%
+2) ProcTHOR-Large [49] 54.0% 32 .0% - -
+3) Habitat-Web [1] 55.0% 22 .0% - -
+4) DD-PPO [50] 26.0% 12 .0% - -
+5) Populus A. 66.0% 32 .0% 60 .0% 30 .0%
+6) ByteBOT 68.0% 37 .0% 64.0% 35.0%
+7) PIRLNav665.0% 33 .0% 65.0% 33 .0%
+Table 3. Results on HM3D TEST -STANDARD and TEST -
+CHALLENGE [16, 50]. Unpublished works submitted only to the
+OBJECT NAVleaderboard have been grayed out.
+ObjectNav Challenge 2022 Results . Using our overall two-
+stage training approach of BC-pretraining followed by RL-
+finetuning, we achieve state-of-the-art results on OBJECT -
+NAV–65.0%success and 33.0%SPL on both the TEST -
+STANDARD and TEST -CHALLENGE splits and 70.4%suc-
+cess and 34.1%SPL on VAL. Table 3 compares our results
+with the top-4 entries to the Habitat OBJECT NAVChallenge
+2022 [50]. Our approach outperforms Stretch [24] on suc-
+cess rate on both TEST -STANDARD and TEST -CHALLENGE
+and is comparable on SPL ( 1%worse on TEST -STANDARD ,
+4%better on TEST -CHALLENGE ). ProcTHOR [49], which
+uses10kprocedurally-generated environments for training,
+achieves 54% success and 32% SPL on TEST -STANDARD
+split, which is 11% worse at success and 1%worse at SPL
+than ours. For sake of completeness, we also report results
+of two unpublished entries uploaded to the leaderboard –
+Populus A. and ByteBOT. Unfortunately, there is no asso-
+ciated report yet with these entries, so we are unable to
+comment on the details of these approaches, or even whether
+the comparison is meaningful.
+5. Role of demonstrations in BC →RL transfer
+Our decision to use human demonstrations for BC-
+pretraining before RL-finetuning was motivated by results in
+prior work [1]. Next, we examine if other cheaper sources of
+demonstrations lead to equally good BC →RL generalization.
+Specifically, we consider 3sources of demonstrations:
+Shortest paths (SP) . These demonstrations are generated
+by greedily sampling actions to fit the geodesic shortest path
+to the nearest navigable goal object, computed using the
+ground-truth map of the environment. These demonstrations
+do not capture any exploration, they only capture success at
+the O BJECT NAVtask via the most efficient path.
+6The approach is called “BadSeed” on the HM3D leaderboard:
+eval.ai/web/challenges/challenge-page/1615/leaderboard/3899Training demonstrations Success (↑)SPL(↑)
+Shortest paths ( 240k) 6.4% 5 .0%
+Frontier exploration ( 70k) 44.9% 21 .5%
+Human demonstrations ( 77k) 64.1% 27.1%
+Table 4. Performance on HM3D VAL with imitation learning on
+SP, FE, and HD demonstrations. The size of each demonstration
+dataset is picked such that total steps of experience is ∼12M.
+Task-Agnostic Frontier Exploration (FE) [24] . These are
+generated by using a 2-stage approach: 1) Exploration:
+where a task-agnostic strategy is used to maximize explo-
+ration coverage and build a top-down semantic map of the
+environment, and 2) Goal navigation: once the goal object
+is detected by the semantic predictor, the developed map
+is used to reach it by following the shortest path. These
+demonstrations capture O BJECT NAV-agnostic exploration.
+Human Demonstrations (HD) [1] . These are collected by
+asking humans on Mechanical Turk to control an agent and
+navigate to the goal object. Humans are provided access to
+the first-person RGB view of the agent and tasked to reach
+within 1m of the goal object category. These demonstrations
+capture human-like O BJECT NAV-specific exploration.
+5.1. Results with Behavior Cloning
+Using the BC setup described in Sec. 3.3, we train on SP,
+FE, and HD demonstrations. Since these demonstrations
+vary in trajectory length ( e.g. SP are significantly shorter
+than FE), we collect ∼12Msteps of experience with each
+method. That amounts to 240kSP,70kFE, and 77kHD
+demonstrations respectively. As shown in Table 4, BC on
+240kSP demonstrations leads to 6.4%success and 5.0%
+SPL. We believe this poor performance is due to an imitation
+gap [51], i.e. the shortest path demonstrations are generated
+with access to privileged information (ground-truth map of
+the environment) which is not available to the policy during
+training. Without a map, following the shortest path in a
+new environment to find a goal object is not possible. BC on
+70kFE demonstrations achieves 44.9%success and 21.5%
+SPL, which is significantly better than BC on shortest paths
+(+38.5%success, +16.5%SPL). Finally, BC on 77kHD
+obtains the best results – 64.1%success, 27.1%SPL. These
+trends suggest that task-specific exploration (captured in
+human demonstrations) leads to much better generalization
+than task-agnostic exploration (FE) or shortest paths (SP).
+5.2. Results with RL Finetuning
+Using the BC-pretrained policies on SP, FE, and HD demon-
+strations as initialization, we RL-finetune each using our ap-
+proach described in Sec. 4. These results are summarized in
+Fig. 4. Perhaps intuitively, the trends after RL-finetuning fol-
+low the same ordering as BC-pretraining, i.e. RL-finetuning
+from BC on HD >FE>SP. But there are two factors that
+could be leading to this ordering after RL-finetuning – 1)
+inconsistency in performance at initialization ( i.e. BC on HDFigure 4. OBJECT NAVperformance on HM3D VAL with BC-
+pretraining on shortest path (SP), frontier exploration (FE), and
+human demonstrations (HD), followed by RL-finetuning from each.
+Figure 5. BC and RL performance for shortest paths (SP), frontier
+exploration (FE), and human demonstrations (HD) with equal BC
+training success on HM3D TRAIN (left) and VAL (right).
+Training demonstrations BC Success (↑)RL-FT Success (↑)
+1) SP 5.2% 34 .8%
+2) HD 0.0% 57.2%
+3) FE 26.3% 43 .0%
+4) HD 0.0% 57.2%
+Table 5. Results on SP-favoring and FE-Favoring splits.
+is already better than BC on FE), and 2) amenability of each
+of these initializations to RL-finetuning ( i.e. is RL-finetuning
+from HD init better than FE init?).
+We are interested in answering (2), and so we control for
+(1) by selecting BC-pretrained policy weights across SP, FE,
+and HD that have equal performance on a subset of TRAIN
+=∼48.0%success. This essentially amounts to selecting
+BC-pretraining checkpoints for FE and HD from earlier in
+training as ∼48.0%success is the maximum for SP.
+Fig. 5 shows the results after BC and RL-finetuning on
+a subset of the HM3D TRAIN and on HM3D VAL. First,
+note that at BC-pretraining TRAIN success rates are equal
+(=∼48.0%), while on VAL FE is slightly better than HD
+followed by SP. We find that after RL-finetuning, the pol-
+icy trained on HD still leads to higher VAL success ( 66.1%)
+compared to FE ( 51.3%) and SP ( 43.6%). Notice that RL-
+finetuning from SP leads to high TRAIN success, but low VAL
+success, indicating significant overfitting. FE has smaller
+TRAIN -VAL gap after RL-finetuning but both are worse than
+HD, indicating underfitting. These results show that learning
+to imitate human demonstrations equips the agent with nav-
+igation strategies that enable better RL-finetuning general-
+ization compared to imitating other kinds of demonstrations,
+even when controlled for the same BC-pretraining accuracy.Results on SP-favoring and FE-favoring episodes . To fur-
+ther emphasize that imitating human demonstrations is key
+to good generalization, we created two subsplits from the
+HM3D VAL split that are adversarial to HD performance –
+SP-favoring and FE-favoring. The SP-favoring VAL split
+consists of episodes where BC on SP achieved a higher per-
+formance compared to BC on HD, i.e. we select episodes
+where BC on SP succeeded but BC on HD did not or both
+BC on SP and BC on HD failed. Similarly, we also create
+an FE-favoring VAL split using the same sampling strat-
+egy biased towards BC on FE. Next, we report the perfor-
+mance of RL-finetuned from BC on SP, FE, and HD on
+these two evaluation splits in Table 5. On both SP-favoring
+and FE-favoring, BC on HD is at 0%success (by design),
+but after RL-finetuning, is able to significantly outperform
+RL-finetuning from the respective BC on SP and FE policies.
+5.3. Scaling laws of BC and RL
+In this section, we investigate how BC-pretraining →RL-
+finetuning success scales with no. of BC demonstrations.
+Human demonstrations . We create HD subsplits ranging
+in size from 2kto77kepisodes, and BC-pretrain policies
+with the same set of hyperparameters on each split. Then, for
+each, we RL-finetune from the best-performing checkpoint.
+The resulting BC and RL success on HM3D VAL vs. no.
+of HD episodes is plotted in Fig. 1. Similar to [1], we see
+promising scaling behavior with more BC demonstrations.
+Interestingly, as we increase the size of of the BC pretraining
+dataset and get to high BC accuracies, the improvements
+from RL-finetuning decrease. E.g. at20kBC demonstra-
+tions, the BC →RL improvement is 10.1%success, while
+at77kBC demonstrations, the improvement is 6.3%. Fur-
+thermore, with 35kBC-pretraining demonstrations, the RL-
+finetuned success is only 4%worse than RL-finetuning from
+77kBC demonstrations ( 66.4%vs.70.4%). Both suggest
+that by effectively leveraging the trade-off between the size
+of the BC-pretraining dataset vs. performance gains after
+RL-finetuning, it may be possible to achieve close to state-of-
+the-art results without large investments in demonstrations.
+How well does FE Scale? In Section 5.1, we showed that
+BC on human demonstrations outperforms BC on both short-
+est paths and frontier exploration demonstrations, when con-
+trolled for the same amount of training experience. In con-
+trast to human demonstrations however, collecting shortest
+paths and frontier exploration demonstrations is cheaper,
+which makes scaling these demonstration datasets easier.
+Since BC performance on shortest paths is significantly
+worse even with 3x more demonstrations compared to FE
+and HD ( 240kSPvs.70kFE and 77kHD demos, Sec. 5.1),
+we focus on scaling FE demonstrations. Fig. 6 plots perfor-
+mance on HM3D VAL against FE dataset size and a curve fit-
+ted using 75kdemonstrations to predict performance on FE
+dataset-sizes ≥75k. We created splits ranging in size fromFigure 6. Success on ObjectNav HM3D VAL split vs. no. of
+frontier exploration demonstrations for training.
+Figure 7. Failure modes of our best BC →RLOBJECT NAVpolicy
+10kto150k. Increasing the dataset size doesn’t consistently
+improve performance and saturates after 70kdemonstrations,
+suggesting that generating more FE demonstrations is un-
+likely to help. We hypothesize that the saturation is because
+these demonstrations don’t capture task-specific exploration.
+6. Failure Modes
+To better understand the failure modes of our BC →RLOB-
+JECT NAVpolicies, we manually annotate 592failed HM3D
+VAL episodes from our best OBJECT NAVagent. See Fig. 7.
+The most common failure modes are:
+Missing Annotations (27%): Episodes where the agent nav-
+igates to the correct goal object category but the episode is
+counted as a failure due to missing annotations in the data.
+Inter-Floor Navigation (21%): The object is on a different
+floor and the agent fails to climb up/down the stairs.
+Recognition Failure (20%): The agent sees the object in its
+field of view but fails to navigate to it.
+Last Mile Navigation [52] (12%). Repeated collisions
+against objects or mesh geometry close to the goal object
+preventing the agent from reaching close to it.
+Navmesh Failure (9%). Hard-to-navigate meshes blocking
+the path of the agent. E.g. in one instance, the agent fails to
+climb stairs because of a narrow nav mesh on the stairs.
+Looping (4%). Repeatedly visiting the same location and
+not exploring the rest of the environment.
+Semantic Confusion (5%). Confusing the goal object with
+a semantically-similar object. E.g. ‘armchair’ for ‘sofa’.
+Exploration Failure (2%). Catch-all for failures in a com-plex navigation environment, early termination, semantic
+failures ( e.g. looking for a chair in a bathroom), etc.
+As can be seen in Fig. 7, most failures ( ∼36%) are due to is-
+sues in the OBJECT NAVdataset – 27% due to missing object
+annotations + 9% due to holes / issues in the navmesh. 21%
+failures are due to the agent being unable to climb up/down
+stairs. We believe this happens because climbing up / down
+stairs to explore another floor is a difficult behavior to learn
+and there are few episodes that require this. Oversampling
+inter-floor navigation episodes during training can help with
+this. Another failure mode is failing to recognize the goal ob-
+ject – 20% where the object is in the agent’s field of view but
+it does not navigate to it, and 5%where the agent navigates
+to another semantically-similar object. Advances in the vi-
+sual backbone and object recognition can help address these.
+Prior works [1,24] have used explicit semantic segmentation
+modules to recognize objects at each step of navigation. In-
+corporating this within the BC →RL training pipeline could
+help. 11% failures are due to last mile navigation, suggesting
+that equipping the agent with better goal-distance estimators
+could help. Finally, only ∼6%failures are due to looping
+and lack of exploration, which is promising!
+7. Conclusion
+To conclude, we propose PIRLNav, an approach to com-
+bine imitation using behavior cloning (BC) and reinforce-
+ment learning (RL) for OBJECT NAV, wherein we pretrain
+a policy with BC on 77khuman demonstrations and then
+finetune it with RL, leading to state-of-the-art results on
+OBJECT NAV(65% success, 5%improvement over previous
+best). Next, using this BC →RL training recipe, we present a
+thorough empirical study of the impact of different demon-
+stration datasets used for BC-pretraining on downstream
+RL-finetuning performance. We show that BC / BC →RL on
+human demonstrations outperforms BC / BC →RL on short-
+est paths and frontier exploration trajectories, even when we
+control for same BC success on TRAIN . We also show that as
+we scale the pretraining dataset size for BC and get to higher
+BC success rates, the improvements from RL-finetuning
+start to diminish. Finally, we characterize our agent’s failure
+modes, and find that the largest sources of error are 1) dataset
+annotation noise, and inability of the agent to 2) navigate
+across floors, and 3) recognize the correct goal object.
+Acknowledgements . We thank Karmesh Yadav for OVRL
+model weights [30], and Theophile Gervet for answering
+questions related to the frontier exploration code [24] used
+to generate demonstrations. The Georgia Tech effort was
+supported in part by NSF, ONR YIP, and ARO PECASE.
+The views and conclusions contained herein are those of the
+authors and should not be interpreted as necessarily repre-
+senting the official policies or endorsements, either expressed
+or implied, of the U.S. Government, or any sponsor.References
+[1]R. Ramrakhya, E. Undersander, D. Batra, and A. Das,
+“Habitat-web: Learning embodied object-search strate-
+gies from human demonstrations at scale,” in CVPR ,
+2022. 1, 2, 3, 4, 6, 7, 8, 13
+[2]T. Winograd, “Understanding natural language,” Cog-
+nitive Psychology , 1972. 1
+[3]L. Smith and M. Gasser, “The development of embod-
+ied cognition: six lessons from babies.,” Artificial life ,
+vol. 11, no. 1-2, 2005. 1
+[4]K. M. Hermann, F. Hill, S. Green, F. Wang, R. Faulkner,
+H. Soyer, D. Szepesvari, W. Czarnecki, M. Jaderberg,
+D. Teplyashin, et al. , “Grounded language learning in a
+simulated 3D world,” arXiv preprint arXiv:1706.06551 ,
+2017. 1
+[5]F. Hill, K. M. Hermann, P. Blunsom, and S. Clark,
+“Understanding grounded language learning agents,”
+arXiv preprint arXiv:1710.09867 , 2017. 1
+[6]D. S. Chaplot, K. M. Sathyendra, R. K. Pasumarthi,
+D. Rajagopal, and R. Salakhutdinov, “Gated-attention
+architectures for task-oriented language grounding,” in
+AAAI , 2018. 1
+[7]P. Anderson, Q. Wu, D. Teney, J. Bruce, M. John-
+son, N. Sünderhauf, I. Reid, S. Gould, and A. van den
+Hengel, “Vision-and-language navigation: Interpret-
+ing visually-grounded navigation instructions in real
+environments,” in CVPR , 2018. 1
+[8]U. Jain, L. Weihs, E. Kolve, M. Rastegari, S. Lazebnik,
+A. Farhadi, A. G. Schwing, and A. Kembhavi, “Two
+body problem: Collaborative visual task completion,”
+inCVPR , 2019. 1
+[9]A. Das, Building agents that can see, talk, and act .
+PhD thesis, Georgia Institute of Technology, 2020. 1
+[10] J. Abramson, A. Ahuja, I. Barr, A. Brussee,
+F. Carnevale, M. Cassin, R. Chhaparia, S. Clark,
+B. Damoc, A. Dudzik, et al. , “Imitating interactive
+intelligence,” arXiv preprint arXiv:2012.05672 , 2020.
+1
+[11] L. Weihs, A. Kembhavi, K. Ehsani, S. M. Pratt, W. Han,
+A. Herrasti, E. Kolve, D. Schwenk, R. Mottaghi, and
+A. Farhadi, “Learning generalizable visual representa-
+tions via interactive gameplay,” in ICLR , 2021. 1
+[12] C. Lynch, A. Wahid, J. Tompson, T. Ding, J. Betker,
+R. Baruch, T. Armstrong, and P. Florence, “Interac-
+tive language: Talking to robots in real time,” arXiv
+preprint arXiv:2210.06407 , 2022. 1[13] P. Anderson, A. X. Chang, D. S. Chaplot, A. Doso-
+vitskiy, S. Gupta, V . Koltun, J. Kosecka, J. Malik,
+R. Mottaghi, M. Savva, and A. R. Zamir, “On eval-
+uation of embodied navigation agents,” arXiv preprint
+arXiv:1807.06757 , 2018. 1
+[14] D. Batra, A. Gokaslan, A. Kembhavi, O. Maksymets,
+R. Mottaghi, M. Savva, A. Toshev, and E. Wij-
+mans, “ObjectNav revisited: On evaluation of em-
+bodied agents navigating to objects,” arXiv preprint
+arXiv:2006.13171 , 2020. 1, 4
+[15] A. Chang, A. Dai, T. Funkhouser, M. Halber, M. Niess-
+ner, M. Savva, S. Song, A. Zeng, and Y . Zhang, “Mat-
+terport3D: Learning from RGB-D Data in Indoor En-
+vironments,” in 3DV, 2017. MatterPort3D dataset li-
+cense: http://kaldir.vc.in.tum.de/matterport/MP_
+TOS.pdf . 2, 4
+[16] K. Yadav, R. Ramrakhya, S. K. Ramakrishnan,
+T. Gervet, J. Turner, A. Gokaslan, N. Maestre,
+A. X. Chang, D. Batra, M. Savva, et al. , “Habitat-
+matterport 3d semantics dataset,” arXiv preprint
+arXiv:2210.05633 , 2022. 2, 4, 5, 6, 14
+[17] O. Maksymets, V . Cartillier, A. Gokaslan, E. Wijmans,
+W. Galuba, S. Lee, and D. Batra, “THDA: Treasure
+Hunt Data Augmentation for Semantic Navigation,” in
+ICCV , 2021. 2, 3, 4
+[18] S. Schaal, “Learning from demonstration,” in NIPS ,
+1996. 2, 3
+[19] A. Das, G. Gkioxari, S. Lee, D. Parikh, and D. Ba-
+tra, “Neural Modular Control for Embodied Question
+Answering,” in CoRL , 2018. 2
+[20] A. Rajeswaran, V . Kumar, A. Gupta, G. Vezzani,
+J. Schulman, E. Todorov, and S. Levine, “Learning
+complex dexterous manipulation with deep reinforce-
+ment learning and demonstrations,” in RSS, 2018. 2, 3,
+12
+[21] B. Baker, I. Akkaya, P. Zhokhov, J. Huizinga,
+J. Tang, A. Ecoffet, B. Houghton, R. Sampedro, and
+J. Clune, “Video pretraining (vpt): Learning to act
+by watching unlabeled online videos,” arXiv preprint
+arXiv:2206.11795 , 2022. 2, 3, 5, 14
+[22] A. Gupta, V . Kumar, C. Lynch, S. Levine, and K. Haus-
+man, “Relay policy learning: Solving long horizon
+tasks via imitation and reinforcement learning,” in
+CoRL , 2019. 2, 3
+[23] I. Uchendu, T. Xiao, Y . Lu, B. Zhu, M. Yan, J. Si-
+mon, M. Bennice, C. Fu, C. Ma, J. Jiao, S. Levine,
+and K. Hausman, “Jump-start reinforcement learning,”
+arXiv preprint arXiv:2204.02372 , 2022. 2[24] D. S. Chaplot, D. Gandhi, A. Gupta, and R. Salakhut-
+dinov, “Object goal navigation using goal-oriented se-
+mantic exploration,” in NeurIPS , 2020. 2, 3, 6, 8
+[25] B. Yamauchi, “A frontier-based approach for au-
+tonomous exploration,” in Proceedings 1997 IEEE In-
+ternational Symposium on Computational Intelligence
+in Robotics and Automation CIRA’97. ’Towards New
+Computational Principles for Robotics and Automa-
+tion’ , 1997. 2
+[26] A. Mousavian, A.toshev, M. Fiser, J. Kosecka,
+A. Wahid, and J. Davidson, “Visual representations
+for semantic target driven navigation,” in ICRA , 2019.
+3
+[27] J. Ye, D. Batra, A. Das, and E. Wijmans, “Auxiliary
+Tasks and Exploration Enable ObjectNav,” in ICCV ,
+2021. 3
+[28] Y . Liang, B. Chen, and S. Song, “SSCNav: Confidence-
+aware semantic scene completion for visual semantic
+navigation,” in ICRA , 2021. 3
+[29] S. K. Ramakrishnan, D. S. Chaplot, Z. Al-Halah, J. Ma-
+lik, and K. Grauman, “PONI: Potential Functions for
+ObjectGoal Navigation with Interaction-free Learning,”
+inCVPR , 2022. 3
+[30] K. Yadav, R. Ramrakhya, A. Majumdar, V .-P. Berges,
+S. Kuhar, D. Batra, A. Baevski, and O. Maksymets,
+“Offline visual representation learning for embodied
+navigation,” arXiv preprint arXiv:2204.13226 , 2022. 3,
+4, 8
+[31] W. Yang, X. Wang, A. Farhadi, A. Gupta, and R. Mot-
+taghi, “Visual semantic navigation using scene priors,”
+inICLR , 2019. 3
+[32] S. K. Ramakrishnan, D. Jayaraman, and K. Grauman,
+“An exploration of embodied visual exploration,” arXiv
+preprint arXiv:2001.02192 , 2020. 3, 5, 14
+[33] J. Peters and S. Schaal, “Reinforcement learning of
+motor skills with policy gradients,” Neural Networks ,
+vol. 21, no. 4, pp. 682–697, 2008. 3
+[34] J. Kober and J. Peters, “Policy search for motor primi-
+tives in robotics,” in NeurIPS , 2008. 3
+[35] A. Nair, M. Dalal, A. Gupta, and S. Levine, “Accelerat-
+ing online reinforcement learning with offline datasets,”
+arXiv preprint arXiv:2006.09359 , 2020. 3, 12
+[36] Y . Lu, K. Hausman, Y . Chebotar, M. Yan, E. Jang,
+A. Herzog, T. Xiao, A. Irpan, M. Khansari, D. Kalash-
+nikov, and S. Levine, “AW-Opt: Learning robotic skills
+with imitation andreinforcement at scale,” in CoRL ,
+2021. 3, 12[37] D. Kalashnikov, A. Irpan, P. Pastor, J. Ibarz, A. Herzog,
+E. Jang, D. Quillen, E. Holly, M. Kalakrishnan, V . Van-
+houcke, et al. , “Scalable deep reinforcement learning
+for vision-based robotic manipulation,” in CoRL , 2018.
+3, 12
+[38] X. B. Peng, A. Kumar, G. Zhang, and S. Levine,
+“Advantage-weighted regression: Simple and scal-
+able off-policy reinforcement learning,” arXiv preprint
+arXiv:1910.00177 , 2019. 3, 12
+[39] Q. Wang, J. Xiong, L. Han, p. sun, H. Liu, and
+T. Zhang, “Exponentially weighted imitation learning
+for batched historical data,” in NeurIPS , 2018. 3, 12
+[40] S. Kapturowski, G. Ostrovski, J. Quan, R. Munos, and
+W. Dabney, “Recurrent experience replay in distributed
+reinforcement learning,” in ICLR , 2019. 3, 13
+[41] K. Cobbe, J. Hilton, O. Klimov, and J. Schulman, “Pha-
+sic policy gradient,” arXiv preprint arXiv:2009.04416 ,
+2020. 3
+[42] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and
+O. Klimov, “Proximal policy optimization algorithms,”
+arXiv preprint arXiv:1707.06347 , 2017. 3, 4, 14
+[43] E. Wijmans, S. Datta, O. Maksymets, A. Das,
+G. Gkioxari, S. Lee, I. Essa, D. Parikh, and D. Ba-
+tra, “Embodied Question Answering in Photorealistic
+Environments with Point Cloud Perception,” in CVPR ,
+2019. 4
+[44] K. He, X. Zhang, S. Ren, and J. Sun, “Deep Residual
+Learning for Image Recognition,” in CVPR , 2016. 4
+[45] A. Eftekhar, A. Sax, J. Malik, and A. Zamir, “Om-
+nidata: A scalable pipeline for making multi-task mid-
+level vision datasets from 3d scans,” in ICCV , 2021.
+4
+[46] M. Caron, H. Touvron, I. Misra, H. Jégou, J. Mairal,
+P. Bojanowski, and A. Joulin, “Emerging properties in
+self-supervised vision transformers,” in ICCV , 2021. 4
+[47] D. Yarats, R. Fergus, A. Lazaric, and L. Pinto,
+“Mastering visual continuous control: Improved data-
+augmented reinforcement learning,” arXiv preprint
+arXiv:2107.09645 , 2021. 4
+[48] E. Wijmans, A. Kadian, A. Morcos, S. Lee, I. Essa,
+D. Parikh, M. Savva, and D. Batra, “DD-PPO: Learn-
+ing near-perfect pointgoal navigators from 2.5 billion
+frames,” in ICLR , 2020. 4
+[49] M. Deitke, E. VanderBilt, A. Herrasti, L. Weihs, J. Sal-
+vador, K. Ehsani, W. Han, E. Kolve, A. Farhadi,A. Kembhavi, and R. Mottaghi, “Procthor: Large-scale
+embodied ai using procedural generation,” in NeurIPS ,
+2022. 6
+[50] H. Team, “Habitat challenge, 2022.” https : / /
+aihabitat.org/challenge/2022 , 2020. 6
+[51] L. Weihs, U. Jain, I.-J. Liu, J. Salvador, S. Lazebnik,
+A. Kembhavi, and A. Schwing, “Bridging the imitation
+gap by adaptive insubordination,” in NeurIPS , 2021.
+the first two authors contributed equally. 6
+[52] J. Wasserman, K. Yadav, G. Chowdhary, A. Gupta, and
+U. Jain, “Last-mile embodied visual navigation,” in
+CoRL , 2022. 8
+[53] V . Kumar and E. Todorov, “Mujoco haptix: A virtual re-
+ality system for hand manipulation,” in 2015 IEEE-RAS
+15th International Conference on Humanoid Robots
+(Humanoids) , 2015. 12
+[54] M. Hausknecht and P. Stone, “Deep Recurrent Q-
+Learning for Partially Observable MDPs,” in AAAI ,
+2015. 12, 13
+[55] V . Mnih, K. Kavukcuoglu, D. Silver, A. Graves,
+I. Antonoglou, D. Wierstra, and M. A. Riedmiller,
+“Playing atari with deep reinforcement learning,” arXiv
+preprint arXiv:1312.5602 , 2013. 12
+[56] S. Ross, G. Gordon, and D. Bagnell, “A reduction of
+imitation learning and structured prediction to no-regret
+online learning,” in AISTATS , 2011. 13
+[57] J. Ho and S. Ermon, “Generative adversarial imitation
+learning,” in NIPS , 2016. 13
+[58] D. Bahdanau, F. Hill, J. Leike, E. Hughes, A. Hos-
+seini, P. Kohli, and E. Grefenstette, “Learning to un-
+derstand goal specifications by modelling reward,” in
+ICLR , 2019. 13
+[59] P. Abbeel and A. Y . Ng, “Apprenticeship learning via
+inverse reinforcement learning,” in ICML , 2004. 13
+[60] B. D. Ziebart, J. A. Bagnell, and A. K. Dey, “Maximum
+entropy inverse reinforcement learning,” in AAAI , 2008.
+13
+[61] J. Fu, K. Luo, and S. Levine, “Learning robust rewards
+with adverserial inverse reinforcement learning,” in
+ICLR , 2018. 13
+[62] J. Schulman, P. Moritz, S. Levine, M. Jordan, and
+P. Abbeel, “High-dimensional continuous control using
+generalized advantage estimation,” in ICLR , 2016. 13A. Prior work in RL Finetuning
+A.1. DAPG [20]
+Preliminaries . Rajeswaran et al. [20] proposed DAPG, a
+method which incorporates demonstrations in RL, and thus
+quite relevant to our methodology. DAPG first pretrains a
+policy using behavior cloning then finetunes the policy using
+an augmented RL objective (shown in Eq. (4)). DAPG pro-
+poses to use different parts of demonstrations dataset during
+different stages of learning for tasks involving sequence of
+behaviors. To do so, they add an additional term to the policy
+gradient objective:
+gaug=X
+(s,a)∈τ∼πθ∇θlogπθ(a|s)Aπ(s, a) +
+X
+(s,a)∈τ∼T∇θlogπθ(a|s)w(s, a)(4)
+Hereτ∼πθis a trajectory obtained by executing the current
+policy, τ∼ T denotes a trajectory obtained by replaying a
+demonstration, and w(s, a)is a weighting function to alter-
+nate between imitation and reinforcement learning. DAPG
+uses a heuristic weighting scheme to set w(s, a)to decay the
+auxiliary objective:
+w(s, a) =λ0λk
+1max
+(s′,a′)∈τ∼πθAπθ(s′, a′)∀(s, a)(5)
+where λ0andλ1are hyperparameters and kis the update
+iteration counter. The decaying weighting term λk
+1is used to
+avoid biasing the gradient towards the demonstrations data
+towards the end of training.
+Implementation Details . [20] showed results of using
+DAPG on dexterous hand manipulation tasks for object re-
+location, in-hand manipulation, tool use, etc. To train the
+policy with behavior cloning, they use 25demonstrations for
+each task gathered using the Mujoco HAPTIX system [53].
+The small size of the demonstrations dataset and the observa-
+tion input allows DAPG to load the demonstrations dataset
+in system memory which makes it feasible to compute the
+augmented RL objective shown above.
+Challenges in adopting [20]’s setup . Compared to [20],
+our setup uses high-dimensional visual input (256 ×256 RGB
+observations) and 77kOBJECT NAVdemonstrations for train-
+ing. Following DAPG’s training implementation, storing
+the visual inputs for 77kdemonstrations in system memory
+would require 2TB, which is significantly higher than what is
+possible on today’s systems. An alternative is to leverage on-
+the-fly demonstration replay during RL training. However,
+efficiently incorporating demonstration replay with experi-
+ence collection online requires solving a systems research
+problem. Naively switching between online experience col-
+lection using the current policy and replay demonstrationswould require 2x the current experience collection time, over-
+all hurting the training throughput.
+A.2. Feasibility of Off-Policy RL finetuning
+There are several methods for incorporating demonstrations
+with off-policy RL [35 –39]. Algorithm 1 shows the general
+framework of off-policy RL (finetuning) methods.
+Algorithm 1 General framework of off-policy RL algorithm
+Require: πθ: Policy, B: replay buffer, N: Rounds, I:
+Policy Update Iterations
+fork= 1toNdo
+Trajectory τ←Rollout πθ(·|s)to collect trajectory
+{(s1, a1, r1, h1), ......, (sT, aT, rT, hT)}
+B← {B} ∪ {τ}
+πθ←TrainPolicy( πθ,B) forIiterations
+end for
+Unfortunately, most of these methods use feedforward state
+encoders, which is ill-posed for partially observable settings.
+In partially observable settings, the agent requires a state
+representation that combines information about the state-
+action trajectory so far with information about the current
+observation, which is typically achieved using a recurrent
+network.
+To train a recurrent policy in an off-policy setting, the full
+state-action trajectories need to be stored in a replay buffer
+to use for training, including the hidden state htof the RNN.
+The policy update requires a sequence input for multiple
+time steps
+(st, at, rt, ht), ......, (st+l, at+l, rt+l, ht+l)
+∼
+τwhere lis sampled sequence length. Additionally, it is not
+obvious how the hidden state should be initialized for RNN
+updates when using a sampled sequence in the off-policy
+setting. Prior work DRQN [54] compared two training strate-
+gies to train a recurrent network from replayed experience:
+1.Bootstrapped Random Updates . The episodes are sam-
+pled randomly from the replay buffer and the policy updates
+begin at random steps in an episode and proceed only for
+the unrolled timesteps. The RNN initial state is initial-
+ized to zero at the start of the update. Using randomly
+sampled experience better adheres to DQN’s [55] random
+sampling strategy, but, as a result, the RNN’s hidden state
+must be initialized to zero at the start of each policy update.
+Using zero start state allows for independent decorrelated
+sampling of short sequences which is important for robust
+optimization of neural networks. Although this can help
+RNN to learn to recover predictions from an initial state
+that mismatches with the hidden state from the collected
+experience but it might limit the ability of the network to
+rely on it’s recurrent state and exploit long term temporal
+correlations.
+2.Bootstrapped Sequential Updates . The full episode
+replays are sampled randomly from the replay buffer andthe policy updates begin at the start of the episode. The
+RNN hidden state is carried forward throughout the episode.
+Eventhough this approach avoids the problem of finding the
+correct initial state it still has computational issues due to
+varying sequence length for each episode, and algorithmic
+issues due to high variance of network updates due to highly
+correlated nature of the states in the trajectory.
+Even though using bootstrapped random updates with zero
+start states performed well in Atari which is mostly fully
+observable, R2D2 [40] found using this strategy prevents a
+RNN from learning long-term dependencies in more mem-
+ory critical environments like DMLab. [40] proposed two
+strategies to train recurrent policies with randomly samples
+sequences:
+1.Stored State . In this strategy, the hidden state is stored
+at each step in the replay and use it to initialize the network
+at the time of policy updates. Using stored state partially
+remedies the issues with initial recurrent state mismatch in
+zero start state strategy but it suffers from ‘representational
+drfit’ leading to ‘recurrent state staleness’, as the stored
+state generated by a sufficiently old network could differ
+significantly from a state from the current policy.
+2.Burn-in . In this strategy the initial part of the replay
+sequence is used to unroll the network and produce a start
+state (‘burn-in period’) and update the network on the re-
+maining part of the sequence.
+While R2D2 [40] found a combination of these strategies to
+be effective at mitigating the representational drift and recur-
+rent state staleness, this increases computation and requires
+careful tuning of the replay sequence length mand burn-in
+period l.
+Both [40, 54] demonstrate the issues associated with using
+a recurrent policy in an off-policy setting and present ap-
+proaches that mitigate issues to some extent. Applying these
+techniques for Embodied AI tasks and off-policy RL fine-
+tuning is an open research problem and requires empirical
+evaluation of these strategies.
+B. Prior work in Imitation Learning
+In Imitation Learning (IL), we use demonstrations of suc-
+cessful behavior to learn a policy that imitates the expert
+(demonstrator) providing these trajectories. The simplest
+approach to IL is behavior cloning (BC), which uses super-
+vised learning to learn a policy to imitate the demonstrator.
+However, BC suffers from poor generalization to unseen
+states, since the training mimics the actions and not their
+consequences. DAgger [56] mitigates this issue by itera-
+tively aggregating the dataset using the expert and trained
+policy ˆπi−1to learn the policy ˆπi. Specifically, at each step
+i, the new dataset Diis generated by:
+πi=βπexp+ (1−β)ˆπi−1 (6)where, πexpis a queryable expert, and ˆπi−1is the trained
+policy at iteration i−1. Then, we aggregate the dataset D←
+D∪Diand train a new policy ˆπion the dataset D. Using
+experience collected by the current policy to update the
+policy for next iteration enables DAgger [56] to mitigate the
+poor generalization to unseen states caused by BC. However,
+using DAgger [56] in our setting is not feasible as we don’t
+have a queryable human expert for policies being trained
+with human demonstrations.
+Alternative approaches [57 –61] for imitation learning are
+variants of inverse reinforcement learning (IRL), which learn
+reward function from expert demonstrations in order to train
+a policy. IRL methods learn a parameterized Rϕ(τ)reward
+function, which models the behavior of the expert and as-
+signs a scalar reward to a demonstration. Given the reward
+rt, a policy πθ(at|st)is learned to map states stto distri-
+bution over actions atat each time step. The goal of IRL
+methods is to learn a reward function such that a policy
+trained to maximize the discounted sum of the learned re-
+ward matches the behavior of the demonstrator. Compared
+to prior works [57 –61], our setup uses a partially-observable
+setting and high-dimensional visual input for training. Fol-
+lowing training implementation from prior works, storing
+visual inputs of demonstrations for reward model training
+would require 2TBsystem memory, which is significantly
+higher than what is possible on today’s systems. Alterna-
+tively, efficiently replaying demonstrations during RL train-
+ing with reward model learning in the loop requires solving
+an open systems research problem. In addition, applying
+these methods for tasks in a partially observable setting is an
+open research problem and requires empirical evaluation of
+these approaches.
+C. Training Details
+C.1. Behavior Cloning
+We use a distributed implementation of behavior cloning
+by [1] for our imitation pretraining. Each worker collects
+64frames of experience from 8environments parallely by
+replaying actions from the demonstrations dataset. We then
+perform a policy update using supervised learning on 2mini
+batches. For all of our BC experiments, we train the policy
+for500Msteps on 64GPUs using Adam optimizer with a
+learning rate 1.0×10−3which is linearly decayed after each
+policy update. Tab. 6 details the default hyperparameters
+used in all of our training runs.
+C.2. Reinforcement Learning
+To train our policy using RL we use PPO with Generalized
+Advantage Estimation (GAE) [62]. We use a discount factor
+γof0.99and set GAE parameter τto 0.95. We do not use
+normalized advantages. To parallelize training, we use DD-
+PPO with 16workers on 16GPUs. Each worker collects 64
+frames of experience from 8environments parallely and thenParameter Value
+Number of GPUs 64
+Number of environments per GPU 8
+Rollout length 64
+Number of mini-batches per epoch 2
+Optimizer Adam
+Learning rate 1.0×10−3
+Weight decay 0.0
+Epsilon 1.0×10−5
+DDPIL sync fraction 0.6
+Table 6. Hyperparameters used for Imitation Learning.
+Parameter Value
+Number of GPUs 16
+Number of environments per GPU 8
+Rollout length 64
+PPO epochs 2
+Number of mini-batches per epoch 2
+Optimizer Adam
+Weight decay 0.0
+Epsilon 1.0×10−5
+PPO clip 0.2
+Generalized advantage estimation True
+γ 0.99
+τ 0.95
+Value loss coefficient 0.5
+Max gradient norm 0.2
+DDPPO sync fraction 0.6
+Table 7. Hyperparameters used for RL finetuning.
+performs 2epochs of PPO update with 2mini batches in each
+epoch. For all of our experiments, we RL finetune the policy
+for300Msteps. Tab. 7 details the default hyperparameters
+used in all of our training runs.
+C.3. RL Finetuning using VPT
+To compare with RL finetuning approach proposed in VPT
+[21] we implement the method in DD-PPO framework.
+Specifically, we initialize the critic weights to zero, replace
+the entropy term in PPO [42] with a KL-divergence loss be-
+tween the frozen IL policy and RL policy, and decay the KL
+divergence loss coefficient, ρ, by a fixed factor after every
+iteration. This loss term is defined as:
+Lkl_penalty =ρKL(πBC
+θ, πθ) (7)
+where πBC
+θis the frozen behavior cloned policy, πθis the
+current policy, and ρis the loss weighting term. Following,
+VPT [21] we set ρto0.2at the start of training and decay it
+by0.995after each policy update. We use learning rate of1.5×10−5without a learning rate decay for our VPT [21]
+finetuning experiments.
+C.4. RL Finetuning Ablations
+Figure 8. A policy pretrained on the OBJECT NAVtask is used
+as initialization for actor weights and critic weights are initialized
+randomly for RL finetuning using DD-PPO. The policy perfor-
+mance immediately starts dropping early on during training and
+then recovers leading to slightly higher performance with further
+training.
+Method Success (↑) SPL(↑)
+1) BC 52.0 20 .6
+2) BC→RL-FT 53.6±1.0128.6±0.50
+3) BC→RL-FT (+ Critic Learning) 56.7±0.93 27.7±0.82
+4) BC→RL-FT (+ Critic Learning, Critic Decay) 59.4±0.42 26.9±0.38
+5) BC→RL-FT (+ Critic Learning, Actor Warmup) 58.2±0.55 26.7±0.69
+6) PIRLNav 61.9±0.47 27.9±0.56
+Table 8. RL-finetuning ablations on HM3D VAL [16, 32]
+For ablations presented in Sec. 4.3 of the main paper (also
+shown in Tab. 8) we use a policy pretrained on 20khuman
+demonstrations using BC and finetuned for 300Msteps us-
+ing hyperparameters from Tab. 7. We try 3learning rates
+(1.5×10−4,2.5×10−4, and 1.5×10−5) for both BC →
+RL (row 2) and BC →RL (+ Critic Learning) (row 3) and
+we report the results with the one that works the best. For
+PIRLNav we use a starting learning rate of 2.5×10−4and
+decay it to 1.5×10−5, consistent with learning rate schedule
+of our best performing agent. For ablations we do not tune
+learning rate parameters of PIRLNav, we hypothesize tuning
+the parameters would help improve performance.
+We find BC →RL (row 2) works best with a smaller learning
+rate but the training performance drops significantly early on,
+due to the critic providing poor value estimates, and recovers
+later as the critic improves. See Fig. 8. In contrast when
+using proposed two phase learning setup with the learning
+rate schedule we do not observe a significant drop in trainingperformance.

@@ -1,0 +1,679 @@
+C-MCTS:
+Safe Planning with Monte Carlo Tree Search
+Dinesh Parthasarathy
+FAU Erlangen-Nürnberg
+Erlangen, Germany
+dinesh.parthasarathy@fau.de
+Georgios Kontes Axel Plinge Christopher Mutschler
+Fraunhofer Institute for Integrated Circuits (IIS), Fraunhofer IIS
+Nuremberg, Germany
+{FirstName.LastName}@iis.fraunhofer.de
+Abstract
+The Constrained Markov Decision Process (CMDP) formulation allows to solve
+safety-critical decision making tasks that are subject to constraints. While CMDPs
+have been extensively studied in the Reinforcement Learning literature, little
+attention has been given to sampling-based planning algorithms such as Monte
+Carlo Tree Search (MCTS) for solving them. Previous approaches are conservative
+with respect to costs as they avoid constraint violations by using Monte Carlo
+cost estimates that suffer from high variance. We propose Constrained MCTS
+(C-MCTS), which estimates cost using a safety critic that is trained with Temporal
+Difference learning in an offline phase prior to agent deployment. The critic limits
+exploration to unsafe regions during deployment by pruning unsafe trajectories
+within MCTS. This makes C-MCTS more efficient w.r.t. planning steps. Compared
+to previous work, it achieves higher rewards by operating closer to the constraint
+boundary (while satisfying cost constraints) and is less susceptible to cost violations
+under model mismatch between the planner and the deployment environment.
+1 Introduction
+Monte Carlo Tree Search ( MCTS ) is a decision-making algorithm that employs Monte Carlo methods
+across the decision space, evaluates their outcome with respect to a given reward/objective, and
+constructs a search tree focusing on the most promising sequences of decisions [ 4,27]. The success
+ofMCTS lies in the asymmetry of the trees constructed, which ensures better exploration of promising
+parts of the search space. The possibility of using neural networks as heuristics to guide the search
+tree has helped tackle complex and high-dimensional problems with large state and action spaces [ 21].
+However, as vanilla MCTS only optimizes for a single objective it is unsuitable for a large class of real-
+world problems that also require a set of constraints to be fulfilled. These types of problems are usually
+modeled as Constrained Markov Decision Processes (CMDPs) [ 1] and specialized algorithms are used
+to solve them. Such algorithms include approaches that rely on expert knowledge to create safe action
+sets [ 10,17,16], Lagrangian relaxation methods that update primal and dual variables incrementally
+online and learn safe policies [ 7,18], approaches that learn separate reward and cost/constraint signals
+to train a safe-aware policy both in Markov Decision Process ( MDP ) [3,24,32] and Robust Markov
+Decision Process ( RMDP ) environments [ 28,15], and methods that use uncertainty-aware estimators
+like Gaussian Processes to balance exploration-exploitation risk [30, 9].
+We propose Constrained MCTS (C-MCTS), an MCTS -based approach for solving CMDPs (Fig. 1).
+We use a high-fidelity simulator to collect trajectories under different safety constraint satisfaction
+Workshop on Safe & Trustworthy Agents, NeurIPS 2024.arXiv:2305.16209v4  [cs.LG]  27 Oct 2024Solve MDP :
+Collect training
+samples using
+MCTS from a high-
+fidelity simulator .Evaluate Policy :
+Compute
+discounted costs
+of current episode.
+No, reset environmentGenerated 'n'
+transitions?
+No, collect more 
+training samplesCosts
+are optimal i.e. 
+just within the
+ constraints?.Training:
+(Re)-train
+safety
+critic.Solve CMDP:
+Update safety critic
+and deploy CMCTS
+on a high-fidelity
+simulator . 
+No, collect more 
+training samplesIs it safe? End Training
+Update MDP  solver : Use
+latest safety critic to guide
+action selection.Initialize : Set
+Lagrange
+multiplier to 0.Start
+TrainingData Gathering Model T raining Safety Evaluation
+Update Lagrange
+multiplierYes, add collected
+samples to the
+training set. Yes, deploy CMCTS
+to the target
+environment.Figure 1: Simplified flow of training phase in C-MCTS.
+levels. This allows for violating cost-constraints during training with no impact, as well as simulating
+rare events that have a safety impact. With these samples, we train a safety critic offline , which is
+used during deployment within MCTS to make cost predictions and avoid tree expansion to unsafe
+states. C-MCTS constructs deeper search trees with fewer planning iterations compared to the
+state-of-the-art while operating safely closer to the cost-constraint, thus leading to higher rewards.
+2 Monte Carlo Tree Search for Constrained MDPs
+A Constrained Markov Decision Process ( CMDP ) can be defined by the tuple ⟨S, A, P, R, C,ˆ c, γ, µ⟩
+where Sis the set of states s,Ais the set of actions a,Pdefines the probability of transitioning from
+s∈Stos′∈Sfor action a∈Aexecuted at s,Ris a reward function that returns a one-step reward
+for a given action aat a state s,γ∈[0,1)is the discount factor, and µ:S7→[0,1]is the initial state
+distribution. Following the notation convention of [ 13],C={Cm}1...Mis a set of Mnon-negative
+cost functions, with ˆ c={cm}1...M∈[0,1]their respective thresholds, in terms of average cost
+allowed per episode . For the remainder of the text, we assume only one constraint function Cwith its
+respective threshold ˆc, to simplify the notation. The optimal policy π∗∈Πis a policy that belongs
+to a (parametric) policy class Πthat maximizes the expected discounted cumulative reward Vπ
+R(s),
+while satisfying all the constraints on the expected discounted cumulative cost Vπ
+C(s), as follows:
+max
+π∈ΠVπ
+R(s) =Eπ"∞X
+t=0γtR(st, at)|s0=s#
+s.t. Vπ
+C(s) =Eπ"∞X
+t=0γtC(st, at)|s0=s#
+≤ˆc.
+(1)
+Depending on the context we will use the definitions of Eq. 1 or the notion of the state-action expected
+discounted cumulative reward/cost (i.e., the state-action value function), defined (for cost) as follows:
+Qπ
+C(s, a) =Eπ"∞X
+t=0γtC(st, at)|s0=s, a0=a#
+≜Vπ
+C(s). (2)
+Similar to assumptions of previous work (see e.g., [ 29] and the robust constraint objective (Eq. 2)
+from [15]), we prioritize the constraint satisfaction part of Eq. 1.
+Definition 1. [29] A feasible solution of the constrained optimization problem defined in Eq. 1 is a
+solution that satisfies Vπ
+C(s)≤ˆc.
+One approach to address the problem in Eq. 1 is using the Lagrange multiplier technique (see [ 2]).
+For formulating the Lagrangian, we can define the following:
+Definition 2. [29] The penalized reward function is defined as rλ(λ, s, a ) =r(s, a)−λ c(s, a). The
+penalized expected discounted cumulative reward function is defined as Vπ
+R(λ, s) =Vπ
+R(s)−λVπ
+C(s).
+The Lagrangian transforms the posed problem into an unconstrained one:
+min
+λ≥0max
+π∈ΠL(λ, π) = min
+λ≥0max
+π∈Π[Vπ
+R(s)−λ(Vπ
+C(s)−ˆc)]. (3)
+Even though a significant body of work in solving CMDPs is available, MCTS fordiscrete-
+action CMDP s has only been little explored. To our knowledge, apart from the seminal work
+of [13], previous work extended MCTS only to multi-objective variants [ 8] that attempt to construct
+local [ 5] or global [ 31] Pareto fronts and determine the Pareto-optimal solution. These approaches
+report good results at the expense of higher computational costs, due to the need to compute a set
+2of Pareto-optimal solutions. Lee et al. [ 13] proposed Cost-Constrained Partially Observable Monte
+Carlo Planning, an MCTS algorithm to solve Constrained Partially Observable Markov Decision
+Process problems, which can be used to solve CMDP settings (we will refer to this algorithm as Cost-
+Constrained Monte Carlo Planning ( CC-MCP )).CC-MCP uses a Lagrange formulation and updates
+the Lagrange multiplier while constructing the search tree based on accumulated cost statistics. The
+CMDP problem is formulated as a Linear Program (LP), and then the dual formulation is solved:
+min
+λ≥0[V∗
+R(λ, s) +λˆc] (4)
+Here, V∗
+R(λ, s)is the optimal penalized expected discounted cumulative reward function, and ˆcare
+the cost constraints. As the objective function in Eq. 4 is piecewise-linear and convex over λ[13],
+λcan be updated using the gradient information V∗
+C−ˆc, where V∗
+Care the costs incurred for an
+optimal policy with a fixed λ. Hence, the CMDP can be solved by iterating the following three steps:
+(i) Solve MDP with a penalized reward function (see Definition 2), (ii) evaluate V∗
+Cfor this policy,
+and (iii) update λusing the gradient information. Steps (i) and (ii) can also be interleaved at a finer
+granularity, and this is the idea behind CC-MCP , where λis updated at every MCTS iteration based
+on the Monte Carlo cost estimate ˆVCat the root node of the search tree.
+3 Constrained Monte Carlo Tree Search (C-MCTS)
+CC-MCP has several shortcomings: (1) it requires a large number of planning iterations to tune the
+Lagrange multiplier (as it is tuned online and thus CC-MCP explores both unsafe and safe trajectories
+in the search tree); (2) the agent acts conservatively, trying to satisfy the cost constraints; and (3) the
+algorithm also relies on the planning model to calculate cost estimates, making it error-prone due to
+the fast-but-inaccurate nature of planning models used for online planning at deployment.
+In C-MCTS the training phase consists of approximating a safety critic that is used by the MCTS pol-
+icy during the deployment phase (without a Lagrange multiplier) for pruning unsafe trajectories/sub-
+trees. We foresee the availability of two simulators: an inaccurate low-fidelity simulator, whose low
+complexity allows for utilization in the online planning/rollout phase of MCTS , and a high-fidelity
+one, used for data collection and evaluation of the safety critic training. We also assume that using
+the high-fidelity model for online planning during deployment is infeasible due to computational
+constraints, therefore we learn safety constraints in an offline phase using the high-fidelity simulator.
+We train the safety critic offline (“Model Training” in Fig. 1), by gathering samples from the training
+environment (high-fidelity simulator). As MCTS explores the state space exhaustively during online
+planning , some state-action pairs are likely to be out-of-distribution , i.e., some trajectories are not
+encountered during (offline) training. More formally, we have two main sources of inaccurate safety
+critic predictions: the aleatoric and the epistemic uncertainty. The former is inherent in the training
+data (e.g., due to the stochastic nature of the transition model) and the latter is due to the lack of
+training data (e.g., it could appear as an extrapolation error) – see for example [ 6] for a more formal
+discussion. To mitigate the effect of both uncertainty sources, we resort to a combination of utilizing
+an ensemble for the safety critic and selecting data near the constraint-switching hypersurface for the
+training phase. However, a large mismatch between the training simulator and the target environment,
+i.e.,distribution shifts , may still affect the agent’s performance (Appendix C.4).
+Uncertainty-aware safety predictions. For the training, we use SARSA(0) [ 26] (a Temporal
+Difference ( TD) Learning-like method [ 25]), but instead of training a single safety critic, we train
+an ensemble. The individual members of the ensemble have the form of neural networks and
+approximate the state-action-cost function. We denote this ensemble safety critic as ˆQ∗
+sc(s, a). The
+trainable parameters of each member of the ensemble are optimized to minimize the mean-squared
+TD-error which uses a low variance one-step target. The aggregated ensemble output ( ˆµ,ˆσ) provides
+a mean and a standard deviation computed from the individual member’s outputs, which we then use
+within MCTS . Hence, the safety critic output with an ensemble standard deviation greater than a set
+threshold ˆσ > σ max can be used to identify and ignore those samples and predictions.
+The trained safety critic ensemble is used during the expansion phase in MCTS , see Alg. 1 – the other
+phases (selection, simulation, backpropagation) are identical to vanilla MCTS . At the expansion
+phase, we try to expand the search tree from the leaf node along different branches corresponding to
+different actions. First, based on the safety critic’s output we filter out predictions that we cannot
+trust (corresponding to high ensemble variance) and create a reduced action set (lines 6-7). The
+safety of each action from this set is evaluated based on the safety critic’s output predicting expected
+3Algorithm 1: C-MCTS | Using a learned safety critic in MCTS.
+1Nroot: Root node representing the current state, s0.
+2Nleaf: Selected leaf node with state st.
+3P: Traversed path from the root node to the leaf node (s0, a0, s1, a1, ..., a t−1, st).
+4repeat
+5P,Nleaf←SELECT (Nroot)// SELECTION (using UCT algorithm)
+// EXPANSION
+6 i. Get safety critic outputs (ˆµ,ˆσ)for all actions at∈AfromNleaf.
+7 ii. Identify feasible actions i.e. Afeasible ={at: ˆσat≤σmax}.
+8 iii. Calculate the cost estimate ˆQ∗
+sc(st, at)for actions at∈Afeasible .
+9 iv. Define: Cpath=c(s0, a0) +γ·c(s1, a1) +...+γt−1·c(st−1, at−1)
+10 v. Identify unsafe actions i.e. Aunsafe ={at∈Afeasible :Cpath+γt·ˆQ∗
+sc(st, at)>ˆc}.
+11 vi. Expand tree for branches with safe actions, at∈A\Aunsafe .
+12 ˆVR←ROLLOUT (Nleaf)// SIMULATION (Get Monte Carlo reward estimate)
+13 BACKUP (ˆVR,P)// BACKPROPAGATION (Update tree statistics)
+14until maximum number of planning iterations is reached
+cumulative costs from the leaf. This is summed up with the one-step costs stored in the tree from
+the root node to the leaf node. If this total cost estimate is greater than the cost constraints ( ˆc), then
+we prune the corresponding branches, while other branches are expanded (lines 8-11). These steps,
+when repeated over multiple planning iterations create a search tree exploring a safe search space.
+Guided Bootstrapping of the Safety Critic Ensemble. Training an ensemble for the safety critic is
+only half part of the story – we still need informative data. A seamingly straight-forward approach
+solves the problem in Eq. 1 in the offline phase, finds the optimal value λ∗for the Lagrange multiplier,
+and utilizes the optimal, safe policy discovered to collect training data for the safety critic. In this
+case though, there is always the risk that the resulting safety critic (thus also the MCTS policy that
+utilizes it) does not generalize well far from the collected training data [20].
+Ideally, the training data covers the entire state-action space, but with a higher focus on states where
+selecting a specific action (over others) has a high effect on expected future performance [ 19,12] or
+cost violations/feasibility in our case. In other words: we must ensure that cost-critical states (i.e.,
+states that – in expectation under following the current policy π– have a high chance of violating
+the cost constraints later in the trajectories) are part of our training data. Our key idea is that we
+re-use the data that we collect during the optimizing of λduring Lagrangian relaxation: We collect
+trajectories under different safety levels (i.e., different λ’s) which likely ensures that we collect all
+cost-critical states around the constraint-switching hypersurface. See Appendix A.1 for more details.
+The iterative process of data gathering, followed by the training of a new version of ensemble safety
+critic is repeated until a safety critic leading to a feasible solution is produced (as evaluated in the last
+phase shown in Fig. 1). See Appendix A.2 for more details on the reliability of the safety critic.
+4 Evaluation
+We test our method by comparing its performance with the strongest – to our knowledge – baseline
+CC-MCP [13] onRocksample andSafe Gridworld environments (see Sec. B.1). Considering that the
+scalability of MCTS has already been addressed in previous work (e.g, [ 23,22]), we have tried to
+define environments that are computationally manageable while still providing insights on properties
+and the quality of the final, feasible solution of our algorithm, w.r.t. the constraint formulation. See
+Appendix B.2 for more details on the training setup and compute.
+We evaluate the agent on different sizes and complexities of Rocksample environments, with C-MCTS,
+CC-MCP , and vanilla MCTS (for penalized reward function with known λ∗). C-MCTS obtains higher
+rewards than CC-MCP (see Fig. 2, top row). The reward for C-MCTS increases with the number of
+planning iterations and the agent operates consistently below the cost-constraint (see Fig. 2, middle
+row), close to the safety boundary. In constrast, CC-MCP acts conservatively w.r.t costs and performs
+sub-optimally w.r.t. rewards as costs incurred in each episode vary greatly with different environment
+initializations. This is mitigated with C-MCTS since cost estimates with TDlearning have a lower
+42821021251015Average Discounted
+Cumulative RewardRocksample(5,7)
+2821021251015Rocksample(7,8)
+282102120246810Rocksample(11,11)
+2821021200.20.40.60.81ˆc= 1Average Discounted
+Cumulative Cost
+2821021200.20.40.60.81ˆc= 1
+2821021200.51ˆc= 1
+282102120204060
+Planning IterationsEpisodes With Cost
+Violations [%]
+282102120204060
+Planning Iterations28210212020406080
+Planning Iterations
+CC-MCP MCTS C-MCTS
+Figure 2: Performance of C-MCTS, MCTS, and CC-MCP on different Rocksample configurations
+evaluated on 100 episodes. The shaded region represents the standard deviation over all episodes.
+variance than Monte Carlo cost estimates. Hence, the total number of cost violations is lower for
+C-MCTS compared to the other methods, in spite of operating closest to the safety constraint (see
+Fig. 2, bottom row). Vanilla MCTS obtains higher rewards than CC-MCP asλ∗is known, and unlike
+CC-MCP , doesn’t require tuning. MCTS operates close to the cost-constraint but has a high number
+of cost violations. Compared to vanilla MCTS , C-MCTS is safer, obtains equally high rewards, and
+in some cases even acts better (e.g., Rocksample( 11,11)). We refer the reader to Appendix C for a
+more detailed results on the planning efficiency of C-MCTS compared to CC-MCP (Appendix C.1).
+Hyperparameters. We optimized algorithmic parameters, i.e., α0(initial step size to update λ)
+andϵ(termination criterion for training loop) with a grid search (see values below), and ablated the
+remaining hyper-parameters hyperparameters, i.e., planning horizon in training, standard deviation
+threshold of the ensemble σ, and reliability of the simulator (controlled by d0, see Sec. B.1.1). We
+conducted these experiments on Rocksample( 7,8) and averaged the results over 100 runs.
+Length of planning horizon during training (for α0=4andϵ=0.1).Regarding the effect of the
+planning horizon in the quality of the final solution, Fig. 3 (left column) indicates that the safety
+critic trained with a longer planning horizon operates closer to the safety boundary. This is because
+the safety critic predicts costs for a near-optimal policy and hence discerns the safety boundary
+more accurately. The safety critic trained with a smaller planning horizon estimates costs from a
+sub-optimal policy leading to cost violations during deployment.
+Ensemble threshold during deployment (for α0=8andϵ=0.3).We set different standard deviation
+thresholds ( σmax= 0.1andσmax= 0.5) in the neural network ensemble during deployment. Fig. 3
+(middle column) shows that the cost incurred exceeds the cost-constraint if σmax= 0.1, but the agent
+performs safely within the cost-constraint with a far lesser number of cost violations if σmax= 0.5.
+This is because we prune unsafe branches during planning only when the predictions between the
+individual members of the ensemble align with each other. Setting σmax= 0.1is a tight bound
+52821021211.52
+Planning IterationsAverage Discounted
+Cumulative CostPlanning Horizon
+282102120.811.21.4
+Planning IterationsEnsemble Threshold
+2821021211.522.5
+Planning IterationsSimulator Accuracy
+28210212051015Episodes With Cost
+Violations [%]
+2821021205101520
+282102120102030
+128 planning iterations (training) 1024 planning iterations (training)
+σmax= 0.1 σmax= 0.5 ∆d0= 40 ∆d0= 10
+Figure 3: Comparing safety for different training/deployment strategies, i.e., using different planning
+horizons during training (left), deploying with different ensemble thresholds (middle), and collecting
+training samples from simulators of different accuracies (right).
+resulting in most of the predictions of the safety critic being ignored. Using a higher threshold with
+σmax= 0.5ensures that only large mismatches between the predictions of the individual members
+(corresponding to out-of-distribution inputs) are ignored, and the rest are used during planning. This
+results in the agent performing safely within the cost-constraint, but not too conservatively.
+Training on imperfect simulators (for α0=1andϵ=0.1).On the Rocksample environment, the sensor
+characteristics measuring the quality of the rock are defined by the constant d0(see Sec. B.1.1). We
+overestimate the sensor accuracy in our training simulator by choosing dsim
+0with error ∆d0and
+observe the safety of the agent in the real world when trained on simulators with different values of
+∆d0. Fig. 3 (right column) shows the results. The values of ∆d0set to 10 and 40 correspond to a
+maximum prediction error of 11.7%and32.5%, respectively. When ∆d0= 40 the agent operates at
+a greater distance from the cost-constraint. The reason for cost violations is that the safety critic has
+been trained to place too much trust in the sensor measurements due to the simulation-to-reality gap.
+With a smaller gap ( ∆d0= 10 ) the agent performs safer.
+5 Conclusion
+C-MCTS solves CMDP s by learning cost-estimates in a pre-training phase from simulated data and
+pruning unsafe branches of the search tree during deployment. Compared to previous work, C-MCTS
+does not need to tune a Lagrange multiplier online, which leads to better planning efficiency and higher
+rewards. In our experiments on Rocksample environments, C-MCTS achieved maximum rewards
+surpassing previous work for small, medium, and large-sized grids with increasing complexity, while
+maintaining safer performance. As cost is estimated from a lower variance TDtarget the agent can
+operate close to the safety boundary with minimal constraint violations. C-MCTS is also suited
+for safety-critical applications that use approximate planning models for fast inference. Our Safe
+Gridworld results demonstrate that even with an approximate planning model, safety can be learned
+separately using a more realistic simulator, resulting in zero constraint violations and improved safety.
+Acknowledgments. This work was supported by the Bavarian Ministry for Economic Affairs,
+Infrastructure, Transport and Technology through the Center for Analytics-Data-Applications (ADA-
+Center) within the framework of “BAYERN DIGITAL II”.
+6Broader Impact
+While C-MCTS mitigates the reliance on the planning model to meet cost constraints through pre-
+training in a high-fidelity simulator, there may still be sim-to-reality gaps when learning cost estimates.
+This introduces the possibility of encountering unforeseen consequences in real-world scenarios. In
+the context of using C-MCTS in a human-AI interaction task, if minority groups are not adequately
+represented in the training simulator, inaccurate cost estimates might lead to potential harm to humans.
+However, C-MCTS addresses these gaps more effectively than previous methods by leveraging a
+more relaxed computational budget during the training phase (fast inference is only required during
+deployment). This allows more accurate modeling of the real world to include rare edge scenarios.
+References
+[1] E. Altman. Constrained Markov Decision Processes . Chapman and Hall, 1999.
+[2]Dimitri P Bertsekas. Constrained optimization and Lagrange multiplier methods . Academic
+press, 2014.
+[3]Homanga Bharadhwaj, Aviral Kumar, Nicholas Rhinehart, Sergey Levine, Florian Shkurti, and
+Animesh Garg. Conservative safety critics for exploration. arXiv preprint arXiv:2010.14497 ,
+2020.
+[4]Cameron Browne, Edward Powley, Daniel Whitehouse, Simon Lucas, Peter Cowling, Philipp
+Rohlfshagen, Stephen Tavener, Diego Perez Liebana, Spyridon Samothrakis, and Simon Colton.
+A survey of monte carlo tree search methods. IEEE Transactions on Computational Intelligence
+and AI in Games , 4:1:1–43, 03 2012. doi: 10.1109/TCIAIG.2012.2186810.
+[5]Weizhe Chen and Lantao Liu. Pareto monte carlo tree search for multi-objective informative
+planning. In Proceedings of Robotics: Science and Systems , FreiburgimBreisgau, Germany,
+June 2019. doi: 10.15607/RSS.2019.XV .072.
+[6]Kurtland Chua, Roberto Calandra, Rowan McAllister, and Sergey Levine. Deep reinforcement
+learning in a handful of trials using probabilistic dynamics models. Advances in neural
+information processing systems , 31, 2018.
+[7]Dongsheng Ding, Kaiqing Zhang, Tamer Basar, and Mihailo R. Jovanovic. Natural policy
+gradient primal-dual method for constrained markov decision processes. In Proceedings of the
+34th International Conference on Neural Information Processing Systems , NIPS’20, Red Hook,
+NY , USA, 2020. Curran Associates Inc. ISBN 9781713829546.
+[8]Conor F. Hayes, Mathieu Reymond, Diederik M. Roijers, Enda Howley, and Patrick Man-
+nion. Monte carlo tree search algorithms for risk-aware and multi-objective reinforce-
+ment learning. Autonomous Agents and Multi-Agent Systems , 37(2), April 2023. doi:
+10.1007/s10458-022-09596-0. URL https://doi.org/10.1007/s10458-022-09596-0 .
+[9]Lukas Hewing, Juraj Kabzan, and Melanie N Zeilinger. Cautious model predictive control
+using gaussian process regression. IEEE Transactions on Control Systems Technology , 28(6):
+2736–2743, 2019.
+[10] Carl-Johan Hoel, Katherine Driggs-Campbell, Krister Wolff, Leo Laine, and Mykel J. Kochen-
+derfer. Combining planning and deep reinforcement learning in tactical decision making for
+autonomous driving. IEEE Transactions on Intelligent Vehicles , 5(2):294–305, 2020. doi:
+10.1109/TIV .2019.2955905.
+[11] Levente Kocsis and Csaba Szepesvári. Bandit based monte-carlo planning. In European
+conference on machine learning , pages 282–293. Springer, 2006.
+[12] Aviral Kumar, Joey Hong, Anikait Singh, and Sergey Levine. When should we prefer offline
+reinforcement learning over behavioral cloning? arXiv preprint arXiv:2204.05618 , 2022.
+[13] Jongmin Lee, Geon-Hyeong Kim, Pascal Poupart, and Kee-Eung Kim. Monte-carlo tree
+search for constrained pomdps. In Proceedings of the 32nd International Conference on Neural
+Information Processing Systems , NIPS’18, page 7934–7943, Red Hook, NY , USA, 2018. Curran
+Associates Inc.
+7[14] Zuxin Liu, Zijian Guo, Yihang Yao, Zhepeng Cen, Wenhao Yu, Tingnan Zhang, and Ding
+Zhao. Constrained decision transformer for offline safe reinforcement learning. arXiv preprint
+arXiv:2302.07351 , 2023.
+[15] Daniel J Mankowitz, Dan A Calian, Rae Jeong, Cosmin Paduraru, Nicolas Heess, Sumanth
+Dathathri, Martin Riedmiller, and Timothy Mann. Robust constrained reinforcement learning
+for continuous control with model misspecification. arXiv preprint arXiv:2010.10644 , 2020.
+[16] Branka Mirchevska, Christian Pek, Moritz Werling, Matthias Althoff, and Joschka Boedecker.
+High-level decision making for safe and reasonable autonomous lane changing using reinforce-
+ment learning. In 2018 21st International Conference on Intelligent Transportation Systems
+(ITSC) , pages 2156–2162. IEEE, 2018.
+[17] Arash Mohammadhasani, Hamed Mehrivash, Alan Lynch, and Zhan Shu. Reinforcement
+learning based safe decision making for highway autonomous driving. arXiv preprint
+arXiv:2105.06517 , 2021.
+[18] Santiago Paternain, Miguel Calvo-Fullana, Luiz F. O. Chamon, and Alejandro Ribeiro. Learning
+safe policies via primal-dual methods. In 2019 IEEE 58th Conference on Decision and Control
+(CDC) , page 6491–6497. IEEE Press, 2019. doi: 10.1109/CDC40024.2019.9029423. URL
+https://doi.org/10.1109/CDC40024.2019.9029423 .
+[19] Ioannis Rexakis and Michail G Lagoudakis. Directed policy search using relevance vector
+machines. In 2012 IEEE 24th International Conference on Tools with Artificial Intelligence ,
+volume 1, pages 25–32. IEEE, 2012.
+[20] Stéphane Ross, Geoffrey Gordon, and Drew Bagnell. A reduction of imitation learning and
+structured prediction to no-regret online learning. In Proceedings of the fourteenth interna-
+tional conference on artificial intelligence and statistics , pages 627–635. JMLR Workshop and
+Conference Proceedings, 2011.
+[21] Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert, Karen Simonyan, Laurent Sifre,
+Simon Schmitt, Arthur Guez, Edward Lockhart, Demis Hassabis, Thore Graepel, Timothy
+Lillicrap, and David Silver. Mastering atari, go, chess and shogi by planning with a learned
+model. Nature , 588:604–609, 12 2020. doi: 10.1038/s41586-020-03051-4.
+[22] Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert, Karen Simonyan, Laurent Sifre, Si-
+mon Schmitt, Arthur Guez, Edward Lockhart, Demis Hassabis, Thore Graepel, et al. Mastering
+atari, go, chess and shogi by planning with a learned model. Nature , 588(7839):604–609, 2020.
+[23] David Silver, Aja Huang, Chris J Maddison, Arthur Guez, Laurent Sifre, George Van Den Driess-
+che, Julian Schrittwieser, Ioannis Antonoglou, Veda Panneershelvam, Marc Lanctot, et al. Mas-
+tering the game of go with deep neural networks and tree search. nature , 529(7587):484–489,
+2016.
+[24] Krishnan Srinivasan, Benjamin Eysenbach, Sehoon Ha, Jie Tan, and Chelsea Finn. Learning to
+be safe: Deep rl with a safety critic. arXiv preprint arXiv:2010.14603 , 2020.
+[25] Richard S. Sutton. Learning to predict by the methods of temporal differences. Mach. Learn. ,
+3(1):9–44, aug 1988. ISSN 0885-6125. doi: 10.1023/A:1022633531479. URL https:
+//doi.org/10.1023/A:1022633531479 .
+[26] Richard S Sutton and Andrew G Barto. Reinforcement learning: An introduction . MIT press,
+2018.
+[27] Maciej ´Swiechowski, Konrad Godlewski, Bartosz Sawicki, and Jacek Ma ´ndziuk. Monte
+carlo tree search: a review of recent modifications and applications. Artificial Intelligence
+Review , July 2022. doi: 10.1007/s10462-022-10228-y. URL https://doi.org/10.1007/
+s10462-022-10228-y .
+[28] Aviv Tamar, Shie Mannor, and Huan Xu. Scaling up robust mdps using function approximation.
+InInternational conference on machine learning , pages 181–189. PMLR, 2014.
+8[29] Chen Tessler, Daniel J Mankowitz, and Shie Mannor. Reward constrained policy optimization.
+arXiv preprint arXiv:1805.11074 , 2018.
+[30] Akifumi Wachi, Yanan Sui, Yisong Yue, and Masahiro Ono. Safe exploration and optimization
+of constrained MDPs using gaussian processes. Proceedings of the AAAI Conference on
+Artificial Intelligence , 32(1), April 2018. doi: 10.1609/aaai.v32i1.12103. URL https://doi.
+org/10.1609/aaai.v32i1.12103 .
+[31] Weijia Wang and Michèle Sebag. Multi-objective Monte-Carlo tree search. In Steven C. H. Hoi
+and Wray Buntine, editors, Proceedings of the Asian Conference on Machine Learning , vol-
+ume 25 of Proceedings of Machine Learning Research , pages 507–522, Singapore Management
+University, Singapore, 04–06 Nov 2012. PMLR. URL https://proceedings.mlr.press/
+v25/wang12b.html .
+[32] Qisong Yang, Thiago D. Simão, Simon H. Tindemans, and Matthijs T. J. Spaan. Safety-
+constrained reinforcement learning with a distributional safety critic. Machine Learning , 112
+(3):859–887, June 2022. doi: 10.1007/s10994-022-06187-8. URL https://doi.org/10.
+1007/s10994-022-06187-8 .
+9Supplementary Material
+A Methodology
+A.1 Guided Bootstrapping of the Safety Critic Ensemble
+Ideally, the training data covers the entire state-action space, but with a higher focus on states where
+selecting a specific action (over others) has a high effect on expected future performance [ 19,12] or
+cost violations/feasibility in our case.
+Definition 3. A state sis said to be cost-non-critical if
+∀a∈A, min
+a′Qπ
+c(s,a′)≤Qπ
+c(s,a)≤ˆcorˆc≤min
+a′Qπ
+c(s,a′)≤Qπ
+c(s,a) (5)
+In other words, in cost-non-critical states, selecting any action under the applied policy πdoes not
+lead (in expectation) to a change in the constraint/threshold violation (positive or negative).1Even
+though having more training data from cost-critical states is desirable, these do not frequently occur
+in trajectories generated by any policy π(see also the discussion in [12]).
+The question now lies in how to sample data from cost-critical states. To achieve this, C-MCTS varies
+the value of the Lagrange parameter λin the offline phase to obtain different sets of trajectories with
+different safety levels (“data gathering” in Fig. 1), and all this data is utilized for the training of the
+(ensemble) safety critic.
+The value of λis adapted following the standard training process in Lagrangian relax-
+ation/augmentation settings [ 2]. Here, training iterates between calculating a new value λkin
+eachk-th iteration of the data gathering loop and solving the k-thMDP (using MCTS ) with the
+penalized reward function r(s, a)−λkc(s, a). The latest (ensemble) safety critic is used to prune
+unsafe paths in MCTS , as described in Algo. 1, thus pushing data collection to either safe or unex-
+plored unsafe paths. This also implies that the action space of the k-th MDP will be different (more
+restricted) than the action space of the original CMDP, under the effect of the safety critic.
+The new value for λkin each iteration is λk=λk−1+α0
+k
+Vk,∗
+C−ˆc
+, with Vk,∗
+Cbeing the optimal
+VCfor the optimal policy (for the k-thMDP ) with a fixed λkat data gathering iteration k. The data
+gathering loop is terminated when ˆc−ϵ≤Vk,∗
+C≤ˆc. Here, α0andϵare tunable hyper-parameters.
+Proposition 1. This iterative optimization process converges asymptotically to the optimal λ∗, in the
+k-th MDP.
+Proof sketch. Previous work [ 11,23] shows that the MCTS policy converges to the optimal policy
+as the number of simulations increases, meaning that in each iteration kwe are (asymptotically)
+guaranteed to find the optimal solution in the k-thMDP . Based on this, and on the fact that λis
+updated following the gradient direction of Vk,∗
+C−ˆc, convergence to the optimal λ∗is achieved [ 13,
+29, 15].
+AsMCTS with upper confidence bounds converges asymptotically to the optimal policy [ 11], usually
+a time- or computational budget-limit is used to terminate learning [ 23,21]. As we are interested in a
+feasible solution, we terminate the training process (search for λ∗effectively) in the data gathering
+phase only when enough data has been gathered and the cost constraints are satisfied (see “data
+gathering” phase in Fig. 1).
+Since the value of λkis iteratively converging to λ∗in each “data gathering” phase shown in Fig. 1,
+state-action pairs around the constraint-switching hypersurface are collected. The use of all available
+data (generated by different policies πkas a result of all values of λk) for the safety critic training
+(“model training” phase in Fig. 1), ensures that a large collection of state-action pairs from both
+critical and non-critical states is available.2
+1Note that a similar discussion, under the concept of ϵ-reducible datasets (or parts of datasets), also exists in
+safe/constrained offline reinforcement learning approaches [14].
+2With this data mixture we train the safety critic using (s, a)samples that have different cost-targets (due to
+different λ’s), some of them over- or under-estimating the “true” cost. We could e.g. give higher weight to data
+from trajectories where the value of λwas close to λ∗, but we observed that using an ensemble of safety critics
+(see Sec. C.4) combined with using the latest safety critic in each “data gathering” outer loop, leads to “correct”
+cost data being predominant and thus to a robust final safety critic, possibly at the cost of collecting more data.
+10A.2 Considerations on the Reliability of the Safety Critic
+The iterative process of data gathering, followed by the training of a new version of ensemble safety
+critic is repeated until a safety critic leading to a feasible solution is produced (as evaluated in the last
+phase shown in Fig. 1).
+Proposition 2. LetSc⊆Sbe the set of cost-critical states (see Definition 3). Let B={(sc, a)|sc∈
+Scanda∈A}be the set of all cost-critical-state and action pairs for a given MDP . Then, there
+exists Bp⊆B, a set of cost-critical-state and action pairs for which the trained safety critic would
+over-estimate the expected discounted cumulative cost, and Bn⊆B, a set of cost-critical-state and
+action pairs for which the trained safety critic would under-estimate it. Then, Bp∪Bn=Band
+Bp∩Bn=∅.
+What Proposition 2 indicates is that the trained safety critic will under-estimate or over-estimate
+the expected cost of every cost-critical-state and action pair defined in the underlying MDP of
+thehigh-fidelity simulator (except perhaps for trivial predictions, such as in close-to-terminal states
+of simple MDPs). This is both due to numerical precision issues, as well as due to the utilization
+of the low-fidelity simulator in the MCTS planner, which potentially predicts sequences of safe or
+unsafe next states that are different compared to the actual ones, especially for cost-critical-state and
+action pairs that are far from the terminal states.
+Corollary 1. The overall training process of the safety critic, illustrated in Fig. 1, converges to a
+feasible solution of the constrained optimization problem defined in (1).
+Proof sketch. As discussed before, the inner training loop will asymptotically converge to the optimal
+solution in the k−thMDP (“data gathering” phase in Fig. 1). In case the safety critic over-estimates
+the expected cost ( (sc, a)∈Bp), it will lead to pruning the corresponding branch in the MCTS
+tree. This leads to a safe, but potentially conservative (i.e., non-optimal) behavior. In case of
+under-estimation ( (sc, a)∈Bn), the respective branch can be traversed and a non-safe trajectory is
+performed at the high-fidelity simulator. Since data collected from the unsafe trajectories are used
+in subsequent safety critic training iterations, the new versions of the safety critic will no longer
+under-estimate the cost. This means, that progressively all the (sc, a)∈Bnpairs (as defined in
+Proposition 2) that are visited in the high-fidelity simulator will belong to the Bpset in subsequent
+iterations and there will be no constraint violations eventually, i.e., we will have a feasible solution .
+B Details on the Experimental Setup
+B.1 Environments
+B.1.1 Rocksample
+The environment is defined as a grid with n×nsquares with mrocks randomly placed, some being
+good and others bad (see Fig. 4, left). A specific Rocksample setup is defined by the nomenclature
+Rocksample( n, m ). A rover (agent) starting from the left is tasked to collect as many good rocks
+as possible and exit the grid to the right. The positions of the rocks are known in advance, but the
+quality of the rocks is unknown. The agent can move up, down, right, and left, sample a rock, or make
+measurements to sense the quality of a rock. The total number of possible actions is hence 5 +m.
+The agent is equipped with a noisy sensor to measure the quality of a rock with a probability of
+accuracy (2−d/d0+ 1)/2, where dis the Euclidean distance of the agent from the corresponding rock
+andd0is a constant. The number of measurements that the agent can perform is constrained. Trying
+to maximize rewards (collecting good rocks) with constraints (number of sensor measurements)
+encourages the agent to use a limited number of measurements at a reasonable proximity to the rocks,
+wherein the sensor readings can be trusted. At each time step the agent observes its own position and
+the positions of the rocks with the updated probabilities.
+We formulate the task within the CMDP framework by additionally defining a reward structure, cost
+function, and a cost-constraint. The agent is rewarded a +10 reward for exiting the grid from the
+right or for collecting a good rock. A -10 penalty is received for each bad rock collected, and a -100
+penalty is given when the agent exits the grid to the other sides or if the agent tries to sample a rock
+from an empty grid location. The agent incurs a +1 cost when measuring the quality of a single rock.
+The discounted cost over an episode cannot exceed 1, and this is the cost-constraint. The discount
+factor γis set to 0.95.
+11EXIT
+Agent GoodRock BadRock
+Figure 4: Environments: (left) exemplary Rocksample (7,8)environment, i.e., a 7×7rocksample
+environment with 8rocks randomly placed; (right) exemplary Safe Gridworld environment, where
+the colors denote start cells (yellow), the goal cell (green), unsafe cells (pink), and windy cells (blue).
+B.1.2 Safe Gridworld
+We additionally propose a new problem: Safe Gridworld . The environment is defined as 8×8grid
+where an agent from the bottom left region is tasked to find the shortest path to reach the top right
+square avoiding unsafe squares on the way (see Fig. 4, right). The agent can move to the neighboring
+squares and has a total of 9action choices. The transition dynamics in all squares are deterministic
+except the 8squares at the top which are stochastic. These squares have winds blowing from the top
+to the bottom forcefully pushing the agent down by one square with a probability of 0.3, independent
+of the action chosen by the agent (we vary this probability to account for simulator mismatch in the
+experiment in Sec. C.4). Otherwise, the transition is guided by the agent’s action.
+The agent receives a reward of +100 on reaching the goal state, a -1000 penalty for exiting the grid,
+and a -1 penalty otherwise until the terminal state is reached. Entering an unsafe square incurs a cost
+of +1. The agent should only traverse safe squares, and the discounted cost over an episode is 0. The
+cost-constraint imposes this as a constraint and is set to 0. The discount factor γis set to 0.95.
+B.2 Training Details & Compute
+The training and evaluation were conducted on a single Intel Xeon E3-1240 v6 CPU. The CPU
+specifications are listed below.
+Component Specification
+Generation Kaby Lake
+Number of Cores 4
+Hyper-Threading (HT) Disabled
+Base Frequency 3.70 GHz
+RAM 32 GB
+SSD 960 GB
+Table 1: Specifications of Intel Xeon E3-1240 v6
+No GPU accelerators were used as the C-MCTS implementation was not optimized for efficient GPU
+resource utilization. The hyperparameters chosen for training the safety critic in the primary results
+(Fig. 2) are summarized in Table 2.
+Environment α0ϵσmax Planning Iterations
+Rocksample (5,7) 8 0.1 0.5 1024
+Rocksample (7,8) 4 0.1 0.5 1024
+Rocksample (11,11) 12 0.1 0.5 512
+Safe Gridworld 10 0.1 0.2 512
+Table 2: Key hyperparameters to train the safety critic.
+12C Additional Experimental Results
+C.1 Planning cost to achieve high rewards: C-MCTS vs CC-MCP
+N/A : Performance not achieved (*): Additional evaluation environment
+Environment Method Performance
+Number of planning iterations Discounted Reward
+Rocksample(5,7)CC-MCP 22013.72
+C-MCTS 21013.93
+Rocksample(7,8)CC-MCP 2209.83
+C-MCTS 21011.0
+Rocksample(11,11)CC-MCP 2205.26
+C-MCTS 2107.14
+Rocksample(15,15)∗CC-MCP N/A N/A
+C-MCTS 2814.29
+Table 3: Comparing planning iterations of C-MCTS and CC-MCP at equivalent reward levels.
+C.2 Computational cost comparison
+In terms of computational cost per simulation across the different algorithmic phases:
+•Selection: CC-MCP is the most computationally expensive, requiring more operations to
+select the best child node. MCTS and C-MCTS have identical operation counts.
+•Expansion: C-MCTS incurs additional costs due to the safety critic’s prediction. MCTS and
+CC-MCP require no additional computation during expansion.
+•Backpropagation: CC-MCP backs up Q-values for both reward and cost, while MCTS and
+C-MCTS back up only Q-values for reward.
+• Rollout: Computational cost is identical for C-MCTS, MCTS, and CC-MCP.
+C-MCTS and MCTS algorithms were implemented in Python, while the benchmark CC-MCP uses a
+C++ implementation. Comparing actual execution times was unfair since our implementation was not
+optimized for hardware efficiency. Also, such an optimization would highly depend on the hardware
+platform (e.g. CPUs vs GPUs). For instance, added cost in C-MCTS’s expansion phase is highly
+parallelizable, with good potential for effective GPU utilization. So, for our analysis we instead
+compare the number of simulations (planning iterations) required by each algorithm as a performance
+metric.
+C.3 Planning efficiency
+We compare the planning efficiency of all methods on the same set of experiments. The comparison
+is done based on the depth of the search tree, given a specific computational budget, i.e., a fixed
+number of planning iterations. This comparison is qualitative and is used to evaluate the effectiveness
+of different planning algorithms. Fig. 5 shows that C-MCTS performs a more narrow search for the
+same number of planning iterations. The peak tree depth (averaged over 100 episodes) is the highest
+for C-MCTS. In C-MCTS the exploration space is restricted by the safety critic, and this helps in
+efficient planning. In Rocksample( 11,11) the peak tree depth of CC-MCP is high in spite of having a
+sub-optimal performance. This is probably because the Lagrange multiplier in CC-MCP gets stuck
+in a local maximum and is unable to find the optimum.
+C.4 Robustness to source/target environment mismatch
+MCTS planner model. The benefit of learning safety constraints before deployment from a simulator
+that has a higher fidelity compared to the planning (low-fidelity) simulator is evident when examining
+the synthetically constructed Safe Gridworld scenario (see Sec. B.1.2). In this setup, we use a
+planning simulator that models the dynamics approximately, and a training simulator (for the safety
+critic) that captures the dynamics more accurately. In the planning simulator, all transition dynamics
+are accurately modeled, except the blue squares with winds (Fig. 4 right). The transitions here
+are determined by the action selection (stochasticity due to wind is not considered). The training
+simulator models the transitions in these regions more accurately, but with some errors. The agent in
+the blue squares moves down with a probability of 0.25, as compared to the real-world configuration
+where the probability is 0.3. We trained and evaluated C-MCTS for 29andCC-MCP for220planning
+132821021202468
+Planning IterationsAverage Peak
+Tree DepthRocksample(5,7)
+282102120510
+Planning IterationsRocksample(7,8)
+2821021205101520
+Planning IterationsRocksample(11,11)
+CC-MCP MCTS C-MCTS
+Figure 5: Maximum depth of the search tree for C-MCTS, MCTS andCC-MCP on different rock-
+sample configurations averaged over 100 episodes.
+30 79 81 21 86 0 0 029 21 19 79 14 100 0 00 0 0 0 0 -1 100 00 0 0 0 0 -1 01000 0 0 0 0 -1 01000 0 -1 -1 -1 -1 01000 0 0 0 0 0 01000 0 0 0 0 0 0 -2
+(a) C-MCTS with 0%cost violations.
+27 27 50 51 76 0 0 024 49 3 25 0 76 0 024 0 23 0 0 -1 76 022 2 0 0 0 -1 1 7524 0 0 0 0 -1 0 760 24 -1 -1 -1 -1 0 760 0 24 14 9 10 2 760 0 0 15 18 23 22 -2 (b) CC-MCP with 11% cost violations.
+Figure 6: State visitations aggregated over 100 episodes. The length of the arrows is proportional to
+the number of action selections. Values of -1 and -2 denote unsafe cells and the goal cell, respectively.
+iterations. The latter was set to a higher planning budget to allow the baseline algorithm to converge
+to its final solution.
+Fig. 6 shows the number of state visitations of C-MCTS (left) and CC-MCP (right). The CC-MCP
+agent takes both of the possible paths (going to the top and to the right), avoiding the unsafe region (in
+pink) to reach the goal state, which is optimal in the absence of the windy squares, but here it leads to
+cost violations due to inaccurate cost estimates.3C-MCTS on the other hand only traverses through
+the two right-most columns to avoid the unsafe region, as the safety critic being trained using the
+high-fidelity simulator identifies the path from the top as unsafe, which leads to zero cost violations.
+3Of course also the variance could play a minor role but we designed the setup to focus on the dynamics
+mismatch between the planner and the actual environment, which is much more prevalent here.
+14

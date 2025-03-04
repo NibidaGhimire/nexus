@@ -1,0 +1,2423 @@
+SPARSE CHOLESKY FACTORIZATION FOR SOLVING
+NONLINEAR PDES VIA GAUSSIAN PROCESSES
+YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Abstract. In recent years, there has been widespread adoption of machine
+learning-based approaches to automate the solving of partial differential equa-
+tions (PDEs). Among these approaches, Gaussian processes (GPs) and kernel
+methods have garnered considerable interest due to their flexibility, robust
+theoretical guarantees, and close ties to traditional methods. They can trans-
+form the solving of general nonlinear PDEs into solving quadratic optimization
+problems with nonlinear, PDE-induced constraints. However, the complexity
+bottleneck lies in computing with dense kernel matrices obtained from point-
+wise evaluations of the covariance kernel, and its partial derivatives , a result
+of the PDE constraint and for which fast algorithms are scarce.
+The primary goal of this paper is to provide a near-linear complexity al-
+gorithm for working with such kernel matrices. We present a sparse Cholesky
+factorization algorithm for these matrices based on the near-sparsity of the
+Cholesky factor under a novel ordering of pointwise and derivative measure-
+ments. The near-sparsity is rigorously justified by directly connecting the
+factor to GP regression and exponential decay of basis functions in numerical
+homogenization. We then employ the Vecchia approximation of GPs, which is
+optimal in the Kullback-Leibler divergence, to compute the approximate fac-
+tor. This enables us to compute ϵ-approximate inverse Cholesky factors of the
+kernel matrices with complexity O(Nlogd(N/ϵ)) in space and O(Nlog2d(N/ϵ))
+in time. We integrate sparse Cholesky factorizations into optimization algo-
+rithms to obtain fast solvers of the nonlinear PDE. We numerically illustrate
+our algorithm’s near-linear space/time complexity for a broad class of nonlinear
+PDEs such as the nonlinear elliptic, Burgers, and Monge-Amp` ere equations. In
+summary, we provide a fast, scalable, and accurate method for solving general
+PDEs with GPs and kernel methods.
+Contents
+1. Introduction 2
+1.1. The context 2
+1.2. Contributions and organizations 3
+1.3. Related work 4
+2. Solving nonlinear PDEs via GPs 5
+2.1. The GP framework 5
+2.2. The finite dimensional problem 6
+2.3. The general case 7
+3. The sparse Cholesky factorization algorithm 7
+3.1. The case of derivative-free measurements 7
+3.2. The case of derivative measurements 11
+4. Theoretical study 15
+2010 Mathematics Subject Classification. 65F30, 60G15, 65N75, 65M75, 65F50, 68W40.
+1arXiv:2304.01294v3  [math.NA]  9 Mar 20242 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+4.1. Set-up for rigorous results 15
+4.2. Theory 16
+5. Second order optimization methods 17
+5.1. Gauss-Newton iterations 17
+5.2. Sparse Cholesky factorization for the reduced kernel matrices 18
+5.3. General case 20
+6. Numerical experiments 22
+6.1. Nonlinear elliptic PDEs 22
+6.2. Burgers’ equation 23
+6.3. Monge-Amp` ere equation 24
+7. Conclusions 26
+Acknowledgements 26
+References 27
+Appendix A. Supernodes and aggregate sparsity pattern 31
+Appendix B. Ball-packing arguments 32
+Appendix C. Explicit formula for the KL minimization 32
+Appendix D. Proofs of the main theoretical results 33
+D.1. Proof of Theorem 4.1 33
+D.2. Proof of Theorem 4.2 36
+D.3. Connections between Cholesky factors, conditional covariance,
+conditional expectation, and Gamblets 38
+D.4. Results regarding the exponential decay of Gamblets 40
+Appendix E. Eigenvalue bounds on the kernel matrices 45
+1.Introduction
+Machine learning and probabilistic inference [50] have gained increasing popu-
+larity due to their capacity to automate the solution of computational problems.
+Gaussian processes (GPs) [78] offer a promising approach, combining the theoret-
+ical rigor of traditional numerical algorithms with the flexible design of machine
+learning solvers [54, 55, 62, 12, 8]. Additionally, GPs exhibit deep connections to
+kernel methods [70, 67], neural networks [52, 37, 30], and meshless methods [67, 84].
+This paper investigates the computational efficiency of GPs and kernel methods
+in solving nonlinear PDEs, where dense kernel matrices are encountered, with en-
+tries derived from pointwise values and derivatives of the covariance kernel function
+of the GP. The methodology developed herein could also be of practical interest in
+other contexts where derivative information of a GP or function is available, such
+as in Bayesian optimization [81] and PDE discovery [43].
+1.1.The context. Recent research proposes the use of GPs and kernel methods for
+solving nonlinear PDEs. The rationale behind the approach is to regard the PDE as
+data in machine learning, describing the relationship between pointwise evaluations
+and derivatives of a function at each collocation point. Then, by placing a GP prior
+on the unknown function and solving the maximum a posteriori (MAP) estimation
+given the PDE data at collocation points, a numerical solver for the PDEs can
+be obtained [8]. We review the methodology in Section 2. In short, the method
+transforms every nonlinear PDE into the following quadratic optimization problemSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 3
+with nonlinear, PDE-induced constraints:
+(1.1)(min
+z∈RNzTK(ϕ,ϕ)−1z
+s.t. F (z) =y,
+where Fandyencode the PDE and source/boundary data. K(ϕ,ϕ)∈RN×Nis a
+positive definite kernel matrix whose entries are k(xi,xj) or (a linear combination
+of) derivatives of the kernel function such as ∆ xk(xi,xj). Here xi,xj∈Rdare
+some sampled collocation points in space. Entries like k(xi,xj) arise from Diracs
+measurements while entries like ∆ xk(xi,xj) come from derivative measurements of
+the GP; for more details see Section 2.
+In [8, 3], theoretical analyses and numerical experiments demonstrate the flex-
+ibility and provable convergence of the method. For typical PDE problems with
+smooth solutions, using Mat´ ern kernels and Gaussian kernels can achieve high ac-
+curacy with a moderate number (i.e. N∼103to 104) of collocation points; in
+such case the algorithm is more efficient than vanilla methods such as finite dif-
+ference and is much simpler and more interpretable than neural network based
+approaches. However, computing with the dense matrix K(ϕ,ϕ) na¨ ıvely results in
+O(N3) space/time complexity, which becomes prohibitive as the number of collo-
+cation points further increase. In this paper, we aim to provide a general algorithm
+to make the GP approach scalable for solving nonlinear PDEs.
+1.2.Contributions and organizations. This paper introduces an algorithm with
+a computational complexity of O(Nlogd(N/ϵ)) in space and O(Nlog2d(N/ϵ)) in
+time. This algorithm outputs a permutation matrix Pperm and a sparse upper tri-
+angular matrix Uwith O(Nlogd(N/ϵ)) nonzero entries. The resulting matrices
+satisfy the condition:
+(1.2) ∥K(ϕ,ϕ)−1−PT
+permUUTPperm∥Fro≤ϵ ,
+where ∥·∥Frois the Frobenius norm. The algorithm details are elaborated in Section
+3.
+We rigorously analyze the error of the algorithm in Section 4. The analysis
+requires sufficient Dirac measurements within the domain and is established for a
+class of kernel functions that are Green functions of differential operators, such as
+Mat´ ern-like kernels. The theory relies on the interplay of linear algebra, Gauss-
+ian process conditioning, screening effects, and numerical homogenization, which
+demonstrate the exponential decay/near-sparsity of the inverse Cholesky factor of
+the kernel matrix after permutation.
+Utilizing these sparse factors, gradient-based optimization methods for (1.1) be-
+come scalable. We can also employ second-order methods, often more efficient, to
+solve (1.1) by linearizing the constraint and solving a sequential quadratic program-
+ming problem. This results in a linear system involving a reduced kernel matrix
+K(ϕk,ϕk) :=DF(zk)K(ϕ,ϕ)(DF(zk))Tat each iterate zk; refer to Section 5. For
+this reduced kernel matrix, where insufficient Dirac measurements are present in
+the domain, our theoretical guarantee for its sparse Cholesky factorization no longer
+holds. Nevertheless, we can apply the algorithm with a slightly different permuta-
+tion and couple it with preconditioned conjugate gradient (pCG) methods to solve
+the linear system. Our experiments demonstrate that nearly constant steps of pCG4 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+suffice for convergence. For many nonlinear PDEs, we observe that the above se-
+quential quadratic programming approach converges in O(1) steps. Consequently,
+our algorithm leads to a near-linear space/time complexity solver for general non-
+linear PDEs, assuming the sequential quadratic programming iterations converge.
+The assumption of convergence depends on the selection of kernels and the property
+of the PDE, and we demonstrate it numerically in solving nonlinear elliptic, Burg-
+ers, and Monge-Amp` ere equations; see Section 6. We make concluding remarks in
+Section 7.
+1.3.Related work. We summarize relevant literature below.
+1.3.1. Machine learning PDEs. Machine learning methods, such as those based on
+neural networks (NNs) and GPs, have shown remarkable promise in automating
+scientific computing, for instance in solving PDEs. Recent developments in this
+field include operator learning using prepared solution data [39, 6, 53, 44] and
+learning a single solution without any solution data [26, 61, 8, 31]. This paper
+focuses on the latter. NNs provide an expressive function representation. Empirical
+success has been widely reported in the literature. However, the training of NNs
+often requires significant tuning and takes much longer than traditional solvers [20].
+Considerable research efforts have been devoted to stabilizing and accelerating the
+training process [35, 74, 75, 14, 83].
+GP and kernel methods are based on a more interpretable and theoretically
+grounded function representation rooted in the Reproducing Kernel Hilbert Space
+(RKHS) theory [76, 4, 56]; with hierarchical kernel learning [80, 57, 11, 13], these
+representations can be made expressive as well. Nevertheless, working with dense
+kernel matrices is common, which often limits scalability. In the case of PDE
+problems, these matrices may also involve partial derivatives of the kernels [8], and
+fast algorithms for such matrices are less developed compared to the derivative-free
+counterparts.
+1.3.2. Fast solvers for kernel matrices. Approximating dense kernel matrices (de-
+noted by Θ) is a classical problem in scientific computing and machine learning.
+Most existing methods focus on the case where Θ only involves the pointwise val-
+ues of the kernel function. These algorithms typically rely on low-rank or sparse
+approximations, as well as their combination and multiscale variants. Low-rank
+techniques include Nystr¨ om’s approximations [77, 51, 7], rank-revealing Cholesky
+factorizations [21], inducing points via a probabilistic view [59], and random fea-
+tures [60]. Sparsity-based methods include covariance tapering [17], local experts
+(see a review in [42]), and approaches based on precision matrices and stochastic
+differential equations [40, 63, 66, 65]. Combining low-rank and sparse techniques
+can lead to efficient structured approximation [79] and can better capture short
+and long-range interactions [64]. Multiscale and hierarchical ideas have also been
+applied to seek for a full-scale approximation of Θ with a near-linear complex-
+ity. They include Hmatrix [23, 25, 24] and variants [38, 1, 2, 36, 49, 48, 41, 18]
+that rely on the low-rank structure of the off-diagonal block matrices at different
+scales; wavelets-based methods [5, 19] that use the sparsity of Θ in the wavelet ba-
+sis; multiresolution predictive processes [32]; and Vecchia approximations [73, 33]
+and sparse Cholesky factorizations [69, 68] that rely on the approximately sparse
+correlation conditioned on carefully ordered points.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 5
+For Θ that contains derivatives of the kernel function, several work [16, 58, 15]
+has utilized structured approximation to scale up the computation; no rigorous
+accuracy guarantee is proved. The inducing points approach [82, 47] has also been
+explored; however since this method only employs a low-rank approximation, the
+accuracy and efficiency can be limited.
+1.3.3. Screening effects in spatial statistics. Notably, the sparse Cholesky factor-
+ization algorithm in [68], formally equivalent to Vecchia’s approximation [73, 33],
+achieves a state-of-the-art complexity O(Nlogd(N/ϵ)) in space and O(Nlog2d(N/ϵ))
+in time for a wide range of kernel functions, with a rigorous theoretical guarantee.
+This algorithm is designed for kernel matrices with derivative-free entries and is
+connected to the screening effect in spatial statistics [71, 72]. The screening effect
+implies that approximate conditional independence of a spatial random field is likely
+to occur, under suitable ordering of points. The line of work [55, 56, 69] provides
+quantitative exponential decay results for the conditional covariance in the setting
+of a coarse-to-fine ordering of data points, laying down the theoretical groundwork
+for [68].
+A fundamental question is how the screening effect behaves when derivative
+information of the spatial field is incorporated, and how to utilize it to extend
+sparse Cholesky factorization methods to kernel matrices that contain derivatives
+of the kernel. The screening effect studied within this new context can be useful
+for numerous applications where derivative-type measurements are available.
+2.Solving nonlinear PDEs via GPs
+In this section, we review the GP framework in [8] for solving nonlinear PDEs.
+We will use a prototypical nonlinear elliptic equation as our running example to
+demonstrate the main ideas, followed by more complete recipes for general nonlinear
+PDEs.
+Consider the following nonlinear elliptic PDE:
+(2.1)(
+−∆u+τ(u) =fin Ω,
+u=gon∂Ω,
+where τis a nonlinear scalar function and Ω is a bounded open domain in Rdwith
+a Lipschitz boundary. We assume the equation has a strong solution in the classical
+sense.
+2.1.The GP framework. The first step is to sample MΩcollocation points in
+the interior and M∂Ωon the boundary such that
+xΩ={x1, ...,xMΩ} ⊂Ω and x∂Ω={xMΩ+1, ...,xM} ⊂∂Ω,
+where M=MΩ+M∂Ω. Then, by assigning a GP prior to the unknown function u
+with mean 0 and covariance function K:Ω×Ω→R, the method aims to compute
+the maximum a posterior (MAP) estimator of the GP given the sampled PDE data,
+which leads to the following optimization problem
+(2.2)
+
+minimize
+u∈U∥u∥
+s.t.−∆u(xm) +τ(u(xm)) =f(xm), form= 1, . . . , M Ω,
+u(xm) =g(xm), form=MΩ+ 1, . . . , M .6 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Here, ∥ · ∥ is the Reproducing Kernel Hilbert Space (RKHS) norm corresponding
+to the kernel/covariance function K.
+Regarding consistency, once Kis sufficiently regular, the above solution will con-
+verge to the exact solution of the PDE when MΩ, M∂Ω→ ∞ ; see Theorem 1.2 in [8]
+and convergence rates in [3]. The methodology can be seen as a nonlinear general-
+ization of many radial basis function based meshless methods [67] and probabilistic
+numerics [54, 12].
+2.2.The finite dimensional problem. The next step is to transform (2.2) into
+a finite-dimensional problem for computation. We first introduce some notations:
+•Notations for measurements : We denote the measurement functions by
+ϕ(1)
+m=δxm,1≤m≤Mand ϕ(2)
+m=δxm◦∆,1≤m≤MΩ,
+where δxis the Dirac delta function centered at x. They are in U∗, the dual
+space of U, for sufficiently regular kernel functions.
+Further, we use the shorthand notation ϕ(1)andϕ(2)for the MandMΩ-
+dimensional vectors with entries ϕ(1)
+mandϕ(2)
+mrespectively, and ϕfor the N-
+dimensional vector obtained by concatenating ϕ(1)andϕ(2), where N=M+MΩ.
+•Notations for primal dual pairing : We use [ ·,·] to denote the primal dual pairing,
+such that for u∈ U, ϕ(1)
+m=δxm∈ U∗, it holds that [ u, ϕ(1)
+m] =u(xm). Similarly
+[u, ϕ(2)
+m] = ∆ u(xm) for ϕ(2)
+m=δxm◦∆∈ U∗. For simplicity of presentation, we
+oftentimes abuse the notation to write the primal-dual pairing in the L2integral
+form: [ u, ϕ] =R
+u(x)ϕ(x) dx.
+•Notations for kernel matrices : We write K(ϕ,ϕ) as the N×N-matrix with
+entriesR
+K(x,x′)ϕm(x)ϕj(x′) dxdx′where ϕmdenotes the entries of ϕ. Here,
+the integral notation shall be interpreted as the primal-dual pairing as above.
+Similarly, K(x,ϕ) is the Ndimensional vector with entriesR
+K(x,x′)ϕj(x′) dx′.
+Moreover, we adopt the convention that if the variable inside a function is a set,
+it means that this function is applied to every element in this set; the output will
+be a vector or a matrix. As an example, K(xΩ,xΩ)∈RMΩ×MΩ.
+Then, based on a generalization of the representer theorem [8], the minimizer of
+(2.2) attains the form
+u†(x) =K(x,ϕ)K(ϕ,ϕ)−1z†,
+where z†is the solution to the following finite dimensional quadratic optimization
+problem with nonlinear constraints
+(2.3)
+
+minimize
+z∈RM+MΩzTK(ϕ,ϕ)−1z
+s.t.−z(2)
+m+τ(z(1)
+m) =f(xm),form= 1, . . . , M Ω,
+z(1)
+m=g(xm), form=MΩ+ 1, . . . , M .
+Here, z(1)∈RM,z(2)∈RMΩandzis the concatenation of them. For this specific
+example, we can write down K(x,ϕ) and K(ϕ,ϕ) explicitly:
+(2.4)K(x,ϕ) = (K(x,xΩ), K(x,x∂Ω),∆yK(x,xΩ))∈R1×N,
+K(ϕ,ϕ) =
+K(xΩ,xΩ) K(xΩ,x∂Ω) ∆ yK(xΩ,xΩ)
+K(x∂Ω,xΩ) K(x∂Ω,x∂Ω) ∆ yK(x∂Ω,xΩ)
+∆xK(xΩ,xΩ) ∆ xK(xΩ,x∂Ω) ∆ x∆yK(xΩ,xΩ)
+∈RN×N.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 7
+Here, ∆ x,∆yare the Laplacian operator for the first and second arguments of k,
+respectively. Clearly, evaluating the loss function and its gradient requires us to
+deal with the dense kernel matrix K(ϕ,ϕ) with entries comprising derivatives ofk.
+2.3.The general case. For general PDEs, the methodology leads to the opti-
+mization problem
+(min
+u∈U∥u∥
+s.t.PDE constraints at {x1, . . . ,xM} ∈Ω,
+and the equivalent finite dimensional problem
+(2.5)(min
+z∈RNzTK(ϕ,ϕ)−1z
+s.t. F (z) =y,
+where ϕis the concatenation of Diracs measurements and derivative measurements
+ofu; they are induced by the PDE at the sampled points. The function Fencodes
+the PDE, and the vector yencodes the right hand side and boundary data. Again,
+it is clear that the computational bottleneck lies in the part K(ϕ,ϕ)−1.
+Remark 2.1.Here, we use “derivative measurement” to mean a functional in U∗
+whose action on a function in Uleads to a linear combination of its derivatives.
+Mathematically, suppose the highest order of derivatives is J, then the correspond-
+ing derivative measurement at point xmcan be written as ϕ=P
+|γ|≤Jaγδxm◦Dγ
+with the multi-index γ= (γ1, ..., γ d)∈Ndand|γ|:=Pd
+k=1γk≤J. Here
+Dγ:=Dγ1
+x(1)···Dγd
+x(d)is a|γ|-th order differential operator, and we use the notation
+x= (x(1), ...,x(d)). We require linear independence between these measurements
+to ensure K(ϕ,ϕ) is invertible. ♢
+3.The sparse Cholesky factorization algorithm
+In this section, we present a sparse Cholesky factorization algorithm for K(ϕ,ϕ)−1.
+Theoretical results will be presented in Section 4 based on the interplay between
+linear algebra, Gaussian process conditioning, screening effects in spatial statistics,
+and numerical homogenization.
+In Subsection 3.1, we summarize the state-of-the-art sparse Cholesky factoriza-
+tion algorithm for kernel matrices with derivative-free measurements. In Subsec-
+tion 3.2, we discuss an extension of the idea to kernel matrices with derivative-type
+measurements, which are the main focus of this paper. The algorithm presented in
+Subsection 3.2 leads to near-linear complexity evaluation of the loss function and
+its gradient in the GP method for solving PDEs. First-order methods thus become
+scalable. We then extend the algorithm to second-order optimization methods (e.g.,
+the Gauss-Newton method) in Section 5.
+3.1.The case of derivative-free measurements. We start the discussion with
+the case where ϕcontains Diracs-type measurements only.
+Consider a set of points {xi}i∈I⊂Ω, where I={1,2, ..., M }as in Subsection
+2.1. We assume the points are scattered ; to quantify this, we have the following
+definition of homogeneity:8 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Definition 3.1. The homogeneity parameter of the points {xi}i∈I⊂Ω conditioned
+on a set Ais defined as
+δ({xi}i∈I;A) =minxi̸=xj∈Idist(xi,{xj} ∪A)
+max x∈Ωdist(x,{xi}i∈I∪A).
+When A=∅, we also write δ({xi}i∈I) :=δ({xi}i∈I;∅).
+Throughout this paper, we assume δ({xi}i∈I)>0. One can understand that a
+larger δ({xi}i∈I) makes the distribution of points more homogeneous in space. It
+can also be useful to consider A=∂Ω if one wants the points not too close to the
+boundary.
+Letϕbe the collection of δxi,1≤i≤M; all of them are Diracs-type mea-
+surements and thus derivative-free. In [68], a sparse Choleksy factorization algo-
+rithm was proposed to factorize K(ϕ,ϕ)−1. We summarize this algorithm (with a
+slight modification1) in the following three steps: reordering, sparsity pattern, and
+Kullback-Leibler (KL) minimization.
+3.1.1. Reordering. The first step is to reorder these points from coarse to fine scales.
+It can be achieved by the maximum-minimum distance ordering (maximin ordering)
+[22]. We define a generalization to conditioned maximin ordering as follows:
+Definition 3.2 (Conditioned Maximin Ordering) .The maximin ordering condi-
+tioned on a set Afor points {xi, i∈I}is obtained by successively selecting the
+point xithat is furthest away from Aand the already picked points. If Ais an
+empty set, then we select an arbitrary index i∈Ias the first to start. Otherwise,
+we choose the first index as
+i1= arg maxi∈Idist(xi,A).
+For the first qindices already chosen, we choose
+iq+1= arg maxi∈I\{i1,...,iq}dist(xi,{xi1, ...,xiq} ∪A).
+Usually we set A=∂Ω or∅. We introduce the operator P:I→Ito map the
+order of the measurements to the index of the corresponding points, i.e., P(q) =iq.
+One can define the lengthscale of each ordered point as
+(3.1) li= dist( xP(i),{xP(1), ...,xP(i−1)} ∪A).
+Let Θ = K(˜ϕ,˜ϕ)∈RN×Nbe the kernel matrix after reordering the measurements
+inϕto˜ϕ= (ϕP(1), ..., ϕ P(M)); we have N=Min this setting. An important
+observation is that the Cholesky factors of Θ and Θ−1could exhibit near-sparsity
+under the maximin ordering. Indeed, as an example, suppose Θ−1=U⋆U⋆Twhere
+U⋆is the upper Cholesky factor. Then in Figure 1, we show the magnitude of
+U⋆
+ij, i≤jfor a Mat´ ern kernel, where j= 1000 ,2000; the total number of points
+isM= 512. It is clear from the figure that the entries decay very fast when the
+points move far away from the current jth ordered point.
+1The method in [68] was presented to get the lower triangular Cholesky factors. Our paper
+presents the method for solving the upper triangular Cholesky factors since it gives a more concise
+description. As a consequence of this difference, in the reordering step, we are led to a reversed
+ordering compared to that in [68].SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 9
+0.0 0.2 0.4 0.6 0.8 1.00.00.20.40.60.81.0
+12
+10
+8
+6
+4
+2
+02
+0.0 0.2 0.4 0.6 0.8 1.00.00.20.40.60.81.0
+12
+10
+8
+6
+4
+2
+02
+Figure 1. Demonstration of screening effects in the context of
+Diracs measurements using the Mat´ ern kernel with ν= 5/2 and
+lengthscale 0 .3. The data points are equidistributed in [0 ,1]2with
+grid size h= 0.02. In the left figure, we display the 1000th point
+(the big point) in the maximin ordering with A=∅, where all
+points ordered before it (i.e., i <1000) are colored with intensity
+according to the corresponding |U⋆
+ij|. The right figure is generated
+in the same manner but for the 2000th point in the ordering.
+Remark 3.3.One may wonder why such a coarse-to-fine reordering leads to sparse
+Cholesky factors. In fact, we can interpret entries of U⋆as the conditional co-
+variance of some GP. More precisely, consider the GP ξ∼ GP (0, K). Then, by
+definition, the Gaussian random variables Yi:= [ξ,˜ϕi]∼ N(0, K(˜ϕi,˜ϕi)). We have
+the following relation:
+(3.2)U⋆
+ij
+U⋆
+jj= (−1)i̸=jCov[Yi, Yj|Y1:j−1\{i}]
+Var[Yi|Y1:j−1\{i}], i≤j .
+Here we used the MATLAB notation such that Y1:j−1\{i}corresponds to {Yq: 1≤
+q≤j−1, q̸=i}. Proof of this formula can be found in Appendix D.3.
+Formula (3.2) links the values of U⋆to the conditional covariance of a GP.
+In spatial statistics, it is well-known from empirical evidence that conditioning a
+GP on coarse-scale measurements results in very small covariance values between
+finer-scale measurements. This phenomenon, known as screening effects , has been
+discussed in works such as [71, 72]. The implication is that conditioning on coarse
+scales screens out fine-scale interactions.
+As a result, one would expect the corresponding Cholesky factor to become sparse
+upon reordering. Indeed, the off-diagonal entries exhibit exponential decay. A rig-
+orous proof of the quantitative decay can be found in [69], where the measurements
+consist of Diracs functionals only, and the kernel function is the Green function of
+some differential operator subject to Dirichlet boundary conditions. The proof of
+Theorem 6.1 in [69] effectively implies that
+(3.3) |U⋆
+ij| ≤C1lC2
+Mexp
+−dist(xP(i),xP(j))
+C1lj
+for some generic constants C1, C2depending on the domain, kernel function, and
+homogeneity parameter of the points. We will prove such decay also holds when
+derivative-type measurements are included, in Section 4 under a novel ordering.10 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+It is worth mentioning that our analysis also provides a much simpler proof for
+(3.3). ♢
+3.1.2. Sparsity pattern. With the ordering determined, our next step is to identify
+the sparsity pattern of the Cholesky factor under the ordering.
+For a tuning parameter ρ∈R+, we select the upper-triangular sparsity set
+SP,l,ρ⊂I×Ias
+(3.4) SP,l,ρ={(i, j)⊂I×I:i≤j,dist(xP(i),xP(j))≤ρlj}.
+The choice of the sparsity pattern is motivated by the quantitative exponential
+decay result mentioned in Remark 3.3. Here in the subscript, Pstands for the
+ordering, lis the lengthscale parameter associated with the ordering, and ρis a
+hyperparameter that controls the size of the sparsity pattern. We sometimes drop
+the subscript to simplify the notation when there is no confusion. We note that the
+cardinality of the set SP,l,ρis bounded by O(Nρd), through a ball-packing argument
+(see Appendix B).
+Remark 3.4.The maximin ordering and the sparsity pattern can be constructed
+with computational complexity O(Nlog2(N)ρd) in time and O(Nρd) in space; see
+Algorithm 4.1 and Theorem 4.1 in [68]. ♢
+3.1.3. KL minimization. With the ordering and sparsity pattern identified, the last
+step is to use KL minimization to compute the best approximate sparse Cholesky
+factors given the pattern.
+Define the set of sparse upper-triangular matrices with sparsity pattern SP,l,ρas
+(3.5) Smtx
+P,l,ρ:={A∈RN×N:Aij̸= 0⇒(i, j)∈SP,l,ρ}.
+For each column j, denote sj={i: (i, j)∈SP,l,ρ}. The cardinality of the set sjis
+denoted by # sj.
+The KL minimization step seeks to find
+(3.6) U= arg min ˆU∈Smtx
+P,l,ρKL
+N(0,Θ)∥ N(0,(ˆUˆUT)−1)
+.
+It turns out that the above problem has an explicit solution
+(3.7) Usj,j=Θ−1
+sj,sje#sjq
+eT
+#sjΘ−1sj,sje#sj,
+where e#sjis a standard basis vector in R#sjwith the last entry being 1 and
+other entries equal 0. Here, Θ−1
+sj,sj:= (Θ sj,sj)−1where Θ sj,sj∈R(#sj)×(#sj)is
+a submatrix of Θ with index set sj. The proof of this explicit formula follows a
+similar approach to that of Theorem 2.1 in [68], with the only difference being the
+use of upper Cholesky factors. A detailed proof is provided in Appendix C. It is
+worth noting that the optimal solution is equivalent to the Vecchia approximation
+used in spatial statistics; see discussions in [68].
+With the KL minimization, we can find the best approximation measured in the
+KL divergence sense, given the sparsity pattern. The computation is embarrassingly
+parallel, noting that the formula (3.7) are independent for different columns.
+Remark 3.5.For the algorithm described above, the computational complexity is
+upper-bounded by O(P
+1≤i≤N(#sj)3) in time and O(#S+ max 1≤i≤N(#sj)2) in
+space when using dense Cholesky factorization to invert Θ sj,sj.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 11
+When using the sparsity pattern SP,l,ρ, we can obtain # sj=O(ρd) and # S=
+O(Nρd) via a ball-packing argument (see Appendix B). This yields a complexity of
+O(Nρ3d) in time and O(Nρd) in space. ♢
+Remark 3.6.The concept of supernodes [68], which relies on an extra parameter λ,
+can be utilized to group the sparsity pattern of nearby measurements and create an
+aggregate sparsity pattern SP,l,ρ,λ . This technique reduces computation redundancy
+and improves the arithmetic complexity of the KL minimization to O(Nρ2d) in time
+(see Appendix A). In this paper, we consistently employ this approach. ♢
+Remark 3.7.In [68], it was shown in Theorem 3.4 that ρ=O(log(N/ϵ)) suffices
+to get an ϵ-approximate factor for a large class of kernel matrices, so the com-
+plexity of the KL minimization is O(Nlog2d(N/ϵ)) in time and O(Nlogd(N/ϵ)) in
+space. Note that the ordering and aggregate sparsity pattern can be constructed
+in time complexity O(Nlog2(N)ρd) and space complexity O(Nρd); the complexity
+of this construction step is usually of a lower order compared to that of the KL
+minimization. Moreover, this step can be pre-computed. ♢
+3.2.The case of derivative measurements. The last subsection discusses the
+sparse Cholesky factorization algorithm for kernel matrices generated by derivative-
+free measurements. When using GPs to solve PDEs and inverse problems, ϕcan
+contain derivative measurements, which are the main focus of this paper. This
+subsection aims to deal with such scenarios.
+3.2.1. The nonlinear elliptic PDE case. To begin with, we will consider the example
+in Subsection 2.2, where we have Diracs measurements ϕ(1)
+m=δxmfor 1≤m≤M,
+and Laplacian-type measurements ϕ(2)
+m=δxm◦∆ for 1 ≤m≤MΩ. Our objective
+is to extend the algorithm discussed in the previous subsection to include these
+derivative measurements.
+An important question we must address is the ordering of these measurements.
+Specifically, should we consider the Diracs measurements before or after the derivative-
+type measurements? To explore this question, we conduct the following experiment.
+First, we order all derivative-type measurements, ϕ(2)
+mfor 1≤m≤MΩ, in an arbi-
+trary manner. We then follow this ordering with any Diracs measurement, labeled
+MΩ+ 1 in the order. For this measurement, we plot the magnitude of the corre-
+sponding Cholesky factor of Θ−1, i.e.,|U⋆
+ij|fori≤jandj=MΩ+ 1, similar to
+the approach taken in Figure 1. The results are shown in the left part of Figure 2.
+Unfortunately, we do not observe an evident decay in the left of Figure 2. This
+may be due to the fact that, even when conditioned on the Laplacian-type measure-
+ments, the Diracs measurements can still exhibit long-range interactions with other
+measurements. This is because there are degrees of freedom of harmonic functions
+that are not captured by Laplacian-type measurements, and thus, the correlations
+may not be effectively screened out.
+Alternatively, we can order the Dirac measurements first and then examine the
+same quantity as described above for any Laplacian measurement. This approach
+yields the right part of Figure 2, where we observe a fast decay as desired. This
+indicates that the derivative measurements should come after the Dirac measure-
+ments, or equivalently, that the derivative measurements should be treated as finer
+scales compared to the pointwise measurements.12 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+0.0 0.2 0.4 0.6 0.8 1.00.00.20.40.60.81.0
+7
+6
+5
+4
+3
+0.0 0.2 0.4 0.6 0.8 1.00.00.20.40.60.81.0
+12
+10
+8
+6
+4
+2
+02
+Figure 2. Demonstration of screening effects in the context of
+derivative-type measurements using the Mat´ ern kernel with ν=
+5/2 and lengthscale 0 .3. The data points are equidistributed in
+[0,1]2with grid size h= 0.02. In the left figure, we order the
+Laplacian measurements first and then select a Diracs measure-
+ment which is the big point. The points are colored with intensity
+according to |U⋆
+ij|. In the right figure, we order the Dircas measure-
+ments first and then select a Laplacian measurement; we display
+things in the same manner as the left figure.
+With the above observation, we can design our new ordering as follows. For the
+nonlinear elliptic PDE example in Subsection 2.2, we order the Diracs measurements
+ϕ(1)
+m=δxm,1≤m≤Mfirst using the maximin ordering with A=∅mentioned
+earlier. Then, we add the derivative-type measurements δxm◦∆,1≤m≤MΩin
+arbitrary order to the ordering.
+Again, for our notations, we use P:IN→Ito map the index of the ordered
+measurements to the index of the corresponding points. Here IN:={1,2, ..., N},
+N=M+MΩand the cardinality of IisM. We define the lengthscales of the
+ordered measurements to be
+(3.8) li=(
+dist(xP(i),{xP(1), ...,xP(i−1)} ∪A),ifi≤M,
+lM, otherwise.
+We will justify the above choice of lengthscales in our theoretical study in Section
+4.
+With the ordering and the lengthscales determined, we can apply the same steps
+in the last subsection to identify sparsity patterns:
+(3.9) SP,l,ρ={(i, j)⊂IN×IN:i≤j,dist(xP(i),xP(j))≤ρlj} ⊂IN×IN.
+Then, we can use KL minimization as in Subsection 3.1.3 (see (3.5), (3.6), and
+(3.7)) to find the optimal sparse factors under the pattern. This leads to our
+sparse Cholesky factorization algorithm for kernel matrices with derivative-type
+measurements.
+Remark 3.8.Similar to Remark 3.6, the above KL minimization step (with the
+idea of supernodes to aggregate the sparsity pattern) can be implemented in time
+complexity O(Nρ2d) and space complexity O(Nρd), for a parameter ρ∈R+that
+determines the size of the sparsity set. ♢SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 13
+We present some numerical experiments to demonstrate the accuracy of such
+an algorithm. In Figure 3, we show the error measured in the KL divergence
+sense, namely KL 
+N(0,Θ)∥ N(0,(UρUρT)−1)
+where Uρis the computed sparse
+factor. The figures show that the KL error decays exponentially fast regarding
+ρ. The rate is faster for less smooth kernels, and for the same kernel, the rate
+remains the same when there are more physical points. Note that for a fixed ρ,
+when the number of points increases, the KL error will increase. This effect is
+captured in our Theorem 4.1, and is expected since when we have more points,
+finer scale information is incorporated, the matrix becomes more ill-conditioned,
+and the approximation error will deteriorate. Moreover, Theorem 4.2 implies that
+once ρincreases logarithmically regarding the number of points, we can achieve the
+same KL error. This is also evident from the right of Figure 3. In the left of Figure
+4, we show the CPU time of the algorithm, which scales nearly linearly regarding
+the number of points.
+2 4 6 8 10
+104
+103
+102
+101
+100101102KL error
+Matern5/2
+Matern7/2
+Matern9/2
+2 3 4 5 6
+101
+100101102103KL error
+Ndomain =625
+Ndomain =2500
+Ndomain =10000
+Figure 3. Demonstration of the accuracy of the sparse Cholesky
+factorization for K(ϕ,ϕ)−1in the nonlinear elliptic PDE example.
+In the left figure, we choose Mat´ ern kernels with ν= 5/2,7/2,9/2
+and lengthscale l= 0.3; the physical points are fixed to be equidis-
+tributed in [0 ,1]2with grid size h= 0.05; we plot the error mea-
+sured in the KL sense with regard to different ρ. In the right figure,
+we fix the Mat´ ern kernels with ν= 5/2 and lengthscale l= 0.3.
+We vary the number of physical points, which are equidistributed
+with grid size h= 0.04,0.02,0.01; thus Ndomain = 625 ,2500,10000
+correspondingly.
+3.2.2. General case. We present the algorithm discussed in the last subsection for
+general PDEs. In the general case (2.5), we need to deal with K(ϕ,ϕ) where
+ϕis the concatenation of Diracs measurements and derivative-type measurements
+that are derived from the PDE. Suppose the number of physical points is M; they
+are{x1, ...,xM}and the index set is denoted by I={1, ..., M }. Without loss of
+generality, we can assume ϕcontains Diracs measurements δxmat all these points
+and some derivative measurements at these points up to order J∈N. See the
+definition of derivative measurements in Remark 2.1. The reason we can assume
+Diracs measurements are in ϕis that one can always add 0 u(x) to the PDE if there
+are no terms involving u(x). The presence of these Diracs measurements is the key
+to get provable guarantee of the algorithm; for details see Section 4.14 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+104105
+Ndomain100101102CPU Time (s)
+Matern5/2, slope 1.16
+Matern7/2, slope 1.16
+Matern9/2, slope 1.12
+2 4 6 8 10
+102
+101
+100101KL error
+Ndomain =625
+Ndomain =2500
+Ndomain =10000
+Figure 4. In the left figure, we choose Mat´ ern kernels with
+ν= 5/2,7/2,9/2 and lengthscale l= 0.3; the physical points are
+equidistributed in [0 ,1]2with different grid sizes; we plot the CPU
+time of the factorization algorithm for K(ϕ,ϕ)−1, using the per-
+sonal computer MacBook Pro 2.4 GHz Quad-Core Intel Core i5.
+In the right figure, we study the sparse Cholesky factorization for
+the reduced kernel matrix K(ϕk,ϕk)−1. We fix the Mat´ ern ker-
+nels with ν= 5/2 and lengthscale l= 0.3. We vary the num-
+ber of physical points, which are equidistributed with grid size
+h= 0.04,0.02,0.01. We plot the KL error with regard to different
+ρ.
+Denote the total number of measurements by N, as before. We order the Diracs
+measurements δxm,1≤m≤Mfirst using the maximin ordering with A=∅. Then,
+we add the derivative-type measurements in an arbitrary order to the ordering.
+Similar to the last subsection, we use the notation P:IN→Ito map the
+index of the ordered measurements to the index of the corresponding points; here
+IN:={1,2, ..., N}. The lengthscales of the ordered measurements are defined
+via (3.8). With the ordering, one can identify the sparsity pattern as in (3.9)
+(and aggregate it using supernodes as discussed in Remark 3.6) and use the KL
+minimization (3.5)(3.6)(3.7) to compute ϵ-approximate factors the same way as
+before. We outline the general algorithmic procedure in Algorithm 1.
+Algorithm 1 Sparse Cholesky factorization for K(ϕ,ϕ)−1
+1:Input : Measurements ϕ, kernel function K, sparsity parameter ρ, supernodes
+parameter λ
+2:Output :Uρ, Pperm s.t. K(ϕ,ϕ)−1≈PT
+permUρUρTPperm
+3:Reordering and sparsity pattern: we first order the Diracs measurements us-
+ing the maximin ordering. Next, we order the derivative measurements in an
+arbitrary order. This process yields a permutation matrix denoted by Pperm,
+such that Ppermϕ=˜ϕ, and lengthscales lfor each measurement in ˜ϕ. Under
+the ordering, we construct the aggregate sparsity pattern SP,l,ρ,λ based on the
+chosen values of ρandλ.
+4:KL minimization: solve (3.6) with Θ = K(˜ϕ,˜ϕ), by (3.7), to obtain Uρ
+5:return Uρ, PpermSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 15
+The complexity is of the same order as in Remark 3.8; the hidden constant
+in the complexity estimate depends on J, the maximum order of the derivative
+measurements. We will present theoretical analysis for the approximation accuracy
+in Section 4, which implies that ρ=O(log(N/ϵ)) suffices to provide ϵ-approximation
+for a large class of kernel matrices.
+4.Theoretical study
+In this section, we perform a theoretical study of the sparse Cholesky factoriza-
+tion algorithm in Subsection 3.2 for K(ϕ,ϕ)−1.
+4.1.Set-up for rigorous results. We present the setting of kernels, physical
+points, and measurements for which we will provide rigorous analysis of the algo-
+rithm.
+Kernel. We first describe the domains and the function spaces. Suppose Ω is a
+bounded convex domain in Rdwith a Lipschitz boundary. Without loss of gener-
+ality, we assume diam(Ω) ≤1; otherwise, we can scale the domain. Let Hs
+0(Ω) be
+the Sobolev space in Ω with order s∈Nderivatives in L2and zero traces. Let the
+operator
+L:Hs
+0(Ω)→H−s(Ω)
+satisfy Assumption 1. This assumption is the same as in Section 2.2 of [56].
+Assumption 1.The following conditions hold for L:Hs
+0(Ω)→H−s(Ω):
+(i) symmetry: [ u,Lv] = [v,Lu];
+(ii) positive definiteness: [ u,Lu]>0 for∥u∥Hs
+0(Ω)>0;
+(iii) boundedness:
+∥L∥:= sup
+u∥Lu∥H−s(Ω)
+∥u∥Hs
+0(Ω)<∞,∥L−1∥:= sup
+u∥L−1u∥Hs
+0(Ω)
+∥u∥H−s(Ω)<∞;
+(iv) locality: [ u,Lv] = 0 if uandvhave disjoint supports.
+We assume s > d/ 2 so Sobolev’s embedding theorem shows that Hs
+0(Ω)⊂C(Ω),
+and thus δx∈H−s(Ω) for x∈Ω. We consider the kernel function to be the Green
+function K(x,y) := [ δx,L−1δy]. An example of Lcould be ( −∆)s; we use the zero
+Dirichlet boundary condition to define L−1, which leads to a Mat´ ern-like kernel.
+Physical points. Consider a scattered set of points {xi}i∈I⊂Ω, where I={1,2, ..., M }
+as in Subsection 3.1; the homogeneity parameter of these points is assumed to be
+positive:
+δ({xi}i∈I;∂Ω) =minxi̸=xj∈Idist(xi,{xj} ∪∂Ω)
+max x∈Ωdist(x,{xi}i∈I∪∂Ω)>0.
+This condition ensures that the points are scattered homogeneously. Here we set
+A=∂Ω since we consider zero Dirichlet’s boundary condition and no points will
+be on the boundary. The accuracy in our theory will depend on δ({xi}i∈I;∂Ω).16 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Measurements. The setting is the same as in Subsection 3.2.2. We assume ϕcon-
+tains Diracs measurements at allof the scattered points, and it also contains
+derivative-type measurements at some of these points up to order J∈N. We
+require J < s −d/2 so that the Sobolev embedding theorem guarantees these de-
+rivative measurements are well-defined.
+For simplicity of analysis, we assume all the measurements are of the type δxi◦Dγ
+with the multi-index γ= (γ1, ..., γ d)∈Ndand|γ|:=Pd
+k=1γk≤J; here Dγ=
+Dγ1
+x(1)···Dγd
+x(d); see Remark 2.1. Note that when |γ|= 0, δxi◦Dγcorresponds to
+Diracs measurements. The total number of measurements is denoted by N.
+Note that the aforementioned assumption does not apply to the scenario of
+Laplacian measurements in the case of a nonlinear elliptic PDE example. This
+exclusion is solely for the purpose of proof convenience, as it necessitates linear
+independence of measurements. However, similar proofs can be applied to Laplacian
+measurements once linear independence between the measurements is ensured; see
+Remark D.1.
+4.2.Theory. Under the setting in Subsection 4.1, we consider the ordering P:
+{1,2, ..., N} → { 1,2, ..., M }described in Subsection 3.2.2. Recall that for this P,
+we first order the Diracs measurements using the maximin ordering conditioned
+on∂Ω (since there are no boundary points); then, we follow the ordering with an
+arbitrary order of the derivative measurements. The lengthscale parameters are
+defined via
+li=(
+dist(xP(i),{xP(1), ...,xP(i−1)} ∪∂Ω),ifi≤M,
+lM, otherwise.
+We write Θ = K(˜ϕ,˜ϕ)∈RN×N, which is the kernel matrix after reordering the
+measurements in ϕto˜ϕ= (ϕP(1), ..., ϕ P(N)).
+Theorem 4.1. Under the setting in Subsection 4.1 and the above given ordering
+P, we consider the upper triangular Cholesky factorization Θ−1=U⋆U⋆T. Then,
+for1≤i≤j≤N, we have
+U⋆
+ij
+U⋆
+jj≤Cl−2s
+jexp
+−dist(xP(i),xP(j))
+Clj
+and|U⋆
+jj| ≤Cl−s+d/2
+M ,
+where Cis a generic constant that depends on Ω, δ({xi}i∈I;∂Ω), d, s, J, ∥L∥,∥L−1∥.
+The proof for Theorem 4.1 can be found in Appendix D.1. The proof relies on
+the interplay between GP regression, linear algebra, and numerical homogenization.
+Specifically, we use (3.2) to represent the ratio U⋆
+ij/U⋆
+jjas the normalized conditional
+covariance of a GP. Our technical innovation is to connect this normalized term to
+the conditional expectation of the GP, leading to the identity
+U⋆
+ij
+U⋆
+jj=Cov[Yi, Yj|Y1:j−1\i]
+Var[Yi|Y1:j−1\i]=E[Yj|Yi= 1, Y1:j−1\i= 0],
+where Y∼ N(0,Θ). This conditional expectation directly connects to the operator-
+valued wavelets, or Gamblets , in the numerical homogenization literature [55, 56].
+We can apply PDE tools to establish the decay result of Gamblets. Remarkably,
+the connection to the conditional expectation simplifies the analysis for generalSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 17
+measurements, compared to the more lengthy proof based on exponential decay
+matrix algebra in [69] for Diracs measurements only.
+In our setting, we need additional analytic results regarding the derivative mea-
+surements to prove the exponential decay of the Gamblets, which is one of the
+technical contributions of this paper. Finally, for |U⋆
+jj|, we obtain the estimate by
+bounding the lower and upper eigenvalues of Θ. For details, see Appendix D.1 and
+E.1.
+With Theorem 4.1, we can establish that |U⋆
+ij|is exponentially small when ( i, j)
+is outside the sparsity set SP,l,ρ. This property enables us to show that the sparse
+Cholesky factorization algorithm leads to provably accurate sparse factors when
+ρ=O(log(N/ϵ)). See Theorem 4.2 for details.
+Theorem 4.2. Under the setting in Theorem 4.1, suppose Uρis obtained by
+the KL minimization (3.6) with the sparsity parameter ρ∈R+. Then, there
+exists a constant depending on Ω, δ({xi}i∈I;∂Ω), d, s, J, ∥L∥,∥L−1∥, such that if
+ρ≥Clog(N/ϵ), we have
+KL
+N(0,Θ)∥ N(0,(UρUρT)−1)
++∥Θ−1−UρUρT∥Fro+∥Θ−(UρUρT)−1∥Fro≤ϵ ,
+where ϵ <1and∥ · ∥ Frois the Frobenius norm.
+The proof can be found in Appendix D.2. It is based on the KL optimality of Uρ
+and a comparison inequality between KL divergence and Frobenious norm shown
+in Lemma B.8 of [68].
+Remark 4.3.Theorem 4.2 will still hold when the idea of supernodes in Remark
+3.6 is used since it only makes the sparsity pattern larger. ♢
+5.Second order optimization methods
+Using the algorithm in Subsection 3.2, we get a sparse Cholesky factorization
+forK(ϕ,ϕ)−1, and thus we have a fast evaluation of the loss function in (2.3) (and
+more generally in (2.5)) and its gradient. Therefore, first-order methods can be
+implemented efficiently.
+In [8], a second-order Gauss-Newton algorithm is used to solve the optimization
+problem and is observed to converge very fast, typically in 3 to 8 iterations. In this
+subsection, we discuss how to make such a second-order method scalable based on
+the sparse Cholesky idea. As before, we first illustrate our ideas on the nonlinear
+elliptic PDE example (2.2) and then describe the general algorithm.
+5.1.Gauss-Newton iterations. For the nonlinear elliptic PDE example, the op-
+timization problem we need to solve is (2.3). Using the equation z(2)
+m=τ(z(1)
+m)−
+f(xm) and the boundary data, we can eliminate z(2)and rewrite (2.3) as an un-
+constrained problem:
+(5.1) minimize
+z(1)
+Ω∈RMΩ 
+z(1)
+Ω, g(x∂Ω), f(xΩ)−τ(z(1)
+Ω)
+K(ϕ,ϕ)−1
+z(1)
+Ω
+g(x∂Ω)
+f(xΩ)−τ(z(1)
+Ω)
+,
+where z(1)
+Ωdenotes the MΩ-dimensional vector of the zifori= 1, . . . , M Ωassociated
+to the interior points xΩwhile f(xΩ), g(x∂Ω) and τ(z(1)
+Ω) are vectors obtained by
+applying the corresponding functions to entries of their input vectors. To be clear,18 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+the expression in (5.1) represents a weighted least-squares optimization problem,
+and the transpose signs in the row vector multiplying the matrix have been sup-
+pressed for notational brevity. In [8], a Gauss-Newton method has been proposed
+to solve this problem. This method linearizes the nonlinear function τat the cur-
+rent iteration and solves the resulting quadratic optimization problem to obtain the
+next iterate.
+In this paper, we present the Gauss-Newton algorithm in a slightly different but
+equivalent way that is more convenient for exposition. To that end, we consider
+the general formulation in (2.5). In the nonlinear elliptic PDE example, we have
+ϕ= (δxΩ,δx∂Ω,δxΩ◦∆) where δxΩdenotes the collection of Diracs measurements
+(δx1, ...,δxMΩ); the definition of δx∂Ωand δxΩ◦∆ follows similarly. We also write
+correspondingly z= (zΩ,z∂Ω,z∆
+Ω)∈RNwith N=M+MΩ. Then F(z) = (−z∆
+Ω+
+τ(zΩ),z∂Ω)∈RMandy= (f(xΩ), g(x∂Ω))∈RM, such that F(z) =y.
+The Gauss-Netwon iterations for solving (5.1) is equivalent to the following se-
+quential quadratic programming approach for solving (2.5): for k∈N, assume zk
+obtained, then zk+1is given by
+(5.2)zk+1= arg min
+z∈RNzTK(ϕ,ϕ)−1z
+s.t. F(zk) +DF(zk)(z−zk) =y,
+where DF(zk)∈RM×Nis the Jacobian of Fatzk. The above is a quadratic
+optimization with a linear constraint. Using Lagrangian multipliers, we get the
+explicit formula of the solution: zk+1=K(ϕ,ϕ)(DF(zk))Tγ, where γ∈RMsolves
+the linear system
+(5.3) 
+DF(zk)K(ϕ,ϕ)(DF(zk))T
+γ=y−F(zk) +DF(zk)zk.
+Now, we introduce the reduced set of measurements ϕk=DF(zk)ϕ. For the
+nonlinear elliptic PDE, we have
+ϕk= (−δxΩ◦∆ +τ(zk
+Ω)·δxΩ,δx∂Ω)
+where τ(zk
+Ω)·δxΩ:= (τ(zk
+1)δx1, ..., τ (zk
+MΩ)δxMΩ). Then, we can equivalently write
+the solution as zk+1=K(ϕ,ϕ)(DF(zk))Tγwhere γsatisfies
+(5.4) K(ϕk,ϕk)γ=y−F(zk) +DF(zk)zk.
+Note that K(ϕk,ϕk)∈RM×M, in contrast to K(ϕ,ϕ)∈RN×N. The dimension is
+reduced. The computational bottleneck lies in the linear system with the reduced
+kernel matrix K(ϕk,ϕk).
+5.2.Sparse Cholesky factorization for the reduced kernel matrices. As
+K(ϕk,ϕk) is also a kernel matrix with derivative-type measurements, we hope to
+use the sparse Cholesky factorization idea to approximate its inverse. The first
+question, again, is how to order these measurements.
+To begin with, we examine the structure of the reduced kernel matrix. Note
+that as F(z) =yencodes the PDE at the collocation points, the linearization of
+Fin (5.2) is also equivalent to first linearizing the PDE at the current solution
+and then applying the kernel method. Thus, ϕkwill typically contain MΩinterior
+measurements corresponding to the linearized PDE at the interior points and M−
+MΩboundary measurements corresponding to the sampled boundary condition.
+For problems with Dirichlet’s boundary condition, which are the main focus of this
+paper, the boundary measurements are of Diracs type. It is worth noting that, inSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 19
+contrast to K(ϕ,ϕ), we no longer have Diracs measurements at every interior point
+now.
+We propose to order the boundary Diracs measurements first, using the maximin
+ordering on ∂Ω. Then, we order the interior derivative-type measurements using
+the maximin ordering in Ω, conditioned on ∂Ω. We use numerical experiments to
+investigate the screening effects under such ordering. Suppose Θ is the reordered
+version of the reduced kernel matrix K(ϕk,ϕk), then similar to Figures 1 and 2,
+we show the magnitude of the corresponding Cholesky factor of Θ−1=U⋆U⋆T,
+i.e., we plot |U⋆
+ij|fori≤j; here jis selected to correspond to some boundary and
+interior points. The result can be found in Figure 5.
+0.0 0.2 0.4 0.6 0.8 1.00.00.20.40.60.81.0
+6
+5
+4
+3
+2
+1
+01
+0.0 0.2 0.4 0.6 0.8 1.00.00.20.40.60.81.0
+9
+8
+7
+6
+5
+4
+3
+2
+Figure 5. Demonstration of screening effects for the reduced ker-
+nel matrix. We choose the Mat´ ern kernel with ν= 5/2; the length-
+scale parameter is 0 .3. The data points are equidistributed in [0 ,1]2
+with grid size h= 0.02. In the left figure, we show a boundary
+point, and all the points ordered before are marked with a color
+whose intensity scales with the entry value |U⋆
+ij|. The right figure
+is obtained in the same manner but for an interior measurement.
+From the left figure, we observe a desired screening effect for boundary Diracs
+measurements. However, in the right figure, we observe that the interior derivative-
+type measurements still exhibit a strong conditional correlation with boundary
+points. That means that the correlation with boundary points is not screened
+thoroughly. This also implies that the presence of the interior Diracs measurements
+is the key to the sparse Choleksy factors for the previous K(˜ϕ,˜ϕ)−1.
+The right of Figure 5 demonstrates a negative result: one cannot hope that the
+Cholesky factor of Θ−1will be as sparse as before. However, algorithmically, we can
+still apply the sparse Cholesky factorization to the matrix. We present numerical
+experiments to test the accuracy of such factorization. In the right of Figure 4, we
+show the KL errors of the resulting factorization concerning the sparsity parameter
+ρ. Even though the screening effect is not perfect, as we discussed above, we still
+observe a consistent decay of the KL errors when ρincreases.
+In addition, although we cannot theoretically guarantee the factor is as accu-
+rate as before, we can use it as a preconditioner to solve linear systems involving
+K(ϕk,ϕk). In practice, we observe that this idea works very well, and nearly con-
+stant steps of preconditioned conjugate gradient (pCG) iterations can lead to an
+accurate solution to (5.4). As a demonstration, in Figure 6, we show the pCG iter-
+ation history when the preconditioning idea is employed. The stopping criterion for20 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+pCG is that the relative tolerance is smaller than 2−26≈10−8, which is the default
+criterion in Julia. From the figures, we can see that pCG usually converges in 10-40
+steps, and this fast convergence is insensitive to the numbers of points. When ρ
+is large, the factor is more accurate, and the preconditioner is better, leading to
+smaller number of required pCG steps. Among all the cases, the number of pCG
+steps required to reach the stopping criterion is of the same magnitude, and is not
+large.
+0.0 2.5 5.0 7.5 10.0 12.5 15.0
+iterations104
+102
+100102pcg residue norm
+Ndomain =10000
+Ndomain =40000
+Ndomain =160000
+0 10 20 30 40
+iterations104
+102
+100102pcg residue norm
+ =2.0
+ =3.0
+ =4.0
+Figure 6. Demonstration of the convergence history of the pCG
+iteration. We choose the Mat´ ern kernel with ν= 5/2; the length-
+scale parameter is 0 .3. In the left figure, we choose the data points
+to be equidistributed in [0 ,1]2with different grid sizes; ρ= 4.0. We
+show the equation residue norms of the iterates in each pCG iter-
+ation. In the right figure, we choose the data points to be equidis-
+tributed in [0 ,1]2with grid size 0 .0025 so that Ndomain = 160000.
+We plot the pCG iteration history for ρ= 2.0,3.0,4.0.
+It is worth noting that since K(ϕk,ϕk) =DF(zk)K(ϕ,ϕ)(DF(zk))Tand we
+have a provably accurate sparse Cholesky factorization for K(ϕ,ϕ)−1, the matrix-
+vector multiplication for K(ϕk,ϕk) in each pCG iteration is efficient.
+5.3.General case. The description in the last subsection applies directly to gen-
+eral nonlinear PDEs, which correspond to general ϕandFin (2.5). We use the
+maximin ordering on the boundary, followed by the conditioned maximin ordering
+in the interior. We denote the ordering by Q:I→I. The lengthscale is defined by
+(5.5) li= dist( xQ(i),{xQ(1), ...,xQ(i−1)} ∪A),
+where for a boundary measurement, A=∅and for an interior measurement A=∂Ω.
+With the ordering and lengthscales, we create the sparse pattern through (3.4)
+(and aggregate it using the supernodes idea) and apply the KL minimization in
+Subsection 3.1 to obtain an approximate factor for K(ϕk,ϕk)−1. The general
+algorithmic procedure is outlined in Algorithm 2. We now denote the sparsity
+parameter for the reduced kernel matrix by ρr.
+Now, putting all things together, we outline the general algorithmic procedure
+for solving the PDEs using the second-order Gauss-Newton method, in Algorithm
+3.
+For the choice of parameters, we usually set tto be between 2 to 10. Setting
+ρ=O(log(N/ϵ)) suffices to obtain an ϵ-accurate approximation of K(ϕ,ϕ)−1. WeSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 21
+Algorithm 2 Sparse Cholesky factorization for K(ϕk,ϕk)−1
+1:Input : Measurements ϕk, kernel function K, sparsity parameter ρr, supernodes
+parameter λ
+2:Output :Uρrr, Qperm
+3:Reordering and sparsity pattern: we first order the boundary measurements
+using the maximin ordering. Next, we order the interior measurements using
+the maximin ordering conditioned on ∂Ω. This process yields a permutation
+matrix denoted by Qperm such that Qpermϕk=˜ϕk, and lengthscales lfor each
+measurement in ˜ϕk. Under the ordering, we construct the aggregate sparsity
+pattern SQ,l,ρ r,λbased on the chosen values of ρrandλ.
+4:KL minimization: solve (3.6) with Θ = K(˜ϕk,˜ϕk), by (3.7), to obtain Uρrr
+5:return Uρrr, Qperm
+Algorithm 3 Sparse Cholesky accelerated Gauss-Newton for solving (2.5)
+1:Input : Measurements ϕ, data functional F, data vector y, kernel function K,
+number of Gauss-Newton steps t, sparsity parameters ρ, ρr, supernodes param-
+eterλ
+2:Output : Solution zt
+3:Factorize K(ϕ,ϕ)−1≈PT
+permUρUρTPperm using Algorithm 1
+4:Setk= 0,zk=0or other user-specified initial guess
+5:while k < t do
+6: Form the reduced measurements ϕk=DF(zk)ϕ
+7: Factorize K(ϕk,ϕk)−1to get QT
+permUρrrUρrrTQperm using Algorithm 2
+8: Use pCG to solve (5.4) with the preconditioner QT
+permUρrrUρrrTQperm
+9:zk+1= (PT
+permUρUρTPperm)\((DF(zk))Tγ)
+10: k=k+ 1
+11:end while
+12:return zt
+do not have a theoretical guarantee for the factorization algorithm applied to the
+reduced kernel matrix K(ϕk,ϕk)−1. Still, our experience indicates that setting
+ρr=ρor a constant such as ρr= 3 works well in practice. We note that a larger ρr
+increases the factorization time while decreasing the necessary pCG steps to solve
+the linear system, as demonstrated in the right of Figure 6. There is a trade-off
+here in general.
+The overall complexity of Algorithm 3 for solving (5.2) is O(Nlog2(N)ρd+
+Nρ2d+Mtρ2d
+r+TpCG) in time and O(Nρd+Mρd
+r) in space, where O(Nlog2(N)ρd)
+is the time for generating the ordering and sparsity pattern, O(Nρ2d) is for the
+factorization, and O(Mtρ2d
+r) is for the factorizations in all the GN iterations, TpCG
+is the time that the pCG iterations take.
+Based on empirical observations, we have found that TpCGscales nearly linearly
+with respect to Nρd. This is because a nearly constant number of pCG iterations
+are sufficient to obtain an accurate solution, and each pCG iteration takes at most
+O(Nρd) time, as explained in the matrix-vector multiplication mentioned at the
+end of Subsection 5.2. Additionally, it is worth noting that the time required
+for generating the ordering and sparsity pattern ( O(Nlog2(N)ρd)) is negligible in22 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+practice, compared to that for the KL minimization. Furthermore, the ordering
+and sparsity pattern can be pre-computed once and reused for multiple runs.
+6.Numerical experiments
+In this section, we use Algorithm 3 to solve nonlinear PDEs. The numerical
+experiments are conducted on the personal computer MacBook Pro 2.4 GHz Quad-
+Core Intel Core i5. In all the experiments, the physical data points are equidis-
+tributed on a grid; we specify its size in each example. We always set the sparsity
+parameter for the reduced kernel matrix ρr=ρ, the sparsity parameter for the
+original matrix. We adopt the supernodes ideas in all the examples and set the
+parameter λ= 1.5.
+Our theory guarantees that once the Diracs measurements are ordered first by
+the maximin ordering, the derivative measurements can be ordered arbitrarily. In
+practice, for convenience, we order them from lower-order to high-order derivatives,
+and for the same type of derivatives, we order the corresponding measurements
+based on their locations, in the same maximin way as the Diracs measurements.
+Our codes are in https://github.com/yifanc96/PDEs-GP-KoleskySolver .
+6.1.Nonlinear elliptic PDEs. Our first example is the nonlinear elliptic equa-
+tion
+(6.1)(
+−∆u+τ(u) =fin Ω,
+u=gon∂Ω,
+with τ(u) =u3. Here Ω = [0 ,1]2. We set
+u(x) =600X
+k=11
+k6sin(kπx 1) sin(kπx 2)
+as the ground truth and use it to generate the boundary and right hand side data.
+We set the number of Gauss-Newton iterations to be 3. The initial guess for the
+iteration is a zero function. The lengthscale of the kernels is set to be 0 .3.
+We first study the solution error and the CPU time regarding ρ. We choose
+the number of interior points to be Ndomain = 40000; or equivalently, the grid size
+h= 0.005. In the left side of Figure 7, we observe that a larger ρleads to a smaller
+L2error of the solution. For the Mat´ ern kernel with ν= 5/2,7/2, we observe
+that such accuracy improvement saturates at ρ= 2 or 4, while when ν= 9/2.
+the accuracy keeps improving until ρ= 10. This high accuracy for large νis
+because the solution uis fairly smooth. Using smoother kernels can lead to better
+approximation accuracy. On the other hand, smoother kernels usually need a larger
+ρto achieve the same level of approximation accuracy, as we have demonstrated in
+the left of Figure 3.
+In the right side of Figure 7, we show the CPU time required to compute the
+solution for different kernels and ρ. A larger ρgenerally leads to a longer CPU
+time. But there are some exceptions: for the Mat´ ern kernel with ν= 7/2,9/2,
+the CPU time for ρ= 3 is shorter than that for ρ= 2. Again, the reason is that
+these smoother kernels often require a larger ρfor accurate approximations. When
+ρis very small, although the sparse Cholesky factorization is very fast, the pCG
+iterations could take long since the preconditioner matrix does not approximate the
+matrix well.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 23
+2 4 6 8 10
+108
+107
+106
+105
+104
+L2 error
+Matern5/2
+Matern7/2
+Matern9/2
+2 4 6 8 10
+102CPU Time (s)
+Matern5/2
+Matern7/2
+Matern9/2
+Figure 7. Nonlinear elliptic PDE example. The left figure con-
+cerns the L2errors of the solution, while the right figure concerns
+the CPU time. Both plots are with regard to ρ. We set Ndomain =
+40000.
+We then study the L2errors and CPU time regarding the number of physical
+points. We fix ρ= 4.0. In the left of Figure 8, we observe that the accuracy improves
+when Ndomain increases. For the smoother Mat´ ern kernels with ν= 7/2,9/2, they
+will hit an accuracy floor of 10−7. This is because we only have a finite number of
+Gauss-Newton steps and a finite ρ. In the right of Figure 8, a near-linear complexity
+in time regarding the number of points is demonstrated.
+104105
+Ndomain107
+106
+105
+104
+103
+L2 error
+Matern5/2, slope -1.71
+Matern7/2, slope -1.52
+Matern9/2, slope -0.78
+104105
+Ndomain101102CPU Time (s)
+Matern5/2, slope 1.17
+Matern7/2, slope 1.16
+Matern9/2, slope 1.13
+Figure 8. Nonlinear elliptic PDE example. The left figure con-
+cerns the L2errors of the solution, while the right figure concerns
+the CPU time. Both plots are with regard to the number of phys-
+ical points in the domain. We set ρ= 4.0.
+6.2.Burgers’ equation. Our second example concerns the time-dependent Burg-
+ers equation:
+(6.2)∂tu+u∂xu−0.001∂2
+xu= 0,∀(x, t)∈(−1,1)×(0,1],
+u(x,0) =−sin(πx),
+u(−1, t) =u(1, t) = 0 .
+Rather than using a spatial-temporal GP as in [8], we first discretize the equation
+in time and then use a spatial GP to solve the resulting PDE in space. This reduces24 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+the dimensionality of the system and is more efficient. More precisely, we use the
+Crank–Nicolson scheme with time stepsize ∆ tto obtain
+(6.3)ˆu(x, tn+1)−ˆu(x, tn)
+∆t+1
+2(ˆu(x, tn+1)∂xˆu(x, tn+1) + ˆu(x, tn)∂xˆu(x, tn))
+=0.001
+2 
+∂2
+xˆu(x, tn+1) +∂2
+xˆu(x, tn)
+,
+where ˆ u(tn, x) is an approximation of the true solution u(tn, x) with tn=n∆t.
+When ˆ u(·, tn) is known, (6.3) is a spatial PDE for the function ˆ u(·, tn+1). We can
+solve (6.3) iteratively starting from n= 0. We use two steps of Gauss-Newton
+iterations with the initial guess as the solution at the last time step.
+We set ∆ t= 0.02 and compute the solution at t= 1. The lengthscale of the
+kernels is chosen to be 0 .02. We set ρ= 4.0 in the factorization algorithm. In the
+left of Figure 9, we show our numerical solution by using a grid of size h= 0.001
+and the true solution computed by using the Cole-Hopf transformation. We see
+that they match very well, and the shock is captured. This is possible because we
+use a grid of small size so that the shock is well resolved. With a very small grid
+size, we need to deal with many large-size dense kernel matrices, and we use the
+sparse Cholesky factorization algorithm to handle such a challenge.
+In the right of Figure 9, we show the CPU time of our algorithm regarding
+different Ndomain . We clearly observe a near-linear complexity in time. The total
+CPU time is less than 10 seconds to handle 50 dense kernel matrices (since 1 /∆t=
+50) of size larger than 104(the dimension of K(ϕ,ϕ) is around 3 ×Ndomain since
+we have three types of measurements) sequentially.
+1.0
+ 0.5
+ 0.0 0.5 1.0
+x0.75
+0.50
+0.25
+0.000.250.500.75true sol
+numeric sol
+1032×1033×1034×103
+Ndomain101
+3×1004×1006×100CPU Time (s)
+Matern5/2, slope 1.00
+Matern7/2, slope 1.03
+Matern9/2, slope 1.12
+Figure 9. Burgers’ equation example. The left figure is a demon-
+stration of the numerical solution and true solution at t= 1. The
+right figure concerns the CPU time regarding the number of phys-
+ical points. We set ρ= 4.0.
+We also show the accuracy of our solutions in the following Table 1. We observe
+high accuracy, O(10−5) in the L2norm and O(10−4) in the L∞norm. The L2
+errors do not decrease when we increase the number of points from 2000 to 4000.
+It is because we use a fixed time stepsize ∆ t= 0.02 and a fixed ρ= 4.0.
+6.3.Monge-Amp` ere equation. Our last example is the Monge-Amp` ere equation
+in two dimensional space.
+(6.4) det( D2u) =f,x∈(0,1)2.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 25
+Ndomain 1000 2000 4000
+L2error 1.729e-4 6.111e-5 7.453e-5
+L∞error 1.075e-3 2.745e-4 1.075e-4
+Table 1. Burgers’ equation example. The L2andL∞errors of
+the computed solution at t= 1. We use the Mat´ ern kernel with
+ν= 7/2. The sparsity parameter ρ= 4.0.
+Here, we choose u(x) = exp(0 .5((x1−0.5)2+(x2−0,5)2)) to generate the boundary
+and right hand side data. To ensure uniqueness of the solution, some convexity as-
+sumption is usually needed. Here, to test the wide applicability of our methodology,
+we directly implement Algorithm 3. We adopt 3 steps of Gauss-Newton iterations
+with the initial guess u(x) =1
+2∥x∥2. We choose the Mat´ ern kernel with ν= 5/2.
+The lengthscale of the kernel is set to be 0 .3.
+103104
+Ndomain105
+104
+103
+L2 error
+=2.0, slope -1.06
+=3.0, slope -1.38
+=4.0, slope -1.32
+103104
+Ndomain100101102CPU Time (s)
+=2.0, slope 1.25
+=3.0, slope 1.22
+=4.0, slope 1.27
+Figure 10. The Monge-Amp` ere equation example. The left figure
+concerns the L2errors, while the right figure concerns the CPU
+time. Both are with respect to the number of physical points in
+space, and in both figures, we consider ρ= 2.0,3.0,4.0. We choose
+the Mat´ ern kernel with ν= 5/2 in this example.
+In Figure 10, we present the L2errors of the solution and the CPU time with
+respect to Ndomain . Once again, we observe a nearly linear complexity in time.
+However, since det( D2u) involves several partial derivatives of the function, we
+need to differentiate our kernels accordingly; we use auto-differentiation in Julia for
+convenience, which is slightly slower than the hand-coded derivatives used in our
+previous numerical examples. Consequently, the total CPU time is longer compared
+to the earlier examples, although the scaling regarding Ndomain remains similar.
+AsNdomain increases, the L2solution errors decrease for ρ= 2.0,3.0,4.0. This
+indicates that our kernel method is convergent for such a fully nonlinear PDE.
+However, since we do not incorporate singularity into the solution, this example
+may not correspond to the most challenging setting. Nonetheless, the success of
+this simple methodology combined with systematic fast solvers demonstrates its
+potential for promising automation and broader applications in solving nonlinear
+PDEs.26 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+7.Conclusions
+In this paper, we have investigated a sparse Cholesky factorization algorithm
+that enables scaling up the GP method for solving nonlinear PDEs. Our algorithm
+relies on a novel ordering of the Diracs and derivative-type measurements that
+arise in the GP-PDE methodology. With this ordering, the Cholesky factor of the
+inverse kernel matrix becomes approximately sparse, and we can use efficient KL
+minimization, equivalent to Vecchia approximation, to compute the sparse factors.
+We have provided rigorous analysis of the approximation accuracy by showing the
+exponential decay of the conditional covariance of GPs and the Cholesky factors
+of the inverse kernel matrix, for a wide class of kernel functions and derivative
+measurements.
+When using second-order Gauss-Newton methods to solve the nonlinear PDEs,
+a reduced kernel matrix arises, in which many interior Dirac measurements are ab-
+sent. In such cases, the decay is weakened, and the accuracy of the factorization
+deteriorates. To compensate for this loss of accuracy, we use pCG iterations with
+this approximate factor as a preconditioner. In our numerical experiments, our
+algorithm achieves high accuracy, and the computation time scales near-linearly
+with the number of points. This justifies the potential of GPs for solving general
+PDEs with automation, efficiency, and accuracy. We anticipate extending our al-
+gorithms to solving inverse problems and our theories to more kernel functions and
+measurement functionals in the future.
+Due to the power of din the complexity, the algorithm in this paper is best suited
+for low-dimensional PDE problems. However, we note that for high-dimensional
+problems, if the points lie on a low-dimensional manifold of dimension ˜d, then the
+complexity of our algorithm will depend on ˜drather than d. This observation
+has been discussed in [68] for the case where the measurements are Diracs and
+will also apply to our paper, where derivative measurements induced by PDEs are
+considered. In truly high-dimensional problems, low-rank approximations should
+be pursued rather than the more ambitious full-scale approximations achieved by
+sparse Cholesky factorization in this paper. Potential approaches could include
+randomly pivoted Cholesky [7], which also involves selecting a specific ordering and
+Pperm(based on adaptive randomized ordering rather than the physically motivated
+coarse-to-fine ordering) but without further sparsifying these Cholesky factors. It
+is of interest to explore their connections to refine the low rank and sparse approx-
+imations for high dimensional scientific computing.
+Acknowledgements
+YC and HO acknowledge support from the Air Force Office of Scientific Research
+under MURI award number FA9550-20-1-0358 (Machine Learning and Physics-
+Based Modeling and Simulation). YC is also partly supported by NSF Grants DMS-
+2205590. HO also acknowledges support from the Department of Energy under
+award number DE-SC0023163 (SEA-CROGS: Scalable, Efficient and Accelerated
+Causal Reasoning Operators, Graphs and Spikes for Earth and Embedded Systems).
+FS acknowledges support from the Office of Naval Research under award number
+N00014-23-1-2545 (Untangling Computation). We thank Xianjin Yang for helpful
+comments on an earlier version of this article.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 27
+References
+[1] Sivaram Ambikasaran and Eric Darve. An O(nlogn) fast direct solver for partial hierarchi-
+cally semi-separable matrices: With application to radial basis function interpolation. Journal
+of Scientific Computing , 57:477–501, 2013.
+[2] Sivaram Ambikasaran, Daniel Foreman-Mackey, Leslie Greengard, David W Hogg, and
+Michael O’Neil. Fast direct methods for Gaussian processes. IEEE transactions on pattern
+analysis and machine intelligence , 38(2):252–265, 2015.
+[3] Pau Batlle, Yifan Chen, Bamdad Hosseini, Houman Owhadi, and Andrew M Stuart.
+Error analysis of kernel/gp methods for nonlinear and parametric pdes. arXiv preprint
+arXiv:2305.04962 , 2023.
+[4] Alain Berlinet and Christine Thomas-Agnan. Reproducing kernel Hilbert spaces in probability
+and statistics . Springer Science & Business Media, 2011.
+[5] Gregory Beylkin, Ronald Coifman, and Vladimir Rokhlin. Fast wavelet transforms and nu-
+merical algorithms I. Communications on pure and applied mathematics , 44(2):141–183, 1991.
+[6] Kaushik Bhattacharya, Bamdad Hosseini, Nikola B Kovachki, and Andrew M Stuart. Model
+reduction and neural networks for parametric PDEs. The SMAI journal of computational
+mathematics , 7:121–157, 2021.
+[7] Yifan Chen, Ethan N Epperly, Joel A Tropp, and Robert J Webber. Randomly pivoted
+Cholesky: Practical approximation of a kernel matrix with few entry evaluations. arXiv
+preprint arXiv:2207.06503 , 2022.
+[8] Yifan Chen, Bamdad Hosseini, Houman Owhadi, and Andrew M Stuart. Solving and learning
+nonlinear PDEs with Gaussian processes. Journal of Computational Physics , 447:110668,
+2021.
+[9] Yifan Chen and Thomas Y Hou. Function approximation via the subsampled Poincar´ e in-
+equality. Discrete and Continuous Dynamical Systems , 41(1):169–199, 2020.
+[10] Yifan Chen and Thomas Y Hou. Multiscale elliptic PDE upscaling and function approxima-
+tion via subsampled data. Multiscale Modeling & Simulation , 20(1):188–219, 2022.
+[11] Yifan Chen, Houman Owhadi, and Andrew Stuart. Consistency of empirical Bayes and kernel
+flow for hierarchical parameter estimation. Mathematics of Computation , 90(332):2527–2578,
+2021.
+[12] Jon Cockayne, Chris J Oates, Timothy John Sullivan, and Mark Girolami. Bayesian proba-
+bilistic numerical methods. SIAM review , 61(4):756–789, 2019.
+[13] Matthieu Darcy, Boumediene Hamzi, Giulia Livieri, Houman Owhadi, and Peyman Tavallali.
+One-shot learning of stochastic differential equations with data adapted kernels. Physica D:
+Nonlinear Phenomena , 444:133583, 2023.
+[14] Arka Daw, Jie Bu, Sifan Wang, Paris Perdikaris, and Anuj Karpatne. Rethinking the im-
+portance of sampling in physics-informed neural networks. arXiv preprint arXiv:2207.02338 ,
+2022.
+[15] Filip De Roos, Alexandra Gessner, and Philipp Hennig. High-dimensional Gaussian process
+inference with derivatives. In International Conference on Machine Learning , pages 2535–
+2545. PMLR, 2021.
+[16] David Eriksson, Kun Dong, Eric Lee, David Bindel, and Andrew G Wilson. Scaling Gaussian
+process regression with derivatives. Advances in neural information processing systems , 31,
+2018.
+[17] Reinhard Furrer, Marc G Genton, and Douglas Nychka. Covariance tapering for interpolation
+of large spatial datasets. Journal of Computational and Graphical Statistics , 15(3):502–523,
+2006.
+[18] Christopher J Geoga, Mihai Anitescu, and Michael L Stein. Scalable Gaussian process com-
+putations using hierarchical matrices. Journal of Computational and Graphical Statistics ,
+29(2):227–237, 2020.
+[19] D Gines, G Beylkin, and J Dunn. LU factorization of non-standard forms and direct mul-
+tiresolution solvers. Applied and Computational Harmonic Analysis , 5(2):156–201, 1998.
+[20] Tamara G Grossmann, Urszula Julia Komorowska, Jonas Latz, and Carola-Bibiane Sch¨ onlieb.
+Can physics-informed neural networks beat the finite element method? arXiv preprint
+arXiv:2302.04107 , 2023.
+[21] Ming Gu and Luiza Miranian. Strong rank revealing Cholesky factorization. Electronic Trans-
+actions on Numerical Analysis , 17:76–92, 2004.28 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+[22] Joseph Guinness. Permutation and grouping methods for sharpening Gaussian process ap-
+proximations. Technometrics , 60(4):415–429, 2018.
+[23] Wolfgang Hackbusch. A sparse matrix arithmetic based on H-matrices. Part I: Introduction
+to H-matrices. Computing , 62(2):89–108, 1999.
+[24] Wolfgang Hackbusch and Steffen B¨ orm. Data-sparse approximation by adaptive H 2-matrices.
+Computing , 69:1–35, 2002.
+[25] Wolfgang Hackbusch and Boris N Khoromskij. A sparse H-matrix arithmetic, part II: Appli-
+cation to multi-dimensional problems. Computing , 64(1):21–47, 2000.
+[26] Jiequn Han, Arnulf Jentzen, and Weinan E. Solving high-dimensional partial differential equa-
+tions using deep learning. Proceedings of the National Academy of Sciences , 115(34):8505–
+8510, 2018.
+[27] Moritz Hauck and Daniel Peterseim. Super-localization of elliptic multiscale problems. Math-
+ematics of Computation , 92(341):981–1003, 2023.
+[28] Patrick Henning and Daniel Peterseim. Oversampling for the multiscale finite element
+method. Multiscale Modeling & Simulation , 11(4):1149–1175, 2013.
+[29] Thomas Y Hou and Pengchuan Zhang. Sparse operator compression of higher-order elliptic
+operators with rough coefficients. Research in the Mathematical Sciences , 4:1–49, 2017.
+[30] Arthur Jacot, Franck Gabriel, and Cl´ ement Hongler. Neural tangent kernel: Convergence
+and generalization in neural networks. Advances in neural information processing systems ,
+31, 2018.
+[31] George Em Karniadakis, Ioannis G Kevrekidis, Lu Lu, Paris Perdikaris, Sifan Wang, and Liu
+Yang. Physics-informed machine learning. Nature Reviews Physics , 3(6):422–440, 2021.
+[32] Matthias Katzfuss. A multi-resolution approximation for massive spatial datasets. Journal of
+the American Statistical Association , 112(517):201–214, 2017.
+[33] Matthias Katzfuss, Joseph Guinness, Wenlong Gong, and Daniel Zilber. Vecchia approxima-
+tions of Gaussian-process predictions. Journal of Agricultural, Biological and Environmental
+Statistics , 25:383–414, 2020.
+[34] Ralf Kornhuber, Daniel Peterseim, and Harry Yserentant. An analysis of a class of varia-
+tional multiscale methods based on subspace decomposition. Mathematics of Computation ,
+87(314):2765–2774, 2018.
+[35] Aditi Krishnapriyan, Amir Gholami, Shandian Zhe, Robert Kirby, and Michael W Mahoney.
+Characterizing possible failure modes in physics-informed neural networks. Advances in Neu-
+ral Information Processing Systems , 34:26548–26560, 2021.
+[36] Kenneth L. Ho and Lexing Ying. Hierarchical interpolative factorization for elliptic operators:
+Integral equations. Communications on Pure and Applied Mathematics , 69(7):1314–1353,
+2016.
+[37] Jaehoon Lee, Yasaman Bahri, Roman Novak, Samuel S Schoenholz, Jeffrey Pennington,
+and Jascha Sohl-Dickstein. Deep neural networks as Gaussian processes. arXiv preprint
+arXiv:1711.00165 , 2017.
+[38] Shengguo Li, Ming Gu, Cinna Julie Wu, and Jianlin Xia. New efficient and robust HSS
+Cholesky factorization of SPD matrices. SIAM Journal on Matrix Analysis and Applications ,
+33(3):886–904, 2012.
+[39] Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya,
+Andrew Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial
+differential equations. arXiv preprint arXiv:2010.08895 , 2020.
+[40] Finn Lindgren, H˚ avard Rue, and Johan Lindstr¨ om. An explicit link between Gaussian fields
+and Gaussian Markov random fields: the stochastic partial differential equation approach.
+Journal of the Royal Statistical Society: Series B (Statistical Methodology) , 73(4):423–498,
+2011.
+[41] Alexander Litvinenko, Ying Sun, Marc G Genton, and David E Keyes. Likelihood approxi-
+mation with hierarchical matrices for large spatial datasets. Computational Statistics & Data
+Analysis , 137:115–132, 2019.
+[42] Haitao Liu, Yew-Soon Ong, Xiaobo Shen, and Jianfei Cai. When gaussian process meets big
+data: A review of scalable GPs. IEEE transactions on neural networks and learning systems ,
+31(11):4405–4423, 2020.
+[43] Da Long, Nicole Mrvaljevic, Shandian Zhe, and Bamdad Hosseini. A kernel approach for pde
+discovery and operator learning. arXiv preprint arXiv:2210.08140 , 2022.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 29
+[44] Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, and George Em Karniadakis. Learn-
+ing nonlinear operators via DeepONet based on the universal approximation theorem of
+operators. Nature machine intelligence , 3(3):218–229, 2021.
+[45] Tzon-Tzer Lu and Sheng-Hua Shiou. Inverses of 2 ×2 block matrices. Computers & Mathe-
+matics with Applications , 43(1-2):119–129, 2002.
+[46] Axel M˚ alqvist and Daniel Peterseim. Localization of elliptic multiscale problems. Mathematics
+of Computation , 83(290):2583–2603, 2014.
+[47] Rui Meng and Xianjin Yang. Sparse Gaussian processes for solving nonlinear PDEs. arXiv
+preprint arXiv:2205.03760 , 2022.
+[48] Victor Minden, Anil Damle, Kenneth L Ho, and Lexing Ying. Fast spatial Gaussian pro-
+cess maximum likelihood estimation via skeletonization factorizations. Multiscale Modeling
+& Simulation , 15(4):1584–1611, 2017.
+[49] Victor Minden, Kenneth L Ho, Anil Damle, and Lexing Ying. A recursive skeletonization
+factorization based on strong admissibility. Multiscale Modeling & Simulation , 15(2):768–
+796, 2017.
+[50] Kevin P Murphy. Machine learning: a probabilistic perspective . MIT press, 2012.
+[51] Cameron Musco and Christopher Musco. Recursive sampling for the Nystr¨ om method. Ad-
+vances in neural information processing systems , 30, 2017.
+[52] Radford M Neal. Priors for infinite networks. Bayesian learning for neural networks , pages
+29–53, 1996.
+[53] Nicholas H Nelsen and Andrew M Stuart. The random feature model for input-output maps
+between Banach spaces. SIAM Journal on Scientific Computing , 43(5):A3212–A3243, 2021.
+[54] Houman Owhadi. Bayesian numerical homogenization. Multiscale Modeling & Simulation ,
+13(3):812–828, 2015.
+[55] Houman Owhadi. Multigrid with rough coefficients and multiresolution operator decomposi-
+tion from hierarchical information games. Siam Review , 59(1):99–149, 2017.
+[56] Houman Owhadi and Clint Scovel. Operator-Adapted Wavelets, Fast Solvers, and Numer-
+ical Homogenization: From a Game Theoretic Approach to Numerical Approximation and
+Algorithm Design , volume 35. Cambridge University Press, 2019.
+[57] Houman Owhadi and Gene Ryan Yoo. Kernel flows: from learning kernels from data into the
+abyss. Journal of Computational Physics , 389:22–47, 2019.
+[58] Misha Padidar, Xinran Zhu, Leo Huang, Jacob Gardner, and David Bindel. Scaling Gauss-
+ian processes with derivative information using variational inference. Advances in Neural
+Information Processing Systems , 34:6442–6453, 2021.
+[59] Joaquin Quinonero-Candela and Carl Edward Rasmussen. A unifying view of sparse approx-
+imate Gaussian process regression. The Journal of Machine Learning Research , 6:1939–1959,
+2005.
+[60] Ali Rahimi and Benjamin Recht. Random features for large-scale kernel machines. Advances
+in neural information processing systems , 20, 2007.
+[61] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks:
+A deep learning framework for solving forward and inverse problems involving nonlinear
+partial differential equations. Journal of Computational physics , 378:686–707, 2019.
+[62] Maziar Raissi, Paris Perdikaris, and George Em Karniadakis. Numerical Gaussian processes
+for time-dependent and nonlinear partial differential equations. SIAM Journal on Scientific
+Computing , 40(1):A172–A198, 2018.
+[63] Lassi Roininen, Markku S Lehtinen, Sari Lasanen, Mikko Orisp¨ a¨ a, and Markku Markkanen.
+Correlation priors. Inverse problems and imaging , 5(1):167–184, 2011.
+[64] Huiyan Sang and Jianhua Z Huang. A full scale approximation of covariance functions for
+large spatial data sets. Journal of the Royal Statistical Society: Series B (Statistical Method-
+ology) , 74(1):111–132, 2012.
+[65] Daniel Sanz-Alonso and Ruiyi Yang. Finite element representations of gaussian processes:
+Balancing numerical and statistical accuracy. SIAM/ASA Journal on Uncertainty Quantifi-
+cation , 10(4):1323–1349, 2022.
+[66] Daniel Sanz-Alonso and Ruiyi Yang. The SPDE approach to Mat´ ern fields: Graph represen-
+tations. Statistical Science , 37(4):519–540, 2022.
+[67] Robert Schaback and Holger Wendland. Kernel techniques: from machine learning to meshless
+methods. Acta numerica , 15:543–639, 2006.30 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+[68] Florian Sch¨ afer, Matthias Katzfuss, and Houman Owhadi. Sparse Cholesky factorization by
+Kullback–Leibler minimization. SIAM Journal on Scientific Computing , 43(3):A2019–A2046,
+2021.
+[69] Florian Sch¨ afer, TJ Sullivan, and Houman Owhadi. Compression, inversion, and approximate
+PCA of dense kernel matrices at near-linear computational complexity. Multiscale Modeling
+& Simulation , 19(2):688–730, 2021.
+[70] Bernhard Sch¨ olkopf, Alexander J Smola, Francis Bach, et al. Learning with kernels: support
+vector machines, regularization, optimization, and beyond . MIT press, 2002.
+[71] Michael L Stein. The screening effect in kriging. The Annals of Statistics , 30(1):298–323,
+2002.
+[72] Michael L Stein. 2010 Rietz lecture: When does the screening effect hold? The Annals of
+Statistics , 39(6):2795–2819, 2011.
+[73] Aldo V Vecchia. Estimation and model identification for continuous spatial processes. Journal
+of the Royal Statistical Society: Series B (Methodological) , 50(2):297–312, 1988.
+[74] Sifan Wang, Yujun Teng, and Paris Perdikaris. Understanding and mitigating gradient flow
+pathologies in physics-informed neural networks. SIAM Journal on Scientific Computing ,
+43(5):A3055–A3081, 2021.
+[75] Sifan Wang, Xinling Yu, and Paris Perdikaris. When and why pinns fail to train: A neural
+tangent kernel perspective. Journal of Computational Physics , 449:110768, 2022.
+[76] Holger Wendland. Scattered data approximation , volume 17. Cambridge university press,
+2004.
+[77] Christopher Williams and Matthias Seeger. Using the Nystr¨ om method to speed up kernel
+machines. Advances in neural information processing systems , 13, 2000.
+[78] Christopher KI Williams and Carl Edward Rasmussen. Gaussian processes for machine learn-
+ing, volume 2. MIT press Cambridge, MA, 2006.
+[79] Andrew Wilson and Hannes Nickisch. Kernel interpolation for scalable structured Gaussian
+processes (KISS-GP). In International conference on machine learning , pages 1775–1784.
+PMLR, 2015.
+[80] Andrew Gordon Wilson, Zhiting Hu, Ruslan Salakhutdinov, and Eric P Xing. Deep kernel
+learning. In Artificial intelligence and statistics , pages 370–378. PMLR, 2016.
+[81] Jian Wu, Matthias Poloczek, Andrew G Wilson, and Peter Frazier. Bayesian optimization
+with gradients. Advances in neural information processing systems , 30, 2017.
+[82] Ang Yang, Cheng Li, Santu Rana, Sunil Gupta, and Svetha Venkatesh. Sparse approximation
+for Gaussian process with derivative observations. In AI 2018: Advances in Artificial Intel-
+ligence: 31st Australasian Joint Conference, Wellington, New Zealand, December 11-14,
+2018, Proceedings , pages 507–518. Springer, 2018.
+[83] Qi Zeng, Yash Kothari, Spencer H Bryngelson, and Florian Tobias Schaefer. Competitive
+physics informed networks. In The Eleventh International Conference on Learning Repre-
+sentations , 2023.
+[84] Xiong Zhang, Kang Zhu Song, Ming Wan Lu, and X Liu. Meshless methods based on collo-
+cation with radial basis functions. Computational mechanics , 26:333–343, 2000.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 31
+Appendix A.Supernodes and aggregate sparsity pattern
+The supernode idea is adopted from [68], which allows to re-use the Cholesky
+factors in the computation of (3.7) to update multiple columns at once.
+We group the measurements into supernodes consisting of measurements whose
+points are close in location and have similar lengthscale parameters li. To do this,
+we select the last index j∈Iof the measurements in the ordering that has not
+been aggregated into a supernode yet and aggregate the indices in {i: (i, j)∈
+SP,l,ρ, li≤λlj}that have not been aggregated yet into a common supernode, for
+some λ >1. We repeat this procedure until every measurement has been aggregated
+into a supernode. We denote the set of all supernodes as ˜Iand write i⇝˜ifori∈I
+and˜i∈˜Iif˜iis the supernode to which ihas been aggregated.
+The idea is to assign the same sparsity pattern to all the measurements of the
+same supernode. To achieve so, we define the sparsity set for a supernode as the
+union of the sparsity sets of all the nodes it contains, namely s˜i:={j:∃i⇝˜i, j∈
+si}. Then, we introduce the aggregated sparsity pattern
+SP,l,ρ,λ :=[
+˜j[
+j⇝˜j{(i, j)⊂I×I:i≤j, i∈s˜j}.
+Under mild assumptions (Theorem B.5 in [68]), one can show that there are O(N/ρd)
+number of supernodes and each supernode contains O(ρd) measurements. The size
+of the sparsity set for a supernode # s˜j=O(ρd). For a visual demonstration of the
+grouping and aggregate sparsity pattern, see Figure 11, which is taken from Figure
+3 in [68].
+Figure 11. The figure on the left illustrates the original pattern
+SP,ℓ,ρ. For each orange point j, its sparsity pattern sjincludes all
+points within a circle with a radius of ρ. On the right, all points j
+that are located close to each other and have similar lengthscales
+are grouped into a supernode ˜j. The supernode can be represented
+by a list of parents (the orange points within an inner sphere of
+radius ≈ρ, or all j⇝˜j) and children (all points within a radius
+≤2ρ, which correspond to the sparsity set s˜j). Figure reproduced
+from [68] with author permission.
+Now, we can compute (3.7) with the aggregated sparsity pattern more efficiently.
+Lets∗
+j={i: (i, j)∈SP,l,ρ,λ}be the individual sparsity pattern for jin the ag-
+gregated pattern SP,l,ρ,λ . In (3.7), we need to compute matrix-vector products
+for Θ−1
+s∗
+j,s∗
+j. For that purpose, one can apply the Cholesky factorization to Θ s∗
+j,s∗
+j.
+Na¨ ıvely computing Cholesky factorizations of every Θ s∗
+j,s∗
+jwill result in O(Nρ3d)32 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+arithmetic complexity. However, due to the supernode construction, we can factor-
+ize Θ s˜j,s˜jonce and then use the resulting factor to obtain the Cholesky factors of
+Θs∗
+j,s∗
+jdirectly for all j⇝˜j. This is because our construction guarantees that
+Θs∗
+j,s∗
+j= Θ s˜j,s˜j[1 : # s∗
+j,1 : #s∗
+j],
+where we used the MATLAB notation. The above relation shows that sub-Cholesky
+factors of Θ s˜j,s˜jbecome the Cholesky factors of Θ s∗
+j,s∗
+jforj⇝˜j.
+Therefore, one step of Cholesky factorization works for all O(ρd)measurements
+in the supernode . In total, the arithmetic complexity is upper bounded by O(ρ3d×
+N/ρd) =O(Nρ2d). For more details of the algorithm, we refer to section 3.2, in
+particular Algorithm 3.2, in [68].
+It was shown that the aggregate sparsity pattern could be constructed with time
+complexity O(Nlog(N) +Nρd) and space complexity O(N); see Theorem C.3 in
+[68]. They are of a lower order compared to the time complexity O(Nlog2(N)ρd)
+and space complexity O(Nρd) for generating the maximin ordering and the original
+sparsity pattern SP,l,ρ(see Remark 3.4).
+Appendix B.Ball-packing arguments
+The ball-packing argument is useful to bound the cardinality of the sparsity
+pattern.
+Proposition B.1.Consider the maximin ordering (Definition 3.2) and the sparsity
+pattern defined in (3.4). For each column j, denote sj={i: (i, j)∈SP,l,ρ}. The
+cardinality of the set sjis denoted by # sj. Then, it holds that # sj=O(ρd).
+Proof. Fix a j. For any i∈sj, we have dist( xP(i),xP(j))≤ρlj. Moreover, by
+the definition of the maximin ordering, we know that for i, i′∈sjandi̸=i′, it
+holds that dist( xP(i),xP(i′))≥lj. Thus, the cardinality of siis bounded by the
+number of disjoint balls of radius ljthat the ball B(xP(i),2ρlj) can contain. Clearly,
+#si=O(ρd). The proof is complete. □
+Appendix C.Explicit formula for the KL minimization
+By direct calculation, one can show the KL minimization attains an explicit
+formula. The proof of this explicit formula follows a similar approach to that of
+Theorem 2.1 in [68], with the only difference being the use of upper Cholesky
+factors.
+Proposition C.1.The solution to (3.6) is given by (3.7).
+Proof. We use the explicit formula for the KL divergence between two multivariate
+Gaussians:
+(C.1)KL 
+N(0,Θ)∥ N(0,(UUT)−1)
+=1
+2[−log det( UTΘU) + tr( UTΘU)−N].
+To identify the minimizer, the constant and scaling do not matter, so we focus on
+the−log det( UTΘU) and tr( UTΘU) parts. By writing U= [U:,1, ..., U :,M], we get
+(C.2) −log det( UTΘU)+tr( UTΘU) =MX
+j=1[−2 logUjj+tr(UT
+:,jΘU:,j)]−log det Θ .SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 33
+Thus, the minimization is decoupled into each column of U. Due to the choice of
+the sparsity pattern, we have UT
+:,jΘU:,j=UT
+sj,jΘsj,sjUsj,j. We can further simplify
+the formula
+(C.3) tr( UT
+:,jΘU:,j) = tr( UT
+sj,jΘsj,sjUsj,j).
+It suffices to identify the minimizer of −2 logUjj+ tr(UT
+sj,jΘsj,sjUsj,j). Taking the
+derivatives, we get the optimality condition:
+(C.4) −2
+Ujje#sj+ 2Θ sj,sjUsj,j= 0,
+where e#sjis a standard basis vector in R#sjwith the last entry being 1 and other
+entries equal 0.
+Solving this equation leads to the solution
+(C.5) Usj,j=Θ−1
+sj,sje#sjq
+eT
+#sjΘ−1sj,sje#sj.
+The proof is complete. □
+Appendix D.Proofs of the main theoretical results
+D.1.Proof of Theorem 4.1.
+Proof of Theorem 4.1. We rely on the interplay between GP regression, linear al-
+gebra, and numerical homogenization to prove this theorem. Consider the GP
+ξ∼ N(0,L−1). For each measurement functional, we define the Gaussian random
+variables Yi= [ξ,˜ϕi]∼ N(0,[˜ϕi,L−1˜ϕi]) =N(0,Θii). As mentioned in Remark 3.3
+and proved in Proposition D.5, we have a relation between the Cholesky factor and
+the GP conditioning, as
+U⋆
+ij
+U⋆
+jj= (−1)i̸=jCov[Yi, Yj|Y1:j−1\{i}]
+Var[Yi|Y1:j−1\{i}], i≤j .
+Moreover, by Proposition D.6, one can connect the conditional covariance of GPs
+with conditional expectation, such that
+(D.1)Cov[Yi, Yj|Y1:j−1\{i}]
+Var[Yi|Y1:j−1\{i}]=E[Yj|Yi= 1, Y1:j−1\{i}= 0].
+The above conditional expectation is related to the Gamblets introduced in the
+numerical homogenization literature. Indeed, using the relation Yi= [ξ,˜ϕi], we
+have
+(D.2) E[Yj|Yi= 1, Y1:j−1\{i}= 0] = [ E[ξ|Yi= 1, Y1:j−1\{i}= 0],˜ϕj] = [ψi
+j,˜ϕj],
+where ψi
+j(x) :=E[ξ(x)|Yi= 1, Y1:j−1\{i}= 0]; it is named Gamblets in [55, 56].
+Importantly, for the conditional expectation, by Proposition D.7, we have the
+following variational characterization [55, 56]:
+(D.3)ψi
+j= argminψ∈Hs
+0(Ω) [ψ,Lψ]
+subject to [ ψ,˜ϕk] =δi,kfor 1≤k≤j−1.
+A main property of the Gamblets is that they can exhibit an exponential decay
+property under suitable assumptions, which can be used to prove our theorem. We34 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+collect the related theoretical results in Appendix D.4; we will use them in our
+proof.
+Our proof for the theorem consists of two steps. The first step is to bound
+|U⋆
+ij/U⋆
+jj|, and the second step is to bound |U∗
+jj|.
+For the first step, we separate the cases j≤Mandj > M . Indeed, the case
+j≤Mhas been covered in [69, 68]. Here, our proof is simplified.
+For 1≤i≤j≤M, by the discussions above, we have the relation:
+(D.4)U⋆
+ij
+U⋆
+jj=[ψi
+j,˜ϕj]=|ψi
+j(xP(j))|,
+where we used the fact that ˜ϕj=δxP(j)because all the Diracs measurements are
+ordered first. To bound |ψi
+j(xP(j))|, we will use the exponential decay results for
+Gamblets that we prove in Proposition D.12. More precisely, to apply Proposition
+D.12 to this context, we need to verify its assumptions, especially Assumption 2.
+In our setting, we can construct a partition of the domain Ω by using the Voronoi
+diagram. Denote Xj−1={xP(1), ...,xP(j−1)}. We note that XMwill consist of all
+the physical points. We define τk, for 1 ≤k≤j−1, to be the Voronoi cell,
+which contains all points in Ω that are closer to xP(k)than to any other in Xj−1.
+Since we assume Ω is convex, τkis also convex. And a bounded convex domain is
+itself uniformly Lipschitz. We can show that these Voronoi cells are also uniformly
+Lipschitz (i.e., the Lipschitz constants for each cell are bounded uniformly). To see
+this, note that these cells are convex polygons; the Lipschitz constant depends on
+the size of the angles at the corners. The angles cannot be arbitrarily small since
+each cell contains a ball of size δhand is inside a ball of size h/δ, as shown in the
+arguments below. Therefore, there is a uniform lower bound on the size of angles
+at each corner of these convex polygons, so they are uniformly Lipschitz.
+Furthermore, to verify the other parts in Assumption 2, we analyze the homo-
+geneity parameter of Xj−1. By definition,
+(D.5) δ(Xj−1;∂Ω) =minx̸=y∈Xj−1dist(x,{y} ∪∂Ω)
+max x∈Ωdist(x, Xj−1∪∂Ω).
+Recall the definition of the maximin ordering: the maximin ordering conditioned
+on a set A=∂Ω for points {xi, i∈I}is obtained by successively selecting the point
+xithat is furthest away from Aand the already picked points. This implies
+lj−1= dist( xP(j−1),{xP(1), ...,xP(j−2)} ∪∂Ω).
+We thus have
+(D.6) min
+x̸=y∈Xj−1dist(x,{y} ∪∂Ω) = lj−1.
+Then, by the triangle inequality, it holds that
+(D.7)
+max
+x∈Ωdist(x, Xj−1∪∂Ω)≤max
+x∈XMdist(x, Xj−1∪∂Ω) + max
+x∈Ωdist(x, XM∪∂Ω)
+≤lj+lM/δ(XM;∂Ω)≤(1 + 1 /δ(XM;∂Ω))lj,
+where in the second inequality, we used the definition of the lengthscales ljand
+the homogeneity assumption of XM, i.e., δ(XM;∂Ω)>0, which has the followingSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 35
+relation
+δ(XM;∂Ω) =minx̸=y∈XMdist(x,{y} ∪∂Ω)
+max x∈Ωdist(x, XM∪∂Ω)=lM
+max x∈Ωdist(x, XM∪∂Ω).
+Combining the above two estimates, we get δ(Xj−1;∂Ω)≥1/(1+1 /δ(XM;∂Ω))>0
+where we used the fact that lj≤lj−1. SoXj−1is also homogeneously distributed
+with δ(Xj−1;∂Ω)>0.
+We are ready to verify Assumption 2. Firstly, the balls B(x, lj/2),x∈Xj−1do
+not intersect, and thus inside each τk, there is a ball of center xP(k)and radius lj/2.
+Secondly, since max x∈Ωdist(x, Xj−1∪∂Ω)≤(1 + 1 /δ(XM;∂Ω))lj, we know that
+τiis contained in a ball of center xP(k)and radius (1 + 1 /δ(XM;∂Ω))lj. Therefore,
+Assumption 2 holds with h=lj/2,δ= min(1 /(2+2 /δ(XM;∂Ω)),1) and Q=j−1.
+Assumption 3 readily holds by our choice of measurements.
+Thus, applying Proposition D.12, we then get
+(D.8)U⋆
+ij
+U⋆
+jj=|ψi
+j(xP(j))| ≤Cl−2s
+jexp
+−dist(xP(i),xP(j))
+Clj
+,
+where Cis a constant depending on Ω , δ, d, s, ∥L∥,∥L−1∥. We obtain the exponen-
+tial decay of |U⋆
+ij/U⋆
+jj|forj≤M.
+Forj > M andi≤j, we have
+(D.9)U⋆
+ij
+U⋆
+jj=[ψi
+j,˜ϕj]≤max
+0≤|γ|≤JDγψi
+j(xP(j)),
+where we used the fact that ˜ϕjis of the form δxP(j)◦Dγ. Now, for ψi
+j, the set of
+points we need to deal with is XM. Similar to the case j≤M, we define τk, for
+1≤k≤M, to be the Voronoi cell of these points in Ω. Then, using the same
+arguments in the previous case, we know that Assumption 2 holds with h=lM/2,
+δ= min( δ(XM;∂Ω)/2,1) and Q=M. Assumption 3 readily holds by our choice
+of measurements. Therefore Proposition D.12 implies that
+(D.10) max
+0≤|γ|≤JDγψi
+j(xP(j))≤Cl−2s
+Mexp
+−dist(xP(i),xP(j))
+ClM
+,
+where Cis a constant depending on Ω , δ, d, s, ∥L∥,∥L−1∥, J.
+Summarizing the above arguments, we have obtained that
+(D.11)U⋆
+ij
+U⋆
+jj≤Cl−2s
+jexp
+−dist(xP(i),xP(j))
+Clj
+,
+for any 1 ≤i≤j≤N, noting that by our definition lj=lMforj > M .
+Now, we analyze |U∗
+jj|. Note that Θ = K(˜ϕ,˜ϕ)∈RN×Nand Θ−1=U⋆U⋆T.
+By the arguments above, we know that the assumptions in Proposition E.1 are
+satisfied with h=lM/2,δ= min( δ(XM;∂Ω)/2,1) and Q=M. Thus, for any
+vector w∈RN, by Proposition E.1, we have
+wTΘ−1w≤Cl−2s+d
+M|w|2,
+for some constant Cdepending on δ(XM), d, s,∥L∥, J. This implies that
+|U⋆Tw|2≤Cl−2s+d
+M|w|2.36 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Taking wto be the standard basis vector ej, we get
+NX
+k=j|U⋆
+jk|2≤Cl−2s+d
+M ,
+which leads to |U⋆
+jj| ≤Cl−s+d/2
+M for some Cdepending on δ(XM;∂Ω), d, s,∥L∥, J.
+□
+Remark D.1.We provide some remarks regarding our assumption in Section 4.1,
+where we assume all the measurements are of the type δxi◦Dγwith the multi-
+index γ= (γ1, ..., γ d)∈Ndand|γ|:=Pd
+k=1γk≤J; here Dγ=Dγ1
+x(1)···Dγd
+x(d).
+This assumption is for convenience of presentation and can be generalized. For
+example, similar proofs can be applied if Laplacian measurements are considered.
+In fact, for such a case, the main change of the proof of Theorem 4.1 is the bound
+on the right hand side of (D.9), where one now needs to bound |∆ψi
+j|. Here ψi
+j
+is defined by (D.3), with ˜ϕj=δxP(j)◦∆. Note that Theorem D.10 applies to
+general measurements, and its conditions are satisfied when Laplace measurements
+are added once linear independence between the measurements is ensured (which
+is needed for the condition (D.32)). With Theorem D.10, we can prove Proposition
+D.12 when Laplace measurements are added, which then implies the bound on the
+right hand side of (D.9). ♢
+D.2.Proof of Theorem 4.2. We need the following lemma, which is taken from
+Lemma B.8 in [68].
+Lemma D.2. Letλmin, λmaxbe the minimal and maximal eigenvalues of Θ∈
+RN×N, respectively. Then there exists a universal constant η >0such that for any
+matrix M∈RN×N, we have
+•Ifλmax∥Θ−1−MMT∥Fro≤η, then
+KL 
+N(0,Θ)∥ N(0,(MMT)−1)
+≤λmax∥Θ−1−MMT∥Fro;
+•IfKL 
+N(0,Θ)∥ N(0,(MMT)−1)
+≤η, then
+∥Θ−1−MMT∥Fro≤λ−1
+minKL 
+N(0,Θ)∥ N(0,(MMT)−1)
+.
+With this lemma, we can prove Theorem 4.2. The proof is similar to that of
+Theorem B.6 in [68].
+Proof of Theorem 4.2. First, by a covering argument, we know lM=O(M−1/d) =
+O(N−1/d). By Proposition E.1 with h=lM/2, we know that
+(D.12) λmax(Θ)≤C1Nand λmin(Θ)≥C1N−2s/d+1
+for some constant C1depending on δ({xi}i∈I;∂Ω), d, s,∥L∥,∥L−1∥, J.
+Theorem 4.1 implies that for ( i, j)/∈SP,l,ρ, it holds that
+|U⋆
+ij| ≤Cl−s+d/2
+M l−2s
+jexp
+−dist(xP(i),xP(j))
+Clj
+≤CNαexp
+−ρ
+C
+,
+for some αdepending on s, d, where Cis a generic constant that depends on Ω,
+δ({xi}i∈I;∂Ω), d, s, J, ∥L∥,∥L−1∥; in fact α≤3s/d−1/2, using that l−1
+j, l−1
+M=
+O(N1/d). Moreover, from the proof in the last subsection, we know that |U∗
+ij| ≤
+CNs/d−1/2for all 1 ≤i≤j≤N.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 37
+Now, consider the upper triangular Cholesky factorization Θ−1=U⋆U⋆T. De-
+fineMρ∈RN×Nsuch that
+(D.13) Mρ
+ij=(
+U⋆
+ij,if (i, j)∈SP,l,ρ
+0, otherwise .
+Then, by using the above bounds on U⋆
+ij, we know that there exists a constant
+βdepending on s, d, such that
+(D.14) ∥Θ−1−MρMρT∥Fro≤CNβexp
+−ρ
+C
+.
+Here, we can use a simple bound
+∥Θ−1−MρMρT∥Fro=∥U⋆U⋆T−MρMρT∥Fro
+≤r
+N2·N2·N2s/d−1·C2N2αexp(−2ρ
+C)
+since there are N2entries in the matrix U⋆U⋆T−MρMρT, each entry is the sum-
+mation of at most Nterms, and each term is of the form U⋆
+ijU⋆
+lk, one of which
+must be exponentially decaying and bounded by CNαexp 
+−ρ
+C
+and another is
+always bounded by O(l−s+d/2
+M ) = O(Ns/d−1/2) due to the result at the end of
+the section D.1. Using the Cauchy-Swarchz inequality, we get that each entry of
+the matrix is bounded byq
+N2·N2s/d−1·C2N2αexp(−2ρ
+C); squaring, summing,
+and then taking square root leads to the final bound. Consequently, we can take
+β=s/d+ 3/2 +α≤4s/d+ 1.
+Since λmax(Θ)≤C1N, we know that there exists a constant C′, such that when
+ρ≥C′log(N),
+λmax(Θ)∥Θ−1−MρMρT∥Fro≤η ,
+for the ηdefined in Lemma D.2. Using Lemma D.2, we get
+KL
+N(0,Θ)∥ N(0,(MρMρT)−1)
+≤λmax(Θ)∥Θ−1−MρMρT∥Fro.
+By the KL optimality, the optimal solution Uρwill satisfy
+(D.15) KL
+N(0,Θ)∥ N(0,(UρUρT)−1)
+≤λmax(Θ)∥Θ−1−MρMρT∥Fro.
+This means that
+KL
+N(0,Θ)∥ N(0,(UρUρT)−1)
+≤C1CNβ+1exp(−ρ
+C)≤C1CN4s/d+2exp(−ρ
+C).
+Again, by Lemma D.2, we get
+(D.16)
+∥Θ−1−UρUρT∥Fro≤λmax(Θ)
+λmin(Θ)∥Θ−1−MρMρT∥Fro≤CN6s/d+1exp(−ρ
+C).
+Moreover,
+(D.17) ∥Θ−(UρUρT)−1∥Fro≤ ∥Θ∥Fro∥Θ−1−UρUρT∥Fro∥(UρUρT)−1∥Fro,
+Using the above estimates , we know that there exists a constant C′′depending
+on Ω, δ({xi}i∈I;∂Ω), d, s, J, ∥L∥,∥L−1∥, such that when ρ≥C′′log(N/ϵ), it holds
+that
+KL
+N(0,Θ)∥ N(0,(UρUρT)−1)
++∥Θ−1−UρUρT∥Fro+∥Θ−(UρUρT)−1∥Fro≤ϵ .38 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Such C′′depends on C, the generic constant in Theorem 4.1, which relies on the
+analysis in Theorem D.10, for which we do not track a tight constant in the scope
+of this work. These constants are at most polynomially on s, d, which can be
+suppressed by the exponential decay term.
+The above bound shows that with ρlogarithmic on N/ϵ, we can get an approx-
+imation error bounded by ϵ. □
+D.3.Connections between Cholesky factors, conditional covariance, con-
+ditional expectation, and Gamblets. We first present two lemmas.
+The first lemma is about the inverse of a block matrix [45].
+Lemma D.3. For a positive definite matrix Θ∈RN×N, if we write it in the block
+form
+(D.18) Θ =ΘY Y ΘY Z
+ΘZY ΘZZ
+,
+then, Θ−1equals
+(D.19)(ΘY Y−ΘY ZΘ−1
+ZZΘZY)−1−Θ−1
+Y YΘY Z(ΘZZ−ΘZYΘ−1
+Y YΘY Z)−1
+−Θ−1
+ZZΘZY(ΘY Y−ΘY ZΘ−1
+ZZΘZY)−1(ΘZZ−ΘZYΘ−1
+Y YΘY Z)−1
+.
+The second lemma is about the relation between the conditional covariance of a
+Gaussian random vector and the precision matrix.
+Lemma D.4. LetN≥3andX= (X1, ..., X N)be aN(0,Θ)Gaussian vector in
+RN. Let Y= (X1, X2)andZ= (X3, ..., X N). Then,
+(D.20) Cov( Y1, Y2|Z) =−A12
+A11A22−A2
+12,
+and
+(D.21) Var( Y1|Z) =A22
+A11A22−A2
+12,
+where A= Θ−1. Therefore
+(D.22)Cov(Y1, Y2|Z)
+Var(Y1|Z)=−A12
+A22.
+Proof. First, we know that Cov( Y|Z) = Θ Y Y−ΘY ZΘ−1
+ZZΘZY. By Lemma D.3, we
+have
+(D.23) Θ Y Y−ΘY ZΘ−1
+ZZΘZY=A11A12
+A21A22−1
+.
+Inverting this matrix leads to the desired result. □
+With these lemmas, we can show the connection between the Cholesky factors
+and the conditional covariance as follows.
+Proposition D.5.Consider the positive definite matrix Θ ∈RN×N. Suppose the
+upper triangular Cholesky factorization of its inverse is U, such that Θ−1=UUT.
+LetYbe a Gaussian vector with law N(0,Θ). Then, we have
+(D.24)Uij
+Ujj= (−1)i̸=jCov[Yi, Yj|Y1:j−1\{i}]
+Var[Yi|Y1:j−1\{i}], i≤j .SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 39
+Proof. We only need to consider the case i̸=j. We consider j=Nfirst. Denote
+A= Θ−1. By the definition of the Cholesky factorization A=UUT, we know that
+U:,N=A:,N/√ANN. Thus,
+UiN
+UNN=AiN
+ANN.
+Fori̸=N, by Lemma D.4, we have
+(D.25)Cov[Yi, YN|Y1:N−1\{i}]
+Var[Yi|Y1:N−1\{i}]=−AiN
+ANN.
+By comparing the above two identities, we obtain the result holds for j=N.
+Forj < N , we can use mathematical induction. Note that U1:N−1,1:N−1is
+also the upper triangular Cholesky factor of (Θ 1:N−1,1:N−1)−1, noting the fact (by
+applying Lemma D.3 to the matrix A) that
+(Θ1:N−1,1:N−1)−1=A1:N−1,1:N−1−A1:N−1,NA−1
+NNAN,1:N−1
+is the Schur complement, which is exactly the residue block in the Cholesky factor-
+ization. Therefore, applying the result for j=Nto the matrix Θ 1:N−1,1:N−1, we
+prove (D.24) holds for j=N−1 as well. Iterating this process to j= 1 finishes
+the proof. □
+Furthermore, the conditional covariance is related to the conditional expectation,
+as follows.
+Proposition D.6.For a Gaussian vector Y∼ N(0,Θ), we have
+(D.26)Cov[Yi, Yj|Y1:j−1\{i}]
+Var[Yi|Y1:j−1\{i}]=E[Yj|Yi= 1, Y1:j−1\{i}= 0].
+Proof. We show that for any zero-mean Gaussian vector Zin dimension d, and any
+vectors v, w∈Rd(such that Var[ Zw]̸= 0), it holds that
+(D.27)Cov[Zv, Zw]
+Var[Zw]=E[Zv|Zw= 1],
+where Zv=⟨Z, v⟩andZw=⟨Z, w⟩. Indeed this can be verified by direct calcula-
+tions. We have
+Cov(Zv−Cov[Zv, Zw]
+Var[Zw]Zw, Zw) = 0 ,
+which implies they are independent since they are joint Gaussians. This yields
+E[Zv−Cov[Zv, Zw]
+Var[Zw]Zw|Zw= 1] = 0 ,
+which then implies (D.27) holds.
+Now, we set Zto be the Gaussian vectors Yconditioned on Y1:j−1\{i}= 0. It
+is still a Gaussian vector (with a degenerate covariance matrix). Applying (D.27)
+with v=ej, w=ei, we get the desired result. □
+Finally, the conditional expectation is connected to a variational problem. The
+following proposition is taken from [55, 56]. One can understand the result as the
+maximum likelihood estimator for the GP conditioned on the constraint coincides
+with the conditional expectation since the distribution is Gaussian. Mathematically,
+it can be proved by writing down the explicit formula for the two problems directly.40 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Proposition D.7.For a Gaussian process ξ∼ N (0,L−1) where L:Hs
+0(Ω)→
+H−s(Ω) satisfies Assumption 1. Then, for some linearly independent measurements
+ϕ1, ..., ϕ l∈H−s(Ω), the conditional expectation
+ψ⋆(x) :=E[ξ(x)|[ξ, ϕi] =ci,1≤i≤l]
+is the solution to the following variational problem:
+(D.28)ψ⋆= argminψ∈Hs
+0(Ω) [ψ,Lψ]
+subject to [ ψ, ϕi] =cifor 1≤i≤l .
+The solution of the above variational problem is termed Gamblets in the litera-
+ture; see Definition D.8.
+D.4.Results regarding the exponential decay of Gamblets. We collect and
+organize some theoretical results of the exponential decay property of Gamblets
+from [56]. And we provide some new results concerning the derivative measurements
+which are not covered in [56].
+The first assumption is about the domain and the partition of the domain.
+Assumption 2 (Domain and partition: from Construction 4.2 in [56]) .Suppose Ω is
+a bounded domain in Rdwith a Lipschitz boundary. Consider δ∈(0,1) and h >0.
+Letτ1, ..., τ Qbe a partition of Ω ⊂Rdsuch that the closure of each τiis convex, is
+uniformly Lipschitz, contains a ball of center xiand radius δh, and is contained in
+the ball of center xiand radius h/δ.
+The second assumption is regarding the measurement functionals related to the
+partition of the domain.
+Assumption 3 (Measurement functionals: from Construction 4.12 in [56]) .Let As-
+sumption 2 holds. For each 1 ≤i≤Q, letϕi,α, α∈Ti(where Tiis an index set)
+be elements of H−s(Ω) that the following conditions hold:
+•Linear independence: ϕi,α, α∈Tiare linearly independent when acting on
+the subset Hs
+0(τi)⊂Hs
+0(Ω).
+•Locality: [ ϕi,α, ψ] = 0 for every ψ∈C∞
+0(Ω\τi) and α∈Ti.
+With the measurement functionals, we can define Gamblets as follows via a
+variational problem. Note that according to Proposition D.7, Gamblets are also
+conditional expectations of some GP given the measurement functionals.
+Definition D.8 (Gamblets: from Section 4.5.2.1 in [56]) .Let Assumptions 2 and 3
+hold, and the operator L:Hs
+0(Ω)→H−s(Ω) satisfies Assumption 1. The Gamblets
+ψi,α,1≤i≤Q, α∈Tiassociated with the operator Land measurement functionals
+ϕi,α,1≤i≤Q, α∈Tiare defined as
+(D.29)ψi,α= arg min
+ψ∈Hs
+0(Ω)[ψ,Lψ]
+subject to [ ψ, ϕk,β] =δikδαβfor 1≤k≤Q, β∈Tk.
+A crucial property of Gamblets is that they exhibit exponential decay; see the
+following Theorem D.10.
+Remark D.9.Exponential decay results regarding the solution to optimization prob-
+lems of the type (D.29) are first established in [46], where the measurement function-
+als are piecewise linear nodal functions in finite element methods and the operatorSPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 41
+L=−∇ · (a∇·). Then, the work [55] extends the result to piecewise constant
+measurement functionals and uses it to develop a multigrid algorithm for elliptic
+PDEs with rough coefficients. Later on, the work [29] extends the analysis to a class
+of strongly elliptic high-order operators with piecewise polynomial-type measure-
+ment functionals, and the work [9, 10] focuses on detailed analysis regarding the
+subsampled lengthscale for subsampled measurement functionals. All these results
+rely on similar mass-chasing arguments, which are difficult to extend to general
+higher-order operators.
+The paper [34] presents a simpler and more algebraic proof of the exponential
+decay in [46] based on the exponential convergence of subspace iteration methods.
+Then, the work [56] extends this technique (by presenting necessary and sufficient
+conditions) to general arbitrary integer order operators and measurement func-
+tionals. Specifically, the authors in [69] use the conditions in [56] to show the
+desired exponential decay when the operator Lsatisfies Assumption 1, and the
+measurement functionals are Diracs. We also note that there are works on different
+localization schemes that can lead to decay estimates with a better dependence on
+hand better decay rates [28, 27].
+In Theorem D.10, we present the sufficient conditions in [56] that ensure the
+exponential decay and verify that the derivative-type measurements considered in
+this paper indeed satisfy these conditions; see Propositions D.11 and D.12. ♢
+Theorem D.10 (Exponential decay of Gamblets) .Let Assumptions 2 and 3 hold.
+We define the function space
+Φ⊥:={f∈Hs
+0(Ω) : [ f, ϕi,α] = 0 for any α∈Ti,1≤i≤Q}.
+Assume, furthermore the following conditions hold:
+|f|Ht(Ω)≤C0hs−t∥f∥Hs
+0(Ω)for any 0≤t≤sandf∈Φ⊥; (D.30)
+X
+1≤i≤Q,α∈Ti[f, ϕi,α]2≤C0sX
+t=0h2t|f|2
+Ht(Ω)for any f∈Hs
+0(Ω); (D.31)
+|y| ≤C0h−s∥X
+α∈Tiyαϕi,α∥H−s(τi)for any 1≤i≤Qandy∈R|Ti|. (D.32)
+Here, | · |Ht(Ω)is the Sobolev seminorm in Ωof order t.
+Then, for the Gamblets in Definition D.8, we have
+|Dγψi,α(x)| ≤Ch−sexp(−dist(x,xi)
+Ch),x∈Ω,
+for any 1≤i≤Q, α∈Tiand multi-index γsatisfying |γ|< s−d/2. Here Cis a
+constant depending on C0,Ω, δ, d, s, ∥L∥,∥L−1∥.
+Proof. We use results in the book [56]. Conditions (D.30), (D.31) and (D.32) are
+equivalently Condition 4.15 in [56]. Let
+(D.33) Ω i= int
+[
+j:dist( τi,τj)≤δhτj
+⊂B(xi,3h/δ).
+Then, by Theorem 4.16 in [56], there exists a constant Cthat depends on C0, δ, d, s ,
+∥L∥,∥L−1∥such that
+(D.34) ∥ψi,α−ψn
+i,α∥Hs
+0(Ω)≤Ch−sexp(−n/C),42 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+where ψn
+i,αis the minimizer of (D.29) after replacing the condition ψ∈Hs
+0(Ω)
+byψ∈Hs
+0(Ωn
+i). Here, Ωn
+iis the collection of Ω jwhose graph distance to Ω iis
+not larger than n; see the definition of graph distance in Definition 4.13 of [56].
+Intuitively, one can understand Ωn
+ias the n-layer neighborhood of Ω i. We have
+Ω0
+i= Ω i.
+By the definition of Ωn
+iand Assumption 2, we know that
+(D.35) B(xi,(n+ 1)δh)∩Ω⊂Ωn
+i⊂B(xi,9(n+ 1)h/δ)∩Ω.
+Now, using the Sobolev embedding theorem and the fact that ψn
+i,αis supported in
+Ωn
+i, we get
+(D.36)∥Dγψi,α∥L∞(Ω\B(xi,9nh/δ ))≤ ∥Dγψi,α∥L∞(Ω\Ωn
+i)
+≤ ∥Dγψi,α−Dγψn
+i,α∥L∞(Ω)
+≤C1∥ψi,α−ψn
+i,α∥Hs
+0(Ω)
+≤C1Ch−sexp(−n/C),
+where C1is a constant depending on Ω , d, J that satisfies
+sup
+0≤|γ|≤J∥Dγu∥L∞(Ω)≤C1∥u∥Hs
+0(Ω),
+for any u∈Hs
+0(Ω).
+The result (D.36) implies that for any n∈N, once dist( x,xi)≥9(n+ 1)h/δ, it
+holds that
+|Dγψi,α(x)| ≤Ch−sexp(−n
+C),
+where Cis some constant depending on C0,Ω, δ, d, s, ∥L∥,∥L−1∥. Here we used the
+fact that the function C→Ch−sexp(−n
+C) is increasing.
+In particular, the above inequality holds when 9( n+ 1)h/δ≤dist(x,xi)≤9(n+
+2)h/δ; the relation yields n∼dist(x,xi)/h. By replacing nin terms of dist( x,xi)/h,
+we obtain that there exists a constant Cdepending on the same set of variables,
+such that
+|Dγψi,α(x)| ≤Ch−sexp(−dist(x,xi)
+Ch).
+The proof is complete. □
+In the following, we show that conditions (D.30), (D.31), and (D.32) are sat-
+isfied by the derivative measurements that we are focusing on in the paper. We
+need to scale each derivative measurement by a power of h; this will only change
+the resulting Gamblets by a corresponding scaling, which would not influence the
+exponential decay result; see Proposition D.12.
+Proposition D.11.Let Assumptions 2 and 3 hold. Consider J∈NandJ < s−d/2.
+For each 1 ≤i≤Q, we choose {hd/2δxi} ⊂ { ϕi,α, α∈Ti} ⊂ { hd/2+|γ|δxi◦Dγ,0≤
+|γ| ≤J}. Then, Conditions (D.30), (D.31), (D.32) hold with the constant C0
+depending on δ, d, s andJonly.
+Proof. We will verify the conditions one by one.
+Condition (D.30) follows from Section 15.4.5 of the book [56], where the case
+of{ϕi,α, α∈Ti}={hd/2δxi}is covered. More precisely, in our case, we have
+more measurement functionals compared to these Diracs, and thus the space Φ⊥is
+smaller than that considered in Section 15.4.5 of the book [56]. This implies that
+their results directly apply and (D.30) readily holds in our case.SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 43
+For Conditions (D.31) and (D.32), we can assume {ϕi,α, α∈Ti}={hd/2+|γ|δxi◦
+Dγ,0≤ |γ| ≤J}since this could only make the constant C0larger. We start with
+Condition (D.31). We note that in our proof, Crepresents a generic constant and
+can vary from place to place; we will specify the variables it can depend on.
+Consider the unit ball B(0,1)⊂Rd. Since J < s −d/2, the Sobolev embedding
+theorem implies that
+(D.37)X
+0≤|γ|≤J∥Dγf∥L∞(B(0,1))≤C∥f∥Hs(B(0,1)),
+for any f∈Hs(B(0,1)), where Cis a constant depending on dands. This implies
+that
+(D.38)X
+0≤|γ|≤J|Dγf(0)|2≤CsX
+t=0|f|2
+Ht(B(0,1)),
+where Cdepends on d, sandJ. Consequently, using the change of variables x=
+xi+δhx′, we get
+(D.39)X
+0≤|γ|≤Jh2|γ||Dγf(xi)|2≤CsX
+t=0δ2t−dh2t−d|f|2
+Ht(B(xi,δh)).
+We can absorb δintoCand obtain
+(D.40)X
+0≤|γ|≤Jhd+2|γ||Dγf(xi)|2≤CsX
+t=0h2t|f|2
+Ht(B(xi,δh)),
+where Cdepends on δ, d, s andJ, for any f∈Hs(B(xi, δh)). Now, using the fact
+thatHs(B(xi, δh))⊂Hs
+0(Ω) and {ϕi,α, α∈Ti}={hd/2+|γ|δxi◦Dγ,0≤ |γ| ≤J},
+we arrive at
+(D.41)X
+α∈Ti[f, ϕi,α]2≤CsX
+t=0h2t|f|2
+Ht(B(xi,δh)),
+for any f∈Hs
+0(Ω). Summing the above inequalities for all xi, we get
+(D.42)X
+1≤i≤Q,α∈Ti[f, ϕi,α]2≤CsX
+t=0h2t|f|2
+Ht(Ω)for any f∈Hs
+0(Ω),
+where Cdepends on δ, d, s andJ. This verifies Condition (D.31).
+For Condition (D.32), we have
+(D.43)∥X
+α∈Tiyαϕi,α∥H−s(τi)≥ ∥X
+α∈Tiyαϕi,α∥H−s(B(xi,δh))
+=∥X
+0≤|γ|≤Jyγhd/2+|γ|δxi◦Dγ∥H−s(B(xi,δh)),
+where we abuse the notations to write yαbyyγ.44 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Now, by definition, we get
+(D.44)∥X
+0≤|γ|≤Jyγhd/2+|γ|δxi◦Dγ∥H−s(B(xi,δh))
+= sup
+v∈Hs
+0(B(xi,δh))P
+0≤|γ|≤JyγDγv(xi)hd/2+|γ|
+∥v∥Hs
+0(B(xi,δh))
+= sup
+v∈Hs
+0(B(0,1))P
+0≤|γ|≤JyγDγv(0)hd/2+|γ|(δh)−|γ|
+∥v∥Hs
+0(B(0,1))(δh)d/2−s
+≥Chs∥X
+0≤|γ|≤Jyγδ0◦Dγ∥H−s(B(0,1)),
+where Cis a constant that depends on δ, s. In the second identity, we used the
+change of coordinates x=xi+δhx′.
+Now, since δ0◦Dγ,0≤ |γ| ≤Jare linearly independent, we know that there
+exists C′depending on d, J, such that
+(D.45) ∥X
+0≤|γ|≤Jyγδ0◦Dγ∥H−s(B(0,1))≥C′C|y|
+holds for any y. Let C0=C′C, then Condition (D.32) is verified. □
+By Proposition D.11 and rescaling, we can obtain the following results for the
+unscaled measurements.
+Proposition D.12.Let Assumptions 2 and 3 hold. Consider J∈NandJ < s−d/2.
+For each 1 ≤i≤Q, we choose {δxi} ⊂ { ϕi,α, α∈Ti} ⊂ { δxi◦Dγ,0≤ |γ| ≤J}.
+Then, for the Gamblets in Definition D.8, we have
+|Dγψi,α(x)| ≤Ch−2sexp
+−dist(x,xi)
+Ch
+,
+for any 1 ≤i≤Q, α∈Tiand multi-index γsatisfying |γ|< s−d/2. Here Cis a
+constant depending on Ω , δ, d, s, ∥L∥,∥L−1∥, J.
+Proof. Based on Theorem D.10 and Proposition D.11, we know that
+|Dγψi,α(x)| ≤Ch−sexp
+−dist(x,xi)
+Ch
+holds if ψi,αis the Gamblet corresponding to the measurement functionals satisfying
+{hd/2δxi} ⊂ { ϕi,α, α∈Ti} ⊂ { hd/2+|γ|δxi◦Dγ,0≤ |γ| ≤J}. Using the fact that
+|γ|+d/2≤sand the definition of Gamblets, we know that when the measurement
+functionals change to {δxi} ⊂ { ϕi,α, α∈Ti} ⊂ { δxi◦Dγ,0≤ |γ| ≤J}, the
+corresponding Gamblets will satisfy
+|Dγψi,α(x)| ≤Ch−2sexp
+−dist(x,xi)
+Ch
+.
+The proof is complete. □SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 45
+Appendix E.Eigenvalue bounds on the kernel matrices
+This section is devoted to the lower and upper bounds of the eigenvalues of the
+kernel matrix.
+Proposition E.1.Let Assumptions 2 and 3 hold. Consider J∈NandJ < s −d/2.
+For each 1 ≤i≤Q, we choose {δxi} ⊂ { ϕi,α, α∈Ti} ⊂ { δxi◦Dγ,0≤ |γ| ≤J}.
+Letϕbe the collection of all ϕi,α,1≤i≤Q, α∈Ti. Let the operator L:Hs
+0(Ω)→
+H−s(Ω) satisfies Assumption 1 and assume the kernel function to be the Green
+function K(x,y) := [ δx,L−1δy]. Then, for the kernel matrix K(ϕ,ϕ), we have
+(E.1) Cmaxh−dI⪰K(ϕ,ϕ)⪰Cminh2s−dI,
+where Cminis a constant that depends on δ, d, s, ∥L∥,∥L−1∥, J, and Cmaxaddition-
+ally depends on Ω. And I is the identity matrix.
+Proof. It suffices to consider the case {ϕi,α, α∈Ti}={δxi◦Dγ,0≤ |γ| ≤J};
+the kernel matrix in other cases can be seen as a principal submatrix of the case
+considered here. The eigenvalues of the principal submatrix can be lower and upper
+bounded by the smallest and largest eigenvalues of the original matrix, respectively.
+Suppose K(ϕ,ϕ)∈RN×N. For any y∈RN, by definition, we have
+(E.2)
+yTK(ϕ,ϕ)y= [X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ,L−1(X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ)].
+We first deal with the largest eigenvalue. By (E.2), we get
+yTK(ϕ,ϕ)y≤ ∥L−1∥∥X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ∥2
+H−s(Ω).
+Due to the assumption J < s−d/2, there exists a constant C1depending on Ω , d, J
+such that
+sup
+0≤|γ|≤J∥Dγu∥L∞(Ω)≤C1∥u∥Hs
+0(Ω),
+for any u∈Hs
+0(Ω). This implies that for any 0 ≤ |γ| ≤Jandxi∈Ω, it holds
+∥δxi◦Dγ∥H−s(Ω)= sup
+u∈Hs
+0(Ω)|Dγu(xi)|
+∥u∥Hs
+0(Ω)≤C1.
+Therefore, we get
+(E.3)∥X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ∥H−s(Ω)
+≤X
+1≤i≤QX
+0≤|γ|≤J|yi,γ| · ∥δxi◦Dγ∥H−s(Ω)
+≤C1X
+1≤i≤QX
+0≤|γ|≤J|yi,γ|
+≤C1CJX
+1≤i≤Q|yi| ≤C1CJp
+Q|y|,
+where in the inequality, we used the triangle inequality. In the third and fourth
+inequalities, we used the Cauchy-Schwarz inequality, and CJis a constant that
+depends on J. Here, we abuse the notation and write yito be the vector collecting
+yi,γ,0≤ |γ| ≤J.46 YIFAN CHEN, HOUMAN OWHADI, AND FLORIAN SCH ¨AFER
+Now, by a covering argument, we know that Q=O(h−d). Therefore, combining
+(E.3) and (E.2), we arrive at
+yTK(ϕ,ϕ)y≤ ∥L−1∥C2
+1C2
+JQ|y|2≤Cmaxh−d|y|2,
+where Cmaxis a constant that depends on Ω , δ, d, s, ∥L∥,∥L−1∥, J. We have ob-
+tained the upper bound for the largest eigenvalue of K(ϕ,ϕ) as desired.
+For the smallest eigenvalue, using (E.2) again, we have
+yTK(ϕ,ϕ)y≥ ∥L∥−1∥X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ∥2
+H−s(Ω).
+Now, we will use the following fact
+∥w∥2
+H−s(Ω)= sup
+v∈Hs
+0(Ω)2Z
+wv− ∥v∥2
+Hs
+0(Ω)
+for any w∈H−s(Ω); note that hereR
+wvshould be understood as the dual pairing
+between H−s(Ω) and Hs(Ω). To see why this fact is true, we denote by ˜ wthe
+Riesz representer of winHs
+0(Ω), so thatR
+wv=⟨˜w, v⟩Hs
+0(Ω)where ⟨·,·⟩Hs
+0(Ω)is the
+Hs
+0(Ω) inner product and ∥w∥H−s
+0(Ω)=∥˜w∥Hs
+0(Ω). Then, it is straightforward to
+derive that the supremum is achieved by v= ˜w, and the optimum is ∥w∥2
+H−s(Ω),
+the left-hand side.
+Using the above fact, we get
+(E.4)
+∥X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ∥2
+H−s(Ω)= sup
+v∈Hs
+0(Ω)2X
+1≤i≤QX
+0≤|γ|≤Jyi,γDγv(xi)−∥v∥2
+Hs
+0(Ω).
+By restricting v∈Hs
+0(Ω) to v=P
+1≤i≤Qviwith each vi∈Hs
+0(B(xi, δh)), we
+obtain
+(E.5)sup
+v∈Hs
+0(Ω)2X
+1≤i≤QX
+0≤|γ|≤Jyi,γDγv(xi)− ∥v∥2
+Hs
+0(Ω)
+≥X
+1≤i≤Q
+ sup
+vi∈Hs
+0(B(xi,δh))2X
+0≤|γ|≤Jyi,γDγvi(xi)− ∥vi∥Hs
+0(B(xi,δh))
+
+=X
+1≤i≤Q∥X
+0≤|γ|≤Jyi,γδxi◦Dγ∥2
+H−s(B(xi,δh),
+where in the first inequality, we used the fact that the balls B(xi, δh),1≤i≤Q
+are disjoint.
+By (D.44) and (D.45), we know that
+(E.6) ∥X
+0≤|γ|≤Jyi,γhd/2+|γ|δxi◦Dγ∥H−s(B(xi,δh))≥Chs|yi|,
+for some constant Cdepending on δ, d, s, J . Here again, we write yito be the vector
+collecting yi,γ,0≤ |γ| ≤J. By change of variables, the above inequality implies
+that
+(E.7) ∥X
+0≤|γ|≤Jyi,γδxi◦Dγ∥H−s(B(xi,δh))≥Chs−d/2|yi|,
+for some constant Cdepending on δ, d, s, J .SPARSE CHOLESKY FOR SOLVING NONLINEAR PDES 47
+Combining (E.4), (E.5), (E.7), we obtain
+(E.8) ∥X
+1≤i≤QX
+0≤|γ|≤Jyi,γδxi◦Dγ∥2
+H−s(Ω)≥Ch2s−d|y|2.
+With (E.2), we obtain
+(E.9) yTK(ϕ,ϕ)y≥C∥L∥−1h2s−d|y|2.
+The proof is complete. □
+Courant Institute, New York University, NY 10012, Corresponding author
+Email address :yifan.chen@nyu.edu
+Applied and Computational Mathematics, Caltech, Pasadena, CA 91106
+Email address :owhadi@caltech.edu
+School of Computational Science and Engineering Georgia Institute of Technology,
+Atlanta, GA 30332
+Email address :florian.schaefer@cc.gatech.edu

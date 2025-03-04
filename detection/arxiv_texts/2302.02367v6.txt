@@ -1,0 +1,1101 @@
+FastPillars: A Deployment-friendly Pillar-based 3D Detector
+Sifan Zhou1, Zhi Tian2, Xiangxiang Chu2, Xinyu Zhang2, Bo Zhang2, Xiaobo Lu1*
+Chengjian Feng2, Zequn Jie2, Miao Sun3, Patrick Yin Chiang3, Lin Ma2
+1Southeast University2Meituan Inc.3Fudan University
+sifanjay@gmail.com, {tianzhi02,chuxiangxiang,zhangxinyu35,zhangbo97 }@meituan.com
+xblu2013@126.com, {fengchenhgjian,jiezequn,malin11 }@meituan.com, pchiang@photonic-tech.com
+Abstract
+The deployment of 3D detectors strikes one of the major chal-
+lenges in real-world self-driving scenarios. Existing BEV-
+based (i.e., Bird Eye View) detectors favor sparse convo-
+lutions (known as SPConv) to speed up training and in-
+ference, which puts a hard barrier for deployment, espe-
+cially for on-device applications. In this paper, in order to
+tackle the challenge of efficient 3D object detection from
+an industry perspective, we devise a deployment-friendly
+pillar-based 3D detector, termed FastPillars. First, we intro-
+duce a novel lightweight Max-and-Attention Pillar Encod-
+ing (MAPE) module specially for enhancing small 3D ob-
+jects. Second, we propose a simple yet effective principle
+for designing backbone in pillar-based 3D detection. We con-
+struct FastPillars based on these designs, achieving high per-
+formance and low latency without SPConv. Extensive ex-
+periments on two large-scale datasets demonstrate the effec-
+tiveness and efficiency of FastPillars for on-device 3D de-
+tection regarding both performance and speed. Specifically,
+FastPillars delivers state-of-the-art accuracy on Waymo Open
+Dataset with 1.8 ×speed up and 3.8 mAPH/L2 improvement
+over CenterPoint (SPConv-based). We will release our code.
+1 Introduction
+3D object detection using LiDAR point cloud has a wide
+range of applications and has shown remarkable progress in
+self-driving and robotics (Qi et al. 2018; Shi et al. 2020a,b).
+However, the community tends to explore high-performance
+detectors while overlooking the requirement for fast runtime
+speed, essential for onboard deployment in autonomous sys-
+tems. Therefore, it is imperative to develop a real-time top-
+performing 3D detector from the industrial perspective.
+According to the type of input data, existing real-time
+mainstream 3D detectors can be divided into two classes:
+point-based (Qi et al. 2019; Shi, Wang, and Li 2019;
+Shi et al. 2020b; Yang et al. 2020) and grid-based meth-
+ods (Zhou and Tuzel 2018; Lang et al. 2019; Deng et al.
+2021). In point-based methods, PointNet families (Qi et al.
+2017a,b) are leveraged to learn discriminative representation
+from raw point cloud. However, they may not be friendly
+to effective hardware implementation as they often require
+point query/retrieval in 3D space ( e.g., PointNet++ (Qi et al.
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+7372
+1020Inference Speed (FPS)Accuracy  (mAPH/ L2)FastPillarsPillarNetCenterPointCenterPoint++7170696867666530074
+VoxelNeXtFSDPillarNeXtreal time
+1.8xfaster+3.8 mAPH/L21.5xfaster+4.9 mAPH/L2
+1f2f1f2f1f2f3f3f1f1f1fFigure 1: The overall comparison with other real-time one-
+stage 3D detection methods. FastPillars finds a better trade-
+off between accuracy and speed, outperforming CenterPoint
+by 1.8 ×faster and 3.8 mAPH L2 higher on the Waymo val
+set. FPS is measured on an NVIDIA Tesla V100 GPU.
+2017b)). V oxel-based 3D detectors convert irregular point
+cloud into arranged grids ( i.e., voxels/pillars). However,
+sparse point cloud result in numerous empty grids, which
+will lead to significant redundant computational overheads.
+Some methods (Yan, Mao, and Li 2018; Yin, Zhou, and Kra-
+henbuhl 2021a) use SPConv (Graham and van der Maaten
+2017) to skip calculation on empty grids to reduce computa-
+tional burden. Despite being effective, SPConv poses a chal-
+lenge when converted to TRT (i.e., TensorRT) for deploy-
+ment and hampers further speedup through these techniques.
+PointPillars (Lang et al. 2019) is proposed to utilize
+highly-optimized 2D convolutions alone, achieving lower
+latency. Despite being fast, PointPillars has unsatisfactory
+performance due to the lack of an efficient backbone. Re-
+cently, PillarNet (Shi, Li, and Ma 2022) achieved high-
+performance while keeping real-time speed based on a
+SPConv-based backbone. Nevertheless, the use of SPConv
+in PillarNet makes it hard to be quantized and deployed via
+TRT. Specifically, the deployment of SPConv has the fol-
+lowing difficulties. i)SPConv is not a built-in operation in
+TensorRT. This makes it necessary to write a tedious custom
+plugin in CUDA C++ with several limitations like fixed-arXiv:2302.02367v6  [cs.CV]  13 Dec 2023shape input and reduced compatibility for commonly-used
+TensorRT for the quantization deployment. ii)SPConv re-
+quires irregular memory access patterns, which is challeng-
+ing to optimize on modern hardware. iii)SPConv takes as
+inputs 3D coordinates that are difficult to be quantized and
+requires taking fusion into consideration for fast execution,
+further complicating the deployment process. However, TRT
+offers several advantages: i)TRT can significantly accel-
+erate model inference while maintaining accuracy through
+deep optimization and high parallelism techniques such as
+layer and tensor fusion. ii)TRT supports a wide range of
+embedded and automotive environments, making it exten-
+sively used in the deployment of deep learning models in
+various industrial products.
+In this paper, we propose a real-time and high-
+performance 3D object detector designed with deployment
+in mind, termed FastPillars . FastPillars is fully based on
+standard convolutions, and thus it can be effortlessly de-
+ployed in onboard applications and seamlessly enjoy the
+speedup of TRT and network quantization. FastPillars con-
+sists of four essential blocks which are PFE (Pillar Feature
+Encoding), backbone, neck and head (see Fig. 2), respec-
+tively. In PFE block, we observe that previous pillar-based
+methods did not pay attention to local geometry patterns.
+To this end, we propose a simple but effective Max-and-
+Attention Pillar Encoding (MAPE) module, which atten-
+tively integrates significant local features and thus alleviates
+the information loss in the pillar generating process. In ad-
+dition, the MAPE module barely increases the overall la-
+tency (+4ms). In backbone, we find that the design rules
+of 2D backbone are not suitable for point cloud detection
+task. Based on this observation, we propose a computation-
+efficient principle and design a lightweight backbone. Fi-
+nally, we enrich the semantic features in neck block and
+adopt center-based detection head. Extensive experiments
+demonstrate that FastPillars achieves state-of-the-art perfor-
+mance on two large-scale datasets nuScenes and Waymo. As
+shown in Fig. 1, it can be seamlessly speeded up through
+TensorRT with 1.8 ×speed up and 3.8 mAPH L2 improve-
+ment over CenterPoint (SPConv-based). As a result, the pro-
+posed method offers an even better trade-off between speed
+and accuracy for real-time embedded applications. We sum-
+marize our contributions as follows:
+• We introduce a novel lightweight Max-and-Attention Pil-
+lar Encoding ( MAPE ) module specially for enhancing
+small 3D objects.
+• We propose a simple yet effective principle for designing
+pillar-based 3D backbone with remarkable performance
+and real-time inference speed.
+• Based on the above designs, we construct a high-
+performance and low-latency 3D detector termed Fast-
+Pillars . FastPillars eliminates the need for SPConv ham-
+pering the on-device deployment and provides a strong
+and simple alternative to SPConv-based detectors.
+• Extensive experiments on the nuScenes and Waymo
+dataset show that FastPillars brings a new state-of-the-
+art for on-board 3D detection in terms of accuracy and
+latency trade-off, and most importantly end-to-end de-ployable in TensorRT . We believe our method serve as a
+strong competitor to its peers and pose a significant im-
+pact for the community.
+2 Related Work
+Voxel-based 3D Detectors. V oxel-based 3D detec-
+tors (Chen et al. 2017; Kuang et al. 2020; Deng et al. 2021)
+generally convert the unstructured point cloud to regular pil-
+lar/voxel grids. This further allows learning point features
+by utilizing the mature 2D/3D CNNs. V oxelNet (Zhou and
+Tuzel 2018) is a pioneering work, which voxelizes the point
+cloud and then uses V oxel Feature Extractor (VFE) and 3D
+CNNs to learn the geometrical representation. Its shortcom-
+ing is the slow inference speed due to the huge computa-
+tional burden of the 3D convolutions. To save the memory
+cost, SECOND (Yan, Mao, and Li 2018) uses 3D sparse
+convolutions (Graham and van der Maaten 2017) that oper-
+ates on non-empty voxels to speed up the training and infer-
+ence. However, the use of SPConv has a drawback: it is not
+deployment-friendly, makeing it tricky to apply them on em-
+bedded systems. To this end, PointPillars (Lang et al. 2019)
+was proposed for on-device deployment. In PointPillars, a
+mature 2D detector pipeline is applied to predict 3D objects,
+making it easy to be converted into ONNX/TensorRT for
+deployment. Meanwhile, PointPillars’ deployment-friendly
+nature has made it a popular method in practice. After
+that, CenterPoint (Yin, Zhou, and Krahenbuhl 2021a) was
+proposed, which uses a nearly real-time and anchor-free
+pipeline, achieving state-of-the-art performance. Recently,
+PillarNet (Shi, Li, and Ma 2022) uses 2D SPConv based
+on the “encoder-neck-head” architecture to boost accuracy
+with real-time speed. However, due to the use of SPConv,
+it inevitably faces the difficulty of deployment for industrial
+applications and further speedup with TRT optimization.
+Industry-level Lightweight Network Structures
+for Object Detection. For years, the YOLO se-
+ries (Bochkovskiy, Wang, and Liao 2020; Glenn 2022)
+has been the de facto industry standard for lightweight 2D
+object detection, whose backbone designs mainly inherit the
+ideas from RepVGG (Ding et al. 2021). RepVGG refactored
+the famous plain network VGG (Simonyan and Zisser-
+man 2014) using a reparameterization-based structural
+design. During training, a plain Conv-BN-ReLU is replaced
+by its over-parameterized three-branch counterpart, i.e.,
+Conv3 ×3-BN, Conv1 ×1-BN and Identity-BN, followed
+by the ReLU function after the summation of the three
+branches. The three-branch structure substantially helps the
+network optimization while the reparameterization converts
+three branches identically into one at inference, improving
+the efficiency in inference. Due to its advantage, this trend
+has swept 2D object detectors and shown high perfor-
+mance at extreme speeds, such as PPYOLO-E (Xu et al.
+2022), YOLOv6 (Li et al. 2022a) and YOLOv7 (Wang,
+Bochkovskiy, and Liao 2022). Albeit the success, it is
+not yet seen, to our best knowledge, any application of
+these schemes in LiDAR object detection. Our successful
+application significantly improves computational efficiency
+and reduces the difficulty of deployment, especially for
+resource-constrained hardwares.FastPillars
+MAPE
+PillarizationBackbone
+ConvDeConvCHMBoxIoUNeckCenter-HeadStage4Stage3Stage2Stage1Figure 2: The framework of FastPillars . Input the point cloud, FastPillars predicts 3D bounding boxes. As shown in the
+bottom, FastPillars consists of four parts: MAPE module, backbone, neck and center-based head. First, the point cloud is
+pillarized with MAPE, and then the encoded features are sent to the backbone for choreographed feature extraction. These
+features are fused by the neck, and 3D boxes are regressed based on the center-based head. The backbone is designed to be
+scalable by changing the number of blocks at the early stages according to different needs. Best viewed in color.
+3 Our Approach
+This section presents FastPillars, an end-to-end train-
+able and SPConv-free neural network for real-time high-
+performance 3D detection. As shown in Fig. 2, our network
+consists of four blocks: MAPE module, backbone, neck and
+center-based detection head.
+Problem Setting. We present the basic task definitions
+of LiDAR-based 3D detection before introducing the de-
+tailed method. Given a point set with Npoints in the 3D
+space, which is defined as P={pi= [xi, yi, zi, ri, ti]T∈
+RN×5}, where xi, yi, zidenote the coordinate values of
+each point along the axes X, Y , Z, respectively, and riis
+the laser reflection intensity. tiis the relative timestamp,
+which is optional and depends on the specific settings of a
+dataset. Given a set of object in the 3D scene B={bj=
+[xj, yj, zj, hj, wj, lj, θj, cj]T∈RM×8}, where Mis the
+total number of objects, biis the i-th object in the scene,
+xj, yj, zjis the object’s center, hj, wj, ljis the object’s size,
+θjis the object’s heading angle and cjis the object’s class.
+The task of 3D object detection is to detect the 3D boxes B
+from the point cloud Paccurately.
+3.1 Max-and-Attention Pillar Encoding
+Point cloud voxel/pillar encoding is very crucial for grid-
+based 3D detection methods. The pioneering PointPillars ag-
+gressively utilizes max pooling to aggregate point features in
+each pillar. However, the max-pooling operation will result
+in the loss of fine-grained information, and those local geo-
+metric patterns are vital for pillar-based objects, especially
+for small objects. Therefore, paying attention to this infor-
+mation is important for accurate detection.
+In this paper, we propose a simple yet efficient pillar en-
+coding module, named Max-and-Attention Pillar Encod-
+ing (MAPE) , which takes into account every pillar’s lo-
+cal detailed geometric information with negligible computa-
+tional burden and benefits the performance of small objects
+(e.g., pedestrian and cyclist). Meanwhile, the lightweight
+MAPE module makes it highly suitable for real-time em-bedded applications. As shown in Fig. 3, our MAPE module
+consists of three units: 1) the point encoding, 2) the max-
+pooling encoding, 3) and the attention-pooling encoding.
+We suppose that a point cloud Pin the 3D space has the
+range of L,W,Halong the axes X, Y , Z. Pis equally
+divided into a specific pillar grid with the size of l,w,H.
+Here, as in PointPillar, we only voxelize point cloud in the
+XY plane without the height dimension. Let v={pi=
+[xi, yi, zi, ri, ti]∈RNv×5}be a non-empty pillar contains
+Npoints with the spatial shape [l, w, H ],i∈ {1, ..., N v},
+Nvis number of points in pillar v.
+Point Encoding. First, we augment the points in each
+pillar into ˆpi={[xi, yi, zi, ri, ti, xc
+i, yc
+i, zc
+i, xr
+i, yr
+i, zr
+i]∈
+RNv×11}, where [xi, yi, zi]is the original point coordinates
+in the ego frame, [xc
+i, yc
+i, zc
+i]is the offset of pifrom the cur-
+rent pillar center, and [xr
+i, yr
+i, zr
+i]is the relative coordinates
+ofpiobtained by subtracting the range of point cloud. No-
+tably, in each pillar, we did not adopt any sampling strategy
+to keep the number of points within each the same, because
+this operation may drop useful points and impair the original
+geometric patterns. Second, the augmented point-wise fea-
+tures ˆpiwithin vare mapped to the high-dimensional feature
+space through an MLP layer. This process is formulated as
+pe
+i=m( ˆpi;wm), (1)
+where m(·)denotes an MLP, wmdenotes learnable weights
+of function m(·), and pe
+i∈RNv×Dis point-wise feature.
+Max-pooling Encoding. This unit aggregates all point
+features within a pillar into a single feature vector, while re-
+maining invariant to point permutations in each pillar, which
+is formulated as
+fm=max(pe
+i), (2)
+where max(·)means the max-pooling operation across
+these point features, and fm∈RDis the resulting feature
+vector of each pillar.
+Attention-pooling Encoding. This unit is designed to
+maintain the local fine-grained information. Max pooling is
+hard to integrate point-wise features pe
+iwithin each pillar𝑵𝒗
+Weights𝑫𝑵𝒗Weighted Feature
+Maxvalue on column
+Sum on columnAugPoint EncodingMax-Encoding
+Atten-Encoding𝑵𝒗×𝟏𝟏
+WHLH
+WL
+𝑵𝒗×𝑫
+𝑵𝒗×𝑫𝑵𝒗×𝑫𝑫𝑵𝒗×𝟓MLPMLP
+𝟏×𝑫AverageFigure 3: The MAPE module comprises three units: point encoding, max-pooling encoding and attention-pooling encoding. For
+one pillar containing Nvpoints, in point encoding unit, we firstly augment the raw points with the pillar center and point cloud
+range, then map the augmented features to the feature space by a MLP. In max-encoding unit, we obtained pillar-wise features
+by max-pooling operation across point dimension. In atten-encoding unit, we obtained pillar-wise features by a weighted
+summation operation across point dimension. The final pillar-wise feature by averaging the max- and attention-pooling features.
+vas it only takes the maximum value. However, the rich
+local detailed patterns are highly valuable for smaller ob-
+ject detection from BEV perspective. Therefore, we turn to
+the powerful attention mechanism to automatically learn the
+important local features. First , we use a function g(·)con-
+sisting of a shared MLP to predict attention scores for these
+points in a pillar, i.e.,si=g(pe
+i;wg), where wgdenotes
+learnable weights of the MLP, si∈RNv×Dis the attention
+scores. Second, the learnt attention scores can be regarded as
+a soft mask which dynamically weight the point-wise feature
+pe
+i. Finally, the weighted summed features are as follows:
+fa=X
+sij·pe
+ij,NX
+i=1sij= 1 (3)
+where fa∈RNv×Dis resulting pillar attention pooling
+features, j∈ {1, ..., D}is the feature dimension index, sij
+andpe
+ijis the attention score and feature of j-th dimen-
+sion at i-th point respectively. Notably, the weighting op-
+eration across different points ( Nv), this process introduces
+interaction between different points inside a pillar ( e.g., lo-
+cal area). Finally, we combine the learnt pillar-wise max
+and attentive features by averaging them, i.e.,f=fm+fa
+2,
+where f∈R1×Dis the final pillar-wise feature including
+the global-aware and local-aware information inside one pil-
+lar. The max-pooling operation preserves the maximum re-
+sponse feature in each pillar, while the attention pooling fea-
+tures maintain the local fine-grained information. By com-
+bining the two features, richer information can be effectively
+retained to enhance the pillar representation. Despite being
+simple, our MAPE module significantly improve the perfor-
+mance of small objects (+1.6 mAPH L2 for pedestrian) as
+shown in Tab. 4 and Fig. 7.
+3.2 Backbone Design
+Computation Reallocation . As presented in PillarNet, a
+lightweight and powerful backbone is very important for ef-
+fective pillar feature learning. Through adopting classical
+Stage13LayerStage24LayerStage36LayerStage43LayerStage16LayerStage26LayerStage33LayerStage41LayerResNet-34 for imageOur backbone for point cloud
+Computationreallocationdesign
+Figure 4: The diagram of our computation reallocation in
+backbone design. This design brings obvious performance
+gain without extra latency
+2D CNN backbones, i.e., VGGNet (Simonyan and Zis-
+serman 2014), ResNet-18/34 (He et al. 2016), PillarNet
+achieves a better scalability and flexibility for model com-
+plexity. However, we argue that these backbones are specif-
+ically designed to extract high-level semantic features and
+obtain geometries of objects in RGB image, which may not
+be suitable for LiDAR point cloud. This is because there
+exists a substantial modal difference between RGB image
+and LiDAR point cloud. Different from RGB image, LiDAR
+point cloud can easily gauges spatial distances, relationships
+and shapes of objects through collecting laser measurement
+signals to represent 3d models and maps of environments.
+This means that rich and accurate geometric information of64.063.563.062.562.0
+0246Blocks numberAccuracy (Mean mAPHL2)
+Stage 1Stage 2Stage 3Stage 461.561.064.5
+8Figure 5: Performance verse different blocks number on
+Waymo val set trained with 20% training data. Taking
+stage1 as an example, we arrange the number of blocks in
+stage1 from 0 to 8 with stride 2, while setting the number of
+blocks in other stages to 2.
+objects is already explicitly encoded in LiDAR point cloud,
+which is also discussed in FCOS-LiDAR (Tian et al. 2022).
+Therefore, we assume that instead of allocating too much
+computation resources to model the geometries of objects in
+the later stages like ResNet in RGB images, we should re-
+allocate the capacity to the early stages to better incorporate
+the geometry information carried by the raw points.
+To verify the above assumption, we systematically study
+computation allocation in backbone design through adjust-
+ing the stage compute ratio of ResNet. As shown in Fig. 5,
+we set ResNet-18 as the initial model, and arrange the num-
+ber of blocks from 0 to 8 with stride 2 in each stage, re-
+spectively. From the results, we can find that the perfor-
+mance is quite sensitive to the capacity of stage (1, 2), rather
+than stage (3, 4), which confirms our hypothesis that it is
+more beneficial to allocate computation in the early stages
+in pillar-based LiDAR detection. Hence, to achieve a better
+trade-off between performance and latency, we set the stage
+compute ratio of four stages to (6, 6, 3, 1), which has a com-
+parable computation cost to ResNet-34 with (3, 4, 6, 3). As
+shown in Fig. 4 and Tab. 5, our backbone after computation
+reallocation improves accuracy (+1.3 mAPH L2). See sup-
+plements for more details.
+Lightweight Backbone Design . Re-parameterized struc-
+ture (Ding et al. 2021) has excellent feature representation
+ability in training, and can effectively reduce inference la-
+tency without performance loss through re-parameterized
+operation. This structure has been proven effective in 2D
+detection tasks (Xu et al. 2022; Li et al. 2022a; Wang,
+Bochkovskiy, and Liao 2022). However, they have not yet
+been well exploited for the 3D point cloud detection. In-
+spired by this, we introduce this advanced design from
+2D object detection into our backbone designed for point
+cloud. As shown in Fig. 6, during training, a plain res block
+(a)+: Element-wise add+3×𝟑1×𝟏(b)(c)activationactivation+activationactivation+3×𝟑1×𝟏activationactivation3×𝟑3×𝟑3×𝟑3×𝟑Figure 6: The design of lightweight backbone. (a) a ResNet
+blocks. (b) a structural re-parameterization block, which
+using 3 ×3, 1×1 and identity branches to replace a
+3×3 conv. (c) During inference time, a structural re-
+parameterization block is converted to a 3 ×3 conv.
+(Fig. 6 (a)) is replaced by its over-parameterized three-
+branch counterpart, i.e., Conv3 ×3, Conv1 ×1and Identity,
+followed by the ReLU function after the summation of the
+three branches (Fig. 6 (b)). The three-branch structure sub-
+stantially helps the network optimization while the repa-
+rameterization converts three branches identically into one
+at inference (from Fig. 6 (b) to Fig. 6 (c)), improving the
+efficiency in inference. As a result, as shown in Tab. 6,
+our backbone network with single-path structure reduces
+inference latency (14%) while improving accuracy (+0.6
+mAPH/L2). During training, a plain Conv-BN-ReLU is re-
+placed by its over-parameterized three-branch counterpart,
+i.e., Conv3 ×3, Conv1 ×1and identity, followed by the ReLU
+function after the summation of the three branches.
+The Insight of Backbone Design .
+• Our core insight is computation reallocation backbone
+design for point cloud based on root modality difference
+of point cloud and images. Specifically, we conclude that
+we should reallocate the capacity to the early stages (1,
+2) to better integrate the geometric information carried
+by the raw points, instead of allocating the capacity in
+the later stages (3, 4) like ResNet setting. This provides
+a novel perspective and principle to design backbone ar-
+chitecture for point clouds to the community.
+• For re-parameterized structure, which demonstrated that
+simply adapting the advanced backbone design from 2D
+object detection brings non-trivial improvements to 3D
+object detection, which is encouraging to explore more
+successful practices in the image domain to upgrade the
+network designs for point clouds.
+3.3 Neck and Center-based Head
+In the neck block, we followed PillarNet (Shi, Li, and Ma
+2022) by adopting an enriched neck design to fuse features
+of different levels (8 ×and 16 ×) for effective interaction of
+spatial semantic features. In the head block, we directly uti-
+lize the center-based detection head (Yin, Zhou, and Kra-
+henbuhl 2021a). Besides, as in AFDetV2 (Hu et al. 2022),
+we use an IoU branch to bridge the gap between the classi-
+fication and regression prediction.Method Reference #FramesLatency Speedup Mean L2 Vehicle L2 Pedestrian L2 Cyclist L2 #MACs FPS
+(ms) (2021a) (mAPH) (mAP/APH) (mAP/APH) (mAP/APH) (G)
+SECOND1Sensors 2018 1 – – 57.2 63.9 / 63.3 60.7 / 51.3 58.3 / 57.0 – –
+PointPillars1CVPR 2019 1 – – 57.8 63.6 / 63.1 62.8 / 50.3 61.9 / 59.9 – –
+CenterPoint CVPR 2021a 1 64.3 1.0 × 65.5 66.7 / 66.2 68.3 / 62.6 68.7 / 67.6 307.9 15.5
+PillarNeXt CVPR 2023 1 103.2 0.6 × 69.1 70.3 / 69.8 74.9 / 69.8 70.6 / 69.6 281.0 9.7
+FSD NeurIPS 2022b 1 74.3 0.9 × 69.7 68.9 / 68.5 73.2 / 68.0 73.8 / 72.5 - 13.5
+V oxelNeXt CVPR 2023 1 48.9 1.3 × 68.2 69.7 / 69.2 72.2 / 65.9 70.7 / 69.6 38.7 20.4
+PillarNet ECCV 2022 1 38.7 1.7 × 67.2 70.4 / 69.9 71.6 / 64.9 67.8 / 66.7 319.5 25.8
+FastPillars Ours 1 36.5 1.8× 69.3 71.5 / 71.1 73.2 / 67.2 70.5 / 69.5 894.7 27.4
+CenterPoint CVPR 2021a 2 72.2 1.0 × 68.4 67.7 / 67.2 71.0 / 67.5 71.5 / 70.5 318.6 13.9
+PillarNet ECCV 2022 2 45.6 1.6 × 70.0 71.6 / 71.1 74.5 / 71.4 68.3 / 67.5 331.0 21.9
+FastPillars Ours 2 41.2 1.8× 72.5 72.5 / 72.0 75.5 / 72.4 73.9 / 73.0 895.2 24.3
+CenterPoint CVPR 2021a 3 80.8 1.0 × – – – – 325.7 12.4
+CenterPoint++ CVPR 2021b 3 50.1 1.6 × 71.6 71.8 / 71.4 73.5 / 70.8 73.7 / 72.8 294.6 19.9
+FastPillars Ours 3 46.0 1.8× 73.3 73.2 / 72.8 76.3 / 73.2 74.6 / 73.8 895.6 21.7
+Table 1: Results of single-stage 3D detectors on the Waymo val set. FastPillars achieves 1.8 ×speedup over CenterPoint while
+being more accurate. Methods with <60 L2 mAPH are marked gray due to the low performance.1: from FSD paper.
+3.4 Loss Functions
+We follow (Yin, Zhou, and Krahenbuhl 2021a) to design
+our loss functions.
+To be specific, for the classification branch, we use the
+focal loss (Lin et al. 2017) as the heatmap loss Lcls. For
+the 3D box regression, we make use of the L1 loss Lregto
+supervise their localization offsets, size and orientation. For
+the IoU branch, we also utilize the L1 loss Liouto supervise,
+where the target 3D IoU score Iis2×(I−0.5)∈[−1,1].
+Besides, the DIoU loss Lod−iou(Zheng et al. 2020) is added
+in the regression branch. The overall loss consists of four
+parts as follows:
+Ltotal=λ1Lcls+λ2Liou+λ3(Lod−iou+Lreg)(4)
+where λ1,λ2, and λ3represent the weights of these losses.
+4 Experiments
+nuScenes Dataset. nuScenes (Caesar et al. 2020) dataset
+contains 700 training scenes, 150 val scenes and 150 test
+scenes. Each frame is generated approximately 30K points
+by a 32 channels LiDAR sampled with 20Hz. It contains
+40K annotated key-frames and 10 categories in total. We
+report nuScenes detection score (NDS) and Mean Average
+Precision (mAP), where NDS is the main ranking metric.
+Waymo Open Dataset. Waymo Open Dataset (Sun et al.
+2020) contains 1150 sequences in total, 798 for training, 202
+for validation and 150 for test. Each sequence is sampled at
+10Hz with a 64 channels LiDAR containing 6.1M vehicle,
+2.8M pedestrian, and 67k cyclist boxes. Each frame cov-
+ers a scene with a size of 150m×150m. The official eval-
+uation tools evaluated the methods in two difficulty levels:
+LEVEL1 for boxes with more than five LiDAR points, and
+LEVEL2 for boxes with at least one LiDAR point.
+Implementation Details. FastPillars use the same train-
+ing schedules as prior methods (Shi, Li, and Ma 2022) with
+the Adam optimizer under the Det3D (Zhu et al. 2019)
+framework on 8 A100 GPUs. We use one-cycle learning rate
+policy (Smith and Topin 2019) with an initial learning rate
+10e-4, weight decay 0.01, and momentum 0.85 to 0.95. Fora fair comparison, we follow (Yin, Zhou, and Krahenbuhl
+2021a) to only use double-flip test-time augmentation with-
+out any model ensemble on the nuScenes Dataset. Besides,
+we also use the ground-truth copy-paste data augmentation
+from (Yan, Mao, and Li 2018) during training and disable
+this data augmentation in the last 5 epochs following (Wang
+et al. 2021) ( e.g., fade strategy).
+4.1 Overall Results
+Firstly, we compared FastPillars with the real-time 3D de-
+tectors on the Waymo val set. Secondly, we evaluated Fast-
+Pillars on the Waymo and nuScenet test set. Finally, we
+ablated the MAPE and backbone design.
+Comparison with one-stage real-time methods. We
+compare our FastPillars with state-of-the-art SPConv-based
+3D detectors with different input frames setting. For fair
+comparison, we evaluate the whole latency on NVIDIA
+Tesla V100 GPU using FP16 precision and report the whole
+running time. We adopt SpConv v2.1.23 (Contributors 2022)
+to execute the SPConv-based backbone. All modules after
+backbone are executed with TensorRT 8.6. All the methods
+are executed on the first 1,000 samples for 50 runs. Notably,
+FastPillars is 1.8 ×faster and 3.8 mAPH L2 higher than Cen-
+terPoint in single- and two-frame setting, and is faster and
+4.9 mAPH L2 higher in overall, which shows a better trade-
+off between accuracy and latency in different input setting.
+Our effective model design make it available replacement
+for previous real-time state-of-the-art 3D detection methods
+CenterPoint, PillarNet.
+Evaluation on Waymo test set. For a more compre-
+hensive comparison, we also evaluate our FastPillars with
+published methods on the Waymo test set. As shown
+in Table 2, in single-frame input, FastPillars outperforms
+the previous one-stage and two-stage 3D detectors for the
+vehicle and pedestrian detection with remarkable perfor-
+mance gains (+1.44 mAPH L2 for the pedestrian). In two-
+frame input, FastPillars consistently show the superior per-
+formance compared with single-frame counterparts. Exten-
+sive experiments show FastPillars using computation re-Methods Reference Stages FramesVehicle (L1) Vehicle (L2) Ped. (L1) Ped. (L2) Cyc. (L1) Cyc. (L2)
+mAP mAPH mAP mAPH mAP mAPH mAP mAPH mAP mAPH mAP mAPH
+PointPillars†CVPR 2019 One 1 68.60 68.10 60.50 60.10 68.00 55.50 61.40 50.10 - - - -
+RCD CoRL 2020 Two 1 71.97 71.59 65.06 64.70 - - - - - - - -
+CenterPoint CVPR 2021a Two 1 80.20 79.70 72.20 71.80 78.30 72.10 72.20 66.40 - - - -
+PV-RCNN CVPR 2020a Two 1 80.60 80.15 72.81 72.39 78.16 72.01 71.81 66.05 71.80 70.42 69.13 67.80
+AFDetV2 AAAI 2022 One 1 80.49 80.43 72.98 72.55 79.76 74.35 73.71 68.61 72.43 71.23 69.84 68.67
+PV-RCNN++ IJCV 2022 Two 1 81.62 81.20 73.86 73.47 80.41 74.99 74.12 69.00 71.93 70.76 69.28 68.15
+PillarNet-34‡ECCV 2022 One 1 81.91 81.47 74.43 74.01 80.22 73.43 74.16 67.78 69.00 67.79 66.48 65.35
+FastPillars Ours One 1 82.75 82.31 75.42 75.01 81.05 74.84 75.09 69.22 72.94 71.82 70.26 69.23
+CenterPoint CVPR 2021a Two 2 81.05 80.59 73.42 72.99 80.47 77.28 74.56 71.52 74.60 73.68 72.17 71.28
+PV-RCNN CVPR 2020a Two 2 81.06 80.57 73.69 73.23 80.31 76.28 73.98 70.16 - - - -
+VISTA CVPR 2022 One 2 81.70 81.30 74.40 74.00 81.40 78.30 75.50 72.50 74.90 73.90 72.50 71.60
+Pyramid R-CNN ICCV 2021 Two 2 81.77 81.32 74.87 74.43 - - - - - - - -
+AFDetV2 AAAI 2022 One 2 81.65 81.22 74.30 73.89 81.26 78.05 75.47 72.41 76.41 75.37 74.05 73.04
+PillarNet-34‡ECCV 2022 One 2 82.80 82.37 75.65 75.25 82.17 78.73 76.49 73.21 71.25 70.27 69.05 68.10
+PV-RCNN++ IJCV 2022 Two 2 83.74 83.32 76.31 75.92 82.60 79.38 76.63 73.55 74.44 73.43 72.06 71.09
+FastPillars Ours One 2 83.60 83.17 76.52 76.12 82.82 79.45 77.20 73.90 76.52 75.45 74.14 73.11
+3D-MAN CVPR 2021 Multi 16 78.71 78.28 70.37 69.98 69.97 65.98 63.98 60.26 - - - -
+RSN CVPR 2021 Two 3 80.70 80.30 71.90 71.60 78.90 75.60 70.70 67.80 - - - -
+CenterPoint++ CVPR 2021a Two 3 82.78 82.33 75.47 75.05 81.07 78.21 75.13 72.41 74.40 73.33 72.04 71.01
+SST CVPR 2022a Two 3 80.99 80.62 73.08 73.74 83.05 79.38 76.65 73.14 - - - -
+SWFormer 3f ECCV 2022 One 3 82.89 82.49 75.02 74.65 82.13 78.13 75.87 72.07 - - - -
+PillarNeXt CVPR 2023 One 3 83.28 82.83 76.18 75.76 84.40 81.44 78.84 75.98 73.77 72.73 71.56 70.55
+FastPillars Ours One 3 84.02 83.59 77.09 76.68 83.26 80.01 77.76 74.62 76.61 75.49 74.18 73.16
+Table 2: Single- and multi-frame LiDAR-only non-ensemble performance comparison on the Waymo testset.†denotes the
+reported results from RSN (Sun et al. 2021), ‡: reproduced based on official codebase (Shi, Li, and Ma 2022).
+Method Reference Stages NDS mAP
+PointPillars CVPR 2019 One 45.3 30.5
+3DSSD CVPR 2020 One 56.4 42.6
+CenterPoint CVPR 2021a Two 65.5 58.0
+FCOS-LiDAR NeurIPS 2022 One 65.7 60.2
+VMVF CVPR 2022 One 67.3 60.9
+AFDetV2 AAAI 2022 One 68.5 62.4
+UVTR-L CVPR 2022b One 69.7 63.9
+VISTA CVPR 2022 One 69.8 63.0
+Focals Conv CVPR 2022 One 70.0 63.8
+PillarNet ECCV 2022 One 70.8 65.0
+V oxelNeXt CVPR 2023 One 71.4 66.2
+FastPillars Ours One 71.8 66.8
+Table 3: State-of-the-art comparisons for 3D detection on
+nuScenes test set. The table is mainly sorted by nuScenes
+detection score (NDS) which is the official ranking metric.
+allocation and reparameterization-based structural design
+achieve superior performance in large scale Waymo Open
+Dataset. In three-frame input, our best model outperforms
+the two-stage SST (Fan et al. 2022a) in the challenging
+pedestrian class with remarkable performance gains (+1.38
+in mAPH L2 metrics). Notably, SST specially designs a
+single-stride transformer architecture for small object de-
+tection in 3D space. However, our method predict objects
+of all sizes at the same resolution feature map (8 ×strides).
+We owe such leading performance to the effective design of
+our MAPE module. FastPillars is 2.03 and 2.55 mAPH L2
+ahead of SWFormer (Pei Sun and Anguelov 2022) which
+adopts transformer architecture in vehicle and pedestrian
+class with the same temporal information (3 frames) respec-
+tively. PillarNeXt surpasses FastPillars in pedestrian classwith 3-frames setting due to its smaller pillar size (0.075m).
+This leads to the fact that PillarNeXt has more computation
+cost and cannot run in real time. Morever, FastPillars per-
+form superior performance than PillarNeXt in vehicle and
+cyclist class, owing to our efficient backbone design.
+Evaluation on nuScenes test set. In Table 3, we evaluate
+our FastPillars with other LiDAR-only non-ensemble meth-
+ods on nuScenes test set. Both lines of results are better
+than previous ones. The extensive experiments verify the ex-
+cellent performance of FastPillars even without SPConv.
+4.2 Ablation Experiments
+We conduct ablation studies for the MAPE module and
+efficient backbone design to analyze their effect on the la-
+tency and performance on the Waymo val set.
+MethodsVehicle (L2) Ped. (L2) Cyc. (L2)
+mAP mAPH mAP mAPH mAP mAPH
+Max-pool 71.2 70.7 71.9 65.4 68.8 67.8
+MAPE (Ours) 71.6 71.1 72.9 67.0 69.6 68.6
+improvement + 0.4 + 0.4 + 1.0 + 1.6 + 0.8 + 0.8
+Table 4: MAPE ablation on Waymo valset. MAPE shows
+remarkable improvements especially for small objects.
+MAPE module . As shown in Tab. 4, compared with
+common max-pooling operations, the MAPE module im-
+proves the performance of vehicle, pedestrian and cyclist
+in different degrees on Waymo val set. Notably, MAPE
+boost pedestrian category with remarkable performance
+gains (+1.6 mAPH L2). We further visualize the attention
+scores in different categories with MAPE module. As shown
+in Fig. 7, MAPE pays more attention to the object semantic
+information (contour of car/pedestrian). Conversely, Max-
+pooling lose much geometries. The qualitative and quanti-
+tative results show that our MAPE module encodes the lo-cal fine-grained geometrical patterns of objects and the most
+prominent features ( i.e., the maximum value) effectively by
+combining the atten- and max-pooling operation and im-
+prove the perceptual ability in the BEV perspective. More
+ablation studies refer to supplements.
+Max-PoolingMAPE
+(a) Car(b) Car
+(c) Pedestrian(d) PedestrianlowHigh
+Figure 7: Visualization of the attention scores on car (a-b)
+and pedestrian(c-d) using Max-pooling or MAPE. The size
+of points means scores. The point will be paid more atten-
+tion if it has a higher score. Compared with (a) and (b), (c)
+and (d), MAPE module pays more attention to the object se-
+mantic and local geometries. Best viewed in color.
+Computation Reallocation in Backbone. We conduct
+experiments by arranging the number of blocks per stages
+from 0 to 8 with a stride of 2, while setting the number of
+blocks in other stages to 2, as shown in Tab. 5. We observed
+the different phenomena in different stages.
+Stage RatioMean (L2) Veh. (L2) Ped. (L2) Cyc. (L2) GFLOPS
+mAPH mAPH mAPH mAPH
+10, 2, 2, 2 61.0 67.1 56.1 59.6 278.0
+2, 2, 2, 2†62.8 67.7 58.5 62.3 355.1
+4, 2, 2, 2 63.4 68.2 59.5 62.6 432.2
+6, 2, 2, 2 64.1(+ 3.1) 68.4 59.9 64.0 509.3
+22, 0, 2, 2 62.0 67.2 57.6 61.2 278.0
+2, 2, 2, 2†62.8 67.7 58.5 62.3 355.1
+2, 4, 2, 2 63.4 68.2 59.5 62.7 432.2
+2, 6, 2, 2 64.0(+ 2.0) 68.8 59.7 63.5 509.3
+32, 2, 0, 2 62.4 67.0 58.3 62.0 278.0
+2, 2, 2, 2†62.8 67.7 58.5 62.3 355.1
+2, 2, 4, 2 63.4 68.4 58.9 62.7 432.2
+2, 2, 6, 2 63.0(+ 0.6) 68.4 58.7 62.0 509.3
+42, 2, 2, 0 62.9 67.9 58.9 61.8 278.0
+2, 2, 2, 2†62.8 67.7 58.5 62.3 355.1
+2, 2, 2, 4 62.9 67.8 58.7 62.2 432.2
+2, 2, 2, 6 62.8(- 0.1) 67.6 58.7 62.2 509.3
+Res-34 3, 4, 6, 3 63.5 68.8 59.6 62.2 660.3
+Ours 6, 6, 3, 1 64.8(+ 1.3) 69.1 60.8 64.5 660.3
+Table 5: Performance of various stage compute ratio on
+Waymo valset trained with 20% training data. †means the
+stage compute ratio of Res-18.
+• In stage 1, increasing the number of blocks remarkably
+improves the overall performance, from 61.0 to 64.1,
+with 3.1 mAPH L2 gain. Specifically, mAPH L2 of vehi-
+cles, pedestrian and cyclist can be improved 1.3, 3.8 and
+4.4, respectively.
+• In stage 2, increasing the number of blocks also brings
+a significantly improvement in the overall performance,
+from 62.0 to 64.0 mAPH L2. Although the improvementis relatively small compared to stage 1 (+2.0 vs. +3.1), it
+still shows consistent gains for different types of objects
+(vehicles +1.6, pedestrian +2.1, cyclist +2.3 mAPH L2).
+• In stage 3, increasing the number of blocks brings a slight
+improvement in the overall performance, from 62.4 to
+63.0 mAPH L2. The type of vehicle still shows a continu-
+ous improvement, from 67.0 to 68.4, while the pedestrian
+and cyclist have a relatively weak gain.
+• In stage 4, increasing the number of blocks yields little
+overall performance improvement and performance for
+each category is almost unchanged.
+Based on the above results, we conclude that (1)Increas-
+ing the number of blocks in stage (1, 2, 3) can improve the
+overall detection performance, especially in stage (1, 2). (2)
+For different object class, the vehicle exhibits consistent im-
+provement with the increase in the number of blocks in stage
+(1, 2, 3) and no improvement in stage 4. (3)The pedestrian
+and cyclist show consistent improvement with the increase
+in the number of blocks in stage (1, 2) and very little even
+negative gain in stage (3, 4).
+The results prove our previous assumption: for pillar-
+based LiDAR detection tasks, we should reallocate the ca-
+pacity to the early stages to better integrate the geometric
+information carried by the raw points, instead of allocating
+the capacity in the later stages like ResNet setting. In partic-
+ular, allocating more computing sources in the early stages
+can effectively improve small objects’ accuracy. Therefore,
+to achieve a better performance under the constraint of low
+computation resource, we set the stage compute ratio of four
+stages to (6, 6, 3, 1), which has a comparable computa-
+tion cost to ResNet-34 with (3, 4, 6, 3). Besides, we think
+that the proposed compute ratios of different stage is coarse.
+Considering factors such as resolution, channel dimensions,
+and stage depths of the backbone, neural architecture search
+(NAS) technique can be used to achieve improved capacity
+reallocation. This remains an open problem for future re-
+search to the community.
+setting Ratio mAPH L2 ↑Latency(ms) ↓Params(M) ↓FLOPs(G) ↓
+Vanish 3,4,6,3 63.5 17.7 24.2 660.3
+Backbone 6,6,3,1 64.8 17.6 12.1 660.3
++Rep 6,6,3,1 65.4 16.0 12.1 660.3
+improve + 1.9 -1.7 -12.1 –
+Table 6: Ablation on the lightweight backbone design. Our
+backbone can effectively improve performance (+1.9 mAPH
+L2) while reducing latency (11%) and memory cost (50%).
+Lightweight Backbone Design . Tab. 6 demonstrates the
+efficacy of our backbone in reducing the number of param-
+eters (50%) and improving performance (1.3 mAPH L2)
+through computation reallocation. Furthermore, we intro-
+duce the re-parameterized structure, which brings 11% re-
+duction in latency and a 0.6 mAPH L2 gain. Our backbone
+achieves remarkable 1.9 mAPH L2 improvement and 11%
+acceleration, proving its effectiveness.
+5 Conclusion
+In this paper, we propose FastPillars , a real-time one-
+stage pillar-based 3D detector, to simultaneously improvethe detection accuracy and runtime efficiency while keeping
+the deployment in mind. In particular, we show that SPConv
+can be safely sidestepped with a redesigned lightweight and
+effective backbone. Moreover, we also propose a Max-and-
+Attention Pillar Encoding (MAPE) module to compensate
+for the information loss in the pillar encoding.
+Extensive experiments show that our FastPillars achieves
+a better trade-off between speed and accuracy, and can be
+deployed through TensorRT for real-time on-device applica-
+tions. Given its effectiveness and efficiency, we hope that our
+method can serve as a strong and simple alternative to cur-
+rent mainstream SPConv-based 3D detectors. Besides, we
+believe that improved computation reallocation, taking into
+account factors such as resolution, channel dimensions, and
+stage depths for the backbone, could be achieved using the
+neural architecture search (NAS) technique. This remains an
+open problem for future research.
+References
+Bewley, A.; Sun, P.; Mensink, T.; Anguelov, D.; and Smin-
+chisescu, C. 2020. Range Conditioned Dilated Convolutions
+for Scale Invariant 3D Object Detection. In Conference on
+Robot Learning (CoRL) .
+Bochkovskiy, A.; Wang, C.-Y .; and Liao, H.-Y . M. 2020.
+Yolov4: Optimal speed and accuracy of object detection.
+arXiv preprint arXiv:2004.10934 .
+Caesar, H.; Bankiti, V .; Lang, A.; V ora, S.; Liong, V . E.;
+Xu, Q.; Krishnan, A.; Pan, Y .; Baldan, G.; and Beijbom, O.
+2020. Nuscenes: A multimodal dataset for autonomous driv-
+ing. 11621–11631.
+Chen, X.; Ma, H.; Wan, J.; Li, B.; and Xia, T. 2017. Multi-
+view 3D object detection network for autonomous driving.
+InCVPR , 1907–1915.
+Chen, Y .; Li, Y .; Zhang, X.; Sun, J.; and Jia, J. 2022. Focal
+Sparse Convolutional Networks for 3D Object Detection. In
+Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition .
+Chen, Y .; Liu, J.; Zhang, X.; Qi, X.; and Jia, J. 2023. V ox-
+elNeXt: Fully Sparse V oxelNet for 3D Object Detection and
+Tracking. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition .
+Contributors, S. 2022. Spconv: Spatially Sparse Convolution
+Library.
+Deng, J.; Shi, S.; Li, P.; Zhou, W.; Zhang, Y .; and Li, H.
+2021. V oxel R-CNN: Towards High Performance V oxel-
+based 3D Object Detection. In AAAI .
+Deng, S.; Liang, Z.; Sun, L.; and Jia, K. 2022. VISTA:
+Boosting 3D Object Detection via Dual Cross-VIew SpaTial
+Attention. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition , 8448–8457.
+Ding, X.; Zhang, X.; Ma, N.; Han, J.; Ding, G.; and Sun,
+J. 2021. Repvgg: Making vgg-style convnets great again.
+InProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , 13733–13742.
+Fan, L.; Pang, Z.; Zhang, T.; Wang, Y .-X.; Zhao, H.; Wang,
+F.; Wang, N.; and Zhang, Z. 2022a. Embracing single stride3d object detector with sparse transformer. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition , 8458–8468.
+Fan, L.; Wang, F.; Wang, N.; and ZHANG, Z.-X. 2022b.
+Fully sparse 3d object detection. Advances in Neural Infor-
+mation Processing Systems , 35: 351–363.
+Fazlali, H.; Xu, Y .; Ren, Y .; and Liu, B. 2022. A versa-
+tile multi-view framework for lidar-based 3d object detec-
+tion with guidance from panoptic segmentation. In Proceed-
+ings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition , 17192–17201.
+Glenn, J. 2022. YOLOv5 release v6.1. https://github.com/
+ultralytics/yolov5/releases/tag/v6.1.
+Graham, B.; and van der Maaten, L. 2017. Sub-
+manifold sparse convolutional networks. arXiv preprint
+arXiv:1706.01307 .
+He, K.; Zhang, X.; Ren, S.; and Sun, J. 2016. Deep resid-
+ual learning for image recognition. In Proceedings of the
+IEEE conference on computer vision and pattern recogni-
+tion, 770–778.
+Hu, Y .; Ding, Z.; Ge, R.; Shao, W.; Huang, L.; Li, K.; and
+Liu, Q. 2022. Afdetv2: Rethinking the necessity of the sec-
+ond stage for object detection from point clouds. 36(1): 969–
+979.
+Kuang, H.; Wang, B.; An, J.; Zhang, M.; and Zhang, Z.
+2020. V oxel-FPN: Multi-scale voxel feature aggregation for
+3D object detection from LIDAR point clouds. Sensors ,
+20(3): 704.
+Lang, A. H.; V ora, S.; Caesar, H.; Zhou, L.; Yang, J.; and
+Beijbom, O. 2019. Pointpillars: Fast encoders for object de-
+tection from point clouds. In CVPR , 12697–12705.
+Li, C.; Li, L.; Jiang, H.; Weng, K.; Geng, Y .; Li, L.; Ke, Z.;
+Li, Q.; Cheng, M.; Nie, W.; et al. 2022a. YOLOv6: a single-
+stage object detection framework for industrial applications.
+arXiv preprint arXiv:2209.02976 .
+Li, J.; Luo, C.; and Yang, X. 2023. PillarNeXt: Rethinking
+Network Designs for 3D Object Detection in LiDAR Point
+Clouds. In IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR) .
+Li, Y .; Chen, Y .; Qi, X.; Li, Z.; Sun, J.; and Jia, J. 2022b.
+Unifying V oxel-based Representation with Transformer for
+3D Object Detection. In Advances in Neural Information
+Processing Systems .
+Lin, T.-Y .; Goyal, P.; Girshick, R.; He, K.; and Doll ´ar, P.
+2017. Focal loss for dense object detection. In Proceedings
+of the IEEE international conference on computer vision ,
+2980–2988.
+Mao, J.; Niu, M.; Bai, H.; Liang, X.; Xu, H.; and Xu, C.
+2021. Pyramid R-CNN: Towards Better Performance and
+Adaptability for 3D Object Detection. In ICCV , 2723–2732.
+Pei Sun, W. W. C. L. F. X. Z. L., Mingxing Tan; and
+Anguelov, D. 2022. Swformer: Sparse window transformer
+for 3d object detection in point clouds. In ECCV .
+Qi, C. R.; Litany, O.; He, K.; and Guibas, L. J. 2019. Deep
+hough voting for 3D object detection in point clouds. In
+ICCV , 9277–9286.Qi, C. R.; Liu, W.; Wu, C.; Su, H.; and Guibas, L. J. 2018.
+Frustum pointnets for 3D object detection from rgb-d data.
+InCVPR , 918–927.
+Qi, C. R.; Su, H.; Mo, K.; and Guibas, L. J. 2017a. Point-
+net: Deep learning on point sets for 3D classification and
+segmentation. In CVPR , 652–660.
+Qi, C. R.; Yi, L.; Su, H.; and Guibas, L. J. 2017b. Point-
+net++: Deep hierarchical feature learning on point sets in a
+metric space. In NeurIPS , 5099–5108.
+Shi, G.; Li, R.; and Ma, C. 2022. PillarNet: Real-Time and
+High-Performance Pillar-based 3D Object Detection.
+Shi, S.; Guo, C.; Jiang, L.; Wang, Z.; Shi, J.; Wang, X.; and
+Li, H. 2020a. Pv-rcnn: Point-voxel feature set abstraction
+for 3D object detection. In CVPR , 10529–10538.
+Shi, S.; Jiang, L.; Deng, J.; Wang, Z.; Guo, C.; Shi, J.; Wang,
+X.; and Li, H. 2022. PV-RCNN++: Point-V oxel Feature Set
+Abstraction With Local Vector Representation for 3D Object
+Detection. IJCV .
+Shi, S.; Wang, X.; and Li, H. 2019. Pointrcnn: 3D object pro-
+posal generation and detection from point cloud. In CVPR ,
+770–779.
+Shi, S.; Wang, Z.; Shi, J.; Wang, X.; and Li, H. 2020b. From
+points to parts: 3D object detection from point cloud with
+part-aware and part-aggregation network. IEEE TPAMI .
+Simonyan, K.; and Zisserman, A. 2014. Very deep convo-
+lutional networks for large-scale image recognition. arXiv
+preprint arXiv:1409.1556 .
+Smith, L. N.; and Topin, N. 2019. Super-convergence: Very
+fast training of neural networks using large learning rates.
+InArtificial intelligence and machine learning for multi-
+domain operations applications , volume 11006, 369–386.
+SPIE.
+Sun, P.; Kretzschmar, H.; Dotiwalla, X.; Chouard, A.; Pat-
+naik, V .; Tsui, P.; Guo, J.; Zhou, Y .; Chai, Y .; Caine, B.;
+et al. 2020. Scalability in perception for autonomous driv-
+ing: Waymo open dataset. In CVPR , 2446–2454.
+Sun, P.; Wang, W.; Chai, Y .; Elsayed, G.; Bewley, A.; Zhang,
+X.; Sminchisescu, C.; and Anguelov, D. 2021. RSN: Range
+Sparse Net for Efficient, Accurate LiDAR 3D Object Detec-
+tion. In CVPR , 5725–5734.
+Tian, Z.; Chu, X.; Wang, X.; Wei, X.; and Shen, C. 2022.
+Fully Convolutional One-Stage 3D Object Detection on Li-
+DAR Range Images. NeurIPS .
+Wang, C.; Ma, C.; Zhu, M.; and Yang, X. 2021. Pointaug-
+menting: Cross-modal augmentation for 3d object detection.
+InProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition , 11794–11803.
+Wang, C.-Y .; Bochkovskiy, A.; and Liao, H.-Y . M. 2022.
+YOLOv7: Trainable bag-of-freebies sets new state-of-
+the-art for real-time object detectors. arXiv preprint
+arXiv:2207.02696 .
+Xu, S.; Wang, X.; Lv, W.; Chang, Q.; Cui, C.; Deng, K.;
+Wang, G.; Dang, Q.; Wei, S.; Du, Y .; et al. 2022. PP-
+YOLOE: An evolved version of YOLO. arXiv preprint
+arXiv:2203.16250 .Yan, Y .; Mao, Y .; and Li, B. 2018. Second: Sparsely embed-
+ded convolutional detection. Sensors , 18(10): 3337.
+Yang, Z.; Sun, Y .; Liu, S.; and Jia, J. 2020. 3dssd: Point-
+based 3D single stage object detector. In CVPR , 11040–
+11048.
+Yang, Z.; Zhou, Y .; Chen, Z.; and Ngiam, J. 2021. 3D-MAN:
+3D Multi-frame Attention Network for Object Detection. In
+CVPR , 1863–1872.
+Yin, T.; Zhou, X.; and Krahenbuhl, P. 2021a. Center-based
+3d object detection and tracking. 11784–11793.
+Yin, T.; Zhou, X.; and Krahenbuhl, P. 2021b. CenterPoint++
+Submission to the Waymo Real-time 3D Detection Chal-
+lenge. Accessed: 2021-12-05.
+Zheng, Z.; Wang, P.; Liu, W.; Li, J.; Ye, R.; and Ren, D.
+2020. Distance-IoU loss: Faster and better learning for
+bounding box regression. In Proceedings of the AAAI con-
+ference on artificial intelligence , volume 34, 12993–13000.
+Zhou, Y .; and Tuzel, O. 2018. V oxelnet: End-to-end learning
+for point cloud based 3D object detection. In CVPR , 4490–
+4499.
+Zhu, B.; Jiang, Z.; Zhou, X.; Li, Z.; and Yu, G. 2019. Class-
+balanced Grouping and Sampling for Point Cloud 3D Object
+Detection. arXiv preprint arXiv:1908.09492 .A More Ablation Study
+MethodsMean (L2) Vehicle (L2) Ped. (L2) Cyc. (L2)
+mAPH mAP mAPH mAP mAPH mAP mAPH
+CenterPoint-PP 55.9 62.5 62.0 61.8 51.5 56.1 54.3
+CenterPoint-PP+ MAPE 57.0 63.0 62.5 63.5 53.5 56.7 54.9
+improvement +1.1 +0.5 +0.5 +1.7 +2.0 +0.6 +0.6
+Table 7: Apply MAPE module to CenterPoint-Pillar on
+Waymo valset trained with 20% training data.
+MAPE with PointPillars. To evaluate the generalization
+of the proposed MAPE module, we further apply the pro-
+posed MAPE module to pillar encoding of CenterPoint-
+Pillar. As shown in Table 7, MAPE shows remarkable im-
+provements in pedestrian class (+2.0 mAPH L2) and an
+overall performance gain of 1.1 mAPH L2. This result shows
+that by introducing attention-pooling operation in pillar en-
+coding, the fine-grained geometrical patterns of objects can
+be better encoded, thus improving the performance of small
+objects.
+Atten Avg Max mAP NDS
+(a) ✓ 60.5 67.1
+(b) ✓ 60.5 66.7
+(c) ✓ 61.2 67.7
+(d) ✓ ✓ 61.2 67.7
+(e) ✓ ✓ 59.8 67.0
+(f) ✓ ✓ ✓ 61.1 67.7
+MAPE ✓ ✓ 61.5 68.1
+Table 8: Performance comparison of different pooling oper-
+ations on nuScenes valset.
+Different Pooling Operations in MAPE. We compare
+the performance of different pooling operations in Tab. 8.
+Only using attention-pooling operation achieves 60.5 map
+performance, while only using max-pooling operation has
+higher 61.2 map. The reason may be that the max-pooling
+operation retains the most representative feature, while the
+attention-pooling focuses on the fine-grained information of
+different points. However, the combination of Atten- and
+Max-pooling ( i.e., MAPE) obtains the best performance
+with a mere 4ms of added latency compared with com-
+monly used max-pooling operation in PointPillars (Lang
+et al. 2019). This is because that our proposed MAPE mod-
+ule can not only effectively learn the most representative fea-
+tures, but also pay attention on local geometrical patterns
+automatically, which is beneficial to small objects.
+B Detailed Breakup Time of FastPillars
+Device Method PFE/VFE Backbone Neck-Head P-P Overall FPS
+V100 -32GCenterPoint-1f 20.7 29.5 7.9 6.2 64.3 15.5
+FastPillars-1f 6.7 16.0 8.4 5.4 36.5 27.4
+CenterPoint-2f 25.2 32.3 7.9 6.8 72.2 13.9
+FastPillars-2f 10.9 16.0 8.4 5.9 41.2 24.3
+A100 -80GFastPillars-1f 5.1 14.3 7.0 4.5 30.9 32.4
+FastPillars-2f 9.2 14.3 7.0 5.1 35.3 28.1
+Table 9: Inference time on Waymo valset.As shown in Tab. 9. We evaluated the average run-
+ning time on Waymo val set to measure the detailed in-
+ference time of FastPillars in different devices. For exam-
+ple, FastPillars-1f achieved 32.4 FPS on a single NVIDIA
+A100 GPU, including 5.1 ms for pillar encoding, 21.3 ms for
+model forward propagation, and 4.5 ms for post-processing.
+C FastPillars Deployment on Edge Devices
+CenterPoint
+13.217.9FastPillars05101520Real time(>10 FPS)Frames Per Second (FPS)
+Figure 8: Measured latency on NVIDIA Jetson AGX Orin.
+FastPillars can run in real-time on edge GPUs.
+SPConv is not a built-in operation in TensorRT. This
+makes it necessary to write a tedious custom plugin in
+CUDA C++ with several limitations like fixed-shape input
+and reduced compatibility for commonly-used TensorRT for
+the quantization deployment. Therefore, the use of SPConv
+makes it hard to be quantized and deployed via TensorRT.
+In contrast, our model can be easily exported as the stan-
+dard ONNX/TRT format, allowing it to run on edge devices
+where TensorRT is supported. Furthermore, we deploy our
+FastPillars on an NVIDIA Jeston AGX Orin, a resource-
+constrained edge GPU platform widely used in real-word
+autonomous driving. As show in Fig. 8, FastPillars runs at
+18 FPS, is faster than CenterPoint (both report the network
+forward time). This shows that FastPillars can be deployed
+on different types of edge hardware ( i.e., the deployment-
+friendly ability ). We believe that it serves as a strong and
+simple alternative to current mainstream SPConv-based 3D
+detectors for efficient LiDAR-centric perception in real-
+world deployment applications.
+D More Implementation details
+We use one-cycle learning rate policy (Smith and Topin
+2019) with an initial learning rate 10e-4 during training.
+The learning rate gradually increases to 0.001 in the first
+40% epochs and then gradually decreases to 10e-5 in the
+rest of the training process. The whole point cloud is flipped
+randomly along the X or Y axis, randomly rotated along
+the Z axis in the range [−π/4, π/4]and translated by
+[−0.5m,0.5m], as well as globally scaled by a random fac-
+tor sampled from [0.95,1.05]. In loss function, λ1,λ2,λ3
+are set to 1.0, 1.0 and 0.25, respectively. For backbone, the
+number of channels in the four stages is 64, 128, 256, 512.
+For nuScenes dataset, we set the detection range of the
+point cloud to [−54m,54m]for the X and Y axis and
+[−5m,3m]for the Z axis and set the pillar size as 0.15m. Be-
+sides, following CenterPoint we use the class-agnostic NMS
+with the score threshold set to 0.2 and rectification factor α
+to 0.5 for 10 classes during the post-processing in inference.Max-PoolingMAPE
+(a)(b)
+LowHigh
+(c)(d)
+Vehicle 2Vehicle 1
+Max-PoolingMAPE
+(a1)(b1)
+LowHigh
+Pedestrian1
+(c1)(d1)Pedestrian2
+LowHigh
+Cyclist1
+Cyclist2Max-PoolingMAPE
+(a2)(b2)(c2)(d2)Figure 9: Visualization of the learned attention scores in MAPE module on different class. The size and color of points represents
+their scores. The point will be paid more attention if it has a higher score. Best viewed in color.FastPillars is trained by 20 epochs, which takes ∼25 hours
+on 8 A100 GPUs with batch size 32.
+For Waymo Open Dataset, we set the detection range of
+the point cloud to [−75.2m,75.2m]for the X and Y axis
+and[−2m,4m]for the Z axis and set the pillar size as 0.2m.
+We train the FastPillar from scratch with batch size 32, max
+learning rate 3e-3 for 36 epochs. For the post-processing
+process during inference, following AFDetV2 (Hu et al.
+2022), we use class-specific NMS with the IoU threshold
+set to 0.8, 0.55, 0.55 and rectification factor βto 0.68, 0.71,
+0.65 for Vehicle, Pedestrian and Cyclist respectively.
+E More Qualitative Analysis of MAPE
+Forvehicles class, we visualize two cars in different views
+(point-view and bird eye view) in Fig. 9. Compared with
+(a) (b) and (c) (d), the MAPE module obviously pays more
+attention to the object semantic information (car’s outline)
+and local geometric context information. However, the Max-
+pooling operation loses much useful fine-grained informa-
+tion. Notably, FastPillars is a BEV-based method rather than
+a point-based method. For pedestrian andcyclist class, due
+to the tiny size and non-rigid property, pedestrian and cy-
+clist detection are more challenging than vehicle detection.
+Pedestrian and car detection are quite different. In Fig. 9, we
+visualize pedestrian and cyclist categories in different views
+(point-view and bird eye view). Compared with (a1) (b1)
+and (c1) (d1), the MAPE module focus more stable geo-
+metric feature in pedestrian (pedestrian’s body parts), and
+has richer representation than the Max-pooling under BEV .
+Similar with pedestrian, Compared with (a2) (b2) and (c2)
+(d2), cyclist also maintain more semantic information with
+the MAPE modules. Different from the Max-pooling opera-
+tion, MAPE reserves some background information, which
+enhances the local context representation for detection. Ex-
+periments demonstrate the superiority and effectiveness of
+our MAPE module, which introduces low latency and is suit-
+able for real-time deployment applications.
+F Visualization Results with Baseline
+As shown in Fig. 10, we visualize results on the Waymo
+val set, demonstrating that our method outperform baseline
+(CenterPoint), especially in pedestrian classes. This shows
+the effectiveness of our MAPE and backbone design.
+G Qualitative Experiments on Waymo
+Dataset
+Here, we make a qualitative comparison with previous
+state-of-the-art SPConv-based method PillarNet on Waymo
+valset. As shown in Fig. 11, PillarNet has a lot of false
+detection and missed detection, but FastPillars has better de-
+tection performance.
+H Visualization on nuScenes Dataset
+Some visualization results are shown in Fig. 12. Here, we
+visualize the detection results in some challenging scenar-
+ios on the nuScenes valset based on our FastPillars. As we
+can see, FastPillars can work reliably under a wide variety ofchallenging circumstances. We can clearly see that the pro-
+posed FastPillars is capable of detecting small targets, such
+as pedestrians, barriers and bicycles.
+I Visualization on Waymo Dataset
+We visualize the detection results on Waymo valSet in
+Fig. 13 and Fig. 14 based on FastPillars model. Thanks to
+the powerful pillar feature encoding ability of CRVNet and
+fine-grained geometric information provided by the MAPE
+module, our FastPillars performs well on the large scenes
+and can locate 3D objects with sparse points accurately.
+J Potential Negative Social Impact
+In this paper, we proposed a real-time pillar-based de-
+tector capable of achieving promising low-latency objects
+detection in autonomous driving scenarios. Our model is
+trained and evaluated totally based on public datasets, and
+there is no known potential negative impact on society.(a) Val: seq_0_frame_126
+(b) Val: seq_161_frame_116FastPillars(Ours)Ground TruthCenterPointFigure 10: Qualitative Experiments of FastPillars on the Waymo valset with baseline (CenterPoint (Yin, Zhou, and Krahenbuhl
+2021a)) . Blue boxes mean CenterPoint (Yin, Zhou, and Krahenbuhl 2021a) predictions, Green boxes and red boxes are ground-
+truth and FastPillars predictions, respectively. Best viewed in color.
+(a)(b)
+(c)(d)
+Figure 11: Qualitative Experiments of FastPillars on the Waymo valset. Blue boxes mean Pillarnet (Shi, Li, and Ma 2022)
+predictions, Green boxes and red boxes are ground-truth and FastPillars predictions, respectively. Best viewed in color.Figure 12: Visualization results of FastPillars on the nuScenes valset.Figure 13: Visualization results of FastPillars on the Waymo valset.Figure 14: Visualization results of FastPillars on the Waymo valset.

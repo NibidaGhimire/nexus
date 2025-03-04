@@ -1,0 +1,479 @@
+ON BATCHING VARIABLE SIZE INPUTS FOR TRAINING END-TO-END SPEECH
+ENHANCEMENT SYSTEMS
+Philippe Gonzalez?, Tommy Sonne Alstrømy, Tobias May?
+?Department of Health Technology, Technical University of Denmark
+yDepartment of Applied Mathematics and Computer Science, Technical University of Denmark
+ABSTRACT
+The performance of neural network-based speech enhancement sys-
+tems is primarily inﬂuenced by the model architecture, whereas
+training times and computational resource utilization are primar-
+ily affected by training parameters such as the batch size. Since
+noisy and reverberant speech mixtures can have different duration,
+a batching strategy is required to handle variable size inputs during
+training, in particular for state-of-the-art end-to-end systems. Such
+strategies usually strive for a compromise between zero-padding
+and data randomization, and can be combined with a dynamic batch
+size for a more consistent amount of data in each batch. However,
+the effect of these strategies on resource utilization and more im-
+portantly network performance is not well documented. This paper
+systematically investigates the effect of different batching strategies
+and batch sizes on the training statistics and speech enhancement
+performance of a Conv-TasNet, evaluated in both matched and mis-
+matched conditions. We ﬁnd that using a small batch size during
+training improves performance in both conditions for all batching
+strategies. Moreover, using sorted or bucket batching with a dy-
+namic batch size allows for reduced training time and GPU memory
+usage while achieving similar performance compared to random
+batching with a ﬁxed batch size.
+Index Terms —Batching, variable size input, speech enhance-
+ment, Conv-TasNet, generalization.
+1. INTRODUCTION
+The performance of deep learning-based speech enhancement sys-
+tems has drastically improved in recent years, in particular if they
+are trained with very large datasets [1]. However, this substantially
+increases training times. While most of the recent research in speech
+enhancement has focused on designing new architectures [2–4], lit-
+tle research has been dedicated to designing efﬁcient data loading
+pipelines that optimize training times. The usual method to reduce
+training time consists in tweaking training parameters such as the
+learning rate or the batch size. However, for applications with vari-
+able size inputs such as automatic speech recognition (ASR), text-
+to-speech (TTS), neural machine translation (NMT), source separa-
+tion or speech enhancement, forming batches from training exam-
+ples is not as simple as stacking along a new axis, as this would re-
+sult in non-contiguous tensors. State-of-the-art end-to-end systems
+explicitly exploit temporal context via the use of e.g. convolutional
+layers [3] or recurrent architectures [4], preventing from deﬁning a
+batch as multiple time samples of feature frames. A common solu-
+tion to obtain contiguous batches of variable size inputs is to zero-
+pad the sequences within a batch to match their lengths. However,
+this increases the amount of data passed through the network, lead-
+ing to computational waste and increased training times. Moreover,increasing the batch also increases the total amount of zero-padding
+required, and more importantly seems to reduce the generalization
+performance of deep neural networks [5].
+One solution to minimize the amount of zero-padding is to
+sort the training sequences by length before forming the batches.
+However, a common assumption in stochastic gradient descent is
+the need of i.i.d. sampling of the training data to ensure unbiased
+gradient estimators [6]. When sorting the sequences, the same se-
+quences are batched together in every training epoch, even though
+the batches can be shufﬂed subsequently. Thus, the reduction in
+zero-padding comes at the expense of data randomization. Batch-
+ing strategies with a tunable parameter deﬁning this compromise
+include bucket batching [7, 8], alternated-sorting batching [9] and
+semi-sorted batching [10]. Doetsch et al. [9] conducted a compara-
+tive study of random batching, sorted batching, bucket batching and
+semi-sorted batching for the training of a long short-term memory
+(LSTM)-based ASR system. They showed that different batch-
+ing strategies can substantially inﬂuence training times and speech
+recognition performance. Ge et al. [10] introduced semi-sorted
+batching for the training of a Tacotron [11]-based TTS system,
+and showed that bucket batching, alternated-sorting batching and
+semi-sorted batching performed similarly and provided signiﬁcant
+training time improvements compared to random batching. To the
+best of our knowledge, the inﬂuence of different batching strategies
+on speech enhancement performance has not been systematically in-
+vestigated. In particular, the effect of different batching strategies on
+generalization performance is unknown. Moreover, recent studies in
+distributed optimization have questioned the need for i.i.d. sampling
+of the training data [12,13], hinting towards the viability of batching
+strategy alternatives to the commonly used random batching.
+Another consideration when constructing batches of variable
+size inputs is whether to deﬁne a dynamic batch size. Indeed, stack-
+ing a ﬁxed amount of variable length sequences results in batches
+of variable total size, potentially leading to numerically unstable
+gradients and inefﬁcient GPU memory allocation. A solution is to
+use a dynamic batch size in terms of e.g. a total number of tokens
+in the case of NMT, or a total duration in seconds in the case of
+speech processing. Morishita et al. [14] compared different ﬁxed
+and dynamic batch sizes in the context of NMT using a LSTM-based
+model. They concluded that using a ﬁxed or dynamic batch size has
+little effect on performance, and that the batch size can substantially
+affect the ﬁnal accuracy of the model. However, they did not look at
+the effect on generalization performance.
+The present study compares three batching strategies, namely
+random, sorted and bucket batching, in terms of training statistics
+(training time, allocated GPU memory and padding amount) and
+speech enhancement performance of a Conv-TasNet [15] in both
+matched and mismatched conditions. For each batching strategy,
+the effect of the batch size as well as its nature (ﬁxed or dynamic)arXiv:2301.10587v2  [cs.SD]  31 Mar 2023Model
+Batched input
+Batched targets
+Batched output
+Masked
+loss
+Backprop.
+ones
+zeros
+pad.pad.
+pad.pad.Mask
+Fig. 1 : Batching process. Input mixtures are padded to match their
+length and passed as a contiguous tensor through the network. A
+masked loss ensures the padded regions do not contribute to updating
+the weights.
+is investigated. In Sec. 2, we provide an overview of the evaluated
+batching strategies. In Sec. 3, we describe the system used to per-
+form the speech enhancement task. In Sec. 4, we describe the ex-
+perimental setup used to train and test the model with the different
+batching strategies. Finally in Sec. 5, we report the results in terms
+of training statistics and speech enhancement performance in both
+matched and mismatched conditions.
+2. BATCHING STRATEGIES
+The batching task is illustrated in Fig. 1 and can be described as fol-
+lows. Nnoisy and reverberant mixtures x1; : : : ; x Nwith respective
+lengths T1; : : : ; T Nare padded such that they can be stacked to form
+a contiguous batch in RNTmax, where Tmax= max fT1; : : : ; T Ng.
+The batch is then forward passed through the network and the output
+has the same dimensions as the input batch. Since the output batch
+also contains the model output corresponding to the padded zeros, a
+masked loss must be used to prevent the zero-padded regions from
+contributing to the loss. To reduce the amount of padding and thus
+computational waste, strategies can be used to create batches from
+all the sequences in the training dataset. In the present study, we
+consider the three strategies illustrated in Fig. 2:
+•Random batching : at the start of each epoch, the sequences are
+randomized before creating and shufﬂing the batches. This corre-
+sponds to the usual practice in deep learning. While this ensures
+randomization of sequences during training, it requires the largest
+amount of zero-padding compared to sorted and bucket batching,
+as indicated by the black regions in Fig. 2.
+•Sorted batching : before training, the sequences are sorted by their
+length before creating the batches. This allows to batch sequences
+of similar length together, which in turn minimizes the amount of
+padding, as seen in Fig. 2. The batches are then shufﬂed at the
+start of each epoch. This reduces computational waste at the ex-
+pense of randomization, since the same observations are batched
+together in each epoch.
+•Bucket batching : available in TensorFlow [8, 16] and described
+in [7], this strategy can be seen as a compromise between random
+and sorted batching. Before training, sequences are assigned to
+different buckets according to their length, such that sequences of
+similar length are in the same bucket. Then, at the start of each
+epoch, batches are created using random sequences from the same
+bucket. The number of buckets deﬁnes a compromise between
+randomization and batching; using a single bucket is the same as
+random batching, while using as many buckets as the number of
+batches is the same as sorted batching. The bucket limits can be
+Length
+(a) Random batching – Fixed batch size
+Length
+(b) Random batching – Dynamic batch size
+Length
+(c) Sorted batching – Fixed batch size
+Length
+(d) Sorted batching – Dynamic batch size
+Length
+(e) Bucket batching – Fixed batch size
+Length
+(f) Bucket batching – Dynamic batch size
+Fig. 2 : The different batching strategies. Adjacent observations of
+the same color are batched together. Zero-padding is represented in
+black. The number of buckets was set to 3 in (e) and (f).
+uniformly spaced between the minimum and maximum sequence
+length, or deﬁned as quantiles of the sequence length distribution
+such that each bucket contains the same number of sequences.
+For each batching strategy, a ﬁxed or a dynamic batch size can be
+used. A ﬁxed batch size is deﬁned as a ﬁxed number of sequences
+as typically done in deep learning, while a dynamic batch size is
+deﬁned as a total length of sequences in the batch after padding.
+This is particularly useful when the sequence length distribution is
+broad, in which case using a ﬁxed batch size would result in a highly
+variable amount of data in each batch. A dynamic batch size allows
+batches of short sequences to contain more sequences, while batches
+of long sequences to contain fewer sequences.
+3. SPEECH ENHANCEMENT SYSTEM
+The speech enhancement system takes as input a noisy and rever-
+berant binaural mixture sampled at 16 kHz. Binaural mixtures are
+created by convolving a clean speech utterance and noise record-
+ings with binaural room impulse responses (BRIRs) from the same
+room. The binaural mixture is averaged across left and right chan-
+nels before being fed to a Conv-TasNet [15], which is an end-to-
+end fully convolutional network designed for single-channel multi-
+speaker speech separation. It can be used for speech enhancement
+as described in [17] by optimizing the signal-to-noise ratio (SNR)
+loss instead of the scale-invariant signal-to-noise ratio (SI-SNR) [18]
+loss, and by setting the number of separated sources to K= 1. The
+target source is deﬁned as the direct-sound part of the speech sig-
+nal including early reﬂections up to a boundary of 50 ms, which was
+shown to be beneﬁcial for speech intelligibility [19]. This is done byFig. 3 : Training mixture length distribution.
+splitting the BRIR used to generate the mixture into a direct-sound
+part and a reverberant part using a windowing procedure as described
+in [20]. Discarding late speech reﬂections from the target signal also
+allows to train the Conv-TasNet to perform dereverberation. We use
+one of the smaller conﬁgurations proposed in [15] while keeping a
+ﬁlter length of 2 ms at 16 kHz, namely N= 128 ,L= 32 ,B= 128 ,
+H= 256 ,Sc= 128 ,P= 3,X= 7andR= 2. We use cumulative
+layer normalization (cLN) to make the system causal as described
+in [15]. The model is trained for 150 epochs using the Adam opti-
+mizer [21] with a learning rate of 1e 3. Gradients are clipped with
+a maximum L2-norm of 5. The network has 1:45M parameters.
+4. EXPERIMENTAL SETUP
+For each batching strategy, the speech enhancement system is trained
+using different ﬁxed or dynamic batch sizes. The considered ﬁxed
+batch size are 1, 2, 4 and 8 sequences, while the considered dynamic
+batch sizes are 2 s, 4 s, 8 s, 16 s, 32 s, 64 s and 128 s. For bucket
+batching, we use 10 buckets and uniformly spaced bucket limits be-
+tween the minimum and maximum mixture length. For each con-
+ﬁguration, the model is trained ﬁve times using different random
+seeds for weight initialization, batch generation and shufﬂing. All
+trainings are performed on machines equipped with Intel Xeon Gold
+6126 CPUs and Tesla V100 GPUs.
+The model is trained on 10 hours of noisy and reverberant mix-
+tures. Clean speech utterances were selected from LibriSpeech (100-
+hour version) [22], noise recordings from the TAU urban acoustic
+scenes 2019 development dataset [23], and BRIRs from the univer-
+sity of Surrey [24]. The SNR is uniformly distributed between -
+5 dB and 10 dB. The target speech and up to 3 noise sources are ran-
+domly placed in the horizontal plane between -90and 90in front
+of the receiver. Figure 3 shows the training mixture length distribu-
+tion. When the batch size is dynamic and smaller than the maximum
+mixture length, the mixtures are split into segments shorter than the
+batch size such that a batch ﬁts at least one segment.
+The system is evaluated in matched and mismatched conditions.
+The matched condition consists of mixtures generated from differ-
+ent speech utterances, noise recordings and BRIRs, but drawn from
+the same databases as during training. The mismatched conditions
+consist of mixtures generated from different speech corpora, noise
+databases and BRIR databases. The speech corpora are TIMIT [25],
+WSJ SI-84 [26], Clarity [27] and VCTK [28]. The noise databases
+are NOISEX [29], ICRA [30], DEMAND [31] and ARTE [32]. Fi-
+nally the BRIR databases are ASH [33], BRAS [34], CATT [35] and
+A VIL [36]. For each combination of databases, 1 hour of mixtures
+are generated for evaluation. The same random SNR range and po-
+sitions in the horizontal plane as in the training set are used.
+The system is evaluated in terms of perceptual evaluation of
+speech quality (PESQ) [37], extended short-term objective intelli-
+gibility (ESTOI) [38] and SNR improvements. The reference signal
+for each metric is the direct-sound part of the speech signal including
+early reﬂections as described in Sec. 3. The improvements between
+the unprocessed input mixture and the enhanced output signal are de-
+Fig. 4 : Speech enhancement performance in terms PESQ,
+ESTOI and SNR as a function of the dynamic batch size.
+noted as PESQ, ESTOI and SNR. For each conﬁguration, we
+also calculate the zero-padding rate (ZPR), which is deﬁned as the
+total amount of padded zeros relative to the original dataset length,
+ZPR=PN
+ipiPN
+ili; (1)
+where Nis the number of sequences in the dataset, liis the length
+of the i-th sequence before padding and piis the amount of zeros
+padded to the i-th sequence.
+5. RESULTS
+Table 1 shows the average PESQ, ESTOI and SNR scores ob-
+tained by the Conv-TasNet when trained with the different batching
+strategies and batch sizes. The standard error of the mean across ran-
+dom training seeds is displayed next to each average score. The table
+also displays different training statistics, namely the training time,
+the allocated GPU memory and the ZPR. As expected, the largest
+ZPR is obtained with random batching at large batch sizes, namely
+24.5% with a ﬁxed batch size of 8 sequences and 24.1% with a dy-
+namic batch size of 128 s. Conversely, sorted batching yields almost
+no padding even at large batch sizes. Bucket batching serves as a
+compromise between the two as we obtain a ZPR of 5.2%. These
+differences at large batch sizes (when the data loading pipeline is
+not a bottleneck) are reﬂected in the training time; with a batch size
+of 128 s, using random batching takes 7 h 18 m, while using sorted
+of bucket batching takes 5 h 48 m and 6 h 10 m respectively (a speed
+improvement of 26% and 18% respectively).
+For each strategy, using a ﬁxed batch size of 8 sequences or a
+dynamic batch size of 128 s results in similar training times. This
+is in line with the sequence length distribution in Fig. 3, which has
+its peak around 16 s, meaning 8 random sequences can be expected
+to correspond to 128 s in total. While the training times are similar,
+the allocated GPU memory is greater when using ﬁxed 8 sequences-
+long batches. We argue this is due to the inconsistency of the total
+amount of data in batches of ﬁxed length; when using a ﬁxed batch
+size, batches of short mixtures consist of signiﬁcantly fewer audio
+samples compared to batches of long mixtures. This highlights the
+beneﬁt of using a dynamic batch size over a ﬁxed batch size when
+using highly variable size inputs.
+In Fig. 4, the speech enhancement scores in matched and mis-
+matched conditions are shown as a function of the dynamic batchMatch Mismatch
+Strategy Batch size Time Memory ZPRPESQ
+(10 1)ESTOI
+(10 2)SNRPESQ
+(10 1)ESTOI
+(10 2)SNRRandom1 seq. 8 h 33 m 2.9 GB 0.0% 4.610.10 9.020.12 5.540.01 0.890.01 3.250.17 3.610.06
+2 seq. 10 h 24 m 5.8 GB 14.2% 4.55 0.01 8.850.11 5.510.02 0.860.03 2.910.15 3.540.08
+4 seq. 8 h 05 m 11.6 GB 21.0% 4.56 0.08 8.670.06 5.460.04 0.820.03 2.880.25 3.480.06
+8 seq. 7 h 15 m 23.0 GB 24.5% 4.49 0.05 8.530.10 5.410.01 0.810.04 2.860.34 3.400.03
+2 s 38 h 19 m 0.3 GB 0.1% 4.32 0.24 8.870.27 5.630.03 1.110.04 4.550.20 4.140.03
+4 s 19 h 39 m 0.7 GB 0.2% 4.54 0.07 9.150.07 5.740.04 1.070.03 4.160.10 3.930.06
+8 s 12 h 20 m 1.3 GB 0.3% 4.61 0.10 9.450.12 5.740.02 1.050.02 4.430.13 3.840.08
+16 s 8 h 50 m 2.6 GB 0.8% 4.48 0.10 8.930.11 5.440.02 0.890.03 3.480.36 3.620.11
+32 s 10 h 10 m 5.2 GB 12.5% 4.640.04 9.100.13 5.510.03 0.860.00 3.070.09 3.400.02
+64 s 8 h 22 m 10.1 GB 20.3% 4.56 0.03 8.990.11 5.520.02 0.820.02 2.900.33 3.440.05
+128 s 7 h 18 m 20.2 GB 24.1% 4.54 0.06 8.600.07 5.410.00 0.800.03 2.700.14 3.400.02Sorted1 seq. 8 h 31 m 2.9 GB 0.0% 4.47 0.09 8.810.26 5.510.03 0.860.09 2.870.63 3.500.07
+2 seq. 9 h 21 m 5.5 GB 0.0% 4.53 0.03 8.940.07 5.510.02 0.800.03 2.760.16 3.390.03
+4 seq. 6 h 58 m 11.0 GB 0.1% 4.630.07 8.910.06 5.510.03 0.850.05 3.340.06 3.450.06
+8 seq. 5 h 56 m 21.9 GB 0.2% 4.45 0.05 8.620.12 5.380.03 0.830.04 2.960.31 3.450.04
+2 s 34 h 36 m 0.4 GB 0.0% 4.53 0.12 9.120.02 5.730.02 1.040.05 3.970.30 4.120.04
+4 s 18 h 41 m 0.7 GB 0.0% 4.68 0.11 9.410.21 5.700.07 1.120.06 4.330.11 3.910.02
+8 s 11 h 46 m 1.3 GB 0.0% 4.62 0.03 9.350.11 5.770.04 1.000.06 3.890.29 3.830.04
+16 s 8 h 15 m 2.6 GB 0.1% 4.63 0.08 9.190.21 5.570.03 0.800.04 3.070.31 3.660.02
+32 s 8 h 54 m 5.2 GB 0.1% 4.48 0.08 8.970.09 5.520.02 0.860.07 3.020.37 3.530.09
+64 s 6 h 45 m 10.1 GB 0.2% 4.760.02 9.100.06 5.540.02 0.920.03 3.190.12 3.480.04
+128 s 5 h 48 m 20.1 GB 0.4% 4.72 0.04 8.830.03 5.510.02 0.840.03 2.860.02 3.390.11Bucket1 seq. 8 h 39 m 2.9 GB 0.0% 4.34 0.12 8.850.08 5.490.02 0.780.03 2.810.20 3.540.05
+2 seq. 9 h 28 m 5.8 GB 2.2% 4.590.05 8.950.03 5.460.03 0.880.05 3.180.06 3.500.02
+4 seq. 7 h 11 m 11.6 GB 4.0% 4.51 0.05 8.870.15 5.430.03 0.860.07 2.970.35 3.410.01
+8 seq. 6 h 13 m 23.0 GB 5.2% 4.40 0.05 8.590.05 5.430.00 0.740.03 2.660.13 3.420.09
+2 s 36 h 12 m 0.3 GB 0.2% 4.65 0.12 9.460.15 5.730.01 1.160.05 4.840.10 4.070.06
+4 s 20 h 08 m 0.7 GB 0.3% 4.770.07 9.580.04 5.810.02 1.050.05 4.120.26 3.970.07
+8 s 12 h 23 m 1.3 GB 0.4% 4.70 0.04 9.460.13 5.780.02 1.000.06 4.160.43 3.800.06
+16 s 8 h 26 m 2.6 GB 0.6% 4.60 0.02 9.120.09 5.570.01 0.920.06 3.650.09 3.690.11
+32 s 8 h 38 m 4.6 GB 1.7% 4.74 0.10 9.250.06 5.580.01 0.880.04 3.330.20 3.600.01
+64 s 7 h 16 m 10.1 GB 4.0% 4.67 0.07 9.030.13 5.530.02 0.900.05 3.380.36 3.520.03
+128 s 6 h 10 m 20.1 GB 5.2% 4.56 0.05 9.020.01 5.510.01 0.780.02 3.050.17 3.190.04
+Table 1 : Training statistics and speech enhancement scores in matched and mismatched conditions for different batching strategies.
+size. It can be seen that the performance in terms of ESTOI and
+SNR decreases with larger batch sizes for all three batching strate-
+gies. This trend is signiﬁcantly stronger in mismatched conditions.
+No particular trend can be observed for PESQ. This is in line with
+[5] and the common assumption that smaller batch sizes can result
+in models with better generalization. Interestingly, sorted batching
+provides similar performance compared to random batching. This
+suggests that the training does not beneﬁt signiﬁcantly from random-
+izing the data in each batch, and shufﬂing the batches at the start of
+each epoch is sufﬁcient. Sorted batching thus appears as a solution
+for minimum padding and improved training times at seemingly no
+compromise on speech enhancement performance compared to ran-
+dom batching. This is in line with recent studies questioning the
+need for i.i.d. sampling of the training data [12, 13], although they
+were in the context of distributed optimization.
+6. CONCLUSION
+We conducted an empirical study of three batching strategies for the
+training of an end-to-end speech enhancement system with variable
+size noisy and reverberant mixtures. Speciﬁcally, we investigated
+how batching inﬂuences training times, GPU memory allocation and
+speech enhancement performance in both matched and mismatched
+conditions. We found that a smaller batch size provides better per-formance for all batching strategies, especially in mismatched con-
+ditions. Moreover, using a dynamic batch size for a more consistent
+total amount of data in each batch showed to reduce the allocated
+GPU memory at equal training times. Finally, using sorted or bucket
+batching allowed for substantially lower ZPR and thereby improved
+training times without compromising performance, which indicates
+that shufﬂing the batches before each epoch is sufﬁcient to obtain
+appropriate gradient estimates. While the present study focused on
+speech enhancement, we believe it can serve as a guideline for future
+researchers who need to develop data loading pipelines for variable
+size inputs of different nature as well.
+7. REFERENCES
+[1] J. Chen et al. , “Large-scale training to increase speech intelligi-
+bility for hearing-impaired listeners in novel noises,” J. Acoust.
+Soc. Am. , vol. 139, pp. 2604–2612, 2016.
+[2] D. Wang and J. Chen, “Supervised speech separation based
+on deep learning: An overview,” IEEE/ACM Trans. Audio,
+Speech, Language Process. , vol. 26, pp. 1702–1726, 2018.
+[3] S. Lv et al. , “DCCRN+: Channel-wise subband DCCRN with
+SNR estimation for speech enhancement,” in Proc. INTER-
+SPEECH . ISCA, 2021, pp. 2816–2820.[4] A. Pandey et al. , “TPARN: Triple-path attentive recurrent net-
+work for time-domain multichannel speech enhancement,” in
+Proc. ICASSP . IEEE, 2022, pp. 6497–6501.
+[5] N. S. Keskar et al. , “On large-batch training for deep learning:
+Generalization gap and sharp minima,” in Proc. ICLR , 2017.
+[6] Y . Bengio, “Practical recommendations for gradient-based
+training of deep architectures,” in Neural Networks: Tricks of
+the Trade . Springer, 2012, pp. 437–478.
+[7] V . Khomenko et al. , “Accelerating recurrent neural network
+training using sequence bucketing and multi-GPU data paral-
+lelization,” in Proc. DSMP . IEEE, 2016, pp. 100–103.
+[8] E. Variani et al. , “End-to-end training of acoustic models for
+large vocabulary continuous speech recognition with Tensor-
+Flow,” in Proc. INTERSPEECH . ISCA, 2017, pp. 1641–1645.
+[9] P. Doetsch, P. Golik, and H. Ney, “A comprehensive study of
+batch construction strategies for recurrent neural networks in
+MXNet,” arXiv preprint arXiv:1705.02414 , 2017.
+[10] Z. Ge et al. , “Speed up training with variable length inputs by
+efﬁcient batching strategies,” in Proc. INTERSPEECH . ISCA,
+2021, pp. 156–160.
+[11] J. Shen et al. , “Natural TTS synthesis by conditioning WaveNet
+on mel spectrogram predictions,” in Proc. ICASSP . IEEE,
+2018, pp. 4779–4783.
+[12] Q. Meng et al. , “Convergence analysis of distributed stochas-
+tic gradient descent with shufﬂing,” Neurocomputing , vol. 337,
+pp. 46–57, 2019.
+[13] T. T. Nguyen et al. , “Why globally re-shufﬂe? Revisiting data
+shufﬂing in large scale deep learning,” in Proc. IPDPS . IEEE,
+2022, pp. 1085–1096.
+[14] M. Morishita et al. , “An empirical study of mini-batch cre-
+ation strategies for neural machine translation,” arXiv preprint
+arXiv:1706.05765 , 2017.
+[15] Y . Luo and N. Mesgarani, “Conv-TasNet: Surpassing ideal
+time-frequency magnitude masking for speech separation,”
+IEEE/ACM Trans. Audio, Speech, Language Process. , vol. 27,
+pp. 1256–1266, 2019.
+[16] M. Abadi et al. , “TensorFlow: Large-scale machine
+learning on heterogeneous systems,” 2015. [Online]. Available:
+https://www.tensorﬂow.org/
+[17] Y . Koyama et al. , “Exploring the best loss function for DNN-
+based low-latency speech enhancement with temporal convo-
+lutional networks,” arXiv preprint arXiv:2005.11611 , 2020.
+[18] J. Le Roux et al. , “SDR–half-baked or well done?” in Proc.
+ICASSP . IEEE, 2019, pp. 626–630.
+[19] N. Roman and J. Woodruff, “Speech intelligibility in reverber-
+ation with ideal binary masking: Effects of early reﬂections
+and signal-to-noise ratio threshold,” J. Acoust. Soc. Am. , vol.
+133, pp. 1707–1717, 2013.
+[20] P. Zahorik, “Direct-to-reverberant energy ratio sensitivity,” J.
+Acoust. Soc. Am. , vol. 112, pp. 2110–2117, 2002.
+[21] D. P. Kingma and J. Ba, “Adam: A method for stochastic opti-
+mization,” in Proc. ICLR , 2015.
+[22] V . Panayotov et al. , “LibriSpeech: An ASR corpus based on
+public domain audio books,” in Proc. ICASSP . IEEE, 2015,
+pp. 5206–5210.[23] T. Heittola, A. Mesaros, and T. Virtanen, “TAU urban acoustic
+scenes 2019, development dataset,” 2019. [Online]. Available:
+https://doi.org/10.5281/zenodo.2589280
+[24] C. Hummersone, R. Mason, and T. Brookes, “Dynamic prece-
+dence effect modeling for source separation in reverberant en-
+vironments,” IEEE Audio, Speech, Language Process. , vol. 18,
+pp. 1867–1871, 2010.
+[25] J. S. Garofolo et al. , “DARPA TIMIT acoustic-phonetic conti-
+nous speech corpus CD-ROM. NIST speech disc 1-1.1,” NASA
+STI/Recon Technical Report , p. 27403, 1993.
+[26] D. B. Paul and J. Baker, “The design for the Wall Street
+Journal-based CSR corpus,” in Proceedings of the workshop
+on Speech and Natural Language . Association for Computa-
+tional Linguistics, 1992.
+[27] S. Graetzer et al. , “Dataset of British English speech record-
+ings for psychoacoustics and speech processing research: The
+clarity speech corpus,” Data in Brief , vol. 41, p. 107951, 2022.
+[28] J. Yamagishi, C. Veaux, and K. MacDonald, “CSTR
+VCTK corpus: English multi-speaker corpus for CSTR
+voice cloning toolkit,” 2019. [Online]. Available: https:
+//doi.org/10.7488/ds/2645
+[29] A. Varga and H. J. Steeneken, “Assessment for automatic
+speech recognition: II. NOISEX-92: A database and an experi-
+ment to study the effect of additive noise on speech recognition
+systems,” Speech Communication , vol. 12, pp. 247–251, 1993.
+[30] W. A. Dreschler et al. , “ICRA noises: Artiﬁcial noise sig-
+nals with speech-like spectral and temporal properties for hear-
+ing instrument assessment,” Audiology , vol. 40, pp. 148–157,
+2001.
+[31] J. Thiemann, N. Ito, and E. Vincent, “The diverse environ-
+ments multi-channel acoustic noise database (DEMAND): A
+database of multichannel environmental noise recordings,” in
+Proc. Mtgs. Acoust. , vol. 19. ASA, 2013, p. 035081.
+[32] J. M. Buchholz and A. Weisser, “Ambisonics recordings
+of typical environments (ARTE) database,” 2019. [Online].
+Available: https://doi.org/10.5281/zenodo.2261633
+[33] S. Pearce, “Audio Spatialisation for Headphones - Impulse
+Response Dataset,” 2021. [Online]. Available: https://doi.org/
+10.5281/zenodo.4780815
+[34] F. Brinkmann et al. , “A benchmark for room acoustical simu-
+lation. Concept and database,” Applied Acoustics , vol. 176, p.
+107867, 2021.
+[35] “Simulated room impulse responses,” University of Surrey.
+[Online]. Available: http://iosr.surrey.ac.uk/software/index.
+php#CATT RIRs
+[36] L. McCormack et al. , “Higher-order spatial impulse response
+rendering: Investigating the perceived effects of spherical or-
+der, dedicated diffuse rendering, and frequency resolution,” J.
+Audio Eng. Soc. , vol. 68, pp. 338–354, 2020.
+[37] Perceptual evaluation of speech quality (PESQ): An objective
+method for end-to-end speech quality assessment of narrow-
+band telephone networks and speech codecs , Rec. ITU-T
+P.862, International Telecommunication Union, 2001.
+[38] J. Jensen and C. H. Taal, “An algorithm for predicting the in-
+telligibility of speech masked by modulated noise maskers,”
+IEEE/ACM Trans. Audio, Speech, Language Process. , vol. 24,
+pp. 2009–2022, 2016.

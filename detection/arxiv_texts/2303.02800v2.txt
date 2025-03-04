@@ -1,0 +1,583 @@
+Uncoupling System and Environment Simulation Cells for
+Fast-Scaling Modeling of Complex Continuum Embeddings
+G. Medrano, E. Bainglass, O. Andreussi
+March 15, 2023
+Abstract
+Continuum solvation models are becoming increasingly relevant in condensed matter simula-
+tions, allowing to characterize materials interfaces in the presence of wet electried environments
+at a reduced computational cost with respect to all atomistic simulations. However, some chal-
+lenges with the implementation of these models in plane-wave simulation packages still persists,
+especially when the goal is to simulate complex and heterogeneous environments. Among these
+challenges is the computational cost associated with large heterogeneous environments, which in
+plane-wave simulations has a direct eect on the basis-set size and, as a result, on the cost of
+the electronic structure calculation. Moreover, the use of periodic simulation cells are not well-
+suited for modeling systems embedded in semi-innite media, which is often the case in continuum
+solvation models. To address these challenges, we present the implementation of a double-cell
+formalism, in which the simulation cell used for the continuum environment is uncoupled from the
+one used for the electronic-structure simulation of the quantum-mechanical system. This allows for
+a larger simulation cell to be used for the environment, without signicantly increasing computa-
+tional time. In this work, we show how the double-cell formalism can be used as an eective PBC
+correction scheme for non-periodic and partially periodic systems. The accuracy of the double-cell
+formalism is tested using representative examples with dierent dimensionalities, both in vacuum
+and in a continuum dielectric environment. Fast convergence and good speedups are observed for
+all the simulation setups, provided the quantum-mechanical simulation cell is chosen to completely
+t the electronic density of the system.
+1 Introduction
+Materials simulations have seen an incredible growth in recent years, thanks to the increasing power
+of computer hardware and simulation software, together with the development of new computational
+infrastructures to handle high-throughput simulations [1, 2, 3, 4, 5]. Unbiased rst-principles sim-
+ulations based on density functional theory (DFT) represent the work-horse of most computational
+approaches to materials design [6], with many research groups pushing to improve the accuracy of
+computational predictions and the extend the scope of rst-principles simulations to more challenging
+systems and properties.
+Traditional DFT simulations of materials focus on bulk periodic crystalline structures. For this
+reason, most condensed-matter and materials simulation packages rely on basis sets composed of
+periodic functions (e.g. plane-waves, PW) which uniformly occupy the simulation cell. This approach
+provides a systematically improvable basis set, whose accuracy can be tuned with a single parameter,
+usually associated with the kinetic energy of the corresponding plane-wave. PWs also provide easy
+access to the solution of the core electrostatic equations involved in rst-principles simulations, with the
+Poisson equation in vacuum being readily solved in reciprocal space. Fast Fourier transforms (FFTs)[7]
+have proven instrumental to the wide-spread success and fast scaling of PW-based DFT packages, by
+providing real-to-reciprocal space mapping, and vice-versa, at a cost proportional to Npwlog(Npw),
+with Npwbeing the number of PWs in the simulation. However, what is advantageous for bulk
+crystalline materials can be a source of artifacts when non-periodic or partially periodic systems need
+to be characterized. Traditionally, materials interfaces are simulated using the slab approach, in which
+a few-atoms thick slab of the material is described in a 3-dimensional periodically repeated simulation
+cell. By increasing the thickness of the slab and by increasing the cell size in the direction orthogonal
+to the material interface, the periodic replicas of the slab are eectively uncoupled from each other and
+1arXiv:2303.02800v2  [physics.comp-ph]  14 Mar 2023the results are considered to be representative of the surface of a semi-innite bulk material. A similar
+strategy can be devised for systems that are only periodic in one dimension, such as nano-wires or nano-
+tubes, or that are non-periodic. While adjusting the cell size can provide an easy solution to periodic
+boundary conditions (PBC) artifacts, the number of PWs grows linearly with the cell volume, leading
+to a polynomial increase in the cost of the corresponding DFT calculation. For this reason, multiple
+alternative strategies to correct for PBC artifacts have been proposed in the past years, including
+real-space and reciprocal-space approaches. Most of these strategies are focused on simulations of
+two-dimensional and zero-dimensional (isolated) systems, while one-dimensional correction schemes
+are usually less wide-spread.
+Unfortunately, as the typical scaling of DFT simulations depend varies as N3, where Nis the
+number of electrons in the system, complex and large systems with more than a few hundreds of
+electrons are still out of reach for systematic DFT studies. To overcome this limitation, a variety of
+hierarchical approaches [8, 9] and/or divide and conquer[10, 11, 12] strategies have been developed in
+the literature. Without sacricing the important atomistic characteristics of the relevant part of the
+process under investigation (the system), these methods take advantage of dierent, possibly simplied,
+models to handle the more macroscopic or complex part of the process (the environment), thus allowing
+a signicant reduction of the computational cost.
+In particular, implicit solvation models based on continuum embedding media have proven to pro-
+vide a reasonable qualitative accuracy, while signicantly reducing the need for statistical sampling of
+disordered congurations [13, 14, 15, 16]. Indeed, removing the atomistic details of solvent molecules
+not only reduces the number of electrons involved in the DFT simulation, but it allows to avoid the use
+of molecular dynamics (MD) to sample the congurations of the molecules of the liquid. Continuum
+methods in computational chemistry usually involve more or less empirical denitions of the dierent
+contributions to solvation free energy, which are then parameterized on experimental databases gener-
+ated from solubility data. Methods such as the Polarizable Continuum Model (PCM)[17] of Tomasi and
+co-workers have shown a good success in predicting ground state and response properties of molecules
+in solution. More recently, similar approaches have been translated into condensed-matter simulation
+packages in order to study wet, possibly electried, interfaces of materials[8]. When compared to the
+more widespread continuum solvation models in the computational chemistry community, the models
+implemented in periodic PW-based simulation packages rely on a smoothly-varying boundary between
+the quantum-mechanical system and the continuum environment, instead of a sharp two-dimensional
+interface. Denition of the interface based o the electronic density of the solute[18] or its atomic
+positions[19] have been developed and show similar accuracy, when properly parameterized. While
+computationally more demanding, the use of smooth interfaces allows continuum models in condensed
+matter to more seamlessly introduce non-local corrections [20, 21] to avoid some of the typical artifacts
+of these solvation methods.
+Beyond the use of continuum solvation to model bulk neutral solutions, extensions to handle liq-
+uid crystals and diluted ionic solutions were implemented exploiting the integral equation formalism
+(IEF) of PCM[22]. Still following the same strategy, PCM was extended to the study of a single
+two-dimensional interface between dierent dielectric media (liquid-air, liquid-liquid)[23]. Corni et al.
+extended the use of the polarizable dielectric model to handle the electrostatic eects of metal surfaces
+and nanoparticles on nearby molecular dyes, thus allowing a more quantum-mechanical characteriza-
+tion of surface-enhanced spectroscopies[24, 25, 26].
+Similar to the PCM literature, more complex and heterogeneous environments can be introduced in
+condensed-matter simulations. In particular, a signicant focus has been devoted to study electrolyte
+solutions[23, 27, 28, 29, 30, 31], so as to unlock the use of these models for simulations of electried
+interfaces. Going beyond neutral solutions and electrolyte distributions, Campbell et al. [32, 33]
+exploited a continuum approach to model the charge reorganization in a semiconductor substrate.
+As the denition of the continuum environment in smooth-interface solvation models follows a
+function dened everywhere in the simulation cell, it is relatively straightforward to introduce more
+complex and heterogeneous environments, e.g. by introducing multiple continuum media, each with its
+own boundaries and physical properties (e.g. dielectric constant or surface tension). These media can
+be used to model substrate eects on the properties of overlaying materials or molecular compounds.
+Following this idea, Bononi and collaborators[34, 35] exploited the possibility to introduce at two-
+dimensional dielectric regions in the simulation cell in order to characterize in a computationally
+inexpensive way the eect of an ice substrate on the absorption properties and photo-degradation of
+2molecular dyes.
+Despite the exibility of continuum embedding approaches in condensed matter environments,
+PW-based simulations can pose signicant challenges to these class of multiscale methods. The use
+of periodic simulation cells is intrinsically unt to model systems that are embedded in a semi-innite
+medium, i.e. most solvated systems would typically require non-periodic simulation cells in the direc-
+tions where the continuum solvent resides. Moreover, the fact that the simulation cell size is directly
+related to the basis-set size Npwmakes simulating large heterogeneous environments computationally
+more challenging. Extensions of PBC correction schemes have been developed to account for contin-
+uum dielectric media in simulations of isolated (0D) and slab (2D) systems[36]. In both continuum
+electrolyte and semiconductor models, long-range charge reorganizations are handled implicitly, by
+relying on analytical solutions to the electrostatic problems and/or appropriate boundary conditions.
+However, simulating the eects of nano-sized environments, such as plasmonic nanoparticles, micelles,
+liquid nanodroplets, would require to use simulations cells, and thus basis-sets, that are beyond reach
+of standard computational resources.
+The straightforward solution to the aforementioned problem is to uncouple the simulation cell
+exploited for the continuum environment from the one used for the DFT simulation of the quantum-
+mechanical system. The use of a large simulation cell for the environment would not cause signicant
+limitations to the simulation time: the time-consuming part of the continuum environment calculation
+is related to computing the electrostatic potentials, by solving modied and generalized forms of
+the Poisson or Poisson-Boltzmann equations. Most of the algorithms implemented rely on iterative
+strategies in which each iteration involve the solution of a simple Poisson equation, which can be
+performed via FFTs in a time almost linear in the cell size. By keeping the simualtion cell of the
+DFT calculation small, the largest overhead in computational time is avoided. While ideal in theory,
+in practice this double-cell formalism requires to fully uncouple the two simulation methods and to
+carefully design the mapping between the two simulation cells.
+While designed to account for large heterogenous environments, the double-cell formalism can also
+be used for non-periodic and partially periodic systems as an eective PBC correction scheme. By
+increasing the length of the lattice vectors going along the non-periodic directions in the environment
+cell, electrostatics can be fully converged without aecting the basis-set size and cost of the quantum-
+mechanical calculation. This general strategy works equally well for isolated (0D), slab (2D), but also
+one-dimensional (1D) systems. In this work, the details of the double-cell methodology are presented
+and the approach is tested as a PBC correction scheme for some representative examples with dierent
+dimensionalities, both in vacuum and in a continuum dielectric environment. Along with this new
+methodology and in order to test the accuracy and the speed-up of the double-cell formalism for PBC
+corrections, the auxiliary-function countercharge corrections library (LIBAFCC) of Dabo et al.[37] was
+coupled to the continuum embedding software, giving access to an alternative exact correction scheme
+for all types of partially periodic systems.
+The paper is organized as follows: in Section 2 we review the main details of the implementation of
+the double cell formalism, as well as the coupling of the auxiliary-function countercharge corrections
+library (LIBAFCC)[37]; in Section 3 the comptuational details of the DFT calculations as well as how
+the double cell calculations are reported. Eventually, in Section 4 we report a detailed benchmark of
+the accuracy and performance of the double cell approach for modelling partially periodic systems,
+including 0D, 1D, and 2D systems, in vacuum and in a uniform dielectric medium.
+2 Methods
+2.1 Double-Cell Formalism
+The design of a double-cell algorithm is strongly dependent on the numerical details that are
+associated with the calling program (e.g. the PW DFT simulation package), the continuum embedding
+library, and with their coupling. In particular, the key aspects that aect the implementation are:
+1. which scalar elds need to be passed from one cell to the other
+2. how the scalar elds are stored and parallelized in the two cells
+3. the way the gridpoints of the two cells are aligned
+3Figure 1: A schematic view of the double cell formalism with an isolated water molecule. The green
+cell is the system cell where all the PWs are introduced while the blue cell is the environment cell that
+are used for PBC correction.
+In the following we will refer to the specic implementation involving Quantum Espresso as the
+DFT driver and Environ as the continuum embedding library. In order to generate the continuum
+boundary in Environ, information on the electronic density of the system and/or its atomic positions
+are required. The same information is also needed for the calculation of the electrostatic potential, i.e.
+the position and valence of the ions as well as the full electronic density of the system are required
+inputs for an Environ calculation. In alternative polarizable dielectric models, such as PCM, the
+electrostatic potential of the system in vacuum is passed to the continuum embedding module, to be
+used to solve for the polarization charge on the environment. However, passing the full information of
+the charge of the solute allows to have a consistent denition of the electrostatic potential, e.g. when
+smeared ionic charges are used to account for core-electrons. In the case of the double-cell formalism,
+passing the full charge density of the solute also allows to seamlessly adapt the calculation to a dierent
+simulation cell. In the presented implementation, the key scalar quantity that needs to be passed from
+the system cell into the environment cell is thus the electronic density of the system.
+The results of the continuum embedding calculations are usually reported in terms of corrections to
+the corresponding quantities computed in vacuum and periodic boundary conditions by the host DFT
+program. In particular, corrections to the total energy, interatomic forces, and Kohn-Sham potential
+are the key outputs of Environ calculations. Of these quantities, only the latter needs to be mapped
+from the environment cell into the system cell.
+Scalar elds in a 3D simulation cell are discretized in PW simulation packages in terms of their
+values on a 3D structured grid, whose spacing is inversely related to the PW cuto specied in the sim-
+ulation input. However, the values on the 3D grid are stored by Quantum-Espresso as one-dimensional
+arrays, by scanning grid-points sequentially along the three cell axis. As part of the hierarchy of par-
+allelization schemes adopted by Quantum-Espresso, parallelization on the real-space simulation cell is
+implemented by dividing it into slices along the third axis or into sticks along the second and third
+axes, depending on the total number of available processors. This allows to perform operations that
+only depend on local values of the scalar eld in a fully parallelized way, while still requiring gathering
+and scattering of the whole simulation data for real to reciprocal-space transformations (FFTs and
+inverse FFTs). Owing to the origin of Environ as an internal plugin of Quantum Espresso, the same
+strategies and the same numerical libraries are exploited by Environ for its internal calculations.
+In designing the coupling between system and environment simulation cell, it is crucial to realize
+that the quantum-mechanical system lives in a fully periodic simulation cell: in the DFT calculation
+the system energy and properties are not aected by arbitrary translations of the system's degrees of
+freedom. In particular, it is possible for a system to have some of its atoms or part of its electronic
+density on opposite sides of the simulation cell, as the minimum image convention would still give
+rise to a well-dened fully connected system. However, when expanding the system cell into the
+environment cell, care must be taken to ensure that a fully connected system is passed to continuum
+embedding module and that the environment is properly dened with respect to a meaningful center of
+the system. Thus, for the mapping of scalar elds between the two simulation cells, a two step process
+4was implemented as visualized in Figure 1: rst a centering of the system and second an expansion of
+the environment cell along the designated directions (x,y,z).
+The rst step is accomplished by computing the center of mass of the system within its original
+simulation cell, using the minimum image convention to account for potential splits in neighbouring
+cells. We then introduce a new cell with the same cell parameters and the same grid spacing as the
+system cell, but with an origin shifted from the Cartesian origin so as to place the system's center of
+mass near its central gridpoint. A one-to-one mapping of gridpoints, i.e. a change in the integer index
+of the stored one-dimensional arrays containing the scalar elds, can be computed on the y without
+loss of information and without aecting the real-space parallelization scheme.
+The second step of the double-cell algorithm involves the expansion the system cell in the dierent
+directions in order to generate a larger environment cell. While arbitrary expansions could in prin-
+ciple be considered, they would usually result in a environment grid spacing and gridpoint positions
+that would not match the initial ones on the system cell. This numerical mismatch could be easily
+addressed by interpolation algorithms, which would add an additional layer in the mapping between
+the two cells. However, in order to keep the process as simple and robust as possible, the current
+implementation of the double-cell formalism restricts the cell expansion to integer multiples of the
+initial cell. An expansion vector n= (n1; n2; n3) is dened in the input of the environment module,
+withnirepresenting the number of ctitious replicas added on both sides of the re-centered system
+cell along its i-th axis. The combination of these two steps creates the desired environment cell, with
+lattice vectors 2 n+ 1 times as large as the system cell, with the center of mass of the system located
+near its central gridpoint.
+2.2 Auxiliary-Function Correction
+When simulating materials using DFT, electron interactions can be hindered by computational
+singularities, becoming apparent when looking at partially periodic systems, arising from the reciprocal-
+space summation of interaction contributions. Most simulation software set these divergences to zero,
+introducing negligible errors that approach zero as the size of the computational supercell increases.
+Real-space electrostatic corrections have been introduced that can remove these singularities although
+they can become costly due to these corrections requiring dierent interaction potentials per self-
+consistent iteration.
+Because of this additional computational cost, reciprocal-space countercharge corrections have been
+studied in the form of auxiliary-function techniques which are the basis of the LIBAFCC[37]. These
+techniques have an added exibility with the choice of auxiliary functions which all have dierent
+denitions as well as capabilities in removing PBC errors. The LIBAFCC library implements exact
+point-charge reciprocal-space auxiliary functions for all types of partially periodic systems with the 0D
+correction giving the same formulas as the Martyna-Tuckerman[38] (MT) correction scheme.
+Following the similarity of the AFCC with the MT approach, we coupled the library of Li and
+Dabo to a development version of Environ. The point-charge correction as computed by the library
+is mapped in the real-space grid, centered on the origin. Fast Fourier transforms allow to convert
+the correction to reciprocal space and to store it, so that it can be used to complement the standard
+vacuum FFT Poisson solver at no extra cost.
+3 Computational Details
+All calculations were performed using Quantum Espresso (QE) v7.1[39, 40] compiled with the
+Environ library for continuum embedding eects [18, 39, 41]. While the double-cell implementation
+has been ocially released in Environ 3.0, for the results reported ion the following we used a local
+development version of the library that includes the coupling with the AFCC library for periodic
+boundary corrections.
+All reported benchmarks, in vacuum and in dielectric environments, involve a single self-consistent
+eld (SCF) optimization of the electronic density, starting from a random initial guess. In an eort to
+keep benchmarks as consistent as possible, we did not include geometry optimization calculations in
+our results. However, convergence of the inter-atomic forces with the newly implemented algorithms
+was thoroughly tested, showing an accuracy consistent with fully periodic simulations and with other
+PBC correction schemes.
+5Figure 2: Graphic representation of the two sets of calculations adopted to investigate convergence of
+the developed formalism. The double-cell calculations involve a small system cell (green box) embedded
+in an expanded environment cell (blue box). Reference calculations adopt the same expanded cell for
+both the system (DFT) and the environment (continuum electrostatic) calculations.
+The 0D and 2D simulations are based o the Environ's examples distributed with the library. In
+particular, the isolated system considered in this study is an acetamine cation, while a thin Pt (111) slab
+with an adsorbed carbon monoxide molecule was used for testing 2D systems. A BN nanoribbon was
+chosen as benchmark for the 1D systems. The selected systems are known to display more pronounced
+PBC artifacts. However, it is important to stress that the reported analysis is meant to focus on the
+consistency of the results with alternative PBC correction schemes and on the overall computational
+performance. For this reason, the physical approximations and the simulation details that are not
+relevant for the convergence of the electrostatic energy have been selected according to the most wide-
+spread choices in the literature. All the calculations were performed using the Perdue-Burke-Ernzerhof
+generalized gradient approximation (GGA) density functional[42]. For the 0D and 2D systems, the
+standard ultra-soft psuedopotentials distributed on the QE website were adopted. For the 1D system,
+the pseudopotentials from the SSSP eciency library were selected[43, 44]. The Simulations were
+performed by only sampling the gamma point sampling of the Brillouin zone.
+A dielectric embedding environment was modelled using the self-consistent interface function of
+Andreussi et al[18]. A homogeneous static dielectric permittivity of 100 was selected for the bulk of
+the environment. The preconditioned conjugate gradient (PCG) approach of Fisicaro et al [45] was
+used for the convergence of the generalized Poisson equation, with a convergence threshold on the
+computed electrostatic potential of 5 :0e 13 Ry [18, 39].
+For the acetamine cation (0D system) the wave function cuto and density cuto were chosen to
+be 30 Ry and 300 Ry, respectively, with a estimated convergence threshold on the total energy of
+5:0e 6 Ry. A simple cubic simulation cell was adopted, in order to allow the use of a parabolic
+correction to PBCs [46, 47]. For this isolated system, reference simulations were also performed using
+the Martyna-Tuckerman reciprocal space correction [38], both in vacuum and in the dielectric medium.
+For the 2D system, an orthorhombic cell was used with the cell parameter in the z-direction being
+varied to evaluate the interaction with periodic replicas. The wave function cuto and density cuto
+were set to 35 Ry and 300 Ry, respectively, with an estimated convergence threshold on the total
+energy of 1 :0e 6 Ry. Marzari-Vanderbilt[48] smearing of the band occupations was adopted with a
+spread value of 0.03 Ry. A parabolic correction scheme, as implemented in the Environ library, was
+adopted for simulations in vacuum and in the dielectric medium.
+Finally, for the 1D system, an ideal boron-nitride (BN) 2D surface, as obtained from the aowlib[4]
+6repository, was used to create a 1D ribbon. The wave function and density cutos were set to 60 Ry
+and 480 Ry, respectively, with an estimated convergence threshold on the total energy of 1 :0e 7 Ry.
+A Gaussian smearing with a spread value of 0.02 Ry was adopted, together with a local Tomas-Fermi
+mixing and a mixing parameter of 0.7. Although the parabolic correction scheme implemented in
+Environ is only compatible with 0D and 2D systems, a 2D correction with a large simulation cell in
+the direction along the plane of the ribbon was also exploited as reference for the 1D system.
+In order to demonstrate the accuracy and performance of the double-cell formalism, two DFT
+calculations were done for each unit cell size, as schematized in Figure 2. The rst calculation is
+performed using double-cell approach, i.e. having the environment cell dened as an integer expansion
+of the system cell in at least one direction. A reference calculation is then performed by imposing
+the system and environment cells to be of the same size and to match the environment cell of the
+rst calculation. As an example, for a simulation of an isolated (0D) system with a cubic cell of size
+10 Bohr, a double-cell calculation with one replica in every direction, n= (1;1;1), would involve a
+cubic environment cell with a 30 Bohr side length. The reference calculation would be performed with
+identical system and environment cells, both set to a size of 30 Bohr. In the following section, the
+energy dierence between the double-cell calculation and the reference are reported together with the
+speed up in calculation time.
+4 Results
+4.1 Isolated Systems (0D)
+Figure 3: The acetamine cation used for testing the
+double-cell formalism in isolated systems.As discussed above, one of the uses of the
+double-cell formalism is to reduce PBC artifacts
+in isolated systems, thus overcoming one of the
+main sources of artifacts of plane-wave based
+codes. The system selected for testing the ac-
+curacy and performance of the double-cell strat-
+egy is an acetamine cation, visualized in Figure
+3. To simplify the handling of PBC artifacts and
+to allow the use of the parabolic point-counter-
+charge correction, a cubic cell is used to study
+this system.
+In the top panels of Figure 4 the changes in
+total energy with respect to the reference are re-
+ported, for both simulations in vacuum and in a
+dielectric environment. The considered molecule
+has overall size of about 8.0 Bohr. However, from
+the convergence of the double-cell calculations with respect to the reference it is clear that system cells
+smaller than 15 Bohr present artifacts with respect to the same calculation in the reference cell. As
+the electrostatic calculations in the double-cell and the reference are the same, these small dierence
+must be due to the fact that the double-cell mapping is aecting the DFT convergence. In fact, in-
+spection of the density of the molecule reveals that the dierence is due to the non-negligible spilling
+of the electronic density of the molecule beyond the cell boundaries. While in a periodic cell this still
+corresponds to a connected smooth density, the mapping step of the double-cell formalism breaks the
+spilling density apart. This result suggests a general rule for the identication of the minimal system
+cell in a double-cell calculation, which needs to be about 10.0 Bohr larger than the system size.
+When looking at the behaviour of the double-cell energy as a function of system size, it is clear that
+the double-cell results are fully converged for cells larger than the identied minimum size. This is
+consistent with all the other PBC correction schemes investigated, which also show converged electro-
+static for cell sizes larger than 15 Bohr in vacuum, and 20 Bohr in a dielectric medium. In the bottom
+panels of Figure 4 we report the speedup per SCF cycle of the double-cell formalism when compared
+with the reference calculations. This speedup accounts for the relative weight of the FFT-based elec-
+trostatic calculation and the cost of inverting the DFT Hamiltonian in a single SCF step. The reported
+results show an average ve-fold decrease in computational time when the system cell is allowed to
+be smaller than the environment cell. For the case of dielectric embedding, iterating over the solution
+7Figure 4: The top row plots show the energy dierence, in Ry, between an SCF calculation using
+the double cell formalism and the corresponding reference calculation (as visualized in Figure 2). In
+the middle row, the convergence of dierent PBC schemes as a function of DFT system cell size is
+reported. The bottom row plots show the time speedup between these simulations. All reported tests
+were performed for systems in vacuum (left column) and in a continuum dielectric medium (right
+column).
+of the Generalized Poisson problem in the dielectric environment increases the relative costs of the
+electrostatic calculation with respect to the SCF step, thus producing a signicantly smaller speedup.
+While the results in this section aim to provide a comparison between alternative PBC schemes, it
+is important to stress that the double-cell formalism can also be used in combination with any other
+PBC corrections scheme reported above: the electrostatic calculation in the expanded environment
+cell can be corrected with a real-space term (parabolic correction) or with any reciprocal-space scheme
+(Martyna-Tuckerman or AFC) already implemented in Environ. Those results are not reported in this
+section because the simulations are already fully converged without the need for additional corrections.
+4.2 Slab (2D) System
+To study 2D systems, systems that should be periodic in two dimensions, we used a bi-layer of
+platinum atoms in the (111) orientation and in the presence a CO molecule in the atop position, as
+visualized in Figure 5. For this system, the slab is included in an orthorhombic cell, oriented in the
+x-y plane and with the non-periodic axis along third direction. For the double-cell calculations, the
+system cell is expanded only in the z direction, while the system and environment cells are the same
+in the in-plane directions. Convergence tests are reported in Figure 6 as a function of the size of the
+system cell along the z direction.
+The considered system has an extension along the vertical axis of about 11.0 Bohr. When looking at
+the dierence in energy between the double-cell and the reference calculations, it appears that minimal
+artifacts are present at the smallest cell sizes (22-23 Bohr). This suggests that no signicant spills in
+the electronic density are present for these DFT cells, consistent with our previous observations for
+the isolated system. As observed in the 0D case, double-cell energies are fully converged with respect
+to the DFT system cell already for the smallest cells considered. The results are in line with the
+convergence
+8Figure 5: Visualization of the system used for test-
+ing the double-cell algorithm in two dimensions: a
+Pt (111) surface with two layers of Pt atoms in the
+presence of a CO molecule adsorbed in the atop
+position.observed for a parabolic (also known as point-
+counter-charge or dipole correction) scheme,
+while AFC90 shows a slower convergence, with
+exact results for cells larger than 35 Bohr.
+Eventually, in the bottom panels of Figure
+6 we report the computational speedup of us-
+ing a double cell approach, compared to using
+the same expanded cell for both electrostatic and
+DFT simulations. The relative weight of elec-
+trostatic and inverting the DFT Hamiltonian for
+this small system provide a speedup of about 2.5-
+2.8 in vacuum, that drops to about 1.5 in a dielec-
+tric medium. While the scaling of the FFT-based
+electrostatic is expected to be better than the
+DFT one as a function of the cell size, speedups
+appear to be independent of cell size for the con-
+sidered system. This is probably due to the rel-
+atively small number of electrons in the system
+and to the other computational overheads asso-
+ciated with larger FFT grids.
+Figure 6: The top row plots show the energy dierence, in Ry, between an SCF calculation using
+the double cell formalism and the corresponding reference calculation (as visualized in Figure 2). In
+the middle row, the convergence of dierent PBC schemes as a function of DFT system cell size is
+reported. The bottom row plots show the time speedup between these simulations. All reported tests
+were performed for systems in vacuum (left column) and in a continuum dielectric medium (right
+column).
+94.3 Wire (1D) System
+Figure 8: The top row plots show the energy dierence, in Ry, between an SCF calculation using
+the double cell formalism and the corresponding reference calculation (as visualized in Figure 2). In
+the middle row, the convergence of dierent PBC schemes as a function of DFT system cell size is
+reported. The bottom row plots show the time speedup between these simulations. All reported tests
+were performed for systems in vacuum (left column) and in a continuum dielectric medium (right
+column).
+Figure 7: Visualization of the BN nanoribbon
+(boron atoms in pink, nitrogen atoms in blue) in-
+vestigated to test the double-cell formalism for one-
+dimensional systems.For the 1D systems, we studied the boron ni-
+tride (BN) nanoribbon, as shown in Figure 7. An
+orthorhombic cell is adopted, with the ribbon ori-
+ented along the x-axis, making the y and z axes
+the two non-periodic directions. Also in this case,
+only these two directions will be considered in
+the expansion of the system cell into the envi-
+ronment cell, while the system and environment
+cells have the same size along the x direction.
+For a sake of simplifying the discussion, the sizes
+of the cell axes in the non-periodic directions are
+kept identical, allowing to focus our analysis on a
+single parameter. Convergence tests are reported
+in Figure 8 as a function of the such a parameter.
+The BN nanoribbon has a width along the y
+direction of 13 Bohr, with a one-atom thickness of
+less than 1 Bohr in the z direction. Convergence
+of the double-cell calculations with respect to the
+reference setup show minor artifact at the smallest cells considered (10 Bohr). This is consistent with
+10our understanding of these small-cell artifacts reported for the 0D case and with the size of the studied
+system. While a small drift in convergence is observed at the larger cell sizes, the associated errors are
+within the convergence threshold of the performed SCF calculations.
+Similarly to the results reported for 2D systems, double-cell energies appear to be well converged
+at all the considered system-cell sizes. AFC90 results show a slightly slower convergence, with some
+uctuations for cell sizes smaller than 20 Bohr. While the parabolic (point-counter-charge) correction is
+not implemented for 1D systems, in Figure 8 we report results of using a 2D scheme applied considering
+the y axis as the only non-periodic direction of the system. As the system is very homogeneous along
+the z direction, we expect this scheme to capture most of the interaction energy between periodic
+replicas of the nanoribbon. Indeed, our simulations show that this parabolic correction is close to the
+double-cell results, although some small deviations are still present for cell sizes as large as 20 Bohr.
+For this application, more substantial computational speedups are observed in using the double-
+cell formalism. Moreover, a linear increase in the speedup is observed as a function of the cell size,
+consistent with the expected dierence in computational scaling between the electrostatic and the DFT
+components of the calculations. As for the 0D and 2D cases, the speedup is signicantly reduced for
+the simulations in a dielectric medium, as the iterations involved in the solution of the more complex
+Generalized Poisson problem increase the weight of the electrostatic calculation.
+5 Conclusion
+We report the development and implementation of a double-cell numerical algorithm to decouple
+electrostatic calculations and environment eects from the underlying DFT simulation. The proposed
+formalism was tested as a tool to remove PBC artifacts for partially periodic and non-periodic systems.
+By comparing double-cell calculations with a benchmark reference we identied a source of potential
+artifacts for very small system cell sizes. Indeed, if the DFT cell is so small that the electronic density of
+the system spills across the cell boundaries, the mapping of the DFT cell into an expanded environment
+cell introduces articial cuts in the electronic density, thus forbidding the use of the double cell for
+minimal DFT cell sizes. However, the presented results should full convergence with cell size for most
+simulation setups and system dimensionalities. This fast convergence can be further improved by the
+additional use of PBC corrections on the environment cell. While a general speedup in simulation is
+observed by allowing the DFT cell to be smaller than the environment cell, the most impressive result
+were observed the 1D system, with speedups of up to 30 times with respect to corresponding single-cell
+simulations. The eectiveness and accuracy of the presented approach give us condence in the future
+use of this formalism for simulations with heterogeneous and nano-scaled continuum environments.
+References
+[1] Sebastiaan P. Huber, Spyros Zoupanos, Martin Uhrin, Leopold Talirz, Leonid Kahle, Rico H ausel-
+mann, Dominik Gresch, Tiziano M uller, Aliaksandr V. Yakutovich, Casper W. Andersen, and et al.
+Aiida 1.0, a scalable computational infrastructure for automated reproducible workows and data
+provenance. Scientic Data , 7(1), 2020.
+[2] Martin Uhrin, Sebastiaan P. Huber, Jusong Yu, Nicola Marzari, and Giovanni Pizzi. Workows in
+aiida: Engineering a high-throughput, event-based engine for robust and modular computational
+workows. Computational Materials Science , 187:110086, 2021.
+[3] Shyue Ping Ong, William Davidson Richards, Anubhav Jain, Georoy Hautier, Michael Kocher,
+Shreyas Cholia, Dan Gunter, Vincent L. Chevrier, Kristin A. Persson, Gerbrand Ceder, and
+et al. Python materials genomics (pymatgen): A robust, open-source python library for materials
+analysis. Computational Materials Science , 68:314{319, 2013.
+[4] Stefano Curtarolo, Wahyu Setyawan, Gus L.W. Hart, Michal Jahnatek, Roman V. Chepulskii,
+Richard H. Taylor, Shidong Wang, Junkai Xue, Kesong Yang, Ohad Levy, and et al. Aow: An
+automatic framework for high-throughput materials discovery. Computational Materials Science ,
+58:218{226, 2012.
+11[5] Claudia Draxl and Matthias Scheer. The nomad laboratory: From data sharing to articial
+intelligence. Journal of Physics: Materials , 2(3):036001, 2019.
+[6] Nicola Marzari, Andrea Ferretti, and Chris Wolverton. Electronic-structure methods for materials
+design. Nature Materials , 20(6):736{749, 2021.
+[7] David Padua. Fftw. Encyclopedia of Parallel Computing , page 671{671, 2011.
+[8] Oliviero Andreussi and Giuseppe Fisicaro. Continuum embeddings in condensed-matter simula-
+tions. International Journal of Quantum Chemistry , 119(1), 2018.
+[9] Hai Lin and Donald G. Truhlar. Qm/mm: What have we learned, where are we, and where do
+we go from here? ChemInform , 38(22), 2007.
+[10] Wenhui Mi, Xuecheng Shao, Alessandro Genova, Davide Ceresoli, and Michele Pavanello. Eqe 2.0:
+Subsystem dft beyond gga functionals. Computer Physics Communications , 269:108122, 2021.
+[11] Christoph R. Jacob and Johannes Neugebauer. Subsystem density-functional theory. Wiley In-
+terdisciplinary Reviews: Computational Molecular Science , 4(4):325{362, 2014.
+[12] Xuecheng Shao, Wenhui Mi, and Michele Pavanello. Gga-level subsystem dft achieves sub-kcal/mol
+accuracy intermolecular interactions by mimicking nonlocal functionals. Journal of Chemical
+Theory and Computation , 17(6):3455{3461, 2021.
+[13] Modesto Orozco and F. Javier Luque. Theoretical methods for the description of the solvent eect
+in biomolecular systems. Chemical Reviews , 101(1):203{204, 2001. PMID: 11749364.
+[14] Christopher J. Cramer and Donald G. Truhlar. Implicit solvation models: Equilibria, structure,
+spectra, and dynamics. Chemical Reviews , 99(8):009{2665, 1999.
+[15] Jacopo Tomasi and Maurizio Persico. Molecular interactions in solution: An overview of methods
+based on continuous distributions of the solvent. Chemical Reviews , 94(7):2027{2094, 1994.
+[16] Jacopo Tomasi, Benedetta Mennucci, and Roberto Cammi. Quantum mechanical continuum
+solvation models. Chemical Reviews , 105(8):2999{3094, 2005. PMID: 16092826.
+[17] Jacopo Tomasi and Maurizio Persico. Molecular interactions in solution: An overview of methods
+based on continuous distributions of the solvent. Chemical Reviews , 94(7):2027{2094, 1994.
+[18] Oliviero Andreussi, Ismaila Dabo, and Nicola Marzari. Revised self-consistent continuum solvation
+in electronic-structure calculations. The Journal of Chemical Physics , 136(6):064102, 2012.
+[19] Giuseppe Fisicaro, Luigi Genovese, Oliviero Andreussi, Sagarmoy Mandal, Nisanth N. Nair, Nicola
+Marzari, and Stefan Goedecker. Soft-sphere continuum solvation in electronic-structure calcula-
+tions. Journal of Chemical Theory and Computation , 13(8):3829{3845, 2017. PMID: 28628316.
+[20] Oliviero Andreussi, Nicolas Georg H ormann, Francesco Nattino, Giuseppe Fisicaro, Stefan
+Goedecker, and Nicola Marzari. Solvent-aware interfaces in continuum solvation. Journal of
+Chemical Theory and Computation , 15(3):1996{2009, 2019.
+[21] Matthew Truscott and Oliviero Andreussi. Field-aware interfaces in continuum solvation. The
+Journal of Physical Chemistry B , 123(16):3513{3524, 2019.
+[22] E. Canc es, B. Mennucci, and J. Tomasi. A new integral equation formalism for the polarizable con-
+tinuum model: Theoretical background and applications to isotropic and anisotropic dielectrics.
+The Journal of Chemical Physics , 107(8):3032{3041, 1997.
+[23] Luca Frediani, Roberto Cammi, Stefano Corni, and Jacopo Tomasi. A polarizable continuum
+model for molecules at diuse interfaces. The Journal of Chemical Physics , 120(8):3893{3907,
+2004.
+[24] S. Corni and J. Tomasi. Enhanced response properties of a chromophore physisorbed on a metal
+particle. The Journal of Chemical Physics , 114(8):3739{3751, 2001.
+12[25] Oliviero Andreussi, Stefano Corni, Benedetta Mennucci, and Jacopo Tomasi. Radiative and
+nonradiative decay rates of a molecule close to a metal particle of complex shape. The Journal of
+Chemical Physics , 121(20):10190{10202, 2004.
+[26] Oliviero Andreussi, Alessandro Biancardi, Stefano Corni, and Benedetta Mennucci. Plasmon-
+controlled light-harvesting: Design rules for biohybrid devices via multiscale modeling. Nano
+Letters , 13(9):4475{4484, 2013.
+[27] Ravishankar Sundararaman, William A. Goddard, and Tomas A. Arias. Grand canonical elec-
+tronic density-functional theory: Algorithms and applications to electrochemistry. The Journal
+of Chemical Physics , 146(11):114104, 2017.
+[28] Ravishankar Sundararaman and Kathleen Schwarz. Evaluating continuum solvation models for
+the electrode-electrolyte interface: Challenges and strategies for improvement. The Journal of
+Chemical Physics , 146(8):084111, 2017.
+[29] Ryosuke Jinnouchi and Alfred B. Anderson. Electronic structure calculations of liquid-solid inter-
+faces: Combination of density functional theory and modied poisson-boltzmann theory. Physical
+Review B , 77(24), 2008.
+[30] Francesco Nattino, Matthew Truscott, Nicola Marzari, and Oliviero Andreussi. Continuum models
+of the electrochemical diuse layer in electronic-structure calculations. The Journal of Chemical
+Physics , 150(4):041722, 2019.
+[31] Ravishankar Sundararaman, Kendra Letchworth-Weaver, Kathleen A. Schwarz, Deniz Gunceler,
+Yalcin Ozhabes, and T.A. Arias. Jdftx: Software for joint density-functional theory. SoftwareX ,
+6:278{284, 2017.
+[32] Quinn Campbell and Ismaila Dabo. Quantum-continuum calculation of the surface states and
+electrical response of silicon in solution. Physical Review B , 95(20), 2017.
+[33] Quinn Campbell and Ismaila Dabo. Erratum: Quantum-continuum calculation of the surface
+states and electrical response of silicon in solution [phys. rev. b 95, 205308 (2017)]. Physical
+Review B , 96(3), 2017.
+[34] Ted Hullar, Fernanda C. Bononi, Zekun Chen, Danielle Magadia, Oliver Palmer, Theo Tran, Dario
+Rocca, Oliviero Andreussi, Davide Donadio, Cort Anastasio, and et al. Photodecay of guaiacol
+is faster in ice, and even more rapid on ice, than in aqueous solution. Environmental Science:
+Processes &; Impacts , 22(8):1666{1677, 2020.
+[35] Fernanda C. Bononi, Zekun Chen, Dario Rocca, Oliviero Andreussi, Ted Hullar, Cort Anastasio,
+and Davide Donadio. Bathochromic shift in the uv{visible absorption spectra of phenols at
+ice surfaces: Insights from rst-principles calculations. The Journal of Physical Chemistry A ,
+124(44):9288{9298, 2020.
+[36] Oliviero Andreussi and Nicola Marzari. Electrostatics of solvated systems in periodic boundary
+conditions. Physical Review B , 90(24), 2014.
+[37] Yanli Li and Ismaila Dabo. Electronic levels and electrical response of periodic molecular struc-
+tures from plane-wave orbital-dependent calculations. Phys. Rev. B , 84:155127, Oct 2011.
+[38] Glenn J. Martyna and Mark E. Tuckerman. A reciprocal space based method for treating long
+range interactions in ab initio and force-eld-based calculations in clusters. The Journal of Chem-
+ical Physics , 110(6):2810{2821, 1999.
+[39] P Giannozzi, O Andreussi, T Brumme, O Bunau, M Buongiorno Nardelli, M Calandra, R Car,
+C Cavazzoni, D Ceresoli, M Cococcioni, and et al. Advanced capabilities for materials modelling
+with quantum espresso. Journal of Physics: Condensed Matter , 29(46):465901, 2017.
+[40] Paolo Giannozzi, Stefano Baroni, Nicola Bonini, Matteo Calandra, Roberto Car, Carlo Cavazzoni,
+Davide Ceresoli, Guido L Chiarotti, Matteo Cococcioni, Ismaila Dabo, and et al. Quantum
+espresso: A modular and open-source software project for quantum simulations of materials.
+Journal of Physics: Condensed Matter , 21(39):395502, 2009.
+13[41] Edan Bainglass, Medrano Gabriel, Matthew Truscott, Quinn Campbell, Ismaila Dabo, Iurii Tim-
+rov, Nicola Marzari, and Oliviero Andreussi. Environ 3.0: A continuum solvation package [un-
+published manuscript].
+[42] John P. Perdew, Kieron Burke, and Matthias Ernzerhof. Generalized gradient approximation
+made simple. Physical Review Letters , 77(18):3865{3868, 1996.
+[43] Gianluca Prandini, Antimo Marrazzo, Ivano E. Castelli, Nicolas Mounet, and Nicola Marzari.
+Precision and eciency in solid-state pseudopotential calculations. npj Computational Materials ,
+4(1), 2018.
+[44] Kurt et al. Lejaeghere. Reproducibility in density functional theory calculations of solids. Nature ,
+351(6280), 2016.
+[45] G. Fisicaro, L. Genovese, O. Andreussi, N. Marzari, and S. Goedecker. A generalized poisson
+and poisson-boltzmann solver for electrostatic environments. The Journal of Chemical Physics ,
+144(1):014103, 2016.
+[46] Oliviero Andreussi and Nicola Marzari. Electrostatics of solvated systems in periodic boundary
+conditions. Physical Review B , 90(24), 2014.
+[47] Ismaila Dabo, Boris Kozinsky, Nicholas E. Singh-Miller, and Nicola Marzari. Electrostatics in
+periodic boundary conditions and real-space corrections. Physical Review B , 77(11), 2008.
+[48] Nicola Marzari and David Vanderbilt. Maximally localized generalized wannier functions for
+composite energy bands. Physical Review B , 56(20):12847{12865, 1997.
+14

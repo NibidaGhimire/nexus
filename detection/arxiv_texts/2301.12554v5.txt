@@ -1,0 +1,1754 @@
+Improving the Accuracy-Robustness
+Trade-Off of Classifiers via Adaptive Smoothing∗
+Yatong Bai†, Brendon G. Anderson†, Aerin Kim‡,andSomayeh Sojoudi†
+Abstract. While prior research has proposed a plethora of methods that build neural classifiers robust against
+adversarialrobustness, practitionersarestillreluctanttoadoptthemduetotheirunacceptablysevere
+clean accuracy penalties. Real-world services based on neural networks are thus still unsafe. This
+paper significantly alleviates the accuracy-robustness trade-off by mixing the output probabilities of a
+standard classifier and a robust classifier, where the standard network is optimized for clean accuracy
+and is not robust in general. We show that the robust base classifier’s confidence difference for correct
+and incorrect examples is the key to this improvement. In addition to providing empirical evidence,
+we theoretically certify the robustness of the mixed classifier under realistic assumptions. We then
+adapt an adversarial input detector into a mixing network that adaptively adjusts the mixture of the
+twobasemodels, furtherreducingtheaccuracypenaltyofachievingrobustness. Theproposedflexible
+mixture-of-experts framework, termed “adaptive smoothing”, works in conjunction with existing or
+even future methods that improve clean accuracy, robustness, or adversary detection. We use strong
+attack methods, including AutoAttack and adaptive attacks, to evaluate our models’ robustness.
+On the CIFAR-100 dataset, we achieve an 85.21%clean accuracy while maintaining a 38.72%ℓ∞-
+AutoAttacked ( ϵ=8/255) accuracy, becoming the second most robust method on the RobustBench
+benchmark as of submission, while improving the clean accuracy by ten percentage points over all
+listed models. Code implementation is available at https://github.com/Bai-YT/AdaptiveSmoothing.
+Key words. Neural Networks, Computer Vision, Adversarial Robustness, Certified Robustness,
+Accuracy-Robustness Trade-Off.
+AMS subject classifications. 68T07, 68T05, 68T45, 90C17.
+1. Introduction. Neural networks are vulnerable to adversarial attacks in various appli-
+cations, including computer vision and audio [66, 38], natural language processing [36], and
+control systems [46]. Due to the widespread application of neural classifiers, ensuring their
+reliability in practice is paramount.
+Tomitigatethissusceptibility, researchershaveexplored“adversarialtraining” (AT)andits
+improved variants [55, 38, 16, 17, 94], building empirically robust models by training with ad-
+versarial examples. Meanwhile, theoretical research has also considered certifying (i.e., math-
+ematically guaranteeing) the robustness of neural classifiers against adversarial perturbations
+within a radius [7, 63, 9]. “Randomized smoothing” (RS) is one such method that achieves cer-
+tified robustness with an already-trained model at inference time [28, 58]. Improved variants
+of RS incorporate dimension reduction methods [74] and denoising modules [20]. Recent work
+[8] has demonstrated that a data-driven locally biased smoothing approach can improve over
+traditional data-blind RS. However, this method is limited to the binary classification setting
+∗This work is an extension of [14].
+Funding: This work was supported by grants from ONR, NSF, and C3 AI Digital Transformation Institute.
+†Department of Mechanical Engineering and Department of Electrical Engineering and Computer Sciences, Uni-
+versity of California, Berkeley, (yatong_bai@berkeley.edu, bganderson@berkeley.edu, sojoudi@berkeley.edu).
+‡Scale AI, (aerinykim@gmail.com).
+1arXiv:2301.12554v5  [cs.LG]  22 Jul 20242 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+and suffers from the performance bottleneck of its underlying one-nearest-neighbor classifier.
+Despitetheemergenceoftheseproposedremediestotheadversarialrobustnessissue, many
+practitioners are reluctant to adopt them. As a result, existing publicly available services are
+still vulnerable [47, 19], presenting severe safety risks. One important reason for this reluctance
+is the potential for significantly reduced model performance on clean data. Specifically, some
+previous works have suggested a fundamental trade-off between accuracy and robustness [86,
+92]. Sincethesacrificeinunattackedperformanceisunderstandablyunacceptableinreal-world
+scenarios, developing robust classifiers with minimal clean accuracy degradation is crucial.
+Fortunately, recent research has argued that it should be possible to simultaneously achieve
+robustness and accuracy on benchmark datasets [90]. To this end, variants of adversarial train-
+ing that improve the accuracy-robustness trade-off have been proposed, including TRADES
+[92], Interpolated Adversarial Training [56], Instance Adaptive Adversarial Training (IAAT)
+[18], and many others [26, 25, 13, 75, 88, 91, 85]. However, despite these improvements,
+degraded clean accuracy is often an inevitable price of achieving robustness. Moreover, stan-
+dard non-robust models often achieve enormous performance gains by pre-training on larger
+datasets with self- or semi-supervision [42, 15]. In contrast, the effect of pre-training on robust
+classifiers is less understood and may be less prominent [24, 34]. As a result, the performance
+gap between these existing works and the possibility guaranteed in [90] is still huge.
+This work builds upon locally biased smoothing [8] and makes a theoretically disciplined
+step towards reconciling adversarial robustness and clean accuracy, significantly closing this
+performance gap and thereby providing practitioners additional incentives for deploying robust
+models. This paper is organized as follows.
+•In Section 3, observing that the K-nearest-neighbor ( K-NN) classifier, a crucial compo-
+nent of locally biased smoothing, becomes a performance bottleneck, we replace it with
+a robust neural network that can be obtained via various existing methods, and propose
+a new smoothing formulation accordingly. The resulting formulation (3.4) is a convex
+combination of the output probabilities of a standard neural network and a robust one.
+When the robust neural network has a certified Lipschitz constant or is based on random-
+ized smoothing, the mixed classifier also has a certified robust radius. These contents are
+presented in our conference submission [14], but are strengthened in this paper.
+•In Section 4, we propose adaptive smoothing, which adaptively adjusts the mixture of a
+standard model and a robust model by adopting a type of adversary detector as a “mixing
+network”. Themixingnetworkcontrolstheconvexcombinationoftheoutputprobabilities
+from the two base networks, further improving the accuracy-robustness trade-off, making
+the resulting model a mixture-of-experts design. We empirically verify the robustness of
+the proposed method using gray-box and white-box projected gradient descent (PGD)
+attack, AutoAttack, and adaptive attacks, demonstrating that the mixing network is
+robust against the attack types it is trained with. When the mixing network is trained
+with a carefully designed adaptive AutoAttack, the composite model significantly gains
+clean accuracy while sacrificing little robustness. This section and the corresponding
+experiment results are entirely new relative to our conference submission [14], and are
+crucialforachievingthemuchimprovedaccuracy-robustnesstrade-offoverexistingworks.
+Compared to existing methods for improving the accuracy-robustness trade-off, most ofIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 3
+which are training-based, adaptive smoothing has several key advantages:
+•Adaptive smoothing is agnostic to how the standard and robust base models are trained.
+Hence, one can quickly swap the base classifiers with already-trained standard or robust
+models. Therefore, our method is highly versatile and can be coupled with existing
+training-based trade-off improving methods.
+•Adaptivesmoothingcanthustakeadvantageofpre-trainingonlargedatasetsviathestan-
+dard base classifier and benefit from ongoing advancements in robust training methods
+via the robust base model. Meanwhile, training-based methods have limited compatibili-
+ties, since they may conflict with certain techniques essential to achieving state-of-the-art
+(SOTA) clean or robust accuracy. As a result, adaptive smoothing achieves better results:
+it significantly boosts clean accuracy while maintaining near-SOTA robustness.
+•Adaptive smoothing allows for an interpretable continuous adjustment between accuracy
+and robustness at inference time, which can be achieved by simply adjusting the mixture
+ratio. On the other hand, not all training-based methods allow for this adjustment. For
+those that do, this adjustment involves training an entirely new robust model.
+•Whenthemixingratioisfixedandtherobustbasemodelhasacertifiedrobustradiuswith
+a nonzero margin, the mixed classifier can be certified. Since certified models are often
+alsocertifiablewithanonzeromargin, thisconditioniscommonlysatisfiedinpractice. For
+empirically robust base classifiers that are not certifiable, an estimation can be performed.
+During the reviewing period of this paper, the authors of [59] verified that our mixed classi-
+fier simultaneously improves the clean accuracy and the robustness against out-of-distribution
+(OOD) adversarial attacks (i.e., the threat model differs between training and evaluation),
+achieving state-of-the-art OOD adversarial robustness among a plethora of models, including
+the robust base classifier of our mixed classifier. This observation further bolsters the thesis
+that our proposed method achieves the accuracy-robustness trade-off.
+2. Background and Related Works.
+2.1. Notations. The symbol ∥·∥pdenotes the ℓpnorm of a vector and ∥·∥p∗denotes its
+dual norm. For a scalar a,sgn(a)∈ {− 1,0,1}denotes its sign. For a natural number c,[c]
+represents {1,2, . . . , c }. For an event A, the indicator function I(A)evaluates to 1 if Atakes
+place and 0 otherwise. The probability for an event A(X)to occur is denoted by PX∼S[A(X)],
+where Xis a random variable drawn from the distribution S.
+Consider a model g:Rd→Rc, whose components are gi:Rd→R, i∈[c], where dis the
+dimension of the input and cis the number of classes. A classifier f:Rd→[c]can be obtained
+viaf(x)∈arg maxi∈[c]gi(x). In this paper, we assume that g(·)does not have the desired
+level of robustness, and refer to it as a “standard classifier” (as opposed to a “robust classifier”
+which we denote as h(·)). Throughout this paper, we regard g(·)andh(·)as the base classifier
+logits. To denote their output probabilities, we use σ◦g(·)andσ◦h(·). Similarly, σ◦gi(·)
+denotes the predicted probability of the ithclass from g(·). Moreover, we use Dto denote the
+set of all validation input-label pairs (xi, yi).
+We consider ℓp-norm-bounded attacks on differentiable neural networks. A classifier f(·)
+is considered robust against adversarial perturbations at some input data x∈Rdif it assigns
+the same label to all perturbed inputs x+δsuch that ∥δ∥p≤ϵ, where ϵ≥0is the attack
+radius. We use PGD Tto denote the T-step PGD attack.4 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+2.2. Related Adversarial Attacks and Defenses. The fast gradient sign method (FGSM)
+and PGD attacks based on the first-order maximization of the cross-entropy loss have tradi-
+tionally been considered classic and straightforward attacks [64, 38]. However, these attacks
+have been shown to be insufficient as defenses designed against them are often easily circum-
+vented [22, 12, 11, 72]. To this end, various attack methods based on alternative loss functions,
+Expectation Over Transformation, and black-box perturbations have been proposed. Such ef-
+forts include MultiTargeted attack loss [41], AutoAttack [32], adaptive attack [84], minimal
+distortion attack [31], and many others, even considering attacking test-time defenses [30].
+The diversity of attack methods has led to the creation of benchmarks such as RobustBench
+[29] and ARES-Bench [60] to unify the evaluation of robust models.
+On the defense side, while adversarial training [64] and TRADES [92] have seen enormous
+success, such methods are often limited by a significantly larger amount of required training
+data [79]. Initiatives that construct more effective training data via data augmentation [76,
+39, 40] and generative models [80, 89] have successfully produced more accurate and robust
+models. Improved versions of adversarial training [48, 87, 81, 69] have also been proposed.
+Previous research has developed models that improve robustness by dynamically changing
+at test time. Specifically, Input-Adaptive Inference improves the accuracy-robustness trade-off
+by appending side branches to a single network, allowing for early-exit predictions [45]. Other
+initiatives that aim to enhance the accuracy-robustness trade-off include using the SCORE
+attack during training [70] and applying adversarial training for regularization [95].
+Moreover, ensemble-based defenses, such as random ensemble [61], diverse ensemble [71,
+3, 1], and Jacobian ensemble [27], have been proposed. In comparison, this work is distinct in
+that our mixing scheme uses two separate classifiers, incorporating one non-robust component
+while still ensuring the adversarial robustness of the overall design. By doing so, we take
+advantage of the high performance of modern pre-trained models, significantly alleviating the
+accuracy-robustness trade-off and achieving much higher overall performances. Additionally,
+unlike some previous ensemble initiatives, our formulation is deterministic and straightforward
+(in the sense of gradient propagation), making it easier to evaluate its robustness properly.
+The work [54] also explored assembling an accurate classifier and a robust classifier, but the
+method considered robustness against distribution shift in a non-adversarial setting and was
+based on different intuitions. After the submission of this paper, the work [93] also considered
+leveraging the power of a pair of standard and robust classifiers. However, instead of mixing
+the outputs, the authors proposed to distill a new model from the two base classifiers. While
+this approach also yielded impressive results, the distillation process is time-consuming.
+2.3. Locally Biased Smoothing. Randomized smoothing, popularized by [28], achieves
+robustness at inference time by replacing the standard classifier f(·)with the smoothed model
+ef(x)∈arg max
+i∈[c]Pδ∼S
+f(x+δ) =i
+,
+where Sis a smoothing distribution, for which a common choice is a Gaussian distribution.
+Note that Sis independent of the input xand is often zero-mean. The authors of [8]
+have shown that data-invariant smoothing enlarges the region of the input space at which the
+prediction of ef(·)stays constant. Such an operation may unexpectedly degrade both clean and
+robust accuracy (the limiting case is when ef(·)becomes a constant classifier). Furthermore,IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 5
+when f(·)is a linear classifier, the zero-mean restriction on Sleaves f(·)unchanged. That
+is, randomized smoothing with a zero-mean distribution cannot help robustify even the most
+simple linear classifiers. To overcome these limitations, [8] allowed Sto be input-dependent
+(denoted by Sx) and nonzero-mean and searched for distributions Sxthat best robustify ˜f(·)
+with respect to the data distribution. The resulting scheme is “locally biased smoothing”.
+It is shown in [8] that, up to a first-order linearization of the base classifier, the optimal
+locally biased smoothing distribution Sxshifts the input point in the direction of its true class.
+Formally, for a binary classifier of the form f(x) = sign( g(x))with continuously differentiable
+g(·), maximizing the robustness of ef(·)around xover all distributions Sxwith bounded mean
+yields the optimal locally biased smoothing classifier given by
+ef(x) = sign( eg(x)),where eg(x) =g(x) +γy(x)∥∇g(x)∥p∗,
+where y(x)∈ {− 1,1}is the true class of x, and where γ≥0is the (fixed) bound on the
+distribution mean (i.e., ∥Eδ∼Sx[δ]∥p≤γ).
+Intuitively, this optimal locally biased smoothing classifier shifts the input along the direc-
+tion∇g(x)when y(x) = 1as a means to make the classifier more likely to label xinto class 1,
+and conversely shifts the input along the direction −∇g(x)when y(x) =−1. Of course, during
+inference, the true class y(x)is generally unavailable, and therefore [8] uses a “direction oracle”
+h(x)∈ {− 1,1}as a surrogate for y(x), resulting in the locally biased smoothing classifier
+(2.1) fγ(x) = sign( hγ(x)),where hγ(x) =g(x) +γh(x)∥∇g(x)∥p∗.
+Notice that unlike randomized smoothing, the computation (2.1) is deterministic, which is a
+consequence of the closed-form optimization over Sx.
+In contrast to data-invariant randomized smoothing, the direction oracle h(·)is learned
+from data, incorporating the data distribution into the manipulation of the smoothed classi-
+fier’s decision boundaries. This allows for increases in nonlinearity when the data implies that
+such nonlinearities are beneficial for robustness, resolving a fundamental limitation of data-
+invariant smoothing. In general, the direction oracle should come from an inherently robust
+classifier. Since such a robust model h(·)is often less accurate, the value γcan be viewed as a
+trade-off parameter, as it encodes the amount of trust into the direction oracle. The authors
+of [8] showed that when the direction oracle is a one-nearest-neighbor classifier, locally biased
+smoothing outperforms traditional randomized smoothing in binary classification.
+2.4. Adversarial Input Detectors. Adversarial inputs can be detected via various meth-
+ods. For example, [65] proposed to append an additional detection branch to an existing neural
+network and use adversarial data to train the detector in a supervised fashion. However, [21]
+showed that it is possible to bypass this detection method. They constructed adversarial ex-
+amples via the C&W attacks [22] and simultaneously targeted the classification branch and
+the detection branch by treating the two branches as an “augmented classifier”. According to
+[21], the detector is effective against the types of attack that it is trained with, but not neces-
+sarily the attack types that are absent in the training data. It is thus reasonable to expect the
+detector to be able to detect a wide range of attacks if it is trained using sufficiently diverse
+types of attacks (including those targeting the detector itself). While exhaustively covering6 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+the entire adversarial input space is intractable, and it is unclear to what degree one needs
+to diversify the attack types in practice, our experiments show that our modified architecture
+based on [65] can recognize the SOTA AutoAttack adversaries with a high success rate.
+The literature has also considered alternative detection methods that mitigate the above
+challenges faced by detectors trained in a supervised fashion [23]. Such initiatives include
+unsupervised detectors [4, 5] and re-attacking [2]. Since universally effective detectors have not
+yet been discovered, this paper focuses on transferring the properties of the existing detector
+toward better overall robustness. Future advancements in the field of adversary detection can
+further enhance the performance of our method.
+3. Using a Robust Neural Network as the Smoothing Oracle. Locally biased smoothing
+was designed for binary classification, restricting its practicality. Here, we first extend it to
+the multi-class setting by treating the output hγ
+i(x)of each class independently, giving rise to:
+(3.1) hγ
+smo1 ,i(x):=gi(x) +γhi(x)∥∇gi(x)∥p∗,∀i∈[c].
+Note that if ∥∇gi(x)∥p∗is large for some i, then hγ
+smo1 ,i(x)can be large even if both gi(x)
+andhi(x)are small, potentially leading to incorrect predictions. To remove the effect of the
+magnitude difference across the classes, we propose a normalized formulation as follows:
+(3.2) hγ
+smo2 ,i(x):=gi(x) +γhi(x)∥∇gi(x)∥p∗
+1 +γ∥∇gi(x)∥p∗,∀i∈[c].
+The parameter γadjusts between clean accuracy and robustness. It holds that hγ
+smo2 ,i(x)≡
+gi(x)when γ= 0, and hγ
+smo2 ,i(x)→hi(x)when γ→ ∞for all xand all i.
+With the mixing procedure generalized to the multi-class setting, we now discuss the choice
+of the smoothing oracle hi(·). While K-NN classifiers are relatively robust and can be used
+as the oracle, their representation power is too weak. On the CIFAR-10 image classification
+task [53], K-NN only achieves around 35%accuracy on clean test data. In contrast, an
+adversarially trained ResNet [43] can reach 50%accuracy on attacked test data [64]. This
+lackluster performance of K-NN becomes a significant bottleneck in the accuracy-robustness
+trade-off of the mixed classifier. To this end, we replace the K-NN model with a robust neural
+network. The robustness of this network can be achieved via various methods, including
+adversarial training, TRADES, and traditional randomized smoothing.
+Further scrutinizing (3.2) leads to the question of whether ∥∇gi(x)∥p∗is the best choice
+for adjusting the mixture of g(·)andh(·). This gradient magnitude term is a result of the
+setting of h(x)∈ {− 1,1}considered in [8]. Here, we assume a different setting, where both
+g(·)andh(·)are multi-class and differentiable. Thus, we further generalize the formulation to
+hγ
+smo3 ,i(x):=gi(x) +γRi(x)hi(x)
+1 +γRi(x),∀i∈[c], (3.3)
+where Ri(x)is an extra scalar term that can potentially depend on both ∇gi(x)and∇hi(x)
+to determine the “trustworthiness” of the base classifiers. Here, we empirically compare four
+options for Ri(x), namely, 1,∥∇gi(x)∥p∗,∥∇max jgj(x)∥p∗, and∥∇gi(x)∥p∗
+∥∇hi(x)∥p∗. In Appendix B.1
+in the supplemental materials, we explain how these four options were designed.IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 7
+84 86 88 90 92 94 96
+Clean accuracy of the mixed classifier010203040PGD10 attacked accuracy
+1, No SoftMax
+||∇gi(⋅)||p*, No SoftMax
+||∇maxjgj(⋅)||p*, No SoftMax
+||∇g(⋅)||p*
+||∇h(⋅)||p*, No SoftMax
+1, SoftMax
+•“No Softmax” represents Option 1, i.e.,
+use the logits g(·)andh(·).
+•“Softmax” represents Option 2, i.e., use
+the probabilities σ◦g(·)andσ◦h(·).
+•With the best formulation, high clean
+accuracy can be achieved with very lit-
+tle sacrifice on robustness.
+Figure 1: Compare the “attacked accuracy – clean accuracy” curves for various Ri(x)options.
+Another design choice is whether g(·)andh(·)should be the pre-softmax logits or the post-
+softmax probabilities. Note that since most attack methods are designed based on logits, the
+output of the mixed classifier should be logits rather than probabilities. This is because feed-
+ing output probabilities into attacks designed around logits effectively results in a redundant
+Softmax layer, which can cause gradient masking, an undesirable phenomenon that makes it
+hard to evaluate the proposed method’s robustness properly. Thus, we have the following two
+options that make the mixed model compatible with existing gradient-based attacks:
+1. Use the logits for both base classifiers, g(·)andh(·).
+2. Use the probabilities for both base classifiers, and then convert the mixed probabilities
+back to logits. The required “inverse-softmax” operator is simply the natural logarithm.
+Figure 1 visualizes the accuracy-robustness trade-off achieved by mixing logits or prob-
+abilities with different Ri(x)options. Here, the base classifiers are a pair of standard and
+adversarially trained ResNet-18s. This “clean accuracy versus PGD 10-attacked accuracy” plot
+concludes that Ri(x) = 1optimizes the accuracy-robustness trade-off, and g(·)andh(·)should
+be probabilities. Appendix B.2 confirms this selection by repeating Figure 1 with different
+model architectures, other robust base model training methods, and various attack budgets.
+Our selection of Ri(x) = 1differs from Ri(x) =∥gi(x)∥p∗used in [8]. Intuitively, [8] used
+linear classifier examples to motivate estimating the trustworthiness of the base models with
+their gradient magnitudes. However, when the base classifiers are highly nonlinear neural
+networks as in our case, while the local Lipschitzness of a base classifier still correlates with its
+robustness, its gradient magnitude is not always a good estimator of the local Lipschitzness.
+Appendix B.2 provides additional discussions on this matter. Additionally, Subsection 3.1
+offers theoretical intuitions for selecting mixing probabilities over mixing logits.
+With these design choices implemented, the formulation (3.3) can be re-parameterized as
+hα
+i(x):= log
+(1−α)σ◦gi(x) +α·σ◦hi(x)
+,∀i∈[c], (3.4)
+where α=γ
+1+γ∈[0,1]. We take hα(·)in (3.4), which is a convex combination of base classifier
+probabilities, as our proposed mixed classifier. Note that (3.4) calculates the mixed classi-
+fier logits, acting as a drop-in replacement for existing models which usually produce logits.8 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+Removingthelogarithmrecoverstheoutputprobabilitieswithoutchangingthepredictedclass.
+3.1. Theoretical Certified Robust Radius. In this section, we derive certified robust radii
+for the mixed classifier hα(·)introduced in (3.4), given in terms of the robustness properties
+ofh(·)and the mixing parameter α. The results ensure that despite being more sophisticated
+than a single model, hα(·)cannot be easily conquered, even if an adversary attempts to adapt
+its attack methods to its structure. Such guarantees are of paramount importance for reliable
+deployment in safety-critical applications. Note that while the focus of this paper is improved
+empirical accuracy-robustness trade-off and the existing literature often considers empirical
+and certified robustness separately, we will discuss how the certified results in this section
+provide important insights into the empirical performance, as the underlying assumptions are
+realistic and (approximately) verifiable for many empirically robust models.
+Noticing that the base model probabilities satisfy 0≤σ◦gi(·)≤1and0≤σ◦hi(·)≤1
+for all i, we introduce the following generalized and tightened notion of certified robustness.
+Definition 3.1. Consider a model h:Rd→Rcand an arbitrary input x∈Rd. Further
+consider y= arg maxihi(x),µ∈[0,1], and r≥0. Then, h(·)is said to be certifiably robust
+atxwith margin µand radius rifσ◦hy(x+δ)≥σ◦hi(x+δ) +µfor all i̸=yand all
+δ∈Rdsuch that ∥δ∥p≤r.
+Intuitively, Definition 3.1 ensures that all points within a radius from a nominal point have
+the same prediction as the nominal point, with the difference between the top and runner-up
+probabilities no smaller than a threshold. For practical classifiers, the robust margin can
+be straightforwardly estimated by calculating the confidence gap between the predicted and
+the runner-up classes at an adversarial input obtained with strong attacks. As shown in the
+experiments in Subsection 5.1.2, if a real-world robust model is robust at some input with a
+given radius, it is likely to be robust with a non-trivial margin.
+Lemma 3.2. Letx∈Rdandr≥0. If it holds that α∈[1
+2,1]andh(·)is certifiably robust
+atxwith margin1−α
+αand radius r, then the mixed classifier hα(·)is robust in the sense that
+arg maxihα
+i(x+δ) = arg maxihi(x)for all δ∈Rdsuch that ∥δ∥p≤r.
+Proof.Suppose that h(·)is certifiably robust at xwith margin1−α
+αand radius r. Since
+α∈[1
+2,1], it holds that1−α
+α∈[0,1]. Let y= arg maxihi(x). Consider an arbitrary i∈[c]\{y}
+andδ∈Rdsuch that ∥δ∥p≤r. Since σ◦gi(x+δ)∈[0,1], it holds that
+exp 
+hα
+y(x+δ)
+−exp (hα
+i(x+δ))
+=(1−α)(σ◦gy(x+δ)−σ◦gi(x+δ)) +α(σ◦hy(x+δ)−σ◦hi(x+δ))
+≥(1−α)(0−1) +α(σ◦hy(x+δ)−σ◦hi(x+δ))
+≥(α−1) +α 1−α
+α
+= 0.
+Thus, it holds that hα
+y(x+δ)≥hα
+i(x+δ)for all i̸=y, and thus arg maxihα
+i(x+δ) =y=
+arg maxihi(x).
+While most existing provably robust results consider the special case with zero margin, we
+will show that models built via common methods are also robust with nonzero margins. We
+specifically consider two types of popular robust classifiers: Lipschitz continuous models (The-
+orem 3.5) and RS models (Theorem A.2). Here, Lemma 3.2 builds the foundation for provingIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 9
+these two theorems, which amounts to showing that Lipschitz and RS models are robust with
+nonzero margins and thus the mixed classifiers built with them are robust. Lemma 3.2 can also
+motivate future researchers to develop margin-based robustness guarantees for base classifiers
+so that they immediately grant robustness guarantees for mixed architectures.
+Lemma 3.2 additionally provides further justifications for using probabilities instead of
+logits in the smoothing operation. Intuitively, (1−α)σ◦gi(·)is bounded between 0and1−α,
+so as long as αis relatively large (specifically, at least1
+2), the detrimental effect of g(·)when
+subject to attack can be overcome by h(·). Had we used the logits gi(·), since this quantity
+cannot be bounded, it would have been much harder to overcome the vulnerability of g(·).
+Since we do not make assumptions on the Lipschitzness or robustness of g(·), Lemma 3.2
+is tight. To understand this, we suppose that there exists some i∈[c]\{y}andδ̸= 0such
+that∥δ∥p≤rthat make σ◦hy(x+δ)−σ◦hi(x+δ):=hdsmaller than1−α
+α, indicating
+that−αhd> α−1. Since the only information about g(·)is that σ◦gi(x+δ)∈[0,1]and
+thus the value σ◦gy(x+δ)−σ◦gi(x+δ):=gdcan be any number between −1and1, it is
+possible that (1−α)gdis smaller than −αhd. By (3.4), when (1−α)gd<−αhd, it holds that
+hα
+y(x+δ)< hα
+i(x+δ), and thus arg maxihα
+i(x+δ)̸= arg maxihi(x).
+Definition 3.3. A function f:Rd→Ris called ℓp-Lipschitz continuous if there exists L∈
+(0,∞)such that |f(x′)−f(x)| ≤L∥x′−x∥pfor all x′, x∈Rd. TheLipschitz constant of
+such fis defined to be
+Lipp(f):= infn
+L∈(0,∞) :|f(x′)−f(x)| ≤L∥x′−x∥pfor all x′, x∈Rdo
+.
+Assumption 3.4. The base model h(·)is robust in the sense that, for all i∈ {1,2, . . . , n },
+σ◦hi(·)isℓp-Lipschitz continuous with Lipschitz constant Lipp(σ◦hi).
+Theorem 3.5. Suppose that Assumption 3.4holds, and let y= arg maxihi(x), where x∈Rd
+is arbitrary. Then, if α∈[1
+2,1], it holds that arg maxihα
+i(x+δ) =yfor all δ∈Rdsuch that
+(3.5)δ
+p≤rα
+Lip,p(x):= min
+i̸=yα 
+σ◦hy(x)−σ◦hi(x)
++α−1
+α 
+Lipp(σ◦hy) + Lipp(σ◦hi).
+Proof.Suppose that α∈[1
+2,1], and let δ∈Rdbe such that ∥δ∥p≤rα
+Lip,p(x). Furthermore,
+leti∈[c]\ {y}. It holds that
+σ◦hy(x+δ)−σ◦hi(x+δ)
+=σ◦hy(x)−σ◦hi(x) +σ◦hy(x+δ)−σ◦hy(x) +σ◦hi(x)−σ◦hi(x+δ)
+≥σ◦hy(x)−σ◦hi(x)−Lipp(σ◦hy)∥δ∥p−Lipp(σ◦hi)∥δ∥p
+≥σ◦hy(x)−σ◦hi(x)− 
+Lipp(σ◦hy) + Lipp(σ◦hi)
+rα
+Lip,p(x)≥1−α
+α.
+Therefore, h(·)is certifiably robust at xwith margin1−α
+αand radius rα
+Lip,p(x). Hence, by
+Lemma 3.2, the claim holds.
+Note that the ℓpnorm that we certify can be arbitrary (e.g., ℓ1,ℓ2, orℓ∞), so long as the
+Lipschitz constant of the robust network h(·)is computed with respect to the same norm.
+Assumption 3.4 is not restrictive in practice. For example, Gaussian RS with smoothing
+variance σ2Id(Idistheidentitymatrixin Rd×d)yieldsrobustmodelswith ℓ2-Lipschitzconstant10 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+p
+2/πσ2[78]. In Appendix A.3, we use experiments to verify the certified robustness of our
+method when h(·)is an RS model. Additionally, methods have been proposed to compute
+upper bounds on neural network Lipschitz constants, thus allowing our certified robustness
+guarantees via Assumption 3.4 and Theorem 3.5 to be employed [35, 49, 82]. The notion of
+Lipschitz continuity has even motivated novel robustness methods [67, 83, 73].
+Assumption 3.4 can be relaxed to the even less restrictive scenario of using local Lipschitz
+constants over a neighborhood (e.g., a norm ball) around a nominal input x(i.e., how flat
+σ◦h(·)is near x) as a surrogate for the global Lipschitz constants. In this case, Theorem 3.5
+holds for all δwithin this neighborhood. Specifically, suppose that for an arbitrary input
+xand an ℓpattack radius ϵ, it holds that σ◦hy(x)−σ◦hy(x+δ)≤ϵ·Lipx
+p(σ◦hy)and
+σ◦hi(x+δ)−σ◦hi(x)≤ϵ·Lipx
+p(σ◦hi)for all i̸=yand all perturbations δsuch that
+∥δ∥p≤ϵ. Furthermore, suppose that the robust radius rα
+Lip,p(x), as defined in (3.5) but use
+the local Lipschitz constant Lipx
+pas a surrogate to the global constant Lipp, is not smaller than
+ϵ. Then, if the robust base classifier h(·)is correct at the nominal point x, then the mixed
+classifier hα(·)is robust at xwithin the radius ϵ. The proof follows that of Theorem 3.5.
+The relaxed Lipschitzness defined above can be estimated for practical differentiable classi-
+fiers via an algorithm derived from the PGD attack [90]. The authors of [90] showed that many
+existing empirically robust models, including those trained with AT or TRADES, are locally
+Lipschitz. Note that [90] evaluates the local Lipschitz constants of the logits, whereas we ana-
+lyze the probabilities, whose Lipschitz constants are much smaller, and small enough to certify
+a meaningful robust radius. Hence, Theorem 3.5 provides important insights into the empirical
+robustness of the mixed classifier. A detailed discussion is presented in Appendix C.3.
+AnintuitiveexplanationofTheorem3.5isthatif αapproaches 1, then rα
+Lip,p(x)approaches
+mini̸=yhy(x)−hi(x)
+Lipp(hy)+Lipp(hi), which is the standard (global) Lipschitz-based robust radius of h(·)
+around x(see, e.g., [35, 44] for further discussions on Lipschitz-based robustness). On the
+other hand, if αis too small compared to the relative confidence of h(·), namely, if there exists
+i̸=ysuch that α≤1
+1+σ◦hy(x)−σ◦hi(x), then rα
+Lip,p(x)is non-positive, and in this case we cannot
+provide non-trivial certified robustness for hα(·). This is rooted in the fact that too small of
+anαvalue amounts to excess weight in the non-robust classifier g(·). Ifh(·)is100%confident
+in its prediction, then σ◦hy(x)−σ◦hi(x) = 1for all i̸=y, and therefore this threshold value
+ofαbecomes1
+2, leading to non-trivial certified radii for α >1
+2. However, once we put over1
+2
+of the weight into g(·), a nonzero radius around xis no longer certifiable. Since there are no
+assumptions on the robustness of g(·)around x, this is intuitively the best one can expect,
+To summarize our certified robustness results, Lemma 3.2 shows the connection between
+the robust margin of the robust classifier and the robustness of the mixed classifier, while
+Theorem 3.5 demonstrates how general Lipschitz robust base classifiers exploit this relation-
+ship. Since empirically robust models often satisfy the conditions of these two results, they
+guarantee that adaptive attacks cannot easily circumvent our proposed robustification.
+In Appendix A.1 in the supplemental materials, we further tighten the certified radius
+estimation in the special case when h(·)is a randomized smoothing classifier and the robust
+radius is defined with the ℓ2norm. We achieve so by exploiting the stronger Lipschitzness of
+x7→Φ−1 
+σ◦hi(x)
+arising from the unique structure granted by Gaussian convolution opera-
+tions( Φ−1istheinverseGaussiancumulativedistributionfunction). InAppendixA.3, wecom-IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 11
+-2 1 4 7 10 13+
+ 5.72
+Targeted trade-off parameter of the adversary -- Logit(t)
+0.020.040.044.460.080.0100.0PGD20 accuracy targeting t (%)
+Standard NN g()
+Robust NN h()
+Figure 2: Attacked accuracy of the accurate
+base classifier g(·)and the robust base model
+h(·)when the adversary targets different values
+ofαt. For better readability, we use Logit( αt)
+as the horizontal axis labels, where Logit( ·)de-
+notes the inverse function of Sigmoid.pare the mixed classifier’s certified ro-
+bustness to existing certified methods.
+4. Adaptive Smoothing Strength
+with the Mixing Network. So far, αhas
+been treated as a fixed hyperparameter.
+A more intelligent approach is to allow α
+to be different for each xby using a func-
+tionα(x). Wetake α(x)tobedeterminis-
+tic, as stochastic defenses are challenging
+to properly evaluate.
+One motivation for adopting the
+adaptive mixing ratio α(x)is that the op-
+timal α⋆varies when xchanges. For ex-
+ample, when xis unperturbed, the stan-
+dard model g(·)outperforms the robust
+base model h(·). Ifxis an attacked input
+targeting g(·), then h(·)should again be
+used. However, if the attack target is h(·), then as shown in Figure 2, even though h(·)is
+robust, feeding xintog(·)is a better choice. This is because the vulnerabilities of g(·)and
+h(·)differ enough that an adversarial perturb targeting h(·)is benign to g(·).
+When the adversary targets a mixed classifier hαt(·), asαtvaries, the optimal strategy
+changes. Figure 2 provides a visualization based on the CIFAR-10 dataset. Specifically, we
+assemble a composite model hαt(·)using a ResNet-18 standard classifier g(·)and a ResNet-18
+robust classifier h(·)(both from [68]) via (3.4). Then, we attack hαt(·)with different values
+ofαtvia PGD 20, save the adversarial instances, and report the accuracy of g(·)andh(·)on
+these instances. When αt≤Sigmoid(5 .72) = 0 .9967, the robust model h(·)performs better.
+When αt>0.9967, the standard model g(·)is more suitable.
+Throughout the remainder of this section, we overload the notation hα(·)even though α(·)
+may be a function of the input, i.e., we define hα(x) =hα(x)(x).
+4.1. The Existence of α(x)that Achieves the Trade-Off. The following theorem shows
+that, under realistic conditions, there exists a function α(·)that makes the combined classifier
+correct whenever either g(·)andh(·)makes the correct prediction, which further implies that
+the combined classifier matches the clean accuracy of g(·)and the attacked accuracy of h(·).
+Theorem 4.1. Letϵ >0,(x1, y1),(x2, y2)∼ D, and y1̸=y2(i.e., each input corresponds to
+a unique true label). Assume that hi(·),∥∇hi(·)∥p∗, and ∥∇gi(·)∥p∗are all bounded and that
+there does not exist z∈Rdsuch that ∥z−x1∥p≤ϵand∥z−x2∥p≤ϵ. Then, there exists a
+function α(·)such that the assembled classifier hα(·)satisfies
+P(x,y)∼D
+δ∼Fh
+arg max
+i∈[c]hα
+i(x+δ) =yi
+≥maxP(x,y)∼D,δ∼F
+arg maxi∈[c]gi(x+δ) =y
+,
+P(x,y)∼D,δ∼F
+arg maxi∈[c]hi(x+δ) =y
+,
+where Fis an arbitrary distribution that satisfies Pδ∼F
+∥δ∥p> ϵ
+= 0.12 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+Proof.Since it is assumed that the perturbation balls of the data are non-overlapping, the
+true label ycorresponding to each perturbed data x+δwith the property ∥δ∥p≤ϵis unique.
+Therefore, the indicator function
+α(x+δ) =0ifarg maxi∈[c]gi(x+δ) =y,
+1otherwise ,
+satisfies that
+α(x+δ) = 1 ifarg max
+i∈[c]gi(x+δ)̸=yandarg max
+i∈[c]hi(x+δ) =y.
+Therefore, it holds that
+hα
+i(x+δ) =gi(x+δ)ifarg max
+i∈[c]gi(x+δ) =y,
+hα
+i(x+δ) =hi(x+δ)ifarg max
+i∈[c]gi(x+δ)̸=yandarg max
+i∈[c]hi(x+δ) =y,
+implying that
+arg max
+i∈[c]hα
+i(x+δ) =yif
+arg max
+i∈[c]gi(x+δ) =yorarg max
+i∈[c]hi(x+δ) =y
+,
+which leads to the desired statement.
+Note that the distribution Fis arbitrary, implying that the test data can be clean data,
+any type of adversarial data, or some combination of both. As a special case, when Fis a Dirac
+measure at the origin, Theorem 4.1 implies that the clean accuracy of hα(·)is as good as the
+standard classifier g(·). Conversely, when Fis a Dirac measure at the worst-case perturbation,
+the adversarial accuracy of hα(·)is not worse than the robust model h(·), implying that if h(·)
+is inherently robust, then hα(·)inherits the robustness. One can then conclude that there
+exists a hα(·)that matches the clean accuracy of g(·)and the robustness of h(·).
+While Theorem 4.1 guarantees the existence of an instance of α(·)that perfectly balances
+accuracy and robustness, finding an α(·)that achieves this trade-off can be hard. However, we
+will use experiments to show that an α(·)represented by a neural network can retain most of
+the robustness of h(·)while greatly boosting the clean accuracy. In particular, while we used
+the case of α(·)being an indicator function to demonstrate the possibility of achieving the
+trade-off, Figure 1 has shown that letting αtake an appropriate value between 0and1also
+improves the trade-off. Thus, the task for the neural approximator is easier than representing
+the indicator function. Also note that if certified robustness is desired, one can enforce a lower
+bound on α(·)and take advantage of Theorem 3.5 while still enjoying the mitigated trade-off.
+4.2. Attacking the Adaptive Classifier. When the combined model hα(·)is under adver-
+sarial attack, the function α(·)provides an addition gradient flow path. Intuitively, the attack
+should be able to force αto be small through this additional gradient path, tricking the mixing
+network into favoring the non-robust g(·). Following the guidelines for constructing adaptive
+attacks [84], in the experiments, we consider the following types of attacks:
+A Gray-box PGD 20:The adversary has access to the gradients of g(·)andh(·)when
+performing first-order optimization, but is not given the gradient of the mixing network
+α(·). We consider untargeted PGD attack with a fixed initialization.IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 13
+B White-box PGD 20:Since the mixed classifier is end-to-end differentiable, we follow [84]
+and allow the attack to query end-to-end gradient, including that of the mixing network.
+C White-box AutoAttack: AutoAttackisastrongerandmorecomputationallyexpensive
+attack formed by an ensemble of four attack algorithms [32]. It considers Auto-PGD
+(APGD) attacks with the untargeted cross-entropy loss and the targeted Difference of
+Logits Ratio loss, in addition to the targeted FAB attack and the black-box Square attack
+(SA) [10]. Again, the end-to-end mixed classifier gradient is available to the adversary.
+D Adaptive white-box AutoAttack: Since the mixing network is a crucial component of
+the defense, we add an APGD loss component that aims to decrease αinto AutoAttack
+to specifically target the mixing network.
+We will show that the adaptively smoothed model is robust against the attack that it
+is trained against. When trained using untargeted and targeted APGD 75attacks, our model
+becomes robust against AutoAttack while noticeably improving the accuracy-robustness trade-
+off. In Subsection 5.1.1, we additionally consider evaluating with transfer attacks.
+4.3. TheMixingNetwork. Inpractice, weuseaneuralnetwork αθ(·) :Rd→[0,1]tolearn
+an effective mixing network that adjusts the outputs of g(·)andh(·). Here, θrepresents the
+trainable parameters of the mixing network, and we refer to αθ(·)as the “mixing network”. To
+enforce an output range constraint, we apply a Sigmoid function to the mixing network output.
+Note that when training the mixing network αθ(·), the base classifiers g(·)andh(·)are frozen.
+Freezing the base classifiers allows the mixed classifier to take advantage of existing accurate
+models and their robust counterparts, maintaining explainability and avoiding unnecessary
+feature distortions that the adversary can potentially exploit.
+Themixingnetwork’staskoftreatingcleanandattackedinputsdifferentlyiscloselyrelated
+to adversary detection. To this end, we adapt the detection architecture introduced in [65] for
+our mixing network. This architecture achieves high performance and low complexity, and is
+end-to-end differentiable, enabling convenient training and evaluation. While [21] argued that
+simultaneously attacking the base classifier and the adversary detector can bring the detection
+rate of the detection method proposed in [65] to near zero, we show that with several key
+modifications, the method is effective even against strong white-box attacks. Specifically, our
+mixing network αθ(·)takes advantage of both base models g(·)andh(·)by concatenating their
+intermediate features ([65] only used one base model). More importantly, we include stronger
+adaptive adversaries during training to generate much more diverse training examples.
+The mixing network structure is based on a ResNet-18, which is known to perform well for
+a wide range of computer vision applications and is often considered the go-to architecture.
+We make some minimal necessary changes to ResNet-18 for it to fit into our framework.
+Specifically, as the mixing network takes information from both g(·)andh(·), it uses the
+concatenated embeddings from the base classifiers. While [65] considers a single ResNet as
+the base classifier and uses the embeddings after the first ResNet block, to avoid the potential
+vulnerability against “feature adversaries” [77], we consider the embeddings from two different
+layers of the base model. Figure 3 demonstrates the modified architecture. The detailed
+implementations used in the experiment section are discussed in Appendix D.1.
+Since Figure 1 shows that even a constant αcan alleviate the accuracy-robustness trade-
+off, our method does not excessively rely on the performance of the mixing network αθ(·). In14 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+Input𝑥Downstream Layers(Frozen) Robust ModelMiddle Layers𝑔(𝑥)ℎ(𝑥)Eq (3.4)Outputℎ!!(𝑥)Global AvgPool+ Linear + BNMixingNetwork𝛼"(𝑥)RNBRNBRNBUpstream LayersMiddle LayersDownstream Layers(Frozen) Standard Model
+Upstream Layers
+Figure 3: The overall architecture of theadaptivelysmoothedclassifier introducedin Section 4.
+“RNB” stands for ResNetBlock and “BN” represents the 2D batch normalization layer.
+Subsection 5.2, we provide empirical results demonstrating that the above modifications help
+the overall mixed network defend against strong attacks.
+4.4. Training the Mixing Network. Consider the following two loss functions for training
+the mixing network αθ(·):
+•Multi-class cross-entropy: We minimize the multi-class cross-entropy loss of the com-
+bined classifier, which is the ultimate goal of the mixing network:
+(4.1) min
+θE(x,y)∼D
+δ∼Fh
+ℓCE 
+hαθ(x+δ), yi
+,
+where ℓCEis the cross-entropy (CE) loss for logits and y∈[c]is the label corresponding
+tox. The base classifiers g(·)andh(·)are frozen and not updated. Again, δdenotes the
+perturbation, and the distribution Fis arbitrary. In our experiments, to avoid overfitting
+to a particular attack radius, Fis formed by perturbations with randomized radii.
+•Binary cross-entropy: The optimal α⋆that minimizes ℓCEin (4.1) can be estimated
+for each training point. Specifically, depending on whether the input is attacked and how
+it is attacked, either g(·)orh(·)should be prioritized. Thus, we treat the task as a binary
+classification problem and solve the optimization problem
+min
+θE(x,y)∼D
+δ∼Fh
+ℓBCE 
+αθ(x+δ),eαi
+,
+where ℓBCEis the binary cross-entropy (BCE) loss for probabilities and eα∈ {0,1}is the
+“pseudo label” for the output of the mixing network that approximates α⋆.
+Using only the multi-class loss suffers from a distribution mismatch between training and
+test data. Specifically, the robust classifier h(·)may achieve a low loss on adversarial training
+data but a high loss on test data. For example, with our ResNet-18 robust CIFAR-10 classifier,
+the PGD 10adversarial training and test accuracy are very different, at 93.01%and45.55%
+respectively. As a result, approximating (4.1) with empirical risk minimization on training
+data does not effectively optimize the true risk. To understand this, notice that when the
+adversary perturbs a test input xtargeting h(·), the standard classifier prediction g(x)yields
+a lower loss than h(x). However, if xis an attacked example in the training set, then g(x)andIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 15
+h(x)have similar losses, and the mixing network does not receive an incentive to choose g(·)
+when detecting an attack targeting h(·).
+The binary loss, on the other hand, does not capture the potentially different sensitivity
+of each input. Certain inputs can be more vulnerable to adversarial attacks, and ensuring the
+correctness of the mixing network on these inputs is more crucial.
+To this end, we combine the above two components into a composite loss function, in-
+centivizing the mixing network to select the standard classifier g(·)when appropriate, while
+forcing it to remain conservative. The composite loss for each data-label pair (x, y)is
+ℓcomposite 
+θ,(x, y,eα)
+=cCE·ℓCE 
+hαθ(x+δ), y
++cBCE·ℓBCE 
+αθ(x+δ),eα
+(4.2)
++cprod·ℓCE 
+hαθ(x+δ), y
+·ℓBCE 
+αθ(x+δ),eα
+,
+where the hyperparameters cCE, cBCE, and cprodcontrol the weights of the loss components.
+Appendix C.2 in the supplemental materials discusses how these hyperparameters affect the
+performance of the trained mixing model.
+5. Numerical Experiments.
+5.1. Robust Neural Network Smoothing with a Fixed Strength. We first consider the
+case where the smoothing strength αis a fixed value. In this section, we focus on using
+empirically robust base classifiers and consider the CIFAR-10 dataset. In Appendix A.3 in
+the supplemental materials, we present the certified robustness results when the robust base
+model is based on randomized smoothing, simultaneously instantiating the Lemma 3.2 and
+Theorem 3.5. In Appendix C.3, we show that empirically robust models can also take advan-
+tage of our theoretical analyses by estimating their Lipschitz constant.
+5.1.1. α’s Influence on Mixed Classifier Robustness. We first analyze how the accuracy
+of the mixed classifier changes with the mixing strength αunder various settings. Specifically,
+we consider PGD 20attacks that target g(·)andh(·)individually (denoted as STD and ROB
+attacks), in addition to the adaptive PGD 20attack generated using the end-to-end gradient
+ofhα(·), denoted as the MIX attack. Note that the STD and ROB attacks, which share the
+inspiration of [37], correspond to the “transfer attack” setting, a common black-box attack
+strategy designed for defenses with unavailable or unreliable gradients. Note that the models
+with the best transferability with the mixed classifier hα(·)would likely be its base classifiers
+g(·)andh(·), precisely corresponding to the STD and ROB attack settings.
+We use a ResNet18 model trained on clean data as the standard base classifier g(·)and use
+another ResNet18 trained on PGD 20data as the robust base classifier h(·). The test accuracy
+corresponding to each αvalue is presented in Figure 4. As αincreases, the clean accuracy
+ofhα(·)converges from the clean accuracy of g(·)to the clean accuracy of h(·). In terms of
+the attacked performance, when the attack targets g(·), the attacked accuracy increases with
+α. When the attack targets h(·), the attacked accuracy decreases with α, showing that the
+attack targeting h(·)becomes more benign when the mixed classifier emphasizes g(·). When
+the attack targets hα(·), the attacked accuracy increases with α.
+When αis around 0.5, the MIX-attacked accuracy of hα(·)quickly increases from near
+zero to more than 30%(which is two-thirds of h(·)’s attacked accuracy). This observation
+precisely matches the theoretical intuition provided by Theorem 3.5. When αis greater than16 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+0.0 0.2 0.4 0.5 0.6 0.8 1.0
+α0102030405060708090100Clean and PGD10 accuracy (%)
+hα(⋅), Clean
+hα(⋅), ROB attack
+hα(⋅), STD attack
+hα(⋅), MIX attack
+g(⋅), Clean
+h(⋅), Clean
+g(⋅), STD attack
+h(⋅), ROB attack
+Figure 4: The performance of the mixed clas-
+sifier hα(·). “STD attack”, “ROB attack”, and
+“MIX attack” refer to the PGD 20attack gener-
+ated using the gradient of g(·),h(·), and hα(·)
+respectively, with ϵset to 8/255.
+86 88 90 92 94 96
+Clean accuracy01020304050PGD20 attacked accuracy
+Mixed
+TRADES
+IAAT
+PLSFigure 5: An accuracy-robustness trade-
+off comparison between our mixed classifier
+hα(·), denoted as “Mixed”, and TRADES,
+IAAT,andPLSmodels. TRADESallowsfor
+sweeping between accuracy and robustness
+whereas IAAT and PLS are non-adjustable.
+0.5, the clean accuracy gradually decreases at a much slower rate, leading to the noticeably
+alleviated accuracy-robustness trade-off. Note that this improved trade-off is achieved without
+any further training beyond the weights of g(·)andh(·). When αis greater than 0.55, neither
+STD attack nor ROB attack can reduce the accuracy of the mixed classifier below the end-
+to-end gradient-based attack (MIX attack), indicating that the considered transfer attack is
+weaker than gradient-based attack for practical αvalues, and implying that the robustness of
+hα(·)does not rely on obfuscated gradients. In Subsection 5.1.2, we will reveal that the source
+ofhα(·)’s robustness lies in h(·)’s well-calibrated confidence properties.
+5.1.2. The Relationship between hα(·)’s Robustness and h(·)’s Confidence. Our theo-
+retical analysis (Lemma 3.2) has highlighted the relationship between the mixed classifier ro-
+bustness and the robust base classifier h(·)’s robust margin. For practical models, the margin
+at a given radius can be estimated with the confidence gap between the predicted and runner-
+up classes evaluated on strongly adversarial inputs, such as images returned from PGD 20or
+AutoAttack. Moreover, the improved accuracy-robustness trade-off of the mixed classifier, as
+evidenced by the difference in how clean and attacked accuracy change with αin Figure 4, can
+also be explained by the prediction confidence of h(·).
+According to Table 1, the robust base classifier h(·)makes confident correct predictions
+even when under attack (average robust margin is 0.768evaluated with PGD 20and0.774with
+AutoAttack1). Moreover, therobustmarginof h(·)followsalong-taildistribution. Specifically,
+the median robust margin is 0.933(same number when evaluated with PGD 20or AutoAttack),
+much larger than the 0.768/0.774average margin. Thus, most attacked inputs correctly clas-
+sified by h(·)are highly confident (i.e., robust with large margins), with only a tiny portion
+suffering from small robust margins. As Lemma 3.2 suggests, such a property is precisely what
+1The calculation details the AutoAttacked confidence gap are presented in Appendix D.2.IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 17
+Table 1: Average gap between the probabilities of the predicted class and the runner-up class.
+g(·)andh(·)are the same ones used in Figure 4. The confidence difference highlighted by the
+bold numbers is crucial to the mitigated accuracy-robustness trade-off of the mixed classifier.
+Clean PGD 20 AutoAttack
+Accuracy ✓Gap ✗GapAccuracy ✓Gap ✗GapAccuracy ✓Gap ✗Gap
+g(·) 95.28% 0.982 0.698 0.10% 0.602 0.998 0.00% − 0.986
+h(·) 83.53% 0.854 0.434 44.17% 0.768 0.635 40.75% 0.774 0.553
+✓Gap: The average gap between the confidences of the predicted class and the runner-up class among
+all correctly predicted validation data.
+✗Gap: The same quantity evaluated among all incorrectly predicted validation data.
+adaptive smoothing relies on. Intuitively, once αbecomes greater than 0.5and gives h(·)more
+authority over g(·),h(·)can use its high confidence to correct g(·)’s mistakes under attack.
+Ontheotherhand, h(·)isunconfidentwhenitproducesincorrectpredictionsonunattacked
+clean data, with the top two classes’ output probabilities separated by merely 0.434. This
+probability gap again forms a long-tail distribution (the median is 0.378which is less than
+the mean), confirming that h(·)is generally unconfident when mispredicting and rarely makes
+confident incorrect predictions. Now, consider clean data that g(·)correctly classifies and h(·)
+mispredicts. Recall that we assume g(·)to be more accurate but less robust, so this scenario
+should be common. Since g(·)is confident (average top two classes probability gap is 0.982)
+andh(·)is usually unconfident, even when α >0.5andg(·)has less authority than h(·)in the
+mixture, g(·)can still correct some of the mistakes from h(·).
+In summary, h(·)is confident when making correct predictions on attacked data, enjoying
+the large robust margin required by Lemma 3.2. At the same time, h(·)is unconfident when
+misclassifying clean data, and such a confidence property is the key source of the mixed
+classifier’s improved accuracy-robustness trade-off. Additional analyses in Appendix B.2 with
+alternative base models imply that multiple existing robust classifiers share the favorable
+confidence property and thus help the mixed classifier improve the trade-off.
+The standard non-robust classifier g(·)often does not have this desirable property: even
+though it is confident on clean data as are robust classifiers, it also makes highly confident
+mistakes under attack. Note that this does not undermine the mixed classifier robustness,
+since our formulation does not assume any robustness or smoothness from g(·).
+5.1.3. Comparing the Accuracy-Robustness Trade-Off with Existing Methods. This
+subsection compares the accuracy-robustness trade-off of the mixed classifiers with existing
+baseline methods that emphasize addressing this trade-off.
+TRADES [92] is one of the most famous and popular methods to improve the accuracy-
+robustness trade-off. Specifically, it trains robust models by minimizing the risk function
+E(x,y)∼Dh
+ℓCE 
+h(x), y
++βmax
+∥δ∥≤ϵℓsurrogate 
+h(x+δ), h(x)i
+,
+where β≥0is a trade-off parameter between the two loss components and ℓsurrogateis the
+“surrogate loss” that promotes robustness. The larger βis, the more robust the trained model18 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+becomes at the expense of clean accuracy. By adjusting β, we can adjust the accuracy-
+robustness trade-off of TRADES similarly to adjusting αin our mixed classifier.
+The authors of [92] reported that β= 6optimized the adversarial robustness and released
+the corresponding model. We use this model and train three additional models with βset to
+0,0.1, and 0.3. Here, β= 0is standard training, and the other two numbers were chosen so
+that the model accuracy spreads relatively uniformly between β= 0andβ= 6. All TRADES
+models use the WideResNet-34-10 architecture as in [92]. For a fair comparison, we build
+mixed classifiers using the TRADES model trained with β= 0asg(·)and the β= 6model
+ash(·). We compare the relationship between the PGD 20accuracy and the clean accuracy in
+Figure 5. Note that the trade-off curve of the mixed classifier intercepts the TRADES curve
+at the two ends (since the models are exactly the same at the two ends), and is significantly
+above the TRADES in the middle, indicating that the accuracy-robustness trade-off of the
+mixed classifier is much more benign than TRADES’s.
+IAAT [18] and Properly Learned Smoothening (PLS) [25] are two additional high-perfor-
+mancemethodsforalleviatingtheaccuracy-robustnesstrade-off. Specifically, IAATusesinput-
+dependent attack budgets during adversarial training, while PLS performs stochastic weight
+averaging and smooths the logits via knowledge distillation and self-training. IAAT and PLS
+do not explicitly allow for adjusting between clean accuracy and adversarial robustness.
+We implement IAAT on the same WideResNet-34-10 model architecture and add the result
+to Figure 5. For PLS, we use the accuracy reported in [25]. It can be observed that the
+TRADES-based mixed classifier achieves a similar accuracy-robustness trade-off as IAAT and
+PLS,whileallowingforsweepingbetweenaccuracyandrobustnessconvenientlyunlikeprevious
+models. NotethatforTRADES,adjustingthetrade-offrequirestraininganewmodel, whichis
+costly. Meanwhile, IAAT and PLS do not allow for explicitly adjusting the trade-off altogether
+(hence shown as single points in Figure 5). In contrast, for our mixing classifier, the trade-off
+can be adjusted at inference time by simply tuning αand does not require re-training. Thus,
+our method is much more flexible and efficient while achieving a benign Pareto curve.
+Even though the clean-robust accuracy curve of adaptive smoothing overlaps with that of
+IAAT at a single point ( 89.19%clean, 53.73%robust), adaptive smoothing still improves the
+overall accuracy-robustness trade-off. Specifically, on top of IAAT’s result, adaptive smooth-
+ing can further reduce the error rate by 31%while only sacrificing 6%of the robustness by
+achieving ⁄tildelow50%/⁄tildelow92.5%robust/clean accuracy. In scenarios that are more sensitive to clean
+data performance, such a result makes adaptive smoothing more advantageous than IAAT,
+whose level of clean accuracy improvement is relatively limited.
+Moreover, as discussed in Section 1 and confirmed in Subsection 5.2.2, our mixed classifier
+can easily incorporate existing innovations that improve clean accuracy or adversarial robust-
+ness, whereas fusing these innovations into training-based methods such as TRADES, IAAT,
+and PLS can be much more complicated. Also note that Figure 5 considers a constant αvalue,
+and adapting αfor different input values further alleviates the trade-off. To provide exper-
+imental evidence, in Figure 9 in Appendix C.1, we add the mixed classifier results achieved
+with better base classifiers to the trade-off curve.
+5.2. Robust Neural Network Smoothing with Adaptive Strength. Having validated the
+effectiveness of the mixing formulation described in (3.4), we are now ready to incorporate theIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 19
+mixing network for adaptive smoothing strength. As in Section 4, we denote the parameterized
+mixing network by αθ(·), and slightly abuse notation by denoting the composite classifier with
+adaptive smoothing strength given by αθ(·)byhαθ(·), which is defined by hαθ(x) =hαθ(x)(x).
+CIFAR-10 and CIFAR-100 are two of the most universal robustness evaluation datasets,
+and thus we use them to benchmark adaptive smoothing. We consider ℓ∞attacks and use
+the AdamW optimizer [51] for training the mixing network αθ(·). The training data for αθ(·)
+include clean images and the corresponding types of attacked images (attack settings A, B, and
+C presented in Subsection 4.2). For setting C (AutoAttack), the training data only includes
+targeted and untargeted APGD attacks, with the other two AutoAttack components, FAB
+and Square, excluded during training in the interest of efficiency but included for evaluation.
+To alleviate overfitting, when generating training-time attacks, we randomize the attack ra-
+dius and the number of steps, and add a randomly-weighted binary cross-entropy component
+that aims to decrease the mixing network output to the attack objective (thereby tricking
+it into favoring g(·)). Additionally, Appendix D.1 discusses the details of implementing the
+architecture in Figure 3 for the ResNet base classifiers used in our experiments. Appendix C.2
+conducts an ablation study on the hyperparameters in the composite loss function (4.2).
+5.2.1. Ablation Studies Regarding Attack Settings. We first use smaller base classifiers
+to analyze the behavior of adaptive smoothing by exploring various training and attack set-
+tings. The performance of the base models and the assembled mixed classifier are summarized
+in Table 2, where each column represents the performance of one mixed classifier. The results
+show that the adaptive smoothing model can defend against the attacks on which the under-
+lying mixing network is trained. Specifically, for the attack setting A (gray-box PGD), hαθ(·)
+is able to achieve the same level of PGD 20-attacked accuracy as h(·)while retaining a similar
+level of clean accuracy as g(·). For the setting B (white-box PGD), the attack is allowed to
+follow the gradient path provided by αθ(·)and deliberately evade the part of the adversarial
+input space recognized by αθ(·). While the training task becomes more challenging, the im-
+provement in the accuracy-robustness trade-off is still substantial. Furthermore, the composite
+model can generalize to examples generated via the stronger AutoAttack. For the setting C
+(AutoAttack), the difficulty of the training problem further escalates. While the performance
+ofhαθ(·)on clean data slightly decreases, the mixing network can offer a more vigorous defense
+against AutoAttack data, still improving the accuracy-robustness trade-off.
+Table 3 repeats the above analyses on the CIFAR-100 dataset. The results confirm that
+adaptive smoothing achieves even more significant improvements on the CIFAR-100 dataset.
+Notably, even for the most challenging attack setting C, hαθ(·)correctly classifies 1173 ad-
+ditional clean images compared with h(·)(cutting the error rate by a third) while making
+only 404 additional incorrect predictions on AutoAttacked inputs (increasing the error rate by
+merely 6.4 relative percent). Such results show that αθ(·)is capable of approximating a robust
+high-performance mixing network when trained with sufficiently diverse attacked data. The
+fact that hαθ(·)combines the clean accuracy of g(·)and the robustness of h(·)highlights that
+our method significantly improves the accuracy-robustness trade-off.
+5.2.2. Comparisons Against Existing SOTA Methods. In this section, we use Table 4
+to show that when using SOTA base classifiers, adaptive smoothing noticeably improves the
+accuracy-robustness trade-off over existing methods.20 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+Table 2: CIFAR-10 results of adaptive smoothing models trained with three different settings.
+CIFAR-10 base classifier performances
+Model Architecture Clean PGD 20AutoAttack
+g(·)(accurate) ResNet-18 (Standard non-robust training) 95.28% 0.12% 0.00%
+h(·)(robust) WideResNet-34-10 (TRADES model [92]) 84.92% 57.16% 53.09%
+CIFAR-10 adaptive smoothing mixed classifier hαθ(·)performance
+Training Setting \Eval Data Clean A B C D(adaptive AutoAttack)
+A(gray-box PGD 20) 92.05% 57.22% 56.63% 40.04% 39.85%
+B(white-box PGD 20) 92.07% 57.25% 57.09% 40.02% 39.70%
+C(white-box AutoAttack) 91.51% 56.30% 56.29% 42.78% 42.66%
+Table 3: CIFAR-100 results of adaptive smoothing models trained with the three settings.
+CIFAR-100 base classifier performances
+Model Architecture Clean PGD 20AutoAttack
+g(·)(accurate) ResNet-152 (Based on BiT [52]) 91.38% 0.14% 0.00%
+h(·)(robust) WideResNet-70-16 (From [39]) 69.17% 40.86% 36.98%
+CIFAR-100 adaptive smoothing mixed classifier hαθ(·)performance
+Training Setting \Eval Data Clean A B C D(adaptive AutoAttack)
+A(gray-box PGD 20) 83.99% 40.04% 30.59% 23.54% 23.78%
+B(white-box PGD 20) 83.96% 39.80% 34.48% 26.37% 26.17%
+C(white-box AutoAttack) 80.90% 39.26% 38.92% 32.94% 32.80%
+Since the literature has regarded AutoAttack [32] as one of the most reliable robustness
+evaluation methods (weaker attacks such as PGD are known to be circumventable), we select
+AutoAttack-evaluated robust models as baselines. We highlight that these baseline models
+should not be treated as competitors, since advancements in building robust classifiers can be
+incorporated into our framework as h(·), helping adaptive smoothing perform even better.
+For the accurate base classifier g(·), we fine-tune the BiT ResNet-152 checkpoint (from [52],
+pre-trained on ImageNet-21k) on CIFAR-10 or CIFAR-100. Following the recipe from [52], our
+CIFAR-10modelachievesa 98.50%cleanaccuracyandourCIFAR-100modelachieves 91.38%.
+For CIFAR-10, we select the robust model checkpoint released in [89] as the robust base
+classifier h(·). Compared with h(·), adaptive smoothing retains 96.3 (relative) percent of the
+robust accuracy while reducing the clean data error rate by 29.3 (relative) percent. Among
+all models available on RobustBench as of submission, our method achieves the third highest
+AutoAttacked accuracy, only behind [89] (used as h(·)in our model) and [50] (for which
+AutoAttackisunreliableandthebest-knownattackedaccuracyislowerthanours). Meanwhile,
+the clean accuracy of our mixed classifier is higher than all listed models with non-trivial ℓ∞
+robustness and is even higher than the listed non-robust model that uses standard training.
+While the above results demonstrate reconciled accuracy and robustness, the clean accu-
+racy improvement over existing works may not seem highly prominent. Note that our method
+is still highly effective in this setting, but its efficacy is not fully reflected in the numbers. This
+is because SOTA robust base classifiers are already highly accurate on the easier CIFAR-10IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 21
+Table 4: Clean and AutoAttack (AA) accuracy of adaptive smoothing (AS) compared with the
+reported accuracy of previous models. AS clearly improves the accuracy-robustness trade-off.
+CIFAR-10
+Method Clean AA
+AS (adaptive smoothing, ours)⋆95.23% 68.06%
+SODEF+TRADES [50] 93.73% 71.28%†
+Diffusion (EDM)+TRADES [89] 93.25% 70.69%
+Diffusion (DDPM)+TRADES [76] 92.23% 66.58%
+TRADES XCiT-L12 [33, 6] 91.73% 57.58%
+Unlabeled data+TRADES [39] 91.10% 65.88%
+TRADES [39] 85.29% 57.20%
+90 92 94 96 98
+Clean Accuracy (%)030606570Robust Accuracy (%)
+Previous Robust Models
+Standard Model
+AS (ours)
+AS's Trade-Off
+⋆: Uses “EDM + TRADES” [89] as the robust base model h(·).
+†: AutoAttack raises the “potentially unreliable” flag (explained in the next page), and adaptive attack
+reduces the attacked accuracy to 64.20%. AutoAttack does not raise this flag for our models.
+CIFAR-100
+Method Clean AA
+AS (adaptive smoothing, ours)⋆85.21% 38.72%
+AS (adaptive smoothing, ours)⋆⋆80.18% 35.15%
+Diffusion (EDM)+TRADES [89] 75.22% 42.67%
+Unlabeled data+TRADES [39] 69.17% 36.98%
+TRADES XCiT-L12 [33, 6] 70.76% 35.08%
+Diffusion (DDPM)+TRADES [76] 63.56% 34.64%
+SCORE Loss AT [70] 65.56% 33.05%
+Diffusion (DDPM)+AT [80] 65.93% 31.15%
+TRADES [39] 60.86% 30.03%
+65 70 75 80 85 90
+Clean Accuracy (%)0303540Robust Accuracy (%)
+Previous Robust Models
+Standard Model
+AS (ours)
+AS's Trade-Off
+⋆: Uses “EDM+TRADES” [89] as the robust base model h(·).
+⋆⋆: Uses “Unlabeled data+TRADES” [39] as the robust base model h(·).
+dataset, almost matching standard models’ clean accuracy [76, 39, 40], leaving not much room
+for improvements. However, the accuracy-robustness trade-off remains highly penalizing for
+more challenging tasks such as CIFAR-100, for which existing robust models suffer significant
+accuracy degradation. As existing methods for improving standard model accuracy may not
+readily extend to robust ones, training-based trade-off alleviation struggles on harder tasks,
+making it particularly advantageous to mix already-trained classifiers via adaptive smoothing.
+We now support this claim with more significant improvements on CIFAR-100.
+For CIFAR-100, we consider two robust base models and build two adaptive smoothing
+mixed classifiers. Compared with their corresponding robust base models, both mixed clas-
+sifiers improve the clean accuracy by ten percentage points while only losing four points in
+AutoAttacked accuracy. As of the submission of this paper, the mixed classifier whose robust
+base model is from [89] achieved an AutoAttacked accuracy better than any other methods on
+RobustBench [29], except [89] itself. Simultaneously, this mixed model offers a clean accuracy
+improvement of ten percentage points over any other listed models. These results confirm that22 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+adaptive smoothing significantly alleviates the accuracy-robustness trade-off.
+We also report that the SA component of AutoAttack, which performs gradient-free black-
+box attacks on images that gradient-based attack methods fail to perturb, only changes very
+few predictions. Specifically, AutoAttack will raise a “potentially unreliable” flag if SA further
+reducestheaccuracybyatleast 0.2percentagepoints. Thisflagisnotthrownforourmodelsin
+Table 4, indicating that the mixed classifiers’ robustness is not a result of gradient obfuscation.
+Thus, gradient-based attacks in AutoAttack sufficiently evaluate our models.
+6. Conclusions. This paper proposes “adaptive smoothing”, a flexible framework that
+leverages the mixture of the output probabilities from an accurate model and a robust model
+to mitigate the accuracy-robustness trade-off of neural classifiers. We use theoretical and em-
+pirical observations to motivate our design, and mathematically prove that the resulting mixed
+classifier can inherit the robustness of the robust base model under realistic assumptions. We
+then adapt an adversarial input detector into a (deterministic) mixing network, further im-
+proving the accuracy-robustness trade-off. Solid empirical results confirm that our method can
+simultaneously benefit from the high accuracy of modern pre-trained standard (non-robust)
+models and the robustness achieved via SOTA robust classification methods.
+Becauseourtheoreticalstudiesdemonstratethefeasibilityofleveragingthemixingnetwork
+to eliminate the accuracy-robustness trade-off, future advancements in adversary detection can
+furtherreconcilethistrade-offviaourframework. Moreover, theproposedmethodconveniently
+extends to various robust base models and attack types/budgets. Thus, this work paves the
+way for future research to focus on accuracy or robustness without sacrificing the other.
+References.
+[1]G. Adam and R. Speciel ,Evaluating ensemble robustness against adversarial attacks , arXiv
+preprint arXiv:2005.05750, (2020).
+[2]M. A. Ahmadi, R. Dianat, and H. Amirkhani ,An adversarial attack detection method in deep
+neural networks based on re-attacking approach , Multimedia Tools and Applications, 80 (2021),
+pp. 10985–11014.
+[3]M. Alam, S. Datta, D. Mukhopadhyay, A. Mondal, and P. P. Chakrabarti ,Resisting
+adversarial attacks in deep neural networks using diverse decision boundaries , arXiv preprint
+arXiv:2208.08697, (2022).
+[4]A. Aldahdooh, W. Hamidouche, and O. Déforges ,Revisiting model’s uncertainty and
+confidences for adversarial example detection , Applied Intelligence, 53 (2023), pp. 509–531.
+[5]A. Aldahdooh, W. Hamidouche, S. A. Fezza, and O. Déforges ,Adversarial example
+detection for dnn models: A review and experimental comparison , Artificial Intelligence Review,
+55 (2022), pp. 4403–4462.
+[6]A. Ali, H. Touvron, M. Caron, P. Bojanowski, M. Douze, A. Joulin, I. Laptev,
+N. Neverova, G. Synnaeve, J. Verbeek, et al. ,XCiT: Cross-covariance image transformers ,
+in Annual Conference on Neural Information Processing Systems, 2021, pp. 20014–20027.
+[7]B. G. Anderson, Z. Ma, J. Li, and S. Sojoudi ,Tightened convex relaxations for neural
+network robustness certification , in IEEE Conference on Decision and Control, 2020, pp. 2190–IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 23
+2197.
+[8]B. G. Anderson and S. Sojoudi ,Certified robustness via locally biased randomized smoothing ,
+in Annual Learning for Dynamics and Control Conference, 2022, pp. 207–220.
+[9]B. G. Anderson and S. Sojoudi ,Data-driven certification of neural networks with random
+input noise , Transactions on Control of Network Systems, (2022).
+[10]M. Andriushchenko, F. Croce, N. Flammarion, and M. Hein ,Square attack: A query-
+efficient black-box adversarial attack via random search , in European Conference on Computer
+Vision, 2020, pp. 484–501.
+[11]A. Athalye, N. Carlini, and D. Wagner ,Obfuscated gradients give a false sense of security:
+Circumventing defenses to adversarial examples , inInternationalConferenceonMachineLearning,
+2018, pp. 274–283.
+[12]A. Athalye, L. Engstrom, A. Ilyas, and K. Kwok ,Synthesizing robust adversarial examples ,
+in International Conference on Machine Learning, 2018.
+[13]T. Bai, J. Luo, J. Zhao, B. Wen, and Q. Wang ,Recent advances in adversarial training for
+adversarial robustness , in International Joint Conference on Artificial Intelligence, 2021, pp. 4312–
+4321.
+[14]Y. Bai, B. G. Anderson, and S. Sojoudi ,Mixing classifiers to alleviate the accuracy-
+robustness trade-off , in Annual Learning for Dynamics and Control Conference, 2024, pp. 852–865.
+[15]Y. Bai, U. Garg, A. Shanker, H. Zhang, S. Parajuli, E. Bas, I. Filipovic, A. N. Chu,
+E. D. Fomitcheva, E. Branson, A. Kim, S. Sojoudi, and K. Cho ,Let’s Go Shopping (LGS)
+– web-scale image-text dataset for visual concept understanding , arXiv preprint arXiv:2401.04575,
+(2024).
+[16]Y. Bai, T. Gautam, Y. Gai, and S. Sojoudi ,Practical convex formulation of robust one-
+hidden-layer neural network training , in American Control Conference, 2022, pp. 1535–1542.
+[17]Y. Bai, T. Gautam, and S. Sojoudi ,Efficient global optimization of two-layer ReLU networks:
+quadratic-time algorithms and adversarial training , SIAM Journal on Mathematics of Data Sci-
+ence, 5 (2023), pp. 446–474.
+[18]Y. Balaji, T. Goldstein, and J. Hoffman ,Instance adaptive adversarial training: Improved
+accuracy tradeoffs in neural nets , arXiv preprint arXiv:1910.08051, (2019).
+[19]J. Borkar and P.-Y. Chen ,Simple transparent adversarial examples , arXiv preprint
+arXiv:2105.09685, (2021).
+[20]N. Carlini, F. Tramer, J. Z. Kolter, et al. ,(Certified!!) adversarial robustness for free! ,
+in International Conference on Learning Representations, 2022.
+[21]N. Carlini and D. Wagner ,Adversarial examples are not easily detected: Bypassing ten de-
+tection methods , in ACM Workshop on Artificial Intelligence and Security, 2017, pp. 3–14.
+[22]N. Carlini and D. A. Wagner ,Towards evaluating the robustness of neural networks , in IEEE
+Symposium on Security and Privacy, 2017, pp. 39–57.
+[23]F. Carrara, F. Falchi, R. Caldelli, G. Amato, and R. Becarelli ,Adversarial image
+detection in deep neural networks , Multimedia Tools and Applications, 78 (2019), pp. 2815–2835.
+[24]T. Chen, S. Liu, S. Chang, Y. Cheng, L. Amini, and Z. Wang ,Adversarial robustness:
+From self-supervised pre-training to fine-tuning , in Conference on Computer Vision and Pattern
+Recognition, 2020, pp. 699–708.
+[25]T. Chen, Z. Zhang, S. Liu, S. Chang, and Z. Wang ,Robust overfitting may be mitigated by
+properly learned smoothening , in International Conference on Learning Representations, 2021.
+[26]M. Cheng, Q. Lei, P. Y. Chen, I. Dhillon, and C. J. Hsieh ,CAT: Customized adversarial24 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+training for improved robustness , in International Joint Conference on Artificial Intelligence, 2022,
+pp. 673–679.
+[27]K. T. Co, D. Martinez-Rego, Z. Hau, and E. C. Lupu ,Jacobian ensembles improve robust-
+ness trade-offs to adversarial attacks , in Artificial Neural Networks and Machine Learning, 2022,
+pp. 680–691.
+[28]J. Cohen, E. Rosenfeld, and Z. Kolter ,Certified adversarial robustness via randomized
+smoothing , in International Conference on Machine Learning, 2019, pp. 1310–1320.
+[29]F. Croce, M. Andriushchenko, V. Sehwag, E. Debenedetti, N. Flammarion,
+M. Chiang, P. Mittal, and M. Hein ,RobustBench: a standardized adversarial robustness
+benchmark , in Conference on Neural Information Processing Systems Datasets and Benchmarks
+Track (Round 2), 2021.
+[30]F. Croce, S. Gowal, T. Brunner, E. Shelhamer, M. Hein, and T. Cemgil ,Evaluating
+the adversarial robustness of adaptive test-time defenses , in International Conference on Machine
+Learning, 2022, pp. 4421–4435.
+[31]F. Croce and M. Hein ,Minimally distorted adversarial examples with a fast adaptive boundary
+attack, in International Conference on Machine Learning, 2020, pp. 2196–2205.
+[32]F. Croce and M. Hein ,Reliable evaluation of adversarial robustness with an ensemble of diverse
+parameter-free attacks , in International Conference on Machine Learning, 2020, pp. 2206–2216.
+[33]E. Debenedetti, V. Sehwag, and P. Mittal ,A light recipe to train robust vision transformers ,
+in Conference on Secure and Trustworthy Machine Learning, 2023, pp. 225–253.
+[34]L. Fan, S. Liu, P.-Y. Chen, G. Zhang, and C. Gan ,When does contrastive learning preserve
+adversarial robustness from pretraining to finetuning? , in Annual Conference on Neural Informa-
+tion Processing Systems, 2021, pp. 21480–21492.
+[35]M. Fazlyab, A. Robey, H. Hassani, M. Morari, and G. Pappas ,Efficient and accurate
+estimation of lipschitz constants for deep neural networks , in Annual Conference on Neural Infor-
+mation Processing Systems, 2019.
+[36]I. Fursov, A. Zaytsev, P. Burnyshev, E. Dmitrieva, N. Klyuchnikov, A. Kravchenko,
+E. Artemova, E. Komleva, and E. Burnaev ,A differentiable language model adversarial
+attack on text classifiers , IEEE Access, 10 (2022), pp. 17966–17976.
+[37]X. Gao, C.-Z. Xu, et al. ,MORA: Improving ensemble robustness evaluation with model
+reweighing attack , in Annual Conference on Neural Information Processing Systems, 2022,
+pp. 26955–26965.
+[38]I. J. Goodfellow, J. Shlens, and C. Szegedy ,Explaining and harnessing adversarial exam-
+ples, in International Conference on Learning Representations, 2015.
+[39]S. Gowal, C. Qin, J. Uesato, T. Mann, and P. Kohli ,Uncovering the limits of adversarial
+training against norm-bounded adversarial examples , arXiv preprint arXiv:2010.03593, (2020).
+[40]S. Gowal, S.-A. Rebuffi, O. Wiles, F. Stimberg, D. A. Calian, and T. A. Mann ,Im-
+proving robustness using generated data , in Annual Conference on Neural Information Processing
+Systems, 2021, pp. 4218–4233.
+[41]S. Gowal, J. Uesato, C. Qin, P.-S. Huang, T. Mann, and P. Kohli ,An alternative
+surrogate loss for PGD-based adversarial testing , arXiv preprint arXiv:1910.09338, (2019).
+[42]K. He, X. Chen, S. Xie, Y. Li, P. Dollár, and R. Girshick ,Masked autoencoders are scal-
+able vision learners , in Conference on Computer Vision and Pattern Recognition, 2022, pp. 16000–
+16009.
+[43]K. He, X. Zhang, S. Ren, and J. Sun ,Deep residual learning for image recognition , in Con-IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 25
+ference on Computer Vision and Pattern Recognition, 2016, pp. 770–778.
+[44]M. Hein and M. Andriushchenko ,Formal guarantees on the robustness of a classifier against
+adversarial manipulation , in Annual Conference on Neural Information Processing Systems, 2017.
+[45]T. Hu, T. Chen, H. Wang, and Z. Wang ,Triple wins: Boosting accuracy, robustness and
+efficiency together by enabling input-adaptive inference , in International Conference on Learning
+Representations, 2020.
+[46]S. H. Huang, N. Papernot, I. J. Goodfellow, Y. Duan, and P. Abbeel ,Adversarial
+attacks on neural network policies , in International Conference on Learning Representations, 2017.
+[47]A. Ilyas, L. Engstrom, A. Athalye, and J. Lin ,Black-box adversarial attacks with limited
+queries and information , in International Conference on Machine Learning, 2018, pp. 2137–2146.
+[48]X. Jia, Y. Zhang, B. Wu, K. Ma, J. Wang, and X. Cao ,LAS-AT: Adversarial training
+with learnable attack strategy , in Conference on Computer Vision and Pattern Recognition, 2022,
+pp. 13398–13408.
+[49]M. Jordan and A. G. Dimakis ,Exactly computing the local Lipschitz constant of ReLU net-
+works, in Annual Conference on Neural Information Processing Systems, 2020, pp. 7344–7353.
+[50]Q. Kang, Y. Song, Q. Ding, and W. P. Tay ,Stable neural ODE with Lyapunov-stable equilib-
+rium points for defending against adversarial attacks , in Annual Conference on NeuralInformation
+Processing Systems, 2021, pp. 14925–14937.
+[51]D. P. Kingma and J. Ba ,Adam: A method for stochastic optimization , in International Con-
+ference on Learning Representations, 2015.
+[52]A. Kolesnikov, L. Beyer, X. Zhai, J. Puigcerver, J. Yung, S. Gelly, and N. Houlsby ,
+Big transfer (BiT): General visual representation learning , in European Conference on Computer
+Vision, 2020, pp. 491–507.
+[53]A. Krizhevsky ,Learning multiple layers of features from tiny images . https://www.cs.toronto.
+edu/~kriz/learning-features-2009-TR.pdf, 2009.
+[54]A. Kumar, T. Ma, P. Liang, and A. Raghunathan ,Calibrated ensembles can mitigate accu-
+racy tradeoffs under distribution shift , in The Conference on Uncertainty in Artificial Intelligence,
+2022, pp. 1041–1051.
+[55]A. Kurakin, I. J. Goodfellow, and S. Bengio ,Adversarial machine learning at scale , in
+International Conference on Learning Representations, 2017.
+[56]A. Lamb, V. Verma, J. Kannala, and Y. Bengio ,Interpolated adversarial training: Achiev-
+ing robust neural networks without sacrificing too much accuracy , in ACM Workshop on Artificial
+Intelligence and Security, 2019, pp. 95–103.
+[57]A. Levine, S. Singla, and S. Feizi ,Certifiably robust interpretation in deep learning , arXiv
+preprint arXiv:1905.12105, (2019).
+[58]B. Li, C. Chen, W. Wang, and L. Carin ,Certified adversarial robustness with additive noise ,
+in Annual Conference on Neural Information Processing Systems, 2019.
+[59]L. Li, Y. Wang, C. Sitawarin, and M. Spratling ,OODRobustBench: benchmarking and
+analyzing adversarial robustness under distribution shift , arXiv preprint arXiv:2310.12793, (2023).
+[60]C. Liu, Y. Dong, W. Xiang, X. Yang, H. Su, J. Zhu, Y. Chen, Y. He, H. Xue, and
+S. Zheng ,A comprehensive study on robustness of image classification models: Benchmarking
+and rethinking , arXiv preprint arXiv:2302.14301, (2023).
+[61]X. Liu, M. Cheng, H. Zhang, and C.-J. Hsieh ,Towards robust neural networks via random
+self-ensemble , in European Conference on Computer Vision, 2018, pp. 369–385.
+[62]Z. Liu, H. Mao, C.-Y. Wu, C. Feichtenhofer, T. Darrell, and S. Xie ,A ConvNet for26 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+the 2020s , in Conference on Computer Vision and Pattern Recognition, 2022, pp. 11976–11986.
+[63]Z. Ma and S. Sojoudi ,A sequential framework towards an exact SDP verification of neural
+networks , in International Conference on Data Science and Advanced Analytics, 2021, pp. 1–8.
+[64]A. Madry, A. Makelov, L. Schmidt, D. Tsipras, and A. Vladu ,Towards deep learning
+models resistant to adversarial attacks , in International Conference on Learning Representations,
+2018.
+[65]J. H. Metzen, T. Genewein, V. Fischer, and B. Bischoff ,On detecting adversarial per-
+turbations , in International Conference on Learning Representations, 2017.
+[66]S. Moosavi-Dezfooli, A. Fawzi, and P. Frossard ,Deepfool: A simple and accurate method
+to fool deep neural networks , in Conference on Computer Vision and Pattern Recognition, 2016,
+pp. 2574–2582.
+[67]S.-M. Moosavi-Dezfooli, A. Fawzi, J. Uesato, and P. Frossard ,Robustness via curvature
+regularization, and vice versa , in Conference on Computer Vision and Pattern Recognition, 2019,
+pp. 9078–9086.
+[68]D. Na ,Pytorch adversarial training on cifar-10 . https://github.com/ndb796/
+Pytorch-Adversarial-Training-CIFAR, 2020.
+[69]M. Pagliardini, G. Manunza, M. Jaggi, and T. Chavdarova ,Improved generalization-
+robustness trade-off via uncertainty targeted attacks . Preprint, 2022.
+[70]T. Pang, M. Lin, X. Yang, J. Zhu, and S. Yan ,Robustness and accuracy could be reconcilable
+by (proper) definition , in International Conference on Machine Learning, 2022, pp. 17258–17277.
+[71]T. Pang, K. Xu, C. Du, N. Chen, and J. Zhu ,Improving adversarial robustness via promoting
+ensemble diversity , in International Conference on Machine Learning, 2019, pp. 4970–4979.
+[72]N. Papernot, P. McDaniel, I. Goodfellow, S. Jha, Z. B. Celik, and A. Swami ,Practical
+black-box attacks against machine learning , in ACM Asia Conference on Computer and Commu-
+nications Security, 2017.
+[73]S. Pfrommer, B. Anderson, J. Piet, and S. Sojoudi ,Asymmetric certified robustness via
+feature-convex neural networks , in Annual Conference on Neural Information Processing Systems,
+2024.
+[74]S. Pfrommer, B. G. Anderson, and S. Sojoudi ,Projected randomized smoothing for certified
+adversarial robustness , Transactions on Machine Learning Research, (2023).
+[75]A. Raghunathan, S. M. Xie, F. Yang, J. C. Duchi, and P. Liang ,Understanding and
+mitigating the tradeoff between robustness and accuracy , in International Conference on Machine
+Learning, 2020, pp. 7909–7919.
+[76]S.-A. Rebuffi, S. Gowal, D. A. Calian, F. Stimberg, O. Wiles, and T. Mann ,Fixing
+data augmentation to improve adversarial robustness , arXiv preprint arXiv:2103.01946, (2021).
+[77]S. Sabour, Y. Cao, F. Faghri, and D. J. Fleet ,Adversarial manipulation of deep represen-
+tations, arXiv preprint arXiv:1511.05122, (2015).
+[78]H. Salman, J. Li, I. Razenshteyn, P. Zhang, H. Zhang, S. Bubeck, and G. Yang ,
+Provably robust deep learning via adversarially trained smoothed classifiers , in Annual Conference
+on Neural Information Processing Systems, 2019.
+[79]L. Schmidt, S. Santurkar, D. Tsipras, K. Talwar, and A. Madry ,Adversarially ro-
+bust generalization requires more data , in Annual Conference on Neural Information Processing
+Systems, 2018.
+[80]V. Sehwag, S. Mahloujifar, T. Handina, S. Dai, C. Xiang, M. Chiang, and P. Mittal ,
+Robust learning meets generative models: Can proxy distributions improve adversarial robustness? ,IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 27
+in International Conference on Learning Representations, 2022.
+[81]A. Shafahi, M. Najibi, M. A. Ghiasi, Z. Xu, J. Dickerson, C. Studer, L. S. Davis,
+G. Taylor, and T. Goldstein ,Adversarial training for free! , in Annual Conference on Neural
+Information Processing Systems, 2019.
+[82]Z. Shi, Y. Wang, H. Zhang, J. Z. Kolter, and C.-J. Hsieh ,Efficiently computing local
+Lipschitz constants of neural networks via bound propagation , in Annual Conference on Neural
+Information Processing Systems, 2022, pp. 2350–2364.
+[83]D. Terjek ,Adversarial lipschitz regularization , in International Conference on Learning Repre-
+sentations, 2020.
+[84]F. Tramèr, N. Carlini, W. Brendel, and A. Madry ,On adaptive attacks to adversar-
+ial example defenses , in Annual Conference on Neural Information Processing Systems, 2020,
+pp. 1633–1645.
+[85]F. Tramèr, A. Kurakin, N. Papernot, I. J. Goodfellow, D. Boneh, and P. D. Mc-
+Daniel,Ensemble adversarial training: Attacks and defenses , in International Conference on
+Learning Representations, 2018.
+[86]D. Tsipras, S. Santurkar, L. Engstrom, A. Turner, and A. Madry ,Robustness may be
+at odds with accuracy , in International Conference on Learning Representations, 2019.
+[87]H. Wang, T. Chen, S. Gui, T. Hu, J. Liu, and Z. Wang ,Once-for-all adversarial train-
+ing: In-situ tradeoff between robustness and accuracy for free , in Annual Conference on Neural
+Information Processing Systems, 2020.
+[88]J. Wang and H. Zhang ,Bilateral adversarial training: Towards fast training of more ro-
+bust models against adversarial attacks , in International Conference on Computer Vision, 2019,
+pp. 6629–6638.
+[89]Z. Wang, T. Pang, C. Du, M. Lin, W. Liu, and S. Yan ,Better diffusion models further
+improve adversarial training , in International Conference on Machine Learning, 2023, pp. 36246–
+36263.
+[90]Y. Yang, C. Rashtchian, H. Zhang, R. R. Salakhutdinov, and K. Chaudhuri ,A closer
+look at accuracy vs. robustness , in Annual Conference on Neural Information Processing Systems,
+2020, pp. 8588–8601.
+[91]H. Zhang and J. Wang ,Defense against adversarial attacks using feature scattering-based ad-
+versarial training , in Annual Conference on Neural Information Processing Systems, 2019.
+[92]H. Zhang, Y. Yu, J. Jiao, E. P. Xing, L. E. Ghaoui, and M. I. Jordan ,Theoretically
+principled trade-off between robustness and accuracy , in International Conference on Machine
+Learning, 2019, pp. 7472–7482.
+[93]S. Zhao, X. Wang, and X. Wei ,Mitigating the accuracy-robustness trade-off via multi-teacher
+adversarial distillation , arXiv preprint arXiv:2306.16170, (2023).
+[94]H. Zheng, Z. Zhang, J. Gu, H. Lee, and A. Prakash ,Efficient adversarial training with
+transferable adversarial examples , in Conference on Computer Vision and Pattern Recognition,
+2020.
+[95]Y. Zheng, R. Zhang, and Y. Mao ,Regularizing neural networks via adversarial model pertur-
+bation, in Conference on Computer Vision and Pattern Recognition, 2021, pp. 8156–8165.28 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+AppendixA.AdditionalTheoreticalandExperimentalResultsonCertifiedRobustness.
+In this section, we tighten the certified radius in the special case when h(·)is a randomized
+smoothing classifier and the robust radii are defined in terms of the ℓ2norm. This enables us
+to visualize and compare the certified robustness of the mixed classifier to existing certifiably
+robust methods in Appendix A.3.
+A.1. Larger Certified Robust Radius for Randomized Smoothing Base Classifiers.
+Since randomized smoothing often operates on the probabilities and does not consider the
+logits, with a slight abuse of notation, we use h(·)to denote the probabilities throughout this
+section (as opposed to denoting the logits in the main text).
+Assumption A.1. The classifier h(·)is a (Gaussian) randomized smoothing classifier, i.e.,
+h(x) =Eξ∼N(0,σ2Id)
+h(x+ξ)
+for all x∈Rd, where h:Rd→[0,1]cis the output probabilities
+of a neural model that is non-robust in general. Furthermore, for all i∈[c],hi(·)is not 0
+almost everywhere or 1 almost everywhere.
+Theorem A.2. Suppose that Assumption A.1holds, and let x∈Rdbe arbitrary. Let y=
+arg maxihi(x)andy′= arg maxi̸=yhi(x). Then, if α∈[1
+2,1], it holds that arg maxihα
+i(x+δ) =
+yfor all δ∈Rdsuch that
+∥δ∥2≤rα
+σ(x):=σ
+2
+Φ−1 
+αhy(x)
+−Φ−1 
+αhy′(x) + 1−α
+.
+Proof.First, note that since every hi(·)is not 0 almost everywhere or 1 almost everywhere,
+it holds that hi(x)∈(0,1)for all iand all x. Now, suppose that α∈[1
+2,1], and let δ∈Rd
+be such that ∥δ∥2≤rα
+σ(x). Let µα:=1−α
+α(conversely, α=1
+µα+1). We construct a scaled
+classifier ˜h:Rd→Rc, whose ithentry is defined as
+˜hi(x) =(hy(x)
+1+µα=αhy(x) ifi=y,
+hi(x)+µα
+1+µα=αhi(x) + 1−αifi̸=y.
+Furthermore, define a scaled RS classifier ˆh:Rd→Rcbased on ˜hi(·)by
+ˆh(x) =Eξ∼N(0,σ2Id)h
+˜h(x+ξ)i
+.
+Then, since it holds that
+˜hy(x) =hy(x)
+1 +µα∈
+0,1
+1 +µα
+⊆(0,1),
+˜hi(x) =hi(x) +µα
+1 +µα∈µα
+1 +µα,1
+⊆(0,1),∀i̸=y,
+it must be the case that 0<˜hi(x)<1for all iand all x, and hence, for all i, the function
+x7→Φ−1 ˆhi(x)
+isℓ2-Lipschitz continuous with Lipschitz constant1
+σ(see [57, Lemma 1], or
+Lemma 2 in [78] and the discussion thereafter). Therefore,
+(A.1)Φ−1 ˆhi(x+δ)
+−Φ−1 ˆhi(x)≤∥δ∥2
+σ≤rα
+σ(x)
+σIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 29
+for all i. Applying (A.1) for i=yyields that
+(A.2) Φ−1 ˆhy(x+δ)
+≥Φ−1 ˆhy(x)
+−rα
+σ(x)
+σ,
+and, since Φ−1is monotonically increasing and ˆhi(x)≤ˆhy′(x)for all i̸=y, applying (A.1) to
+i̸=ygives that
+Φ−1 ˆhi(x+δ)
+≤Φ−1 ˆhi(x)
++rα
+σ(x)
+σ≤Φ−1 ˆhy′(x)
++rα
+σ(x)
+σ. (A.3)
+Subtracting (A.3) from (A.2) gives that
+Φ−1 ˆhy(x+δ)
+−Φ−1 ˆhi(x+δ)
+≥Φ−1 ˆhy(x)
+−Φ−1 ˆhy′(x)
+−2rα
+σ(x)
+σ
+for all i̸=y. By the definitions of µα,rα
+σ(x), and ˆh(x), the right-hand side of this inequality
+equals zero, and hence, since Φis monotonically increasing, we find that ˆhy(x+δ)≥ˆhi(x+δ)
+for all i̸=y. Therefore,
+hy(x+δ)
+1 +µα=Eξ∼N(0,σ2Id)hy(x+δ+ξ)
+1 +µα
+=ˆhy(x+δ)
+≥ˆhi(x+δ) =Eξ∼N(0,σ2Id)hi(x+δ+ξ) +µα
+1 +µα
+=hi(x+δ) +µα
+1 +µα.
+Hence, hy(x+δ)≥hi(x+δ) +µαfor all i̸=y, soh(·)is certifiably robust at xwith margin
+µα=1−α
+αand radius rα
+σ(x). Therefore, by Lemma 3.2, it holds that arg maxihα
+i(x+δ) =y
+for all δ∈Rdsuch that ∥δ∥2≤rα
+σ(x), which concludes the proof.
+A.2. Experiment Setup. Before visualizing the certified robustness results, we first ex-
+plain the experiment setup. We let the smoothing strength αbe a fixed value. Since a (Gauss-
+ian) RS model with smoothing covariance matrix σ2Idhas an ℓ2-Lipschitz constantp
+2/πσ2,
+such a model can be used to simultaneously visualize both theorems, with Theorem A.2 giving
+tighter certificates of robustness. Consider the CIFAR-10 dataset. We select g(·)to be an
+ImageNet-pretrained ResNet-152 model with a clean accuracy of 98.50%(the same one used
+in Table 4), and use the RS models presented in [92] as h(·).
+Notice that it is possible to maintain the mixed classifier’s clean accuracy while changing
+its robustness behavior by jointly adjusting the mixing weight αand the RS variance σ2.
+Specifically, increasing σ2certifies larger radii at the cost of decreased clean accuracy. To
+compensate, αcan be reduced to allow more emphasis on the accurate base classifier g(·),
+thereby restoring the clean accuracy. We want to understand how jointly adjusting αandσ2
+affects the certified robustness property while fixing the clean accuracy. To this end, for a fair
+comparison, for the mixed classifier hα(·), we select an αvalue such that the clean accuracy
+ofhα(·)matches that of another RS model hbaseline (·)with a smaller smoothing variance.
+The expectation term in the RS formulation is approximated with the empirical mean of
+10,000 random perturbations2drawn from N(0, σ2Id). The certified radii of hbaseline (·)are
+calculated using Theorems 3.5 and A.2by setting αto1.
+2The authors of [28] show that 10,000 Monte Carlo samples are sufficient to provide representative results.30 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+0.0 0.1 0.2 0.3 0.4 0.5
+ℓ2 radius020406080Accuracy (%)Certified, hbaseline
+Certified, hα
+Clean, hbaseline
+Clean, hα
+0.0 0.1 0.2 0.3 0.4
+ℓ2 radius020406080Accuracy (%)
+Empty circles at zero radius are discontinuities.
+hbaseline(⋅) and hα(⋅) have the same clean accuracy.Certified, hbaseline
+Certified, hα
+a
+Certified, hα
+b
+Clean, hbaseline
+Clean, hα
+a
+Clean, hα
+b
+Pareto Frontier
+(a)hbaseline (·): RS with σ= 0.5.
+hα(·)usesα= 0.79;
+h(·)is RS with σ= 1.(b)hbaseline (·): RS with σ= 0.25.
+Consider two mixed classifier examples:
+hα
+a(·)usesα= 0.79andha(·)is RS with σ= 0.5;
+hα
+b(·)usesα= 0.71andhb(·)is RS with σ= 1.0.
+Figure 6: Closed-form certified accuracy of RS models and our mixed classifier with the
+Lipschitz-based bound in Theorem 3.5. The mixed classifier can optimize the certified robust
+accuracy at each radius without affecting clean accuracy by tuning αandσ2. The resulting
+Pareto frontier demonstrates significantly extended certified radii over a standalone RS model,
+signaling improved accuracy-robustness trade-off.
+Note that our certified robustness results make no assumptions on the accurate base clas-
+sifier g(·), and do not depend on it in any way. Hence, to achieve the best accuracy-robustness
+trade-off, we should select a model with the highest clean accuracy as g(·). Using a more
+accurate g(·)will allow using a larger αvalue for the same level of clean accuracy, thereby
+indirectly improving the certified robustness of the mixed classifier. Such a property allows
+the mixed classifier to take advantage of state-of-the-art standard (non-robust) classifiers. In
+contrast, since these models are often not trained for the purpose of RS, directly incorporat-
+ing them into RS may produce suboptimal results. Therefore, our mixed classifier has better
+flexibility and compatibility, even in the certified robustness setting.
+Additionally, since we make no assumptions on the confidence properties of g(·), we re-
+place the Softmax operation in (3.4) with a “Hardmax”. I.e., the confidence of g(·)used in the
+mixture is a one-hot vector associated with g(·)’s predicted class. Note that this replacement
+is equivalent to applying a temperature scaling of zero to g(·). By doing so, the mixed classi-
+fier’s clean accuracy can be enhanced (because the higher-accuracy base model is made more
+confident) while not affecting the certified robustness (because they do not depend on g(·).
+A.3. Visualization of the Certified Robust Radii. We are now ready to visualize the
+certified robust radii presented in Theorem 3.5 and Theorem A.2. Figure 6 displays the
+calculated certified accuracies of hα(·)andhbaseline (·)at various attack radii. The ordinate
+“Accuracy” at a given abscissa “ ℓ2radius” reflects the percentage of the test data for which
+the considered model gives a correct prediction and a certified radius at least as large as the
+ℓ2radius under consideration.
+In both subplots of Figure 7, the clean accuracy is the same for hbaseline (·)andhα(·).IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 31
+0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9
+ℓ2 radius020406080Accuracy (%)Lip-based, hbaseline
+Lip-based, hα
+RS-based, hbaseline
+RS-based, hα
+Clean, hbaseline
+Clean, hα
+0.0 0.1 0.2 0.3 0.4 0.5 0.6
+ℓ2 radius020406080Accuracy (%)
+Empty circles at zero radius are discontinuities.
+hbaseline(⋅) and hα(⋅) have the same clean accuracy.Lip-based, hbaseline
+Lip-based, hα
+a
+Lip-based, hα
+b
+RS-based, hbaseline
+RS-based, hα
+a
+RS-based, hα
+b
+Clean, hbaseline
+Clean, hα
+a
+Clean, hα
+b
+Figure7: TighteningthecertifiedrobustnessboundswithRS-based(TheoremA.2)certificates.
+The models are the same ones as in Figure 6.
+Note that the certified robustness curves of hα(·)do not connect to the clean accuracy when
+αapproaches zero. This discontinuity occurs because Theorems 3.5 and A.2 both consider
+robustness with respect to h(·)and do not issue certificates to test inputs at which h(·)makes
+incorrectpredictions, eventhough hα(·)maycorrectlypredictatsomeofthesepointsinreality.
+This is reasonable because we do not assume any robustness or Lipschitzness of g(·), and g(·)
+is allowed to be arbitrarily incorrect whenever the radius is non-zero.
+The Lipschitz-based bound of Theorem 3.5 allows us to visualize the performance of the
+mixed classifier hα(·)when h(·)is an ℓ2-Lipschitz model. In this case, the curves associated
+withhα(·)andhbaseline (·)intersect, with hα(·)achievinghighercertifiedaccuracyatlargerradii
+andhbaseline (·)certifying more points at smaller radii. By jointly adjusting αand the Lipschitz
+constant of h(·), it is possible to change the location of this intersection while maintaining the
+same level of clean accuracy. Therefore, the mixed classifier structure allows for optimizing
+the certified accuracy at a particular radius, while keeping the clean accuracy unchanged. In
+Figure 6, we illustrate the achievable accuracy at each radius with the optimal α-σ2combi-
+nation as the Pareto Frontier . Compared with the accuracy-radius curve of a standalone RS
+classifier, this frontier significantly extends along the radius axis. Since the clean accuracy is
+kept fixed in this comparison, a noticeable accuracy-robustness trade-off improvement can be
+concluded in the certified setting.
+The RS-based bound from Theorem A.2 tightens the certification when the certifiably
+robust classifier is an RS model. Figure 7 adds these tightened results to the visualizations.
+For both hα(·)andhbaseline (·), the RS-based bounds certify larger radii than the corresponding
+Lipschitz-based bounds. Nonetheless, hbaseline (·)can certify more points with the RS-based
+guarantee. Intuitively, this phenomenon suggests that RS models can yield correct but low-
+confidence predictions when under attack with a large radius, and thus may not be best-suited
+for our mixing operation, which relies on robustness with non-zero margins. In contrast,
+Lipschitz models, a more general and common class of models, exploit the mixing operation
+more effectively. Moreover, as shown in Figure 4, empirically robust models often yield high-
+confidence predictions when under attack, making them more suitable for the mixed classifier
+hα(·)’s robust base model.
+Since randomized smoothing requires thousands of neural network queries to perform a32 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+Table 5: Experiment settings for comparing the choices of Ri(x).
+PGD attack settings g(·)Architecture h(·)Architecture
+Figure 1 ℓ∞,ϵ=8/255, 10 Steps Standard ResNet-18 ℓ∞AT ResNet-18
+Figure 8a ℓ∞,ϵ=8/255, 20 Steps Standard ConvNeXt-T ℓ∞TRADES WideResNet-34
+Figure 8b ℓ2,ϵ= 0.5, 20 Steps Standard ResNet-18 ℓ2AT ResNet-18
+prediction and the mixed classifier only adds one additional query via the standard base
+classifier, the change in computation is negligible.
+Appendix B. Additional Analyses Regarding Ri(x).
+B.1. The four options for Ri(x).Consider the four listed options of Ri(x), namely 1,
+∥∇gi(x)∥p∗,∥∇max jgj(x)∥p∗, and∥∇gi(x)∥p∗
+∥∇hi(x)∥p∗. The constant 1is a straightforward option.
+∥∇gi(x)∥p∗comesfrom(3.2), whichisadirectgeneralizationfromthelocallybiasedsmoothing
+(binaryclassification)formulationtothemulti-classcase. Notethat ∥∇gi(x)∥p∗isnotpractical
+for datasets with a large number of classes, since it requires the calculation of the full Jacobian
+ofg(x), which is very time-consuming. To this end, we use the gradient of the predicted
+class (which is intuitively the most important class) as a surrogate for all classes, bringing the
+formulation ∥∇max jgj(x)∥p∗. Finally, unlike locally biased smoothing, which only has one
+differentiable component, our adaptive smoothing has two differentiable base networks. Hence,
+it makes sense to consider the gradient from both of them. Intuitively, if ∥∇gi(x)∥p∗is large,
+then g(·)is vulnerable at xand we should trust it less. If ∥∇hi(x)∥p∗, then h(·)is vulnerable
+and we should trust h(·)less. This leads to the fourth option, which is∥∇gi(x)∥p∗
+∥∇hi(x)∥p∗.
+B.2. Additional empirical supports and analyses for selecting Ri(x) = 1.In this sec-
+tion, we use additional empirical evidence (Figures 8a and 8b) to show that Ri(x) = 1is
+the appropriate choice for the adaptive smoothing formulation, and that the post-Softmax
+probabilities should be used for smoothing. While most of the experiments in this paper are
+based on ResNets, the architecture is chosen solely because of its popularity, and our method
+does not depend on any properties of ResNets. Therefore, for the experiment in Figure 8a, we
+select an alternative architecture by using a more modern ConvNeXt-T model [62] pre-trained
+on ImageNet-1k as g(·). We also use a robust model trained via TRADES in place of an
+adversarially-trained network for h(·). Moreover, while most of our experiments are based on
+ℓ∞attacks, our method applies to all ℓpattack budgets. In Figure 8b, we provide an example
+that considers the ℓ2attack. The experiment settings are summarized in Table 5.
+Figure 8 demonstrates that setting Ri(x)to the constant 1achieves the best trade-off
+curve between clean and attacked accuracy. Moreover, smoothing using the post-Softmax
+probabilities outperforms the pre-Softmax logits. This result aligns with the conclusions of
+Figure 1 and our theoretical analyses, demonstrating that various robust networks share the
+property of being more confident when classifying correctly than when making mistakes.
+The most likely reason for Ri(x) = 1to be the best choice is that while the local Lip-
+schitzness of a base classifier is a good estimator of its robustness and trustworthiness (as
+motivated in [8]), the gradient magnitude of this base classifier at the input is not always aIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 33
+86 88 90 92 94 96 98
+Clean accuracy0102030405060Attacked accuracy1, No SoftMax
+||∇maxjgj(⋅)||p*, SoftMax
+||∇maxigi(⋅)||p*
+||∇maxjhj(⋅)||p*, SoftMax
+1, SoftMax
+(a)ConvNeXt-T and TRADES WideResNet-34
+under ℓ∞PGD attack.
+86 88 90 92 94
+Clean accuracy0102030405060Attacked accuracy1, No SoftMax
+||∇maxjgj(⋅)||p*, SoftMax
+||∇maxigi(⋅)||p*
+||∇maxjhj(⋅)||p*, SoftMax
+1, SoftMax(b)Standard and AT ResNet-18s under ℓ2PGD
+attack.
+Figure 8: Comparing the “attacked accuracy versus clean accuracy” curve of various options
+forRi(x)with alternative selections of base classifiers.
+good estimator of its local Lipschitzness. Specifically, local Lipschitzness, as defined in Defini-
+tion 3.3, requires the classifier to be relatively flat within an ϵ-ball around the input, whereas
+the gradient magnitude only focuses on the nominal input itself and does not consider the
+surrounding landscape within the ϵ-ball. For example, the gradient magnitude of the standard
+base classifier g(·)may jump from a small value at the input to a large value at some nearby
+point within the ϵ-ball, which may cause g(·)to change its prediction around this nearby point.
+In this case, ∥∇g(x))∥may be small, but g(·)can have a high local Lipschitz constant.
+As a result, while using ∥∇g(·))∥asRiseems to make sense at first glance, it does not
+work as intended and can make the mixed classifier trust g(·)more than it should. Therefore,
+within the ϵ-ball around a given x, the attacker may be able to find adversarial perturbations
+at which the gradient magnitude is small, thereby bypassing the defense.
+In fact, as discussed in [8], the use of gradient magnitude is motivated by approximating a
+neuralclassifierwithalinearclassifier. OurFigure1, whichdemonstratesthatusingaconstant
+Ri(x)outperforms incorporating the gradient magnitude, implies that such an approximation
+results in a large mismatch and therefore does not make sense in our setting.
+Even if some gradient-dependent options for Ri(x)are better than the constant 1, unless
+they produce significantly better results, the constant 1should still be favored since it removes
+theneedforperformingbackwardpasseswithintheforwardpassofthemixedclassifier, making
+the mixing formulation more efficient and less likely to suffer from gradient masking.
+Appendix C. Additional Experiment Results.
+C.1. Trade-Off Curve with State-of-the-Art Base Classifiers. As discussed in the main
+paper text, our mixed classifier framework can take advantage of various models with better
+accuracy-robustness trade-offs (including but not limited to IAAT) by using them as base
+models, achieving state-of-the-art accuracy-robustness balance.
+To demonstrate this, Figure 9 adds the result that replaces the accurate base classifier
+used in Figure 5 with a ConvNeXt-T model, which has higher clean accuracy. Such a replace-34 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+86 88 90 92 94 96 98
+Clean Accuracy (%)0204060PGD20 Accuracy (%)
+Mixed-TRADES (ours)
+Mixed-ConvNeXt (ours)
+Mixed-SOTA (ours)TRADES
+IAAT
+PLS
+•Mixed-TRADES: Adaptive smoothing
+using TRADES ( β= 6) as h(·)and
+TRADES ( β= 0) asg(·), as in Figure 5.
+•Mixed-ConvNeXt: Same as above but
+replace g(·)with a standard ConvNeXt-
+T model which has a similar size.
+•Mixed-SOTA: The trade-off achieved by
+the SOTA mixed model in Table 4.
+Figure 9: The mixed classifier’s trade-off curve in Figure 5 can be easily improved by using a
+better base classifier. When using state-of-the-art models as base classifiers, adaptive smooth-
+ing achieves significantly better results than IAAT.
+ment immediately improves the accuracy-robustness trade-off of the mixed classifier without
+additional training. On the other hand, improving IAAT will at least require training a new
+model with expensive adversarial training.
+Additionally, Figure 9 displays the result achieved with state-of-the-art base classifiers
+from Table 4. With these base classifiers, our mixed classifier can significantly improve the
+accuracy-robustness balance over training-based trade-off alleviating methods. Since SOTA
+base classifiers use a variety of training techniques to achieve high performance, it is uncertain
+whether these techniques can be successfully combined with IAAT. Meanwhile, incorporating
+them into adaptive smoothing is extremely straightforward.
+C.2. Ablation Study on Loss Function Hyperparameters. In this section, we discuss
+the effects of the constants cCE,cBCE, and cprodin the composite loss function (4.2). Since
+multiplying the three weight constants by the same number is equivalent to using a larger
+optimizer step size and is not the focus of this ablation study (we focus on the loss function
+shape), we fix cCE+cBCE= 1.5. To avoid the issue of becoming excessively conservative and
+always prioritizing the robust base model (as described in Subsection 4.4), we add a batch
+normalization layer without trainable affine transform to the output of the mixing network.
+Additionally, note that since the mixing network has a single output, one can arbitrarily shift
+this output to achieve the desired balance between clean and attacked accuracies. For a fair
+and illustrative comparison, after training a mixing network αθ(·)with each hyperparameter
+setting, we add an appropriate constant to the output of the αθ(·)so that the clean accuracy
+of the overall model hαθ(·)is90±0.02%, and compare the PGD 20attacked accuracy of hαθ(·)
+in Table 6. As a baseline, when the smoothing strength αis a constant, the PGD 20accuracy
+is52.6%when the clean accuracy is tuned to be 90%(the corresponding αvalue is 1.763).
+The above results demonstrate that cCE= 0,cBCE= 1.5, and cprod= 0.2works the best.
+Our results also show that a small positive cprodis generally beneficial. This makes sense
+because the CE loss is low for a particular input if both g(·)andh(·)correctly predict its class.
+Thus, the smoothing strength should not matter for such input, and therefore the BCE loss
+is weighted by a small number. Compared with using only the BCE loss, the product term ofIMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 35
+Table 6: The PGD 20accuracy on CIFAR-10 with various loss hyperparameter settings. The
+setting is the same as in Table 2, and we consider both attack and defense in Setting B.
+cCE= 0 cCE= 0.5 cCE= 1 cCE= 1.5
+cBCE= 1.5cBCE= 1 cBCE= 0.5cBCE= 0
+cprod= 0 54.5% 52.8% 53.8% 54.4%
+cprod= 0.1 54.3% 54.1% 54.0% 54.1%
+cprod= 0.2 55.1% 54.2% 54.3% 53.9%
+Table 7: Ablation study on the mixing network’s Sigmoid activation scaling factor.
+Scale 0.5 1 2 4
+PGD 20Accuracy 55.1% 55.5% 55.7% 55.6%
+the CE and the BCE components is lenient on inputs correctly classified by the mixed model
+hαθ(·), while assigning more weight to the data that are incorrectly predicted.
+Recall that the output range of αθ(·)is[0,1], which is enforced by appending a Sigmoid
+output activation function. In addition to shifting, one can arbitrarily scale the Sigmoid
+activation’s input. By performing this scaling, we effectively calibrate the confidence of the
+mixing network. In Table 6, this scaling is set to the same constant for all settings. In Table 7,
+we select the best loss parameter and analyze the validation-time Sigmoid scaling. Again, we
+shift the Sigmoid input so that the clean accuracy is 90±0.02%. While a larger scale benefits
+the performance on clean/attacked examples that are confidently recognized by the mixing
+network, an excessively large scale makes hαθ(·)less stable under attack. Table 7 shows that
+applying a scaling factor of 2yields the best result for the given experiment setting.
+C.3. Estimating the Local Lipschitz Constant for Practical Neural Networks. In this
+section, we demonstrate the practicality of Theorem 3.5 by showing that it can work with a
+relaxed local Lipschitz counterpart of Assumption 3.4, which can be estimated for practical
+differentiable models.
+First, note that the proof Theorem 3.5 does not require global Lipschitzness, and local
+Lipschitzness will suffice. Since the local Lipschitz constant of an empirically robust (AT,
+TRADES, etc.) neural classifier can be much smaller than the global Lipschitz constant,
+Theorem 3.5 is less restrictive in practice. Moreover, it is not necessary for the model output
+to be similar between an arbitrary pair of inputs within the ϵball. Instead, Theorem 3.5 only
+requires the model output to not change too much with respect to the nominal unperturbed
+input. Furthermore, Theorem 3.5 only requires single-sided Lipschitzness. Namely, we only
+need to make sure that the predicted class probability does not decrease too much compared
+with the nominal input, and whether this probably becomes even higher than the nominal
+input will not affect robustness. The opposite is true for the non-predicted classes.
+Specifically, suppose that for an arbitrary input xand an ℓpattack radius ϵ, the following
+two conditions hold with respect to the local Lipschitz constant Lipx
+p:
+•σ◦hy(x)−σ◦hy(x+δ)≤ϵ·Lipx
+p(σ◦hy)andσ◦hi(x+δ)−σ◦hi(x)≤ϵ·Lipx
+p(σ◦hi)36 Y. BAI, B. G. ANDERSON, A. KIM, AND S. SOJOUDI
+for all i̸=yand all perturbations δsuch that ∥δ∥p≤ϵ;
+•The robust radius rα
+Lip,p(x)as defined in (3.5) but use the local Lipschitz constant Lipx
+pas
+a surrogate to the global constant Lipp, is not smaller than ϵ.
+Then, if the robust base classifier is correct at the nominal point x, then the mixed classifier is
+robust at xwithin the radius ϵ. The proof of this statement follows the proof of Theorem 3.5.
+Moreover, the literature [90, Eq.(3)] has shown that the local Lipschitz constant of a given
+differentiable classifier can be easily estimated using a PGD-like algorithm. The work [90]
+also showed that many existing empirically robust models, including those trained with AT or
+TRADES, are in fact locally Lipschitz. Note that [90] evaluates the local Lipschitz constants
+of the logits, whereas we analyze the probabilities, whose Lipschitz constants are much smaller.
+Here, we modify the PGD-based local Lipschitzness estimation for the relaxed requirement
+of Theorem 3.5 listed above. Specifically, we estimate the local Lipschitz constant within an
+ϵ-ball around an arbitrary input xby using the PGD algorithm to solve the problem
+(C.1) dLipx
+p(σ◦h):=1
+c·ϵ
+max
+∥δ∥p≤ϵ 
+σ◦hy(x+δ)−σ◦hy(x)
+−X
+i̸=ymax
+∥δ∥p≤ϵ 
+σ◦hi(x+δ)−σ◦hi(x)
+,
+where dLipx
+p(σ◦h)is the estimated local Lipschitzness of σ◦h(·)averaged among all classes, and
+cis the number of classes as defined in Subsection 2.1. Unlike in [90], we decouple the classes
+by maximizing each class’s probability deviation separately, providing a more conservative and
+insightful estimation.
+We use the default TRADES WideResNet-34-10 model as an example to demonstrate
+robust neural networks’ non-trivial Lipschitzness. When using the PGD 20algorithm to solve
+(C.1), the estimated Lipschitz constant dLipx
+p(σ◦h)is 3.986 averaged among all test data
+within the ℓ∞ball with radius8
+255. Note that this number is normalized with ϵ, which is
+a small number. Intuitively, this Lipschitz constant implies that the probability of a class
+changes for merely at most 0.125within this ℓ∞attack budget on average. Therefore, the
+local Lipschitz constant, which is what Theorem 3.5 relies on, is not large for robust deep
+neural networks.
+Since the relaxed Lipschitz constant can be estimated for differentiable classifiers and is
+not excessively large for robust models, the certified bound is not small. Hence, Theorem 3.5
+provides important theoretical insights into the empirical robustness of the mixed classifier.
+Appendix D. Experiment Implementation Details.
+D.1. Implementation of the Mixing Network in Experiments. Since our formulation is
+agnostic to base classifier architectures, Figure 3 in the main text presents the design of the
+mixing network in the context of general standard and robust classifiers. In the experiments
+presented in Subsection 5.2, both g(·)andh(·)are based on ResNet variants, which share
+the general structure of four main blocks, resulting in Figure 10 as the overall structure of
+the mixed classifier. Following [65], we consider the initial Conv2D layer and the first ResNet
+block as the upstream layers. The embeddings extracted by the first Conv2D layers in g(·)and
+h(·)are concatenated before being provided to the mixing network αθ(·). We further select
+the second ResNet block as the middle layers. For this layer, in addition to concatenating
+the embeddings from g(·)andh(·), we also attach a linear transformation layer (Conv1x1) to
+match the dimensions, reduce the number of features, and improve efficiency.IMPROVING THE ACCURACY-ROBUSTNESS TRADE-OFF WITH ADAPTIVE SMOOTHING 37
+Input𝑥RNB R3RNB R4Conv2D+ BN + ReLU(Frozen) Robust ModelRNB R1RNB R2𝑔(𝑥)ℎ(𝑥)Eq (3.4)Outputℎ!!(𝑥)Global AvgPool+ Linear + BNMixing Network𝛼"(𝑥)ConcatConcat+ Conv1D+RNB M2RNB M4RNB M3RNB S1RNB S2RNB S3RNB S4Conv2D+ BN + ReLU(Frozen) Standard ModelGlobal AvgPool+ Linear + BN
+Global AvgPool+ Linear + BN
+Figure 10: The architecture of the mixed classifier introduced in Section 4 when applied to a
+pair of ResNet base models.
+As mentioned in Subsection 4.1, the range of αθ(·)can be constrained to be within
+(αmin, αmax)⊆[0,1]if certified robustness is desired. We empirically observe that setting
+αmax−αminto be 0.04works well for CIFAR-10, whereas 0.1or0.15works well for CIFAR-
+100. This observation coincides with Figure 4, which shows that a slight increase in αcan
+greatly enhance the robustness at the most sensitive region. The value of αmincan then
+be determined by enforcing a desired level of either clean validation accuracy or robustness.
+Following this guideline, we set the ranges of αθ(·)to be (0.96,1)for the CIFAR-10 model
+discussed in Table 4. The range is (0.84,0.99)and(0.815,0.915)respectively for the two
+CIFAR-100 models in Table 4. Note that this range is only applied during validation. When
+training αθ(·), we use the full (0,1)range for its output, so that the training-time adversary
+can generate strong and diverse attacks that fully exploit αθ(·), which is crucial for securing the
+robustness of the mixing network. We also observe that exponential moving average (EMA)
+improves the training stability of the mixing network, and applies an EMA decay rate of 0.8
+for the model in Table 4. Furthermore, scaling the outputs of h(·)by a number between 0
+and 1 and scaling the outputs of g(·)by a number greater than 1 can help with the overall
+accuracy-robustness trade-off. This scale is set to 3 for the experiments in Table 4.
+D.2. AutoAttack for Calculating the Robust Confidence Gap. The original AutoAttack
+implementation released with [32] does not return perturbations that fail to change the model
+prediction. To enable robustness margin calculation, we modify the code to always return
+the perturbation that achieves the smallest margin during the attack optimization. Since the
+FAB and Square components of AutoAttack are slow and do not successfully attack additional
+images on top of the APGD components, we only consider the two APGD components for the
+purpose of margin calculation.

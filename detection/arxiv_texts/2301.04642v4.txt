@@ -1,0 +1,822 @@
+Subspace recursive Fermi-operator expansion strategies for large-scale DFT eigenvalue
+problems on HPC architectures
+Sameer Khadatkar1and Phani Motamarri1
+Department of Computational and Data Sciences, Indian Institute of Science, Bengaluru 560012,
+India.
+(*Electronic mail: phanim@iisc.ac.in)
+Quantum mechanical calculations for material modelling using Kohn-Sham density functional theory (DFT) involve
+the solution of a nonlinear eigenvalue problem for Nsmallest eigenvector-eigenvalue pairs with Nproportional to the
+number of electrons in the material system. These calculations are computationally demanding and have asymptotic
+cubic scaling complexity with the number of electrons. Large-scale matrix eigenvalue problems arising from the dis-
+cretization of the Kohn-Sham DFT equations employing a systematically convergent basis traditionally rely on iterative
+orthogonal projection methods, which are shown to be computationally efficient and scalable on massively parallel
+computing architectures. However, as the size of the material system increases, these methods are known to incur dom-
+inant computational costs through the Rayleigh-Ritz projection step of the discretized Kohn-Sham Hamiltonian matrix
+and the subsequent subspace diagonalization of the projected matrix. This work explores the potential of polynomial
+expansion approaches based on recursive Fermi-operator expansion as an alternative to the subspace diagonalization
+of the projected Hamiltonian matrix to reduce the computational cost. Subsequently, we perform a detailed compar-
+ison of various recursive polynomial expansion approaches to the traditional approach of explicit diagonalization on
+both multi-node CPU and GPU architectures and assess their relative performance in terms of accuracy, computational
+efficiency, scaling behaviour and energy efficiency.
+I. INTRODUCTION
+A well-known and challenging application of eigenvalue
+problems is in the area of quantum modelling of materials
+using Kohn-Sham density functional theory (DFT)1, which
+has been immensely successful in providing critical insights
+into various ground-state material properties. To compute the
+ground-state electronic structure in DFT, one is confronted
+with solving a large-scale nonlinear eigenvalue problem using
+a self-consistent field iteration procedure (SCF) for Nsmall-
+est eigenvalue/eigenvector pairs, with Nbeing proportional
+to the number of electrons in the material system. This re-
+sults in asymptotic cubic complexity O(N3)with the number
+of electrons for DFT, making these calculations computation-
+ally demanding and often restrictive in terms of system sizes
+that can be handled using widely used DFT codes. Many of
+these codes employ systematically convergent plane-wave ba-
+sis sets restricting the simulation domains to be periodic, or
+employ atomic-orbital (AO) type basis sets with very few ba-
+sis functions per atom, but AO basis sets are not complete.
+Furthermore, the extended nature of these basis sets restricts
+their parallel scalability. To extend the range of system sizes to
+be studied, numerous past efforts have focused on developing
+systematically convergent real-space computational method-
+ologies2–8that have relied on reducing the prefactor associ-
+ated with the cubic computational complexity alongside im-
+proving the parallel scalability, thereby enabling large-scale
+DFT calculations up to 100,000 electrons. These real-space
+DFT discretization approaches result in large sparse Hermi-
+tian eigenvalue problems to be solved for Nsmallest eigen-
+value/eigenvector pairs.
+DFT codes employing systematically convergent basis sets
+either in Fourier-space or in real-space require large num-
+ber of basis functions per atom to achieve chemical accuracy
+compared to approaches employing AO basis sets. This re-
+sults in large Hamiltonian matrices of dimension Mwith M≈105−108, whose Nsmallest eigenvalue/eigenvector pairs we
+seek. We note that Nis usually 0 .1−0.5% of M, the total
+number of basis functions (degrees of freedom (DoFs)) used
+in the simulation. The most popular eigensolver strategies em-
+ployed to solve these large-scale DFT eigenvalue problems
+include the Davidson approach9, Locally Optimal Block Pre-
+conditioned Conjugate Gradient (LOBPCG) method10, or the
+Chebyshev filtered subspace iteration (ChFSI)7,11approach.
+These eigensolvers belong to the category of iterative orthog-
+onal projection methods (IOP) wherein the discretized Kohn-
+Sham Hamiltonian matrix Hof size M×Mis orthogonally
+projected onto a carefully constructed subspace rich in the
+wanted eigenvectors (Rayleigh-Ritz step), and subsequently,
+the resulting smaller dense projected Hamiltonian Hpof di-
+mension k(<<M)is explicitly diagonalized (subspace diago-
+nalization) to approximate the desired eigenvalue/eigenvector
+pairs of the Hmatrix. The cubic scaling computational cost
+of this subspace diagonalization step dominates for medium
+to large-scale material systems ( N>20,000) compared to
+the costs associated with subspace construction and Rayleigh-
+Ritz steps in IOP methods. For instance, Das et al.6employing
+the ChFSI approach have reported that the subspace diagonal-
+ization constitutes roughly 30% of the total ChFSI cost for
+N≈30,000, whereas it accounts for around 56% of the total
+cost for N≈50,000. To this end, the current work explores
+recursive Fermi-operator expansion approaches on HPC ar-
+chitectures as an alternative to the subspace diagonalization
+procedure to improve the computational efficiency, thereby re-
+ducing the computational prefactor associated with the cubic
+complexity of the DFT problem. Furthermore, the accuracy,
+computational efficiency, parallel performance and energy ef-
+ficiency of these approaches are examined on both multi-node
+central processing unit (CPU) and graphics processing unit
+(GPU) architectures and compared with explicit diagonaliza-
+tion of the projected Hamiltonian matrix.arXiv:2301.04642v4  [physics.comp-ph]  24 Sep 20232
+Recursive polynomial expansion approaches (RPE) rely
+on the key idea that constructing a density matrix (projec-
+tor matrix corresponding to Nsmallest eigenvectors) suf-
+fices to compute ground-state electronic structure in DFT
+at zero-temperature without the necessity of computing ex-
+plicit eigenvalues and eigenvectors. In the past, RPE
+approaches12–15have been used for ground-state DFT calcula-
+tions with atomic-orbital basis. Most of these methods aimed
+to achieve linear scaling complexity using sparse-matrix al-
+gebra employing numerical thresholds. Further, these recur-
+sive expansion schemes have also been shown to achieve high
+throughput performance using dense matrix algebra16on a
+single Nvidia M2070 GPU, compared to traditional diagonal-
+isation approaches. More recently, the computational struc-
+ture of RPE approaches has been leveraged in the form of a
+deep neural network architecture17to take advantage of ten-
+sor cores in Nvidia A100 GPUs. These techniques have been
+applied for ab initio molecular dynamics18and quantum re-
+sponse calculations19using atomic-orbital basis sets. Fur-
+thermore, Google’s tensor processing units (TPUs) have been
+successfully used for large-scale DFT calculations20employ-
+ing density matrix purification approaches, which are similar
+in spirit to RPE and involve dense matrix-matrix multiplica-
+tions. However, to the best of our knowledge, computational
+efficiency, scaling behaviour on distributed systems and en-
+ergy efficiency of these RPE approaches have not been ex-
+plored compared to subspace diagonalization procedures for
+their use in iterative orthogonal projection methods on multi-
+node CPU and GPU architectures. The evolving computing
+architectures in today’s exascale era demand scalable method-
+ologies focusing on reduced data movement and increased
+arithmetic intensity on massively parallel computing architec-
+tures, with an equal emphasis on employing energy-efficient
+algorithms. The current work exploring recursive polynomial
+expansion approaches as an alternative to subspace diagonal-
+ization is towards this direction, enabling large-scale eigen-
+value problems arising from the discretization of DFT prob-
+lem using systematically convergent basis sets employing IOP
+methods. To this end, the key contributions of our current
+work, as described in the subsequent sections, include – (a)
+efficient implementation strategies of various recursive poly-
+nomial expansion (RPE) techniques based on Fermi-operator
+expansion on both multi-node CPU and GPU architectures for
+both zero-temperature case, and the finite-temperature case of
+Fermi-Dirac smearing of the occupancy function, (b) mixed
+precision strategies in conjunction with RPE to reduce com-
+pute and data access costs, (c) assessing accuracy, computa-
+tional efficiency, parallel scaling behaviour and energy effi-
+ciency of the proposed implementation procedures by com-
+paring with explicit diagonalization algorithms provided by
+state-of-the-art ELPA library21,22.
+II. RELATED WORK AND BACKGROUND
+This section discusses key ideas central to recursive poly-
+nomial expansion approaches among the various purification
+schemes23–33employed in the literature to approximate the
+density matrix.A. Density matrix
+At zero electronic temperature, the density matrix ( D) can
+be defined as a projector matrix corresponding to the lowest
+occupied ( Nocc≤N) eigenvectors of the discretized Kohn-
+Sham Hamiltonian matrix H. Mathematically, it takes the
+form of a shifted Heaviside step function, θ(.), given by
+D=θ[µI−H]. The density matrix ( D) in the case of finite-
+temperature is a smeared version of zero-temperature density
+matrix and mathematically represented by a Fermi-operator
+matrix function given by D= [eβ(H−µI)+I]−1, where, Ide-
+notes the identity matrix, β= 1/(kBTe)is the inverse elec-
+tronic temperature, µis the Fermi-energy. Note that the eigen-
+values fiofDare referred to as occupancies. fiis either 0 or
+1 for a zero-temperature case, whereas for the case of a finite-
+temperature case, fi∈[0,1].
+B. Recursive polynomial expansion techniques to
+approximate the density matrix
+Two types of polynomial expansion schemes can be used
+to approximate the density matrix – (a) Serial Fermi-operator
+expansion schemes (Chebyshev Fermi-operator expansion
+scheme34,35, Green’s function expansion scheme36,37), (b) Re-
+cursive Fermi-operator expansion schemes12–15. In this work,
+we employ the recursive Fermi-operator expansion schemes
+as they are shown to reach a very high polynomial order in the
+approximation with few iterations (few matrix-matrix multi-
+plications) and can be used to approximate the density ma-
+trix for both zero-temperature, and finite-temperature cases as
+well.
+1. Recursive Fermi-operator expansion for zero-temperature
+density matrix (Z-RFOE)
+The recursive Fermi-operator expansion12involves succes-
+sive projections of a matrix Xn, that begins with X0=Hand
+Xn+1=Fn(Xn). The functions Fn(Xn)are chosen to project
+the eigenvalue spectrum of Xnto eigenvalues closer either to
+1 or to 0. Mathematically this can be represented as
+D=θ(µI−H)≈Fm(Fm−1(...F0(H)...)) (1)
+One of the most efficient techniques in Z-RFOE is to use
+the second-order projection polynomials (SP2)13given by
+Xn+1=Fn(Xn) =Xn±(Xn−X2
+n). The SP2 here is contin-
+uously increasing and decreasing function in the interval [0,
+1]. The ±sign is chosen to adjust the trace of Xn+1in each
+projection such that it converges to Nocc.
+2. Accelerated recursive polynomial expansion for
+zero-temperature density matrix (A-Z-RFOE)
+This technique works on the concept of shifting and scaling
+of the SP2 projection polynomials. In contrast to Z-RFOE
+which uses fixed SP2 polynomial taking the form F(X) =
+X2orF(X) =2X−X2, the A-Z-RFOE31,38approach offers
+the flexibility to choose the expansion polynomials based on
+HOMO (Highest Occupied Molecular Orbital) and LUMO
+(Lowest Unoccupied Molecular Orbital) eigenvalues such that
+it moves the eigenvalues closer to either 1 or 0 at a rapid rate.3
+3. Recursive Fermi-operator expansion scheme for
+finite-temperature cases (T-RFOE)
+Finite-temperature density matrix has occupancies fi∈
+[0,1]and the SP2 recursion scheme discussed above is not
+well suited for approximating density matrix with fractional
+occupancies. To this end, an intermediate function gener-
+ated in Z-RFOE that is obtained before the convergence of
+the algorithm to the projector matrix is used. This serves as a
+smeared function to zero-temperature density matrix (Heavi-
+side step function). To this end, the truncated expansion for
+computing, the density matrix Dcan be given by the expres-
+sion in Eq. (2).
+Gm(H) =Fm(Fm−1(...F0(H)...)) (2)
+Lower the electronic temperature Tehigher will be the βvalue
+(refer to Sec.IIA), and more recursion steps mwill be required
+to approximate the density matrix14,15.
+C. Accuracy and performance of polynomial expansion
+procedures
+The accuracy39of the aforementioned polynomial expan-
+sion procedures can be related to the degree nplof the polyno-
+mial needed to approximate the density matrix and, we note
+thatnpl∝(εN−ε1)with ε1,εNbeing spectral bound estimates
+of the DFT discretized Hamiltonian H. Since the spectral
+width of Harising in DFT calculations employing system-
+atically convergent basis is usually of the O(103−105), a
+large value of nplis required for approximating the density
+matrix. To this end, the above RPE approaches involving H
+require large number of computationally expensive matrix-
+matrix multiplications of huge sizes on distributed architec-
+tures and are never done in practice.
+III. COMPUTATIONAL METHODOLOGY AND
+IMPLEMENTATION
+A. Methodology and algorithmic details
+As discussed before, we consider the iterative orthogonal
+projection (IOP) based methods for solving the large-scale
+eigenvalue problem associated with matrix Hof dimension
+M×M. In these approaches, the orthogonal projection of the
+matrix His carried out onto a carefully constructed subspace
+of dimension k<<Mrich in the wanted eigenvectors. We
+choose to work with this smaller projected Hamiltonian Hp
+of dimension k×kand employ the recursive polynomial ex-
+pansion procedures on Hpto approximate the density matrix
+in the subspace8as an alternative to explicit subspace diag-
+onalization of Hp. Owing to the reduced dimension of Hp
+and spectral width of Hpbeing commensurate with that of oc-
+cupied Kohn-Sham eigenspectrum, the proposed approach is
+computationally efficient as demonstrated subsequently.
+Figure 1 describes the overall algorithmic details of im-
+plementing recursive Fermi-operator expansion (RFOE) ap-
+proaches discussed in this work (Z-RFOE, A-Z-RFOE and T-
+RFOE) employing Hp. As indicated in the figure, the trace
+change in the trial density matrix ( Xn) for a given nthiteration
+relative to the previous iteration ( RelTr ) is used as a criterionfor RFOE convergence. Furthermore, we also explore mixed-
+precision strategies in conjunction with the Z-RFOE and T-
+RFOE schemes implemented in this work. To this end, we
+rely on the fact that far away from RFOE convergence to the
+density matrix, the floating point operations can be performed
+in single precision (FP32) and switching to double precision
+(FP64) operations thereafter. The criteria to decide the num-
+ber of initial FP32 iterations is linked to RelTr .
+B. Implementation strategies
+The C++ implementation of RFOE codes employs the Mes-
+sage Passing Interface (MPI) library to achieve multi-node
+parallelism. To handle the parallel matrices encountered dur-
+ing the RFOE process, we utilize the SLATE (Software for
+Linear Algebra Targeting Exascale) library40. SLATE effec-
+tively stores these matrices in a 2-D block-cyclic fashion on
+both CPUs and GPUs within a node. The tile size, which de-
+termines the size of the sub-matrices (blocks) distributed in
+a 2-D block-cyclic manner across the processor grid, plays a
+crucial role in the parallel performance of matrix-matrix mul-
+tiplication. Therefore, we conduct numerical experiments to
+explore the impact of varying the tile size on the overall per-
+formance. These experiments aimed to identify the optimal
+tile size for a given matrix dimension Hp.
+The computation of the matrix trace, required at the be-
+ginning and end of RFOE iterations, involves traversing the
+diagonal elements of the global matrix and utilizing MPI col-
+lectives. Additionally, we compute the trace of the squares of
+symmetric matrices arising during the course of RFOE itera-
+tions by evaluating the square of the Frobenius norm of the
+given parallel distributed SLATE matrix ( Tr(A2) =||A||2
+F).
+This is facilitated through a SLATE API call, which grants
+users access to the Frobenius norm. Among the various steps
+involved in RFOE algorithms, matrix-matrix multiplication
+(MM) is the computationally dominant step. To handle this
+step efficiently across multiple CPUs and GPUs, we lever-
+age the capabilities of the SLATE library, which enables par-
+allel execution of the underlying MM. Furthermore, we ex-
+plored the performance of alternative approaches, namely the
+Communication-optimal Matrix Multiplication (COSMA)41
+and cuBLASMg (provided by the CUDA Math Library Early
+Access Program42) libraries, for computing parallel matrix-
+matrix multiplications on CPUs and GPUs. Our studies in-
+dicate that COSMA proved to be slower compared to the
+SLATE library in terms of computational times. Additionally,
+it’s worth noting that the cuBLASMg library is limited to uti-
+lizing multiple GPUs within a single node, which constrains
+its applicability.
+C. Metrics for accuracy benchmarking of RFOE
+For accuracy benchmarking of the RFOE methods imple-
+mented in this work, we compute two error metrics – (a)
+relative error ( ε1) in the Frobenius norm between the ex-
+act density matrix ( Dp
+re f=f(Hp)) and the approximate den-
+sity matrix ( Dp) computed -via- RFOE i.e. ε1= (||Dp−
+Dp
+re f||F)/||Dp
+re f||F, and (b) relative error ( ε2) between the
+trace of actual and the approximate value of f(Hp)Hp, a4
+FIG. 1: General implementation details flowchart for all the
+RFOE codes
+measure of band energy error. To this end, we have ε2=
+(Tr(DHp)−Tr(Dre fHp))/Tr(Dre fHp).Dre fis computed by
+explicit diagonalization using ELPA library21,22. We note
+that||Dp
+re f||Fwill be of the O(Nocc), and hence the electron-
+density computed using RFOE approaches will have an ab-
+solute error ερ=O(ε1Nocc)with respect to the true electron-
+density (ground-state). Since the Kohn-Sham energy func-
+tional is variational with respect to the ground-state electron
+density, the ground-state energy error will be of O(ε2
+ρ)and
+forces which are derivatives of ground-state energy with re-
+spect to the position of atoms will have an error of O(ερ).
+IV. RESULTS AND DISCUSSION
+To assess the accuracy and performance of the proposed
+methods, we employ synthetic matrices representative of the
+subspace projected Hamiltonians ( Hp) arising in pseudopo-
+tential DFT calculations. To this end, the matrix Hpis con-
+structed so that the spectral width is smaller and remains
+constant with an increase in the matrix size (indicative of
+an increase in the system size of a given material system).
+We choose the matrix elements of Hpsuch that Hp
+i j=Hp
+ji=
+e−0.5∗|i−j|∗sin(i+1), and the matrix sizes investigated in this
+study are 8192 ×8192, 16384 ×16384, 32768 ×32768, and
+65536×65536. The number of occupied states ( Nocc) is cho-
+sen to be around 90% of the dimension of the matrix in the
+case of zero-temperature density matrix, while in the case
+of the finite-temperature density matrix, the number of occu-
+pied states (including fractionally occupied) is chosen to be
+85% of the dimension of the matrix. We compare the perfor-
+mance of different implementations of RFOE (Z-RFOE, A-Z-RFOE, T-RFOE) and explicit diagonalization of Hpusing the
+ELPA21,22library employing two-stage diagonalization algo-
+rithm (CPU-ELPA2, GPU-ELPA2) on both multi-node CPUs
+and GPUs.
+The multi-node CPU study used the PARAM PRA VEGA
+supercomputer equipped with 584 nodes. Each node has
+2 Intel Xeon Cascade-Lake 8268, 2.9 GHz processors
+with 48 physical cores per node. The nodes are inte-
+grated with a BullSequana XH200 Mellanox HDR 100Gbps
+Infiniband interconnection using FAT-Tree topology for
+MPI. On PRA VEGA, we have compiled our codes using
+the libraries — GCC/11.2.0, INTEL-MKL/2020, INTEL-
+MPI/2019.10.317. The multi-node GPU study was done on
+SUMMIT (Oak Ridge Leadership Computing Facility) su-
+percomputer equipped with 4608 IBM Power System AC922
+nodes with two IBM POWER9 processors (42 physical cores)
+and six NVIDIA V olta V100 GPUs in each node. Summit
+nodes are connected to a dual-rail EDR InfiniBand network
+providing a node injection bandwidth of 23 GB/s. On SUM-
+MIT, we have compiled our codes using the libraries NVIDIA
+CUDA/11.0.3, GCC/9.1.0, IBM Spectrum-MPI/10.4.0.3, and
+OPENBLAS/0.3.15-omp
+Throughout our discussion of the results in this section, it
+is important to note that a relative trace tolerance RelTr of
+5×10−8is utilized as a convergence criterion for all double-
+precision (FP64) RFOE implementations described here (see
+Fig.1). As a result, the number of RFOE iterations (parallel
+matrix-matrix multiplications) is observed to be around 50 in
+the case of Z-RFOE and around 30 in the case of A-Z-RFOE.
+For the mixed precision strategy implemented in the case of Z-
+RFOE and T-RFOE, the value of RelTr is chosen to be around
+5×10−4for FP32 RFOE iterations, and subsequently, the
+RFOE iterations in FP64 precision are continued till a RelTr
+of 5×10−8is reached. In the case of finite-temperature den-
+sity matrix approximation using T-RFOE, the smearing value
+ofβcorresponding to a temperature of 500K is chosen. We
+observe the number of T-RFOE iterations to be around 30.
+Furthermore, we note that the tolerance criteria RelTr men-
+tioned above resulted in errors ε1andε2(refer to sec IIIC)
+of approximately O(10−10)andO(10−9), respectively, in the
+double-precision implementation of Z-RFOE and A-Z-RFOE.
+In the case of mixed precision implementation employing Z-
+RFOE, the errors ε1andε2are of the O(10−7)andO(10−9)
+respectively. In the case of T-RFOE, we remark that the error
+ε1is of the O(10−3)andε2is of O(10−6). We note that the
+higher errors associated with the finite-temperature density
+matrix approximated by T-RFOE relative to the exact Fermi-
+Dirac density matrix are expected, as the T-RFOE method15
+can be considered to be an alternative approach to smearing
+the zero-temperature density matrix. This viewpoint renders
+T-RFOE useful for approximating the finite-temperature den-
+sity matrix in DFT since it relies on energy differences to com-
+pute material properties.
+We now list performance metrics used for our comparative
+study in this work:
+• CPU Node-hrs ⇒Execution time (in hours) ×the num-
+ber of nodes (chosen in the good scaling regime). It
+gives a measure of computational efficiency on CPUs.5
+• GPU-hrs ⇒Execution time (in hours) ×the number of
+GPUs (chosen in the good scaling regime). It gives a
+measure of computational efficiency on GPUs.
+• Minimum wall time ⇒Least possible time obtained us-
+ing as many resources (CPUs/GPUs) as possible. It is a
+measure of the scaling efficiency of the implementation.
+• Energy consumption ⇒Upper bound of power con-
+sumption in kWh for executing a given algorithm on
+CPUs/GPUs. Indicative of the dollar cost required for
+the calculations on the supercomputer. For the energy
+consumption calculation, we used the Thermal Design
+Power (TDP) ratings for both CPUs and GPUs.
+1. Multi-node CPU comparisons
+Figures 2 and 3 provide a comparison between ELPA’s
+subspace diagonalization procedure and various RFOE ap-
+proaches that utilize parallel dense matrix-matrix multipli-
+cations based on the SLATE library. The comparison is
+based on CPU node-hrs, scalability, and minimum wall times
+on multi-node CPU architectures. On CPUs, Figure 2(a)
+demonstrates that RFOE implementations for approximating
+the zero-temperature density matrix are computationally effi-
+cient than subspace diagonalization in terms of CPU node-hrs.
+Among the RFOE implementations, A-Z-RFOE is the closest
+competing method to ELPA’s diagonalization approach and
+is faster than ELPA approximately by a factor of 2x for all
+the matrix Hpdimensions (8192, 16384, 32768 and 65536)
+considered in this work. This can be attributed to the re-
+duced computational prefactor in RFOE approach (only dense
+matrix-matrix multiplications) compared to exact diagonal-
+ization (reduction to tridiagonal matrix followed by reduc-
+tion to Schur form). Further, in Figure 2(b), the multi-node
+CPU scaling behavior of the subspace diagonalization proce-
+dure using ELPA and the A-Z-RFOE approach employing the
+SLATE library for the Hpmatrix of dimension 65536 is illus-
+trated. These results indicate the superior scaling behaviour
+of ELPA over SLATE. For instance, relative to 48 cores (1
+node), the minimum number of nodes that the problem can
+be accommodated, we find the scaling efficiency of ELPA di-
+agonalization is close to 75% at 3072 cores (64 nodes) and
+drops to around 60% at 12288 cores (256 nodes). In contrast,
+the scaling efficiency of A-Z-RFOE approach using SLATE
+drops to 37% at 3072 cores (64 nodes) and flattens around
+6144 cores (128 nodes). Insights into minimum wall times,
+i.e. the least possible execution time obtained with increasing
+CPU cores, are valuable outcomes of the scaling efficiency
+for various implementations considered in this work on multi-
+node CPU architectures. To this end, Figure 2(c) demonstrates
+that the minimum wall times obtained by ELPA’s subspace di-
+agonalization are faster by a factor of around 1.7x - 2x com-
+pared to A-Z-RFOE, the closest competitor and is consistent
+with the observation that ELPA’s scaling behaviour is close to
+ideal scaling behaviour till large number of CPU cores com-
+pared to SLATE. For instance, in this case of the matrix Hp
+of dimension 65536, the minimum wall times are observedat around 12000 CPU cores when using an explicit diagonal-
+ization approach employing the ELPA library, while the best
+RFOE implementation (A-Z-RFOE) based on SLATE gave a
+1.7x higher minimum wall time at around 6000 CPU cores.
+Finally, Figure 3 illustrates the comparisons for building the
+finite-temperature density matrix on multi-node CPUs using
+T-RFOE and diagonalization approaches. We observe from
+Figure 3(a) that T-RFOE approaches are more computation-
+ally efficient than ELPA’s diagonalization in terms of CPU
+node-hrs. In particular, mixed-precision T-RFOE implemen-
+tation has been observed to be faster by a factor of around
+3x-4x compared to ELPA’s diagonalization for the matrix di-
+mensions considered in this work. And, in the minimum wall
+time comparisons illustrated in Figure 3(b), mixed precision
+T-RFOE is found to have almost similar wall times as that of
+diagonalization using ELPA for all the sizes of the matrices
+considered in this work.
+2. Multi-node GPU comparisons
+Figures 4 and 5 illustrate a comparative study of GPU-hrs,
+scalability, minimum wall times on multi-node GPU archi-
+tectures between ELPA’s subspace diagonalization procedure
+and different RFOE approaches implemented using SLATE.
+On V100 GPUs, Figure 4(a) demonstrates that utilizing RFOE
+implementations for approximating the zero-temperature den-
+sity matrix is computationally more efficient than subspace
+diagonalization in terms of GPU-hrs. Among the RFOE im-
+plementations, A-Z-RFOE is the closest competing method to
+ELPA’s diagonalization procedure and is faster than ELPA ap-
+proximately by a factor of 4x, 2.7x, 2x and 1.2x for matrix Hp
+dimensions of 8192, 16384, 32768 and 65536 respectively.
+These results indicate that the speed-up over ELPA reduces
+with an increase in the size of the matrix. We note that the
+total computation time observed in RFOE or ELPA diagonal-
+ization is the cumulative of data movement costs and floating
+point operations costs on GPUs. The reduction in speed-ups
+of RFOE over ELPA with increase in matrix size can be at-
+tributed to the reduction in the fraction of data movement cost
+to the total computational cost associated with ELPA’s two
+phase diagonalization approach. Furthermore, Figure 4(b)
+shows the scalability data for both subspace diagonalization
+procedure using ELPA and A-Z-RFOE implemented using
+SLATE for Hpmatrix of dimension 65536. These results indi-
+cate the superior scaling behaviour of ELPA over SLATE. For
+instance, relative to 2 nodes (12 GPUs), the minimum num-
+ber of nodes that the problem can be accommodated, we find
+that the scaling efficiency of RFOE approaches using SLATE
+quickly drops to 60% at 4 nodes (24 GPUs), 20% at 16 nodes
+(96 GPUs), 10% at 128 nodes (768 GPUs) and around 1% at
+2048 nodes (12288 GPUs). In contrast, the scaling efficiency
+for ELPA is around 93%, 50%, 20% and 14% at 4 nodes, 16
+nodes, 128 nodes and 256 nodes, respectively. As discussed
+previously in the CPU comparisons, a practically valuable
+outcome of the scaling efficiency is the minimum wall time,
+i.e., the least possible execution time one can obtain with in-
+creasing GPUs. Figure 4(c) shows these minimum wall time
+comparisons between various approaches considered in this
+work. The minimum wall times obtained using A-Z-RFOE6
+(a)
+(b)
+(c)
+FIG. 2: (a) CPU Node-hrs vs. matrix size plot, (b) Scaling
+study involving Hpof size 65536, and (c) Min. wall time vs.
+matrix size plot. Case study: ELPA diagonalization vs
+different implementations of RFOE used to approximate the
+zero-temperature density matrix on multi-node CPUs. The
+bar plots in (c) indicates the number of CPU cores at which
+minimum wall time is obtained for each matrix size.
+is faster by a factor of 1.2x - 1.4x compared to ELPA’s sub-
+space diagonalization for the Hpmatrix of dimensions 8192,
+16384. However, the superior scaling of ELPA over SLATE
+resulted in these minimum wall times on fewer GPUs using
+ELPA’s diagonalization (48 GPUs) compared to RFOE ap-
+proaches considered in this work (768 and 1536 GPUs for
+matrix dimensions of 8192 and 16384 respectively). As the
+matrix dimension increases to 32768, the minimum wall time
+obtained is almost similar in the case of diagonalization and
+(a)
+(b)
+FIG. 3: (a) CPU Node-hrs vs. matrix size plot, and (b) Min.
+wall time vs. matrix size plot for different implementations
+of RFOE used to approximate the finite-temperature density
+matrix on multi-node CPUs. The bar plots in (b) indicates the
+number of CPU cores at which minimum wall time is
+obtained for each matrix size
+A-Z-RFOE implementation using SLATE, while the number
+of GPUs to achieve this wall time is larger by a factor of 16x
+for A-Z-RFOE approach in comparison to diagonalization. In
+the case of 65536 matrix size, a factor of 2x speed-up is ob-
+served in minimum wall time employing ELPA’s diagonaliza-
+tion with much fewer GPUs than A-Z-RFOE. Finally, Figure
+5 illustrates the comparative studies carried out in building
+the finite-temperature density matrix on GPUs using T-RFOE
+and diagonalization approaches. We observe that both dou-
+ble and mixed-precision variants of the T-RFOE implementa-
+tions are more computationally efficient than the explicit di-
+agonalization procedure using ELPA in the GPU-hrs regime.
+We also observe that mixed-precision variant of T-RFOE is
+the closest competitor to the diagonalization approach. In
+particular, we see computational gains of around 4.4x, 3.8x,
+3x and 2.3x in terms of GPU-hrs for the Hpmatrix of di-
+mensions 8192, 16384, 32768 and 65536, respectively, over
+ELPA’s diagonalization. Figure 5(b) illustrates the minimum
+wall time comparisons, and these times obtained using mixed-
+precision T-RFOE are faster by a factor of 1.3x - 2x com-
+pared to ELPA’s subspace diagonalization involving matrix
+dimensions of 8192, 16384 and 32768. However, the supe-
+rior scaling of ELPA over SLATE resulted in these minimum
+wall times on fewer GPUs using ELPA. Further, for the Hp
+matrix size of 65536, the minimum wall time obtained -via-7
+ELPA’s diagonalization approach was lower than T-RFOE and
+was obtained on much fewer GPUs.
+The comparisons reported in this study were performed on
+V100 SXM2 GPUs. However, it is important to note that
+newer GPU architectures can potentially provide even greater
+computational improvements in terms of GPU-hrs. This is
+because the dominant computational costs associated with the
+RFOE approaches examined in this study are primarily asso-
+ciated with dense matrix-matrix multiplications. For instance,
+we anticipate a speed-up of ∼1.5−2×in terms of GPU-
+hrs for RFOE approaches using A100 SXM2 GPUs in com-
+parison to V100 SXM2, taking into account the data move-
+ment costs associated with dense matrix-matrix multiplica-
+tions. Futhermore, for the case of H100 GPUs, we anticipate
+the speed-ups in GPU-hrs compared to V100 GPUs can be
+around ∼5−6×since H100 GPUs have close to 8 ×higher
+FP64 throughput performance. These advanced architectures
+also can benefit ELPA’s diagonalization but not to the extent
+it can benefit RFOE dense matrix-matrix multiplications since
+explicit diagonalization methods usually do not involve high
+arithmetic intensity operations like RFOE. This is because di-
+agonalization relies on a two-phase approach with the first
+phase involving the reduction of a dense matrix to a tridiago-
+nal matrix using Householder reflectors which are constructed
+using vectors and do not involve arithmetic intensity oper-
+ations like dense matrix-matrix multiplications. The subse-
+quent phase reduces this tridiagonal matrix to a diagonal ma-
+trix which involves manipulation with sparse matrices which
+involves more data movement costs.
+In the case of minimum wall time comparisons with the
+newer architecture GPUs, the speed-ups gained by RFOE ap-
+proach over ELPA or vice versa may not change much com-
+pared to what is reported in the manuscript as the commu-
+nication cost becomes the dominant cost than compute at a
+larger number of GPUs. As of today, this is better handled
+in ELPA’s diagonalization implementation than the parallel
+dense matrix-matrix multiplications (pgemm) implemented in
+the state-of-the-art libraries.
+3. Energy consumption comparisons
+In order to estimate the upper bound for energy consump-
+tion in units of kWh as a function of matrix dimension, we
+utilize the TDP(Thermal design power) ratings for executing
+both RFOE implementations and the explicit diagonalization
+approach using the ELPA library. To plot the energy consump-
+tion against the matrix dimensions, we consider both the CPU
+node-hours/GPU-hours and minimum wall time regimes us-
+ing the execution time of the best-performing RFOE imple-
+mentation and ELPA diagonalization involving Hp. Figures
+6 and 7summarize the relevant data. As the matrix size in-
+creases, we observe a higher energy consumption in the case
+of explicit diagonalization using ELPA for CPUs, both in the
+regime of CPU node-hours ( ∼2×) and minimum wall time
+(∼1.2×) compared to the best-performing RFOE implemen-
+tations. In the case of GPUs, we also observe a higher energy
+consumption for explicit diagonalization using ELPA in the
+regime of GPU-hrs. However, in the regime of minimum wall
+time, energy consumption is significantly higher in the case of
+(a)
+(b)
+(c)
+FIG. 4: (a) GPU-hrs vs. matrix size plot, and (b) Scaling
+study (c) Min. wall time vs. matrix size plot. Case study:
+ELPA Diagonalization vs different implementations of RFOE
+used to approximate the zero-temperature density matrix on
+multi-node GPUs
+best RFOE implementation using SLATE compared to ELPA,
+owing to the excellent scaling behaviour of ELPA on multin-
+ode GPUs.
+V. CONCLUSIONS
+Our current work investigates recursive Fermi-operator
+expansion (RFOE) strategies involving subspace projected
+Hamiltonian as an alternative to explicit subspace diagonal-
+ization in iterative orthogonal projection methods for solving
+large-scale eigenvalue problems. We explore the potential use
+of these strategies on both multi-node CPU and GPU architec-8
+(a)
+(b)
+FIG. 5: (a) GPU-hrs vs. matrix size plot, and (b) Min. wall
+time vs. matrix size plot for different implementations of
+RFOE used to approximate the finite-temperature density
+matrix on multi-node GPUs.
+tures by employing ELPA and SLATE libraries. As demon-
+strated by various studies conducted in this work, we find that
+RFOE schemes involving dense matrix-matrix multiplications
+have a lesser computational prefactor associated with the cu-
+bic scaling complexity and hence, are more computationally
+efficient ( ∼2×−4×) than the explicit diagonalization of the
+subspace projected Hamiltonian in the CPU node-hrs/GPU-
+hrs regime. Further, we found that RFOE strategies can be
+memory efficient compared to explicit diagonalization proce-
+dures on GPUs. However, our results also demonstrate that
+the scaling efficiency associated with the explicit subspace di-
+agonalization procedure carried out using ELPA is superior
+to RFOE strategies resulting in lower minimum wall times on
+both CPUs and GPUs. Finally, we conclude that RFOE strate-
+gies can be considered as effective alternatives to subspace di-
+agonalization, particularly in the context of the good scaling
+regime, where computational efficiency is measured in terms
+of CPU node-hrs/GPU-hrs consumed. However, it’s worth
+noting that these strategies may not perform as well in the
+extreme scaling regime as demonstrated in the current work.
+ACKNOWLEDGMENTS
+The authors gratefully acknowledge the seed grant from In-
+dian Institute of Science (IISc) and SERB Startup Research
+Grant from the Department of Science and Technology In-
+dia (Grant Number:SRG/2020/002194) for the purchase of
+(a)
+(b)
+FIG. 6: Energy consumption (kWh) vs. matrix size plot in
+terms of (a) Node-hrs/GPU-hrs, and (b) Min. wall time for
+the best-performing implementation of RFOE used to
+approximate zero-temperature density matrix.
+a GPU cluster, which provided computational resources for
+this work. The research used the resources of PARAM
+Pravega at Indian Institute of Science, supported by National
+Super-computing Mission (NSM) R&D for exa-scale grant
+(DST/NSM/R&D_Exascale/2021/14.02). This research also
+used resources of the Oak Ridge Leadership Computing Facil-
+ity at the Oak Ridge National Laboratory, which is supported
+by the Office of Science of the U.S. Department of Energy
+under Contract No. DE-AC05-00OR22725.
+1W. Kohn and L. J. Sham, “Self-consistent equations including exchange
+and correlation effects,” Phys. Rev. 140, A1133–A1138 (1965).
+2L. E. Ratcliff, W. Dawson, G. Fisicaro, D. Caliste, S. Mohr, A. Degomme,
+B. Videau, V . Cristiglio, M. Stella, M. D’Alessandro, S. Goedecker,
+T. Nakajima, T. Deutsch, and L. Genovese, “Flexibilities of wavelets as
+a computational basis set for large-scale electronic structure calculations,”
+The Journal of Chemical Physics 152, 194110 (2020).
+3S. Ghosh and P. Suryanarayana, “SPARC: Accurate and efficient finite-
+difference formulation and parallel implementation of density functional
+theory: Isolated clusters,” Computer Physics Communications 212, 189–
+204 (2017).
+4S. Das, P. Motamarri, V . Gavini, B. Turcksin, Y . W. Li, and B. Leback,
+“Fast, scalable and accurate finite-element based ab initio calculations using
+mixed precision computing: 46 pflops simulation of a metallic dislocation
+system,” in Proc. of the International Conference for High Performance
+Computing, Networking, Storage and Analysis (2019).
+5P. Motamarri, S. Das, S. Rudraraju, K. Ghosh, D. Davydov, and V . Gavini,
+“DFT-FE – a massively parallel adaptive finite-element code for large-scale
+density functional theory calculations,” Computer Physics Communications
+246, 106853 (2020).9
+(a)
+(b)
+FIG. 7: Energy consumption (kWh) vs. matrix size plot in
+terms of (a) Node-hrs/GPU-hrs, and (b) Min. wall time for
+the best-performing implementation of RFOE in the case of
+approximating finite-temperature density matrix.
+6S. Das, P. Motamarri, V . Subramanian, D. M. Rogers, and V . Gavini,
+“Dft-fe 1.0: A massively parallel hybrid cpu-gpu density functional theory
+code using finite-element discretization,” Computer Physics Communica-
+tions280, 108473 (2022).
+7P. Motamarri, M. Nowak, K. Leiter, J. Knap, and V . Gavini, “Higher-order
+adaptive finite-element methods for kohn–sham density functional theory,”
+Journal of Computational Physics 253, 308–343 (2013).
+8P. Motamarri and V . Gavini, “Subquadratic-scaling subspace projection
+method for large-scale kohn-sham density functional theory calculations
+using spectral finite-element discretization,” Physical Review B 90(2014).
+9E. R. Davidson, “The iterative calculation of a few of the lowest eigenvalues
+and corresponding eigenvectors of large real-symmetric matrices,” Journal
+of Computational Physics 17, 87–94 (1975).
+10A. V . Knyazev, “Toward the optimal preconditioned eigensolver: Locally
+optimal block preconditioned conjugate gradient method,” SIAM J. Sci.
+Comput. 23, 517–541 (2001).
+11Y . Zhou, Y . Saad, M. L. Tiago, and J. R. Chelikowsky, “Self-consistent-
+field calculations using chebyshev-filtered subspace iteration,” Journal of
+Computational Physics 219, 172–184 (2006).
+12A. M. N. Niklasson, “Expansion algorithm for the density matrix,” Phys.
+Rev. B 66, 155115 (2002).
+13G. Beylkin, N. Coult, and M. J. Mohlenkamp, “Fast spectral projec-
+tion algorithms for density-matrix computations,” Journal of Computational
+Physics 152, 32–54 (1999).
+14S. M. Mniszewski, R. Perriot, E. H. Rubensson, C. F. A. Negre, M. J. Cawk-
+well, and A. M. N. Niklasson, “Linear scaling pseudo fermi-operator ex-
+pansion for fractional occupation,” Journal of Chemical Theory and Com-
+putation 15, 190–200 (2019).
+15A. M. N. Niklasson, “A note on the pulay force at finite electronic temper-
+atures,” The Journal of Chemical Physics 129, 244107 (2008).
+16M. J. Cawkwell, E. J. Sanville, S. M. Mniszewski, and A. M. N. Niklasson,
+“Computing the density matrix in electronic structure theory on graphics
+processing units,” Journal of Chemical Theory and Computation 8, 4094–4101 (2012).
+17J. Finkelstein, J. S. Smith, S. M. Mniszewski, K. Barros, C. F. A. Negre,
+E. H. Rubensson, and A. M. N. Niklasson, “Mixed precision fermi-operator
+expansion on tensor cores from a machine learning perspective,” Journal of
+Chemical Theory and Computation 17, 2256–2265 (2021).
+18J. Finkelstein, J. S. Smith, S. M. Mniszewski, K. Barros, C. F. A.
+Negre, E. H. Rubensson, and A. M. N. Niklasson, “Quantum-based
+molecular dynamics simulations using tensor cores,” Journal of Chemi-
+cal Theory and Computation 17, 6180–6192 (2021), pMID: 34595916,
+https://doi.org/10.1021/acs.jctc.1c00726.
+19J. Finkelstein, E. H. Rubensson, S. M. Mniszewski, C. F. A. Ne-
+gre, and A. M. N. Niklasson, “Quantum perturbation theory us-
+ing tensor cores and a deep neural network,” Journal of Chemical
+Theory and Computation 18, 4255–4268 (2022), pMID: 35670603,
+https://doi.org/10.1021/acs.jctc.2c00274.
+20R. Pederson, J. Kozlowski, R. Song, J. Beall, M. Ganahl, M. Hauru,
+A. G. M. Lewis, Y . Yao, S. B. Mallick, V . Blum, and G. Vidal,
+“Large scale quantum chemistry with tensor processing units,” Journal of
+Chemical Theory and Computation 19, 25–32 (2023), pMID: 36508260,
+https://doi.org/10.1021/acs.jctc.2c00876.
+21A. Marek, V . Blum, R. Johanni, V . Havu, B. Lang, T. Auckenthaler, A. Hei-
+necke, H.-J. Bungartz, and H. Lederer, “The elpa library: Scalable parallel
+eigenvalue solutions for electronic structure theory and computational sci-
+ence,” Journal of Physics: Condensed Matter 26, 213201 (2014).
+22V . W. zhe Yu, J. Moussa, P. K˚ us, A. Marek, P. Messmer, M. Yoon, H. Led-
+erer, and V . Blum, “Gpu-acceleration of the elpa2 distributed eigensolver
+for dense symmetric and hermitian eigenproblems,” Computer Physics
+Communications 262, 107808 (2021).
+23R. McWeeny, “Some recent advances in density matrix theory,” Rev. Mod.
+Phys. 32, 335–369 (1960).
+24A. H. R. Palser and D. E. Manolopoulos, “Canonical purification of the den-
+sity matrix in electronic-structure theory,” Phys. Rev. B 58, 12704–12711
+(1998).
+25K. Németh and G. E. Scuseria, “Linear scaling density matrix search
+based on sign matrices,” The Journal of Chemical Physics 113, 6035–6041
+(2000).
+26A. Holas, “Transforms for idempotency purification of density matrices in
+linear-scaling electronic-structure calculations,” Chemical Physics Letters
+340, 552–558 (2001).
+27A. M. N. Niklasson, “Implicit purification for temperature-dependent den-
+sity matrices,” Phys. Rev. B 68, 233104 (2003).
+28D. K. Jordan and D. A. Mazziotti, “Comparison of two genres for linear
+scaling in density functional theory: Purification and density matrix mini-
+mization methods,” The Journal of Chemical Physics 122, 084114 (2005).
+29E. Rudberg and E. H. Rubensson, “Assessment of density matrix meth-
+ods for linear scaling electronic structure calculations,” Journal of Physics:
+Condensed Matter 23, 075502 (2011).
+30P. Suryanarayana, “Optimized purification for density matrix calculation,”
+Chemical Physics Letters 555, 291–295 (2013).
+31E. H. Rubensson and A. M. N. Niklasson, “Interior eigenvalues from den-
+sity matrix expansions in quantum mechanical molecular dynamics,” SIAM
+Journal on Scientific Computing 36, B147–B170 (2014).
+32D. Bowler and M. Gillan, “Density matrices in o(n) electronic structure
+calculations: theory and applications,” Computer Physics Communications
+120, 95–108 (1999).
+33L. A. Truflandier, R. M. Dianzinga, and D. R. Bowler, “Communication:
+Generalized canonical purification for density matrix minimization,” The
+Journal of Chemical Physics 144, 091102 (2016).
+34S. Goedecker and L. Colombo, “Efficient linear scaling algorithm for tight-
+binding molecular dynamics,” Phys. Rev. Lett. 73, 122–125 (1994).
+35A. Weiße, G. Wellein, A. Alvermann, and H. Fehske, “The kernel polyno-
+mial method,” Rev. Mod. Phys. 78, 275–306 (2006).
+36R. Zeller, J. Deutz, and P. Dederichs, “Application of complex energy inte-
+gration to selfconsistent electronic structure calculations,” Solid State Com-
+munications 44, 993–997 (1982).
+37T. Ozaki, “Continued fraction representation of the fermi-dirac function
+for large-scale electronic structure calculations,” Phys. Rev. B 75, 035123
+(2007).
+38E. H. Rubensson, “Nonmonotonic recursive polynomial expansions for lin-
+ear scaling calculation of the density matrix,” Journal of Chemical Theory10
+and Computation 7, 1233–1236 (2011).
+39S. Goedecker, “Linear scaling electronic structure methods,” Rev. Mod.
+Phys. 71, 1085–1123 (1999).
+40M. Gates, J. Kurzak, A. Charara, A. YarKhan, and J. Dongarra, “Slate:
+Design of a modern distributed and accelerated linear algebra library,” in
+Proc. of the International Conference for High Performance Computing,Networking, Storage and Analysis (2019).
+41G. Kwasniewski, M. Kabi ´c, M. Besta, J. VandeV ondele, R. Solcà, and
+T. Hoefler, “Red-blue pebbling revisited: Near optimal parallel matrix-
+matrix multiplication,” in Proc. of the International Conference for High
+Performance Computing, Networking, Storage and Analysis (2019).
+42NVIDIA, “Cuda math library early access program,” .

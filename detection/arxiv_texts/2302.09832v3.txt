@@ -1,0 +1,2262 @@
+TAMUNA: Doubly Accelerated Distributed Optimization
+with Local Training, Compression,
+and Partial Participation
+Laurent Condat1,2Ivan Agarský3,4Grigory Malinovsky1Peter Richtárik1,2
+1Computer Science Program, CEMSE Division,
+King Abdullah University of Science and Technology (KAUST)
+Thuwal, 23955-6900, Kingdom of Saudi Arabia
+2SDAIA-KAUST Center of Excellence in Data Science
+and Artificial Intelligence (SDAIA-KAUST AI)
+3Brno University of Technology
+Brno, Czech Republic
+4Kempelen Institute of Intelligent Technologies (KInIT)
+Bratislava, Slovakia
+May 2023. Minor revision in April 2024
+Abstract
+In distributed optimization and learning, several machines alternate between local computa-
+tions in parallel and communication with a distant server. Communication is usually slow and
+costly and forms the main bottleneck. This is particularly true in federated learning, where a
+large number of users collaborate toward a global training task. In addition, it is desirable for
+a robust algorithm to allow for partial participation, since it is often the case that some clients
+are not able to participate to the entire process and are idle at certain times. Two strategies are
+populartoreducethecommunicationburden: 1)localtraining, whichconsistsincommunicating
+less frequently, or equivalently performing more local computations between the communication
+rounds; and 2) compression, whereby compressed information instead of full-dimensional vec-
+tors is communicated. We propose TAMUNA, the first algorithm for distributed optimization
+that leveraged the two strategies of local training and compression jointly and allows for partial
+participation. In the strongly convex setting, TAMUNA converges linearly to the exact solution
+and provably benefits from the two mechanisms: it exhibits a doubly-accelerated convergence
+rate, with respect to the condition number of the functions and the model dimension.
+1arXiv:2302.09832v3  [cs.LG]  27 Apr 2024Contents
+1 Introduction 3
+1.1 Formalism . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+1.2 A model of Asymmetric Communication . . . . . . . . . . . . . . . . . . . . . . . . . 4
+2 Related Work 5
+2.1 Local Training (LT) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+2.2 Partial Participation (PP) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2.3 Communication Compression (CC) . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+3 Challenges and Contributions 7
+3.1 Combining LT and PP . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+3.2 Combining LT and CC . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+4 Proposed Algorithm TAMUNA 10
+4.1 Iteration and Communication Complexities . . . . . . . . . . . . . . . . . . . . . . . 13
+5 Experiments 15
+6 Conclusion 18
+A Proof of Theorem 1 23
+A.1 The Random Variable dt. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+A.2 From Algorithm 2 to TAMUNA . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30
+B Proof of Theorem 3 32
+C Sublinear Convergence in the Convex Case 33
+21 Introduction
+In traditional machine learning methods relying on a large amount of data, the data is first gathered
+and centralized in a datacenter before being processed. By contrast, in the recent paradigm of
+Federated Learning (FL) [Konečný et al., 2016a,b, McMahan et al., 2017, Bonawitz et al., 2017], a
+model is trained in a collaborative way, based on the wealth of information stored on edge devices,
+such as mobile phones, sensors and hospital workstations, without this private data being shared.
+This raises a multitude of challenges, to secure the process and maintaindata privacy[Kairouz et al.,
+2021, Li et al., 2020a, Wang et al., 2021]. The devices perform computations locally in parallel and
+communicate back and forth with a distant orchestrating server, which aggregates the information
+and synchronizes the process so that a consensus is reached and a globally-optimal model is learnt.
+Communication between the parallel workers and the server, which takes place over the internet
+or cell phone network, is typically slow, costly, and unreliable. Thus, communication is the main
+bottleneck in this framework and forms the main challenge to be addressed by the community,
+before FL can be widely adopted.
+Two strategies are popular to reduce the communication burden: 1) local training, which con-
+sists in communicating less frequently, or equivalently performing more local computations between
+the communication rounds; and 2) compression, whereby compressed information instead of full-
+dimensional vectors is communicated. Moreover, in practical applications where FL is deployed,
+it is unrealistic to assume that all clients are available 100%of the time to perform the required
+computation and communication operations. Thus, partial participation is an essential feature in
+practice, whereby only part of the clients need to participate in any given round of the process,
+while maintaining the overall convergence guarantees. We review existing methods using local
+training, compression, and allowing for partial participation in Section 2. In Section 3, we explain
+the challenges of combining these mechanisms and how we overcame them.
+Our proposed randomized algorithm TAMUNA for communication-efficient distributed optimiza-
+tion and learning, presented in Section 4, combines local training and compression, and allows for
+partial participation. Being variance-reduced [Hanzely and Richtárik, 2019, Gorbunov et al., 2020a,
+Gower et al., 2020], it converges to an exact solution when exact gradients are called. The main
+feat is that TAMUNA provably benefits from the two mechanisms: the convergence rate is doubly
+accelerated, with respect to the condition number of the functions and the model dimension. In the
+remainder of this section, we formulate the setup and we propose a new model to characterize the
+communication complexity,
+1.1 Formalism
+We consider the classical client-server setup, with n≥2clients doing computations in parallel and
+communicating back and forth with a server. We study the finite-sum optimization problem
+minimize
+x∈Rdf(x):=1
+nnX
+i=1fi(x), (1)
+where fi:Rd→Ris the individual loss function of client i∈[n]:={1, . . . , n }. This problem
+(1) is of utmost importance as it models empirical risk minimization, the dominant framework in
+supervised machine learning. In spite of its simple form, it is challenging because the number nof
+clients, as well as the dimension d≥1of the model, can be very large.
+3Every function fiis assumed to be L-smooth and µ-strongly convex,1for some L ≥ µ > 0.
+By strong convexity, the sought solution x⋆of (1) exists and is unique. We define κ:=L
+µ. A
+sublinear convergence result is derived in the Appendix for the general convex case. We focus on
+the strongly convex case because the analysis of linear convergence rates provides clear insights on
+the mathematical and algorithmic mechanisms under study, namely local training, compression,
+and partial participation. We emphasize that the problem can be arbitrarily heterogeneous: we do
+not make any assumption on the functions fibeyond smoothness and strong convexity, and there
+is no notion of data similarity whatsoever. We note that studying the minimization of a sum of
+nonconvex functions requires significantly different proof techniques [Karimireddy et al., 2021, Das
+et al., 2022], so the nonconvex setting is out of the scope of this paper. Moreover, whether variance-
+reduced algorithms are appropriate for deep learning, and nonconvex optimization in general, is still
+an open question in the community [Defazio and Bottou, 2019].
+The basic algorithm of Gradient Descent ( GD) solves the problem (1) by iterating, for t=
+0,1, . . . ,
+xt+1:=xt−γ
+nnX
+i=1∇fi(xt),
+for some stepsize γ∈(0,2
+L). Iteration tproceeds as follows: first, xtis broadcast by the server to all
+clients. Second, the clients compute the gradients ∇fi(xt)and send them to the server, in parallel.
+Third, the server averages the received vectors as ∇f(xt) =1
+nPn
+i=1∇fi(xt)and performs the
+gradient descent step xt+1=xt−γ∇f(xt). As is well known, for γ= Θ(1
+L),GDconverges linearly
+and reaches ϵ-accuracy with O(κlogϵ−1)iterations. Since d-dimensional vectors are communicated
+at every iteration, the communication complexity of GDin number of reals is O(dκlogϵ−1). Our
+goal is a twofold acceleration of GDwith a better dependency to both κanddin this complexity.
+1.2 A model of Asymmetric Communication
+We define uplink communication (UpCom) as the communication of information in parallel
+from the clients to the server, and downlink communication (DownCom) as the broadcast of
+the same message from the server to the clients:
+uplink communication (UpCom) :clients to server
+downlink communication (DownCom) :server to clients
+UpCom is typically much slower than DownCom, like uploading is slower than downloading on
+the internet or cell phone network. This can be due to the asymmetry of the service provider’s
+systems or protocols used on the communication network, or constraints on the cache memory and
+aggregation speed of the server, which during UpCom has to decode and process the large number
+nof vectors received from the clients at the same.
+We measure the uplink or downlink communication complexity as the expected number of
+communication rounds to reach ϵ-accuracy multiplied by the number of real numbers (floats) sent
+during a communication round between the server and any client. For instance, the UpCom or
+1A function f:Rd→Ris said to be L-smooth if it is differentiable and its gradient is Lipschitz continuous with
+constant L; that is, for every x, y∈Rd,∥∇f(x)− ∇f(y)∥ ≤ L∥ x−y∥(we use the Euclidean norm throughout the
+paper). fis said to be µ-strongly convex if f−µ
+2∥ · ∥2is convex. We refer to Bauschke and Combettes [2017] for
+such standard notions of convex analysis.
+4DownCom complexity of GDisO(dκlogϵ−1)). We could count bits, instead of floats, but since a
+float is typically represented in the IEEE floating-point standard using a fixed number, say 32, of
+bits, this is just a constant factor that does not change the asymptotic complexity.
+Since UpCom is usually slower than DownCom, we propose to measure, like in Condat et al.
+[2022a], the total communication (TotalCom) complexity as a weighted sum of the UpCom and
+DownCom complexities:
+TotalCom =UpCom +α.DownCom , (2)
+for some weight α∈[0,1]. A symmetric but unrealistic communication regime corresponds to
+α= 1, whereas ignoring downCom and focusing on UpCom only, since Upcom is typically the
+limiting factor, corresponds to α= 0. We will provide explicit expressions of the parameter values
+and TotalCom complexity for any given α∈[0,1]. So, our model is richer than only considering
+UpCom with α= 0, as is the case in many papers on the topic of communication-efficient methods.
+Nevertheless, realistic values of αare small.
+2 Related Work
+Inthissection, wereviewtheliteratureonthetwomainapproachesusedtodecreasecommunication:
+1)Local Training (LT) , which consists in communicating less frequently than after every GD
+step, or equivalently performing more local computations between successive communication rounds
+in order to send “richer” information to the server.
+2)Communication Compression (CC) , which consists in sending shorter messages than full
+vectors made of dfloats.
+We also review existing work on Partial Participation (PP) .
+2.1 Local Training (LT)
+In GD, the gradient vectors are sent to the server right after being computed. LT is the simple but
+very effective idea of doing more computation than just one GD step before sending information to
+the server. Skipping communication was initially just a heuristic idea implemented in the FedAvg
+algorithm of McMahan et al. [2017] to reduce communication, but ample empirical evidence showed
+its practical efficiency, so that FedAvgbecame very popular. No theory was available to back up
+this technique, though. LT was first analyzed in the homogeneous, or i.i.d. data, regime, or under
+assumptions such as bounded gradient diversity [Haddadpour and Mahdavi, 2019]. It was then
+studied in the heterogeneous regime, which is more representative of FL [Khaled et al., 2019, Stich,
+2019, Khaled et al., 2020, Li et al., 2020b, Woodworth et al., 2020, Gorbunov et al., 2021, Glasgow
+et al., 2022]. If too many GD steps are made, the local models get closer and closer to the minimizers
+of the local cost functions fi, which are all different from each other and different from the global
+solution x⋆. Thisso-calledclientdriftwascharacterizedinMalinovskyetal.[2020]. TheLTmethods
+of the next generation, including Scaffold[Karimireddy et al., 2020], S-Local-GD [Gorbunov et al.,
+2021] and FedLin[Mitra et al., 2021], were variance-reduced, with control variates used to correct for
+the client drift. They converge linearly to the exact solution, but their communication complexity
+is still O(dκlogϵ−1), just like GD.
+Most recently, a breakthrough was made with the appearance of accelerated LT methods.
+Scaffnew,proposedbyMishchenkoetal.[2022],isthefirstLT-basedalgorithmachieving O(d√κlogϵ−1)
+accelerated communication complexity. In Scaffnew, communication is triggered randomly with a
+5small probability pat every iteration. Thus, the expected number of local GD steps between two
+communication rounds is 1/p. By choosing p= 1/√κ, the optimal dependency on√κinstead of
+κ[Scaman et al., 2019] is obtained. Scaffnew has been extended in Malinovsky et al. [2022], using
+calls to variance-reduced [Gorbunov et al., 2020a, Gower et al., 2020] stochastic gradient estimates
+instead of exact gradients. It has also been analyzed in Condat and Richtárik [2023] as a particular
+case ofRandProx , a primal-dual algorithm with a general randomized and variance-reduced dual
+update. Conceptually, our proposed algorithm TAMUNA is inspired by RandProx , with the dual
+update corresponding to the intermittent update of the control variates of the participating clients.
+TAMUNA is not a particular case of RandProx , though, because the primal update of the model and
+the dual update of the control variates are decoupled.
+A different approach was developed by Sadiev et al. [2022a] with the APDA-Inexact algorithm,
+and then by Grudzień et al. [2023] with the 5GCSalgorithm: in both algorithms, the local steps
+correspond to an inner loop to compute a proximity operator inexactly.
+TAMUNA relies on the same LT mechanism as Scaffnew and benefits from its accelerated depen-
+dency on√κ. However, we go even further and tackle the multiplicative factor din the complexity,
+using compression.
+2.2 Partial Participation (PP)
+PP, a.k.a. client sampling, is the property that not all clients need to participate in a given round,
+consisting of a series of local steps followed by communication with the server. This is an important
+feature for a FL method, since in practice, there are many reasons for which a client might be
+idle and unable to do any computation and communication for a certain period of time. PP in
+SGD-type methods is now well understood [Gower et al., 2019, Condat and Richtárik, 2022], but
+its combination with LT has remained unconvincing so far. Scaffoldallows for LT and PP, but
+its communication complexity does not benefit from LT. The variance-reduced FedVARP algorithm
+with LT and PP has been proposed [Jhunjhunwala et al., 2022], for nonconvex problems and with
+a bounded global variance assumption that does not hold in our setting. Scaffnew does not allow
+for PP. This was the motivation for Grudzień et al. [2023] to develop 5GCS, which is, to the best of
+our knowledge, the first and only algorithm enabling LT and PP, and enjoying accelerated commu-
+nication. We refer to Grudzień et al. [2023] for a detailed discussion of the literature of LT and PP.
+5GCSis completely different from Scaffnew and based on Point-SAGA [Defazio, 2016] instead of GD.
+Thus, it is an indirect, or two-level, combination of LT and PP: PP comes from the random selection
+of the activated proximity operators, whereas LT corresponds to an inner loop to compute these
+proximity operators inexactly. TAMUNA is a direct combination of LT and PP as two intertwined
+stochastic processes, and the first generalization of Scaffnew to PP.
+Throughout the paper, we denote by c∈ {2, . . . , n }the cohort size, or number of active clients
+participating in every round. We report in Table 1 the communication complexity of the two known
+algorithms converging linearly to the exact solution, while allowing for LT and PP, namely Scaffold
+and5GCS.Scaffoldis not accelerated, with a complexity depending on κ, and5GCSis accelerated
+with respect to κbut not d. Also, in 5GCSthe number of local steps in each communication round is
+of order at least pcκ
+n+ 1
+logκ, whereas in TAMUNA it is typically much smaller, of orderpsκ
+n+1
+where scan be as small as 2, see (14).
+62.3 Communication Compression (CC)
+Another widely-used strategy to decrease the communication load is to make use of (lossy) com-
+pression. It can be formulated as follows: a possibly randomized compression operator C:Rd→Rd
+is applied to the vector xto communicate, with the property that C(x)has a much more compact
+representation than the full vector x∈Rd.Cis unbiased if E[C(x)] =xfor every x∈Rd, where
+E[·]denotes the expectation. Otherwise, it is biased. A popular unbiased compressor is rand-k, for
+some k∈[d]:={1, . . . , d }, which multiplies kelements of x, chosen uniformly at random, by d/k,
+and sets the other ones to zero. Only these kselected elements are actually communicated, usually
+with a few number of additional bits to encode which coordinates have been selected. kcan be as
+small as 1 and the compression factor is d/k, which can be huge. Another sparsifying compressor
+istop-k, which keeps the kelements with largest absolute values and sets the other ones to zero
+[Beznosikov et al., 2020]. top-kis deterministic and biased.
+A major milestone was the introduction of the variance-reduced algorithm DIANA[Mishchenko
+et al., 2019], which converges linearly with a large class of unbiased compressors. For example,
+when the clients use independent rand-1compressors for UpCom, the UpCom complexity of DIANA
+isO 
+(κ(1 +d
+n) +d) logϵ−1
+. Ifnis large, the leading factor is κ+d, which is much better than
+dκwithGD.DIANAhas been extended in several ways [Horváth et al., 2022, Gorbunov et al.,
+2020a, Li et al., 2020c], including as a generalized version DIANA-PP allowing for PP [Condat and
+Richtárik, 2022]. However, the focus in DIANAis on UpCom and the full model is broadcast at
+every iteration, so that its TotalCom complexity can be worsethan the one of GD. Extensions of
+DIANAwith bidirectional CC, i.e. compression in both UpCom and DownCom, have been proposed
+[Gorbunov et al., 2020b, Philippenko and Dieuleveut, 2020, Liu et al., 2020, Condat and Richtárik,
+2022], but this does not improve its TotalCom complexity; see also Philippenko and Dieuleveut
+[2021] and references therein on bidirectional CC. For biased compressors like top-k, the theory is
+less mature. The variance-reduced algorithm EF21[Richtárik et al., 2021, Fatkhullin et al., 2021,
+Condat et al., 2022b] converges linearly, but its complexity factor remains dκ, so it does not show
+any acceleration. Existing results are summarized in Table 2. Thus, compression alone is insufficient
+to obtain a communication-efficient algorithm and our proposed algorithm TAMUNA outperforms
+algorithms based solely on compression, thanks to its combination of LT and CC. We note that if
+LT is disabled ( L(r)≡1),TAMUNA is still new and does not revert to a known algorithm with CC.
+3 Challenges and Contributions
+LetuslookatthedoublechallengeofcombiningLTwithPPandCC.Ournotationsaresummarized
+in Table 3 for convenience.
+3.1 Combining LT and PP
+With the recent breakthrough of Scaffnew [Mishchenko et al., 2022], we now understand that LT is
+not only efficient in practice, but also grounded in theory, and yields communication acceleration if
+the number of local steps is chosen appropriately. However, Scaffnew does not allow for PP. It has
+been an open and challenging question to know whether its powerful randomized mechanism would
+be compatible with PP. In fact, according to Grudzień et al. [2023], the authors of Scaffnew “have
+tried—very hard in their own words—but their efforts did not bear any fruit.” Combining LT and
+PP is difficult, because we want PP not only during communication, whenever it occurs, but also
+7Table 1: UpCom complexity ( α= 0) of linearly converging algorithms with LT or CC and allowing
+for PP (with exact gradients). The eOnotation hides the logϵ−1factor (and other log factors for
+Scaffold).c∈ {2, . . . , n }is the number of participating clients and the other notations are recalled
+in Table 3.
+Algorithm LT CC UpCom
+DIANA-PP(a)✗ ✓ eO 
+(1 +d
+c)κ+dn
+c
+Scaffold ✓ ✗ eO(dκ+dn
+c)
+5GCS ✓ ✗ eO 
+d√κpn
+c+dn
+c
+TAMUNA ✓✓eO√
+d√κpn
+c+d√κ√n
+c+dn
+c
+(a)using independent rand-1 compressors, for instance. Note that O(√
+d√κpn
+c+dn
+c)is better than
+O(κ+dn
+c)andO(d√κ√n
+c+dn
+c)is better than O(d
+cκ+dn
+c), so that TAMUNA has a better complexity
+thanDIANA-PP .
+with respect to all computations before. The simple idea of allowing at every round some clients to
+be active and to proceed normally, and other clients to be idle with unchanged local variables, does
+not work. TAMUNA combines LT and PP successfully, and a key property in our design is that only
+the clients which participated in a given round make use of the updated model broadcast by the
+server to update their control variates (step 14). From a mathematical point of view, our approach
+relies on combining the two stochastic processes of probabilistic communication and random client
+selection in two different ways , for updating after communication the model estimates xion one
+hand, and the control variates hion the other hand. Indeed, a crucial property is that the sum of the
+control variates over all clients always remains zero. Thus, the model update and the control variate
+update are decoupled in TAMUNA , which fully benefits from the acceleration of LT, whatever the
+participation level; that is, its communication complexity depends on√κ, not κ.
+3.2 Combining LT and CC
+In the strongly convex and heterogeneous case considered here, the methods Qsparse-local-SGD
+[Basu et al., 2020] and FedPAQ [Reisizadeh et al., 2020] do not converge linearly. The only linearly
+converging LT + CC algorithm we are aware of is FedCOMGATE [Haddadpour et al., 2021]. But
+its rate is O(dκlogϵ−1), which does not show any acceleration. We note that random reshuffling,
+which can be seen as a kind of LT, has been combined with CC in Sadiev et al. [2022b], Malinovsky
+and Richtárik [2022].
+Thus, it is very challenging to combine LT and CC, just as it is to combine LT and PP, because
+in addition to client drift due to heterogeneity, there is another source of drift to be controlled.
+Simply “plugging” compressors into Scaffnew does not work, because the compression errors will
+propagate along the iterations. In algorithms like DIANAandEF21, the differences between local
+gradients and dedicated control variates are compressed. These differences converge to zero and
+the compression variance vanishes accordingly. This is possible because all gradients are computed
+at the same model estimate known by the server. But in an algorithm where multiple local steps
+have been performed and the local model estimates have drifted apart, the gradients are unusable.
+Also, compressing the differences between the current local estimates and the last global estimate
+known by the server does not work, because the latter is too old and this would ruin the benefits
+8Table 2: TotalCom complexity of linearly converging algorithms using Local Training (LT), Com-
+munication Compression (CC), or both, in case of full participation and exact gradients. The eO
+notation hides the logϵ−1factor. The notations are recalled in Table 3.
+Algorithm LT CC TotalCom TotalCom=UpCom when α= 0
+DIANA(a)✗ ✓ eO
+(1 +αd+d+αd2
+n)κ+d+αd2
+eO 
+(1 +d
+n)κ+d
+EF21(b)✗ ✓ eO(dκ) eO(dκ)
+Scaffold ✓ ✗ eO(dκ) eO(dκ)
+FedLin ✓ ✗ eO(dκ) eO(dκ)
+S-Local-GD ✓ ✗ eO(dκ) eO(dκ)
+Scaffnew ✓ ✗ eO(d√κ) eO(d√κ)
+5GCS ✓ ✗ eO(d√κ) eO(d√κ)
+FedCOMGATE ✓ ✓ eO(dκ) eO(dκ)
+TAMUNA ✓✓eO√
+d√κ+d√κ√n+d+√α d√κ
+eO√
+d√κ+d√κ√n+d
+(a)using independent rand-1 compressors, for instance. Note that O(√
+d√κ+d)is better than
+O(κ+d)andO(d√κ√n+d)is better than O(d
+nκ+d), so that TAMUNA has a better complexity than DIANA.
+(b)using top-kcompressors with any k, for instance.
+of LT. So, the local model estimates themselves must be compressed. In our previous work, we
+designed a compression mechanism that is compatible with LT and proposed CompressedScaffnew ,
+which enables CC in Scaffnew [Condat et al., 2022a]. This compression mechanism is based on
+permutations, so that the compressed messages sent by the different clients complement each other,
+to keep a tight control of the variance after aggregation. Its key property is that if all local model
+estimates to compress are equal, there is no compression error.
+However, like Scaffnew,CompressedScaffnew only works in case of full participation. The suc-
+cessful combination of LT and CC in CompressedScaffnew does not help in combining LT and PP:
+a non-participating client does not participate to communication whenever it occurs, but it also
+does not perform any computation before. Therefore, there is no way to enable PP in loopless
+algorithms like Scaffnew andCompressedScaffnew , where communication can be triggered at any
+time. Our new algorithm TAMUNA is the first to solve this problem. Whether a client participates
+or not is decided at the beginning of a round consisting of a sequence of local steps followed by com-
+munication. TAMUNA works with any level of PP, with as few as two clients participating in every
+round. It relies on the same correction mechanism of client drift as Scaffnew, and uses the same
+permutation-based compressors as CompressedScaffnew , explained in Figure 1. However, TAMUNA
+has a different two-loop structure, to account for idle clients not computing and communicating for
+several successive iterations. It is an open question whether any other type of compressors can be
+used inCompressedScaffnew andTAMUNA , to apply for instance some form of quantization on top
+of sparsification [Horváth et al., 2022, Albasyoni et al., 2020].
+TAMUNA establishes the new state of the art of communication-efficient algorithms enabling for
+PP. For instance, with exact gradients, if αis small and nis large, its TotalCom complexity in case
+of full participation is
+O√
+d√κ+d
+logϵ−1
+,
+9Algorithm 1 TAMUNA
+1:input:stepsizes γ >0,η >0; number of participating clients c∈ {2, . . . , n }; sparsity index
+for compression s∈ {2, . . . , c }; initial model estimate ¯x(0)∈Rdat the server and initial control
+variates h(0)
+1, . . . , h(0)
+n∈Rdat the clients, such thatPn
+i=1h(0)
+i= 0.
+2:forr= 0,1, . . .(rounds) do
+3:choose a subset Ω(r)⊂[n]of size cuniformly at random
+4:choose the number of local steps L(r)≥1
+5:forclients i∈Ω(r), in parallel, do
+6: x(r,0)
+i:= ¯x(r)(initialization received from the server)
+7: forℓ= 0, . . . , L(r)−1(local steps) do
+8: x(r,ℓ+1)
+i:=x(r,ℓ)
+i−γg(r,ℓ)
+i+γh(r)
+i, where g(r,ℓ)
+iis an unbiased stochastic estimate of
+∇fi 
+x(r,ℓ)
+i
+of variance σ2
+i
+9: end for
+10: end for
+11:UpCom: the server and active clients agree on a random binary mask q(r)= 
+q(r)
+i
+i∈Ω(r)∈
+Rd×cgenerated as explained in Figure 1, and every client i∈Ω(r)sends the compressed vector
+C(r)
+i
+x(r,L(r))
+i
+to the server, where C(r)
+i(v)denotes vmultiplied elementwise by q(r)
+i.
+12: ¯x(r+1):=1
+sP
+i∈Ω(r)C(r)
+i
+x(r,L(r))
+i
+(aggregation by the server)
+13: forclients i∈Ω(r), in parallel, do
+14: h(r+1)
+i:=h(r)
+i+η
+γ
+C(r)
+i 
+¯x(r+1)
+− C(r)
+i
+x(r,L(r))
+i 
+¯x(r+1)is received from the server
+15: end for
+16: forclients i /∈Ω(r), in parallel, do
+17: h(r+1)
+i:=h(r)
+i(the client is idle)
+18: end for
+19:end for
+which shows the twofold acceleration, with√κinstead of κthanks to LT and√
+dinstead of dthanks
+to CC. Our general result is in Theorem 3.
+4 Proposed Algorithm TAMUNA
+The proposed algorithm TAMUNA is shown as Algorithm 1. Its main loop is over the rounds,
+indexed by r. A round consists of a sequence, written as an inner loop, of local steps indexed by
+ℓand performed in parallel by the active clients, followed by compressed communication with the
+server and update of the local control variates hi. The cactive, or participating, clients are selected
+randomly at the beginning of the round. During UpCom, every client sends a compressed version
+of its local model xi: it sends only a few of its elements, selected randomly according to the rule
+explained in Figure 1 and known by both the clients and the server (for decoding).
+At the end of the round, the aggregated model estimate ¯x(r+1)formed by the server is sent
+only to the active clients, which use it to update their control variates hi. This update consists in
+overwriting only the coordinates of hiwhich have been involved in the communication process; that
+is, for which the mask q(r)
+ihas a one. Indeed, the received vector ¯x(r+1)does not contain relevant
+10Table 3: Summary of the main notations used in the paper.
+LT local training
+CC communication compression
+PP partial participation (a.k.a. client sampling)
+L smoothness constant
+µ strong convexity constant
+κ=L/µ condition number of the functions
+d dimension of the model
+n,i number and index of clients
+[n] ={1, . . . , n }
+α weight on downlink communication (DownCom), see (2)
+σ2
+i,σ2:=P
+iσ2
+ivariance of the stochastic gradients, see (3)
+c∈ {2, . . . , n }number of active clients (a.k.a. cohort size). Full participation if c=n
+Ω⊂[n]index set of active clients
+s∈ {2, . . . , c }sparsity index for compression. No compression if s=c
+q= (qi)c
+i=1random binary mask for compression, as detailed in Figure 1
+r index of rounds
+L,ℓ number and index of local steps in a round
+p inverse of the expected number of local steps per round
+t,T indexes of iterations
+γ,η,χstepsizes
+xi local model estimate at client i
+hi local control variate tracking ∇fi
+¯x(r)model estimate at the server at round r
+τ convergence rate
+information to update hiat the other coordinates.
+The update of the local model estimates xiat the clients takes place at the beginning of the
+round, when the active clients download the current model estimate ¯x(r)to initialize their local
+steps. So, it seems that there are two DownCom steps from the server to the clients per round
+(steps 6 and 14), but the algorithm can be written with only one: ¯x(r+1)can be broadcast by the
+server at the end of round rnot only to the active clients of round r, but also to the active clients
+of the next round r+ 1, at the same time. We keep the algorithm written in this way for simplicity.
+Thus, the clients of index i /∈Ω(r), which do not participate in round r, are completely idle: they
+do not compute and do not communicate at all. Their local control variates hiremain unchanged,
+and they do not even need to store a local model estimate: they only need to receive the latest
+model estimate x(r)from the server when they participate in the process.
+InTAMUNA , unbiased stochastic gradient estimates of bounded variance σ2
+ican be used: for
+every i∈[n],
+Eh
+g(r,ℓ)
+i|x(r,ℓ)
+ii
+=∇fi 
+x(r,ℓ)
+i
+,Eg(r,ℓ)
+i− ∇fi 
+x(r,ℓ)
+i2
+|x(r,ℓ)
+i
+≤σ2
+i, (3)
+for some σi≥0. We have g(r,ℓ)
+i=∇fi 
+x(r,ℓ)
+i
+ifσi= 0. We define the total variance σ2:=Pn
+i=1σ2
+i.
+Our main result, stating linear convergence of TAMUNA to the exact solution x⋆of (1), or to a
+11(a) (b) (c) (d)
+Figure1: Therandomsamplingpattern q(r)= (q(r)
+i)c
+i=1∈Rd×cusedforcommunicationisgenerated
+byarandompermutationofthecolumnsofafixedbinarytemplatepattern, whichhastheprescribed
+number s≥2of ones in every row. In (a) with (d, c, s ) = (5 ,6,2)and (b) with (d, c, s ) = (5 ,7,2),
+with ones in blue and zeros in white, examples of the template pattern used when d≥c
+s: for every
+rowk∈[d], there are sones at columns i= mod( s(k−1), c)+1, . . . , mod( sk−1, c)+1. Thus, there
+are⌊sd
+c⌋or⌈sd
+c⌉ones in every column vector qi. In (c), an example of sampling pattern obtained
+after a permutation of the columns of the template pattern in (a). In (d) with (d, c, s ) = (3 ,10,2),
+an example of the template pattern used whenc
+s≥d: for every column i= 1, . . . , ds, there is 1
+one at row k= mod( i−1, d) + 1. Thus, there is 0 or 1 one in every column vector qi. We can
+note that when d=c
+s, the two different rules for d≥c
+sandc
+s≥dfor constructing the template
+pattern are equivalent, since they give exactly the same set of sampling patterns when permuting
+their columns. These two rules make it possible to generate easily the columns q(r)
+iofq(r)on the
+fly, without having to generate the whole mask q(r)explicitly. This compression mechanism is the
+same as in CompressedScaffnew and this figure is the same as Figure 1 in our previous paper Condat
+et al. [2022a].
+neighborhood if σ >0, is the following:
+Theorem 1 (fast linear convergence to a σ2-neighborhood) .Letp∈(0,1]. InTAMUNA , suppose
+that at every round r≥0,L(r)is chosen randomly and independently according to a geometric law
+of mean p−1; that is, for every L≥1,Prob( L(r)=L) = (1 −p)L−1p. Also, suppose that
+0< γ <2
+L(4)
+andη:=pχ, where
+0< χ≤n(s−1)
+s(n−1)∈1
+2,1
+. (5)
+For every total number t≥0of local steps made so far, define the Lyapunov function
+Ψt:=n
+γ¯xt−x⋆2+γ
+p2χn−1
+s−1nX
+i=1h(r)
+i−h⋆
+i2
+, (6)
+where x⋆is the unique solution to (1),h⋆
+i=∇fi(x⋆),r≥0andℓ∈ {0, . . . , L(r)−1}are such that
+t=r−1X
+ˆr=0L(ˆr)+ℓ, (7)
+and
+¯xt:=1
+sX
+i∈Ω(r)C(r)
+i
+x(r,ℓ)
+i
+. (8)
+12Then, for every t≥0,
+Eh
+Ψti
+≤τtΨ0+γσ2
+1−τ, (9)
+where
+τ:= max
+(1−γµ)2,(γL −1)2,1−p2χs−1
+n−1
+<1. (10)
+Also, if σ= 0,(¯x(r))r∈Nconverges to x⋆and(h(r)
+i)r∈Nconverges to h⋆
+i, almost surely.
+The complete proof is in the Appendix. We give a brief sketch here. We first analyze Algo-
+rithm 2, which has a single loop over the iterations indexed by tand one local step per iteration.
+Communication does not happen at every iteration but is only triggered randomly with probability
+p, like inScaffnew andCompressedScaffnew . All clients perform computations at every iteration, and
+partial participation only concerns communication. In a second phase, we explain how Theorem 6
+on Algorithm 2 yields the convergence proof of TAMUNA stated in Theorem 1. Since the contraction
+of the Lyapunov function happens at every iteration and not at every round, whose size is random,
+we have to reindex the local steps to obtain a rate depending on the number of iterations tso far.
+We note that in (8), ¯xtis actually computed only if ℓ= 0, in which case ¯xt= ¯x(r). We also note
+that the theorem depends on sbut not on c. The dependence on cis hidden in the fact that sis
+upper bounded by c.
+Remark 2 (setting η).In the conditions of Theorem 1, one can simply set η=p
+2inTAMUNA ,
+which is independent of nands. However, the larger η, the better, so it is recommended to set
+η=pn(s−1)
+s(n−1). (11)
+Also, as a rule of thumb, if the average number of local steps per round is L, one can replace pby
+L−1.
+We can comment on the difference between TAMUNA andScaffold, when CC is disabled ( s=c).
+InTAMUNA ,hiis updated by adding ¯x(r+1)−x(r,L(r))
+i, the difference between the latest global
+estimate ¯x(r+1)and the latest local estimate x(r,L(r))
+i. By contrast, in Scaffold,¯x(r)−x(r,L(r))
+iis
+used instead, which involves the “old” global estimate ¯x(r). Moreover, this difference is scaled by the
+number of local steps, which makes it small. That is why no acceleration from LT can be obtained in
+Scaffold, whatever the number of local steps. This is not a weakness of the analysis in Karimireddy
+et al. [2020] but an intrinsic limitation of Scaffold.
+We can also note that the neighborhood size in (9) does not show so-called linear speedup;
+that is, it does not decrease when nincreases. The properties of LT with SGD steps remain little
+understood [Woodworth et al., 2020], and we believe this should be studied within the general
+framework of variance reduction [Malinovsky et al., 2022]. This goes beyond the scope of this
+paper, which focuses on communication and not on the complexity of the local computations.
+4.1 Iteration and Communication Complexities
+We consider in this section that exact gradients are used ( σ= 0),2since our aim is to establish a
+new state of the art for the communication complexity, regardless of the type of local computations.
+2Ifσ > 0, it is possible to derive sublinear rates to reach ϵ-accuracy for the communication complexity, by setting
+γproportional to ϵ, as was done for Scaffnew in Mishchenko et al. [2022, Corollary 5.6].
+13We place ourselves in the conditions of Theorem 1.
+We first remark that TAMUNA has the same iteration complexity as GD, with rate τ♯:= max(1 −
+γµ, γL−1)2, as long as pandsare large enough to have 1−χp2s−1
+n−1≤τ♯. This is remarkable: LT,
+CC and PP do not harm convergence at all, until some threshold.
+Let us consider the number of iterations (= total number of local steps) to reach ϵ-accuracy,
+i.e.Eh
+Ψti
+≤ϵ. For any s≥2,p∈(0,1],γ= Θ(1
+L), and χ= Θ(1), the iteration complexity of
+TAMUNA is
+O
+κ+n
+sp2
+logϵ−1
+.
+Thus, by choosing
+p= min
+Θrn
+sκ
+,1
+, (12)
+which means that the average number of local steps per round is
+Eh
+L(r)i
+= max
+Θrsκ
+n
+,1
+, (13)
+the iteration complexity becomes
+O
+κ+n
+s
+logϵ−1
+.
+We now consider the communication complexity. Communication occurs at every iteration with
+probability p, and during every communication round, DownCom consists in broadcasting the full
+d-dimensional vector ¯x(r), whereas in UpCom, compression is effective and the number of real values
+sent in parallel by the clients is equal to the number of ones per column in the sampling pattern q,
+which is ⌈sd
+c⌉ ≥1. Hence, the communication complexities are:
+DownCom: O
+pd
+κ+n
+sp2
+logϵ−1
+,
+UpCom: O
+psd
+c+ 1
+κ+n
+sp2
+logϵ−1
+.
+TotalCom: O
+psd
+c+ 1 + αd
+κ+n
+sp2
+logϵ−1
+.
+For a given s, the best choice for p, for both DownCom and UpCom, is given in (12), for which
+O
+p
+κ+n
+sp2
+=Ornκ
+s+n
+s
+and the TotalCom complexity is
+TotalCom: Ornκ
+s+n
+ssd
+c+ 1 + αd
+logϵ−1
+.
+We see the first acceleration effect due to LT: with a suitable p <1, the communication complexity
+only depends on√κ, not κ, whatever the participation level cand compression level s.
+Without compression, i.e. s=c, whatever α, the TotalCom complexity becomes
+O
+drnκ
+c+n
+c
+logϵ−1
+.
+We can now set sto further accelerate the algorithm, by minimizing the TotalCom complexity:
+14Theorem 3 (doubly accelerated communication) .In the conditions of Theorem 1, suppose that
+σ= 0,γ= Θ(1
+L),χ= Θ(1), and
+p= min
+Θrn
+sκ
+,1
+, s = max
+2,jc
+dk
+,⌊αc⌋
+. (14)
+Then the TotalCom complexity of TAMUNA is
+O√
+d√κrn
+c+d√κ√n
+c+dn
+c+√α d√κrn
+c
+logϵ−1
+. (15)
+As reported in Tables 1 and 2, this complexity establishes the new state of the art.
+Corollary 4 (dependence on α).As long as α≤max(2
+c,1
+d,n
+κc), there is no difference with the case
+α= 0, in which we only focus on UpCom, and the TotalCom complexity is
+O√
+d√κrn
+c+d√κ√n
+c+dn
+c
+logϵ−1
+. (16)
+On the other hand, if α≥max(2
+c,1
+d,n
+κc), the complexity increases and becomes
+O√αd√κrn
+clogϵ−1
+, (17)
+but compression remains operational and effective with the√αfactor. It is only when α= 1that
+s=c, i.e. there is no compression, and that the Upcom, DownCom and TotalCom complexities all
+become
+O
+d√κrn
+clogϵ−1
+. (18)
+Thus, in case of full participation ( c=n),TAMUNA is faster than Scaffnew for every α∈[0,1].
+Corollary 5 (full participation) .In case of full participation ( c=n), the TotalCom complexity of
+TAMUNA is
+O√
+d√κ+d√κ√n+d+√α d√κ
+logϵ−1
+. (19)
+5 Experiments
+We illustrate our theoretical findings by experiments on a practical logistic regression problem. The
+global loss function is defined as
+f(x) =1
+MMX
+m=1
+log
+1 + exp
+−bma⊤
+mx
++µ
+2∥x∥2
+, (20)
+where the variables am∈Rdandbm∈ {− 1,1}represent the data samples, and Mdenotes the
+total number of samples. The function fin (20) is divided into nseparate functions fi, with any
+remainder from dividing Mbyndiscarded. We select the strong convexity constant µso that
+κ= 104.
+15(a) w8a, n= 1000,α= 0,c=n (b) w8a, n= 1000,α= 0.1,c=n
+(c) w8a, n= 1000,α= 0,c= 0.1n (d) w8a, n= 1000,α= 0.1,c= 0.1n
+Figure 2: Logistic regression experiment in the case n > d. The dataset w8a has d= 300features
+andn= 1000, son≈3d. The first row shows a comparison in the full participation regime, while
+the second row shows a comparison in the partial participation regime with 10% of clients. On the
+left,α= 0, while on the right, α= 0.1.
+For our analysis, we choose n= 1000and examine two scenarios: in the first one, we have d > n
+using the ‘real-sim’ dataset with d= 20958, and in the second one, we have n > dusing the ‘w8a’
+dataset with d= 300, from the widely-used LIBSVM library [Chang and Lin, 2011]. Additionally,
+we consider two cases for each scenario: α= 0andα= 0.1, where αis the weight on DownCom
+defined in (2).
+We measure the convergence error f(x)−f(x⋆)with respect to TotalCom, i.e. the total number
+of communicated reals, as defined in Section (1.2). Here, xdenotes the model known by the server;
+forTAMUNA , this is ¯x(r). This error serves as a natural basis for comparing algorithms, and since
+fisL-smooth, we have f(x)−f(x⋆)≤L
+2∥x−x⋆∥2for any x. Consequently, the error converges
+linearly at the same rate as Ψin Theorem 1.
+We compare the performance of three algorithms allowing for PP, namely Scaffold,5GCS, and
+TAMUNA , for two participation scenarios: c=nandc= 0.1n(10% participation). In the full
+participation case, we add Scaffnew to the comparison.
+In order to ensure theoretical conditions that guarantee linear convergence, we set γandηfor
+16(a) real-sim, n= 1000,α= 0,c=n (b) real-sim, n= 1000,α= 0.1,c=n
+(c) real-sim, n= 1000,α= 0,c= 0.1n(d) real-sim, n= 1000,α= 0.1,c= 0.1n
+Figure 3: Logistic regression experiment in the case d > n. The dataset real-sim has d= 20,958
+features and n= 1000, son≈d/20. The first row shows a comparison in the full participation
+regime, while the second row shows a comparison in the partial participation regime with 10% of
+clients. On the left, α= 0, while on the right, α= 0.1.
+TAMUNA as
+γ=2
+L+µ, η =pn(s−1)
+s(n−1),
+where the remaining parameters sandpare fine-tuned to achieve the best communication com-
+plexity. In our experimental setup, we found that using s= 40andp= 0.01resulted in excellent
+performance. The conditions of Theorem 1 are met with these values, so linear convergence of
+TAMUNA is guaranteed. We adopt the same values of γandpforScaffnew. ForScaffold, we use p−1
+local steps, which is the same, on average, as for TAMUNA andScaffnew; the behavior of Scaffold
+changed marginally with other values. We also set γto its highest value that ensures convergence.
+In the case of 5GCS, we tune γ,τ, and the number of local steps to achieve the best communication
+complexity.
+The models in all algorithms, as well as the control variates in TAMUNA ,Scaffnew andScaffold,
+are initialized with zero vectors.
+The results are shown in Figures 2 and 3. Each algorithm is run multiple times with different
+random seeds, depending on its variance (7 times for TAMUNA , 5 times for Scaffnew, and 3 times
+forScaffoldand5GCS). The shaded area in the plots shows the difference between the maximum
+17and minimum convergence error achieved over these runs. Additionally, the progress of the first run
+for each algorithm is depicted with a thicker line and markers.
+As can be seen, our proposed algorithm TAMUNA outperforms all other methods. In case of
+full participation, Scaffnew outperforms Scaffoldand5GCS, which shows the efficiency of its LT
+mechanism. TAMUNA embeds the same mechanism and also benefits from it, but it outperforms
+Scaffnew thanks to CC, its second communication-acceleration mechanism. The difference between
+TAMUNA andScaffnew is larger for α= 0than for α= 0.1, as explained by our theory; the
+difference would vanish if αtends to 1.TAMUNA is applicable and proved to converge with any
+level of PP, whereas Scaffnew only applies to the full participation case.
+6 Conclusion
+We introduced TAMUNA , the first communication-efficient algorithm that allows for partial partici-
+pation(PP)andprovablybenefitsfromthetwocombinedaccelerationmechanismsofLocalTraining
+(LT) and Communication Compression (CC), in the convex setting. Moreover, this is achieved not
+only for uplink communication, but for our more comprehensive model of total communication.
+These theoretical guarantees are confirmed in practice and TAMUNA communicates less than exist-
+ing algorithms to reach the same accuracy. An important venue for future work will be to generalize
+our specific compression mechanism to a broad class of compressors including quantization [Horváth
+et al., 2022]. Another venue consists in implementing internal variance reduction for the stochastic
+gradients, as was done for Scaffnew in Malinovsky et al. [2022].
+Acknowledgement
+This work was supported by the SDAIA-KAUST Center of Excellence in Data Science and Artificial
+Intelligence (SDAIA-KAUST AI).
+References
+A. Albasyoni, M. Safaryan, L. Condat, and P. Richtárik. Optimal gradient compression for dis-
+tributed and federated learning. preprint arXiv:2010.03246, 2020.
+D. Basu, D. Data, C. Karakus, and S. N. Diggavi. Qsparse-Local-SGD: Distributed SGD With
+Quantization, Sparsification, and Local Computations. IEEE Journal on Selected Areas in Infor-
+mation Theory , 1(1):217–226, 2020.
+H. H. Bauschke and P. L. Combettes. Convex Analysis and Monotone Operator Theory in Hilbert
+Spaces. Springer, New York, 2nd edition, 2017.
+D. P. Bertsekas. Convex optimization algorithms . Athena Scientific, Belmont, MA, USA, 2015.
+A. Beznosikov, S. Horváth, P. Richtárik, and M. Safaryan. On biased compression for distributed
+learning. preprint arXiv:2002.12410, 2020.
+K. Bonawitz, V. Ivanov, B. Kreuter, A. Marcedone, H. B. McMahan, S. Patel, D. Ramage, A. Segal,
+and K. Seth. Practical secure aggregation for privacy-preserving machine learning. In Proc. of the
+182017 ACM SIGSAC Conference on Computer and Communications Security , pages 1175–1191,
+2017.
+C.-C. Chang and C.-J. Lin. LIBSVM: A library for support vector machines. ACM Trans-
+actions on Intelligent Systems and Technology , 2:27:1–27:27, 2011. Software available at
+http://www.csie.ntu.edu.tw/%7Ecjlin/libsvm.
+L. Condat and P. Richtárik. MURANA: A generic framework for stochastic variance-reduced op-
+timization. In Proc. of the conference Mathematical and Scientific Machine Learning (MSML),
+PMLR 190 , pages 81–96, 2022.
+L. Condat and P. Richtárik. RandProx: Primal-dual optimization algorithms with randomized
+proximal updates. In Proc. of Int. Conf. Learning Representations (ICLR) , 2023.
+L. Condat, I. Agarský, and P. Richtárik. Provably doubly accelerated federated learning: The first
+theoretically successful combination of local training and compressed communication. preprint
+arXiv:2210.13277, 2022a.
+L.Condat, K.Li, andP.Richtárik. EF-BV:Aunifiedtheoryoferrorfeedbackandvariancereduction
+mechanisms for biased and unbiased compression in distributed optimization. In Proc. of Conf.
+Neural Information Processing Systems (NeurIPS) , 2022b.
+R. Das, A. Acharya, A. Hashemi, S. Sanghavi, I. S. Dhillon, and U. Topcu. Faster non-convex
+federated learning via global and local momentum. In Proc. of Conf. on Uncertainty in Artificial
+Intelligence (UAI) , 2022.
+A. Defazio. A simple practical accelerated method for finite sums. In Proc. of 30st Conf. Neural
+Information Processing Systems (NIPS) , volume 29, pages 676–684, 2016.
+A. Defazio and L. Bottou. On the ineffectiveness of variance reduced optimization for deep learning.
+InProc. of Conf. Neural Information Processing Systems (NeurIPS) , 2019.
+I. Fatkhullin, I. Sokolov, E. Gorbunov, Z. Li, and P. Richtárik. EF21 with bells & whistles: Practical
+algorithmic extensions of modern error feedback. preprint arXiv:2110.03294, 2021.
+M. R. Glasgow, H. Yuan, and T. Ma. Sharp bounds for federated averaging (Local SGD) and
+continuous perspective. In Proc. of Int. Conf. Artificial Intelligence and Statistics (AISTATS),
+PMLR 151 , pages 9050–9090, 2022.
+E. Gorbunov, F. Hanzely, and P. Richtárik. A unified theory of SGD: Variance reduction, sam-
+pling, quantization and coordinate descent. In Proc. of 23rd Int. Conf. Artificial Intelligence and
+Statistics (AISTATS), PMLR 108 , 2020a.
+E. Gorbunov, D. Kovalev, D. Makarenko, and P. Richtárik. Linearly converging error compensated
+SGD. In Proc. of Conf. Neural Information Processing Systems (NeurIPS) , 2020b.
+E. Gorbunov, F. Hanzely, and P. Richtárik. Local SGD: Unified theory and new efficient methods.
+InProc. of 24th Int. Conf. Artificial Intelligence and Statistics (AISTATS), PMLR 130 , pages
+3556–3564, 2021.
+19R. M. Gower, N. Loizou, X. Qian, A. Sailanbayev, E. Shulgin, and P. Richtárik. SGD: General
+analysis and improved rates. In Proc. of 36th Int. Conf. Machine Learning (ICML) , volume
+PMLR 97, pages 5200–5209, 2019.
+R. M. Gower, M. Schmidt, F. Bach, and P. Richtárik. Variance-reduced methods for machine
+learning. Proc. of the IEEE , 108(11):1968–1983, November 2020.
+M.Grudzień, G.Malinovsky, andP.Richtárik. Can5thGenerationLocalTrainingMethodsSupport
+Client Sampling? Yes! In Proc. of Int. Conf. Artificial Intelligence and Statistics (AISTATS) ,
+April 2023.
+F. Haddadpour and M. Mahdavi. On the Convergence of Local Descent Methods in Federated
+Learning. preprint arXiv:1910.14425, 2019.
+F. Haddadpour, M. M. Kamani, A. Mokhtari, and M. Mahdavi. Federated learning with compres-
+sion: Unified analysis and sharp guarantees. In Proc. of Int. Conf. Artificial Intelligence and
+Statistics (AISTATS), PMLR 130 , pages 2350–2358, 2021.
+F. Hanzely and P. Richtárik. One method to rule them all: Variance reduction for data, parameters
+and many new methods. preprint arXiv:1905.11266, 2019.
+S. Horváth, C.-Y. Ho, L. Horváth, A. N. Sahu, M. Canini, and P. Richtárik. Natural compression
+for distributed deep learning. In Proc. of the conference Mathematical and Scientific Machine
+Learning (MSML), PMLR 190 , 2022.
+S. Horváth, D. Kovalev, K. Mishchenko, S. Stich, and P. Richtárik. Stochastic distributed learning
+with gradient quantization and variance reduction. Optimization Methods and Software , 2022.
+D. Jhunjhunwala, P. Sharma, A. Nagarkatti, and G. Joshi. FedVARP: Tackling the variance due to
+partial client participation in federated learning. In Proc. of 38th Conf. Uncertainty in Artificial
+Intelligence (UAI) , volume PMLR 180, pages 906–916, 2022.
+P. Kairouz et al. Advances and open problems in federated learning. Foundations and Trends in
+Machine Learning , 14(1–2), 2021.
+S. P. Karimireddy, S. Kale, M. Mohri, S. Reddi, S. U. Stich, and A. T. Suresh. SCAFFOLD:
+Stochastic controlled averaging for federated learning. In Proc. of 37th Int. Conf. Machine Learn-
+ing (ICML) , pages 5132–5143, 2020.
+S. P. Karimireddy, M. Jaggi, S. Kale, M. Mohri, S. Reddi, S. U. Stich, and A. T. Suresh. Breaking
+the centralized barrier for cross-device federated learning. In Proc. of Conf. Neural Information
+Processing Systems (NeurIPS) , 2021.
+A. Khaled, K. Mishchenko, and P. Richtárik. Better communication complexity for local SGD. In
+NeurIPS Workshop on Federated Learning for Data Privacy and Confidentiality , 2019.
+A. Khaled, K. Mishchenko, and P. Richtárik. Tighter theory for local SGD on identical and hetero-
+geneous data. In Proc. of 23rd Int. Conf. Artificial Intelligence and Statistics (AISTATS), PMLR
+108, 2020.
+20J. Konečný, H. B. McMahan, D. Ramage, and P. Richtárik. Federated optimization: distributed
+machine learning for on-device intelligence. arXiv:1610.02527, 2016a.
+J.Konečný, H.B.McMahan, F.X.Yu, P.Richtárik, A.T.Suresh, andD.Bacon. Federatedlearning:
+Strategiesforimprovingcommunicationefficiency. In NIPS Private Multi-Party Machine Learning
+Workshop , 2016b. arXiv:1610.05492.
+T. Li, A. K. Sahu, A. Talwalkar, and V. Smith. Federated learning: Challenges, methods, and
+future directions. IEEE Signal Processing Magazine , 3(37):50–60, 2020a.
+X. Li, K. Huang, W. Yang, S. Wang, and Z. Zhang. On the convergence of FedAvg on non-iid data.
+InProc. of Int. Conf. Learning Representations (ICLR) , 2020b.
+Z. Li, D. Kovalev, X. Qian, and P. Richtárik. Acceleration for compressed gradient descent in
+distributed and federated optimization. In Proc. of 37th Int. Conf. Machine Learning (ICML) ,
+volume PMLR 119, 2020c.
+X. Liu, Y. Li, J. Tang, and M. Yan. A double residual compression algorithm for efficient distributed
+learning. In Proc. of Int. Conf. Artificial Intelligence and Statistics (AISTATS), PMLR 108 , pages
+133–143, 2020.
+G. Malinovsky and P. Richtárik. Federated random reshuffling with compression and variance
+reduction. preprint arXiv:arXiv:2205.03914, 2022.
+G. Malinovsky, D. Kovalev, E. Gasanov, L. Condat, and P. Richtárik. From local SGD to local
+fixed point methods for federated learning. In Proc. of 37th Int. Conf. Machine Learning (ICML) ,
+volume PMLR 119, pages 6692–6701, 2020.
+G. Malinovsky, K. Yi, and P. Richtárik. Variance reduced ProxSkip: Algorithm, theory and applica-
+tion to federated learning. In Proc. of Conf. Neural Information Processing Systems (NeurIPS) ,
+2022.
+H. B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. Agüera y Arcas. Communication-
+efficient learning of deep networks from decentralized data. In Proc. of Int. Conf. Artificial
+Intelligence and Statistics (AISTATS), PMLR 54 , 2017.
+K. Mishchenko, E. Gorbunov, M. Takáč, and P. Richtárik. Distributed learning with compressed
+gradient differences. arXiv:1901.09269, 2019.
+K. Mishchenko, G. Malinovsky, S. Stich, and P. Richtárik. ProxSkip: Yes! Local Gradient Steps
+Provably Lead to Communication Acceleration! Finally! In Proc. of the 39th International
+Conference on Machine Learning (ICML) , July 2022.
+A. Mitra, R. Jaafar, G. Pappas, and H. Hassani. Linear convergence in federated learning: Tackling
+clientheterogeneityandsparsegradients. In Proc. of Conf. Neural Information Processing Systems
+(NeurIPS) , 2021.
+C. Philippenko and A. Dieuleveut. Artemis: tight convergence guarantees for bidirectional com-
+pression in federated learning. preprint arXiv:2006.14591, 2020.
+21C. Philippenko and A. Dieuleveut. Preserved central model for faster bidirectional compression in
+distributed settings. In Proc. of Conf. Neural Information Processing Systems (NeurIPS) , 2021.
+A. Reisizadeh, A. Mokhtari, H. Hassani, A. Jadbabaie, and R. Pedarsani. FedPAQ: A
+communication-efficient federated learning method with periodic averaging and quantization. In
+Proc. of Int. Conf. Artificial Intelligence and Statistics (AISTATS) , pages 2021–2031, 2020.
+P. Richtárik, I. Sokolov, and I. Fatkhullin. EF21: A new, simpler, theoretically better, and prac-
+tically faster error feedback. In Proc. of 35th Conf. Neural Information Processing Systems
+(NeurIPS) , 2021.
+A. Sadiev, D. Kovalev, and P. Richtárik. Communication acceleration of local gradient methods via
+an accelerated primal-dual algorithm with an inexact prox. In Proc. of Conf. Neural Information
+Processing Systems (NeurIPS) , 2022a.
+A. Sadiev, G. Malinovsky, E. Gorbunov, I. Sokolov, A. Khaled, K. Burlachenko, and P. Richtárik.
+Federated optimization algorithms with random reshuffling and gradient compression. preprint
+arXiv:2206.07021, 2022b.
+K. Scaman, F. Bach, S. Bubeck, Y. T. Lee, and L. Massoulié. Optimal convergence rates for convex
+distributed optimization in networks. Journal of Machine Learning Research , 20:1–31, 2019.
+S. U. Stich. Local SGD converges fast and communicates little. In Proc. of International Conference
+on Learning Representations (ICLR) , 2019.
+J. Wang et al. A field guide to federated optimization. preprint arXiv:2107.06917, 2021.
+B.E.Woodworth,K.K.Patel,andN.Srebro. MinibatchvsLocalSGDforheterogeneousdistributed
+learning. In Proc. of Conf. Neural Information Processing Systems (NeurIPS) , 2020.
+22Algorithm 2
+1:input:stepsizes γ > 0,χ > 0; probability p∈(0,1]; number of participating clients c∈
+{2, . . . , n }; compression index s∈ {2, . . . , c }; initial estimates x0
+1, . . . , x0
+n∈Rdandh0
+1, . . . , h0
+n∈
+Rdsuch thatPn
+i=1h0
+i= 0, sequence of independent coin flips θ0, θ1, . . .with Prob( θt= 1) = p,
+and for every twith θt= 1, a subset Ωt⊂[n]of size cchosen uniformly at random and a
+random binary mask qt= (qt
+i)i∈Ωt∈Rd×cgenerated as explained in Figure 1. The compressed
+vector Ct
+i(v)isvmultiplied elementwise by qt
+i.
+2:fort= 0,1, . . .do
+3:fori= 1, . . . , n, at clients in parallel, do
+4: ˆxt
+i:=xt
+i−γgt
+i+γht
+i, where gt
+iis an unbiased stochastic estimate of ∇fi(xt
+i)of variance σ2
+i
+5: ifθt= 1then
+6: ifi∈Ωtthen
+7: send ˆxt
+ito the server, which aggregates ¯xt:=1
+sP
+j∈ΩtCt
+j(ˆxt
+j)and broadcasts it to all
+clients
+8: ht+1
+i:=ht
+i+pχ
+γ 
+Ct
+i(¯xt)− Ct
+i(ˆxt
+i)
+9: else
+10: ht+1
+i:=ht
+i
+11: end if
+12: xt+1
+i:= ¯xt
+13: else
+14: xt+1
+i:= ˆxt
+i
+15: ht+1
+i:=ht
+i
+16: end if
+17: end for
+18:end for
+Appendix
+A Proof of Theorem 1
+We first prove convergence of Algorithm 2, which is a single-loop version of TAMUNA ; that is, there
+is a unique loop over the iterations and there is one local step per iteration. In Section A.2, we show
+that this yields a proof of Theorem 1 for TAMUNA . We can note that in case of full participation
+(c=n,Ωt≡[n]), Algorithm 2 reverts to CompressedScaffnew [Condat et al., 2022a].
+To simplify the analysis of Algorithm 2, we introduce vector notations: the problem (1) can be
+written as
+findx⋆= arg min
+x∈Xf(x)s.t. Wx= 0, (21)
+where X:=Rd×n, an element x= (xi)n
+i=1∈ Xis a collection of vectors xi∈Rd,f:x∈ X 7→Pn
+i=1fi(xi)isL-smooth and µ-strongly convex, the linear operator W:X → Xmaps x= (xi)n
+i=1
+to(xi−1
+nPn
+j=1xj)n
+i=1. The constraint Wx= 0means that xminus its average is zero; that
+is,xhas identical components x1=···=xn. Thus, (21) is indeed equivalent to (1). We have
+W=W∗=W2.
+We also rewrite Algorithm 2 using vector notations as Algorithm 3. It converges linearly:
+23Algorithm 3
+input:stepsizes γ >0,χ >0; probability p∈(0,1], parameter ω≥0; number of participating
+clients c∈ {2, . . . , n }; compression index s∈ {2, . . . , c }; initial estimates x0∈ Xandh0∈ Xsuch
+thatPn
+i=1h0
+i= 0; sequence of independent coin flips θ0, θ1, . . .with Prob( θt= 1) = p, and for
+every twith θt= 1, a subset Ωt⊂[n]of size cchosen uniformly at random and a random binary
+mask qt= (qt
+i)i∈Ωt∈Rd×cgenerated as explained in Figure 1. The compressed vector Ct
+i(v)isv
+multiplied elementwise by qt
+i.
+fort= 0,1, . . .do
+ˆ xt:=xt−γgt+γht, where gt= (gt
+i)n
+i=1≈ ∇f(xt)
+ifθt= 1then
+¯ xt:= (¯xt)n
+i=1, where ¯xt:=1
+sP
+j∈ΩtCt
+j(ˆxt
+j)
+xt+1:=¯ xt
+dt:= (dt
+i)n
+i=1with dt
+i=(1 +ω) 
+Ct
+i(ˆxt
+i)− Ct
+i(¯xt)
+ifi∈Ωt,
+0otherwise
+else
+xt+1:=ˆ xt
+dt:= 0
+end if
+ht+1:=ht−pχ
+γ(1+ω)dt
+end for
+Theorem 6 (fast linear convergence) .In Algorithm 3, suppose that 0< γ <2
+L,0< χ≤n(s−1)
+s(n−1),
+ω=n−1
+p(s−1)−1. For every t≥0, define the Lyapunov function
+Ψt:=1
+γxt−x⋆2+γ(1 +ω)
+pχht−h⋆2, (22)
+where x⋆is the unique solution to (21)andh⋆:=∇f(x⋆). Then Algorithm 3 converges linearly: for
+every t≥0,
+E
+Ψt
+≤τtΨ0+γσ2
+1−τ, (23)
+where
+τ:= max
+(1−γµ)2,(γL −1)2,1−p2χs−1
+n−1
+<1. (24)
+Also, if σ= 0,(xt)t∈Nand(ˆ xt)t∈Nboth converge to x⋆and(ht)t∈Nconverges to h⋆, almost surely.
+Proof.We consider the variables of Algorithm 3. For every t≥0, we denote by Ft
+0theσ-algebra
+generated by the collection of X-valued random variables x0,h0, . . . ,xt,ht, and by Fttheσ-algebra
+generated by these variables, as well as the stochastic gradients gt.dtis a random variable; as
+proved in Section A.1, it satisfies the 3 following properties, on which the convergence analysis of
+Algorithm 3 relies: for every t≥0,
+1.E
+dt| Ft
+=Wˆ xt.
+2.Ehdt−Wˆ xt2| Fti
+≤ωWˆ xt2.
+243.dtbelongs to the range of W; that is,Pn
+i=1dt
+i= 0.
+We suppose thatPn
+i=1h0
+i= 0. Then, it follows from the third property of dtthat, for every
+t≥0,Pn
+i=1ht
+i= 0; that is, Wht=ht.
+For every t≥0, we define ˆht+1:=ht−pχ
+γWˆ xt,wt:=xt−γgtandw⋆:=x⋆−γ∇f(x⋆). We
+also define ¯ xt♯:= (¯xt♯)n
+i=1, with ¯xt♯:=1
+nPn
+i=1ˆxt
+i; that is, ¯xt♯is the exact average of the ˆxt
+i, of which
+¯xtis an unbiased random estimate.
+Lett≥0. We have
+Ehxt+1−x⋆2| Fti
+=pEh¯ xt−x⋆2| Ft, θt= 1i
++ (1−p)ˆ xt−x⋆2,
+SinceE
+¯ xt| Ft, θt= 1
+=¯ xt♯,
+Eh¯ xt−x⋆2| Ft, θt= 1i
+=¯ xt♯−x⋆2
++E¯ xt−¯ xt♯2
+| Ft, θ= 1
+,
+with ¯ xt♯−x⋆2
+=ˆ xt−x⋆2−Wˆ xt2.
+To analyze Eh¯ xt−x⋆2| Ft, θt= 1i
+, where the expectation is with respect to the active subset Ωt
+and the mask qt, we can remark that the expectation and the squared Euclidean norm are separable
+with respect to the coordinates of the d-dimensional vectors. So, we can reason on the coordinates
+independently on each other, even if the the coordinates, or rows, of qtare mutually dependent.
+Also, for a given coordinate k∈[d], choosing selements at random among the celements ˆxt
+i,kwith
+i∈Ωt, with Ωtchosen uniformly at random too, is equivalent to selecting selements ˆxt
+i,kamong all
+i∈[n]uniformly at random in the first place. Thus, for every coordinate k∈[d], it is like a subset
+eΩt
+k⊂[n]of size s, which corresponds to the location of the ones in the k-th row of qt, is chosen
+uniformly at random and
+¯xt
+k=1
+sX
+i∈eΩt
+kˆxt
+i,k.
+Then, as proved in Condat and Richtárik [2022, Proposition 1],
+E¯ xt−¯ xt♯2
+| Ft, θt= 1
+=ndX
+k=1EeΩt
+k
+
+1
+sX
+i∈eΩt
+kˆxt
+i,k−1
+nnX
+j=1ˆxt
+j,k
+2
+| Ft
+=νWˆ xt2,
+where
+ν:=n−s
+s(n−1)∈
+0,1
+2
+. (25)
+Moreover,
+ˆ xt−x⋆2=wt−w⋆2+γ2ht−h⋆2+ 2γ⟨wt−w⋆,ht−h⋆⟩
+=wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ht−h⋆⟩
+=wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ˆht+1−h⋆⟩ −2γ⟨ˆ xt−x⋆,ˆht+1−ht⟩
+=wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ˆht+1−h⋆⟩+ 2pχ⟨ˆ xt−x⋆, Wˆ xt⟩
+=wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ˆht+1−h⋆⟩+ 2pχWˆ xt2.
+25Hence,
+Ehxt+1−x⋆2| Fti
+=pˆ xt−x⋆2−pWˆ xt2+pνWˆ xt2+ (1−p)ˆ xt−x⋆2
+=ˆ xt−x⋆2−p(1−ν)Wˆ xt2
+=wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ˆht+1−h⋆⟩
++ 
+2pχ−p(1−ν)Wˆ xt2.
+On the other hand, using the 3 properties of dtstated above, we have
+Ehht+1−h⋆2| Fti
+≤ht−h⋆−pχ
+γ(1 +ω)Wˆ xt2
++ωp2χ2
+γ2(1 +ω)2Wˆ xt2
+=ht−h⋆+1
+1 +ω ˆht+1−ht2
++ω
+(1 +ω)2ˆht+1−ht2
+=ω
+1 +ω 
+ht−h⋆
++1
+1 +ω ˆht+1−h⋆2
++ω
+(1 +ω)2ˆht+1−ht2
+=ω2
+(1 +ω)2ht−h⋆2+1
+(1 +ω)2ˆht+1−h⋆2
++2ω
+(1 +ω)2⟨ht−h⋆,ˆht+1−h⋆⟩+ω
+(1 +ω)2ˆht+1−h⋆2
++ω
+(1 +ω)2ht−h⋆2−2ω
+(1 +ω)2⟨ht−h⋆,ˆht+1−h⋆⟩
+=1
+1 +ωˆht+1−h⋆2
++ω
+1 +ωht−h⋆2.
+Moreover,
+ˆht+1−h⋆2
+=(ht−h⋆) + (ˆht+1−ht)2
+=ht−h⋆2+ˆht+1−ht2
++ 2⟨ht−h⋆,ˆht+1−ht⟩
+=ht−h⋆2+ 2⟨ˆht+1−h⋆,ˆht+1−ht⟩ −ˆht+1−ht2
+=ht−h⋆2−ˆht+1−ht2
+−2pχ
+γ⟨ˆht+1−h⋆, W(ˆ xt−x⋆)⟩
+=ht−h⋆2−p2χ2
+γ2Wˆ xt2−2pχ
+γ⟨W(ˆht+1−h⋆),ˆ xt−x⋆⟩
+=ht−h⋆2−p2χ2
+γ2Wˆ xt2−2pχ
+γ⟨ˆht+1−h⋆,ˆ xt−x⋆⟩.
+26Hence,
+1
+γEhxt+1−x⋆2| Fti
++γ(1 +ω)
+pχEhht+1−h⋆2| Fti
+≤1
+γwt−w⋆2−γht−h⋆2+
+2pχ
+γ−p
+γ(1−ν)Wˆ xt2
++ 2⟨ˆ xt−x⋆,ˆht+1−h⋆⟩+γ
+pχht−h⋆2
+−pχ
+γWˆ xt2−2⟨ˆht+1−h⋆,ˆ xt−x⋆⟩+γω
+pχht−h⋆2
+=1
+γwt−w⋆2+γ(1 +ω)
+pχ−γht−h⋆2
++pχ
+γ−p(1−ν)
+γWˆ xt2. (26)
+Since we have supposed
+0< χ≤1−ν=n(s−1)
+s(n−1)∈1
+2,1
+,
+we have
+1
+γEhxt+1−x⋆2| Fti
++γ(1 +ω)
+pχEhht+1−h⋆2| Fti
+≤1
+γwt−w⋆2+γ(1 +ω)
+pχ
+1−pχ
+1 +ωht−h⋆2.
+Finally,
+Ehwt−w⋆2| Ft
+0i
+≤(Id−γ∇f)xt−(Id−γ∇f)x⋆2+γ2σ2,
+and according to Condat and Richtárik [2023, Lemma 1],
+(Id−γ∇f)xt−(Id−γ∇f)x⋆2≤max(1 −γµ, γL −1)2xt−x⋆2.
+Therefore,
+E
+Ψt+1| Ft
+0
+≤max
+(1−γµ)2,(γL −1)2,1−pχ
+1 +ω
+Ψt+γσ2
+= max
+(1−γµ)2,(γL −1)2,1−p2χs−1
+n−1
+Ψt+γσ2. (27)
+Using the tower rule, we can unroll the recursion in (27) to obtain the unconditional expectation of
+Ψt+1.
+Ifσ= 0, using classical results on supermartingale convergence [Bertsekas, 2015, Proposition
+A.4.5], it follows from (27) that Ψt→0almost surely. Almost sure convergence of xtandhtfollows.
+Finally, by Lipschitz continuity of ∇f, we can upper bound ∥ˆ xt−x⋆∥2by a linear combination of
+∥xt−x⋆∥2and∥ht−h⋆∥2. It follows that Ehˆ xt−x⋆2i
+→0linearly with the same rate τand
+thatˆ xt→x⋆almost surely, as well.
+27A.1 The Random Variable dt
+We study the random variable dtused in Algorithm 3. If θt= 0,dt= 0. If, on the other hand,
+θt= 1, for every coordinate k∈[d], a subset eΩt
+k⊂[n]of size sis chosen uniformly at random.
+These sets (eΩt
+k)d
+k=1are mutually dependent, but this does not matter for the derivations, since we
+can reason on the coordinates separately. Then, for every k∈[d]andi∈[n],
+dt
+i,k:=(
+a
+ˆxt
+i,k−1
+sP
+j∈eΩt
+kˆxt
+j,k
+ifi∈eΩt
+k,
+0otherwise ,(28)
+for some value a >0to determine. We can check thatPn
+i=1dt
+i= 0. We can also note that dt
+depends only on Wˆ xtand not on ˆ xt; in particular, if ˆxt
+1=···= ˆxt
+n,dt
+i= 0. We have to set aso
+thatE
+dt
+i
+= ˆxt
+i−1
+nPn
+j=1ˆxt
+j, where the expectation is with respect to θtand the eΩt
+k(all expectations
+in this section are conditional to ˆ xt). So, let us calculate this expectation.
+Letk∈[d]. For every i∈[n],
+E
+dt
+i,k
+=ps
+n
+aˆxt
+i,k−a
+sEΩ:i∈Ω
+X
+j∈Ωˆxt
+j,k
+
+,
+where EΩ:i∈Ωdenotes the expectation with respect to a subset Ω⊂[n]of size scontaining iand
+chosen uniformly at random. We have
+EΩ:i∈Ω
+X
+j∈Ωˆxt
+j,k
+= ˆxt
+i,k+s−1
+n−1X
+j∈[n]\{i}ˆxt
+j,k=n−s
+n−1ˆxt
+i,k+s−1
+n−1nX
+j=1ˆxt
+j,k.
+Hence, for every i∈[n],
+E
+dt
+i,k
+=ps
+n
+a−a
+sn−s
+n−1
+ˆxi,k−ps
+na
+ss−1
+n−1nX
+j=1ˆxj,k.
+Therefore, by setting
+a:=n−1
+p(s−1), (29)
+we have, for every i∈[n],
+E
+dt
+i,k
+=ps
+n1
+pn−1
+s−1−1
+pn−s
+s(s−1)
+ˆxi,k−1
+nnX
+j=1ˆxj,k
+= ˆxi,k−1
+nnX
+j=1ˆxj,k,
+as desired.
+Now, we want to find the value of ωsuch that
+Ehdt−Wˆ xt2i
+≤ωWˆ xt2(30)
+28or, equivalently,
+E"nX
+i=1dt
+i2#
+≤(1 +ω)nX
+i=1ˆxt
+i−1
+nnX
+j=1ˆxt
+j2
+.
+We can reason on the coordinates separately, or all at once to ease the notations. We have
+E"nX
+i=1dt
+i2#
+=ps
+nnX
+i=1EΩ:i∈Ωaˆxt
+i−a
+sX
+j∈Ωˆxt
+j2
+.
+For every i∈[n],
+EΩ:i∈Ωaˆxt
+i−a
+sX
+j∈Ωˆxt
+j2
+=EΩ:i∈Ω
+a−a
+s
+ˆxt
+i−a
+sX
+j∈Ω\{i}ˆxt
+j2
+=
+a−a
+s
+ˆxt
+i2
++EΩ:i∈Ωa
+sX
+j∈Ω\{i}ˆxt
+j2
+−2*
+a−a
+s
+ˆxt
+i,a
+sEΩ:i∈ΩX
+j∈Ω\{i}ˆxt
+j+
+.
+We have
+EΩ:i∈ΩX
+j∈Ω\{i}ˆxt
+j=s−1
+n−1X
+j∈[n]\{i}ˆxt
+j=s−1
+n−1
+nX
+j=1ˆxt
+j−ˆxt
+i
+
+and
+EΩ:i∈ΩX
+j∈Ω\{i}ˆxt
+j2
+=EΩ:i∈ΩX
+j∈Ω\{i}ˆxt
+j2+EΩ:i∈ΩX
+j∈Ω\{i}X
+j′∈Ω\{i,j}
+ˆxt
+j,ˆxt
+j′
+=s−1
+n−1X
+j∈[n]\{i}ˆxt
+j2+s−1
+n−1s−2
+n−2X
+j∈[n]\{i}X
+j′∈[n]\{i,j}
+ˆxt
+j,ˆxt
+j′
+=s−1
+n−1
+1−s−2
+n−2X
+j∈[n]\{i}ˆxt
+j2+s−1
+n−1s−2
+n−2X
+j∈[n]\{i}ˆxt
+j2
+=s−1
+n−1n−s
+n−2
+nX
+j=1ˆxt
+j2−ˆxt
+i2
++s−1
+n−1s−2
+n−2nX
+j=1ˆxt
+j−ˆxt
+i2
+.
+29Hence,
+E"nX
+i=1dt
+i2#
+=ps
+nnX
+i=1
+a−a
+s
+ˆxt
+i2
++psa2
+(s)2s−1
+n−1n−s
+n−2nX
+j=1ˆxt
+j2
+−ps
+na2
+(s)2s−1
+n−1n−s
+n−2nX
+i=1ˆxt
+i2+ps
+na2
+(s)2s−1
+n−1s−2
+n−2nX
+i=1nX
+j=1ˆxt
+j−ˆxt
+i2
+−2ps
+na
+ss−1
+n−1
+a−a
+snX
+i=1*
+ˆxt
+i,nX
+j=1ˆxt
+j−ˆxt
+i+
+=(n−1)2
+psnnX
+i=1ˆxt
+i2+(n−1)2
+ps(s−1)nn−s
+n−2nX
+i=1ˆxt
+i2
++1
+pss−2
+s−1n−1
+n−2nX
+i=1ˆxt
+i2
+−21
+psns−2
+s−1n−1
+n−2nX
+i=1ˆxt
+i2
++1
+psns−2
+s−1n−1
+n−2nX
+i=1ˆxt
+i2+ 2n−1
+psnnX
+i=1ˆxt
+i2−2n−1
+psnnX
+i=1ˆxt
+i2
+=(n−1)(n+ 1)
+psnnX
+i=1ˆxt
+i2+(n−1)2
+ps(s−1)nn−s
+n−2nX
+i=1ˆxt
+i2
+−n−1
+psns
+s−1nX
+i=1ˆxt
+i2
++1
+psns−2
+s−1n−1
+n−2nX
+i=1ˆxt
+i2
+=(n2−1)(s−1)(n−2) + ( n−1)2(n−s) + (s−2)(n−1)
+ps(s−1)n(n−2)nX
+i=1ˆxt
+i2
+−n−1
+p(s−1)nnX
+i=1ˆxt
+i2
+=n−1
+p(s−1)nX
+i=1ˆxt
+i2−n−1
+p(s−1)nnX
+i=1ˆxt
+i2
+=n−1
+p(s−1)nX
+i=1ˆxt
+i−1
+nnX
+j=1ˆxt
+j2
+.
+Therefore, (30) holds with
+ω=n−1
+p(s−1)−1 (31)
+and we have a= 1 + ω.
+A.2 From Algorithm 2 to TAMUNA
+TAMUNA is a two-loop version of Algorithm 2, where every sequence of local steps followed by a
+communication step is grouped into a round. One crucial observation about Algorithm 2 is the
+30following: for a client i /∈Ωt, which does not participate in communication at iteration twith
+θt= 1, its variable xigets overwritten by ¯xtanyway (step 12 of Algorithm 2). Therefore, all local
+steps it performed since its last participation are useless and can be omitted. But at iteration twith
+θt= 0, it is still undecided whether or not a given client will participate in the next communication
+step at iteration t′> t, since Ωt′has not yet been generated. That is why TAMUNA is written
+with two loops, so that it is decided at the beginning of the round which clients will communicate
+at the end of the round. Accordingly, at the beginning of round r, a client downloads the current
+model estimate (step 6 of TAMUNA ) only if it participates ( i∈Ω(r)), to initialize its sequence of
+local steps. Otherwise ( i /∈Ω(r)), the client is completely idle: neither computation nor downlink or
+uplink communication is performed in round r. Finally, a round consists of a sequence of successive
+iterations with θt= 0and a last iteration with θt= 1followed by communication. Thus, the
+number of iterations, or local steps, in a round can be determined directly at the beginning of the
+round, according to a geometric law. Given these considerations, Algorithm 2 and TAMUNA are
+equivalent. In TAMUNA , the round and local step indexing is denoted by parentheses, e.g. (r, ℓ),
+to differentiate it clearly from the iteration indexing.
+To obtain Theorem 1 from Theorem 6, we first have to reindex the local steps to make the
+equivalent iteration index tin Algorithm 2 appear, since the rate is with respect to the number
+of iterations, not rounds, whose size is random. The almost sure convergence statement follows
+directly from the one in Theorem 6.
+Importantly, we want a result related to the variables which are actually computed in TAMUNA ,
+without including virtual variables by the idle clients, which are computed in Algorithm 2 but not
+inTAMUNA . That is why we express the convergence result with respect to ¯xt, which relates only
+to the variables of active clients; also, ¯xtis the model estimate known by the server whenever
+communication occurs, which matters at the end. Note the bar in Ψin (6) to differentiate it from
+Ψin (22). Thus, we continue the analysis of Algorithms 2 and 3 in Section A, with same definitions
+and notations. Let t≥0. Ifθt= 0, we choose Ωt⊂[n]of size cuniformly at random and a
+random binary mask qt= (qt
+i)i∈Ωt∈Rd×c, and we define ¯xt:=1
+sP
+j∈ΩtCt
+j(ˆxt
+j)(in Theorem 1, for
+simplicity, Ωtandqtare the ones that will be used at the end of the round; this choice is valid as
+it does not depend on the past). Ωt,qtand¯xtare already defined if θt= 1. We want to study
+Eh¯xt−x⋆2| Fti
+, where the expectation is with respect to Ωtandqt, whatever θt. Using the
+derivations already obtained,
+nEh¯xt−x⋆2| Fti
+=ˆ xt−x⋆2−Wˆ xt2+νWˆ xt2
+=wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ˆht+1−h⋆⟩
++ (2pχ+ν−1)Wˆ xt2
+≤wt−w⋆2−γ2ht−h⋆2+ 2γ⟨ˆ xt−x⋆,ˆht+1−h⋆⟩
++ 
+2pχ−p(1−ν)Wˆ xt2.
+Hence,
+n
+γEh¯xt−x⋆2| Fti
++γ(1 +ω)
+pχEhht+1−h⋆2| Fti
+≤1
+γwt−w⋆2+γ(1 +ω)
+pχ
+1−pχ
+1 +ωht−h⋆2
+31and
+n
+γEh¯xt−x⋆2| Ft
+0i
++γ(1 +ω)
+pχEhht+1−h⋆2| Ft
+0i
+≤max
+(1−γµ)2,(γL −1)2,1−p2χs−1
+n−1
+Ψt+γσ2.
+Using the tower rule,
+n
+γEh¯xt−x⋆2i
++γ(1 +ω)
+pχEhht+1−h⋆2i
+≤τtΨ0+γσ2
+1−τ.
+Since in TAMUNA ,x0
+1=···=x0
+n= ¯x0= ¯x(0),Ψ0= Ψ0. This concludes the proof of Theorem 1.
+B Proof of Theorem 3
+We suppose that the assumptions in Theorem 3 hold. sis set as the maximum of three values. Let
+us consider these three cases.
+1) Suppose that s= 2. Since 2 =s≥ ⌊αc⌋and2 =s≥ ⌊c
+d⌋, we have α≤3
+cand1≤3d
+c. Hence,
+Ornκ
+s+n
+ssd
+c+ 1 + αd
+=O √nκ+nd
+c+d
+c+d
+c
+=O
+d√nκ
+c+dn
+c
+. (32)
+2) Suppose that s=⌊c
+d⌋. Thensd
+c≤1. Since s≥ ⌊αc⌋and⌊c
+d⌋=s≥2, we have αc≤s+ 1≤
+c
+d+ 1andd
+c≤1
+2, so that αd≤1 +d
+c≤2. Hence,
+Ornκ
+s+n
+ssd
+c+ 1 + αd
+=Ornκ
+s+n
+s
+.
+Since 2s≥c
+d, we have1
+s≤2d
+cand
+Ornκ
+s+n
+ssd
+c+ 1 + αd
+=O√
+drnκ
+c+dn
+c
+. (33)
+3) Suppose that s=⌊αc⌋. This implies α >0. Then s≤αc. Also, 2s≥αcand1
+s≤2
+αc. Since
+s=⌊αc⌋ ≥ ⌊c
+d⌋, we have αc+ 1≥c
+dand1≤αd+d
+c. Since s=⌊αc⌋ ≥2, we have1
+c≤α
+2and
+321≤2αd. Hence,
+Ornκ
+s+n
+ssd
+c+ 1 + αd
+=Ornκ
+αc+n
+αc
+(αd+αd+αd)
+=O√αdrnκ
+c+dn
+c
+. (34)
+By adding up the three upper bounds (32), (33), (34), we obtain the upper bound in (15).
+C Sublinear Convergence in the Convex Case
+In this section only, we remove the hypothesis of strong convexity: the functions fiare only assumed
+tobeconvexand L-smooth,andwesupposethatasolution x⋆∈Rdto(1)exists. Also,forsimplicity,
+we only consider the case of exact gradients ( σ= 0). Then we have sublinear ergodic convergence:
+Theorem 7 (sublinear convergence) .In Algorithm 2 suppose that σ= 0and that
+0< γ <2
+Land 0< χ <n(s−1)
+s(n−1)∈1
+2,1
+. (35)
+For every i= 1, . . . , nandT≥0, let
+˜xT
+i:=1
+T+ 1TX
+t=0xt
+i. (36)
+Then
+Eh∇f(˜xT
+i)2i
+=O1
+T
+. (37)
+Proof.Asolution x⋆∈Rdto(1), whichissupposedtoexist, satisfies ∇f(x⋆) =1
+nPn
+i=1∇fi(x⋆) = 0.
+x⋆is not necessarily unique but h⋆
+i:=∇fi(x⋆)is unique.
+We define the Bregman divergence of a L-smooth convex function gat points x, x′∈Rdas
+Dg(x, x′):=g(x)−g(x′)− ⟨∇ g(x′), x−x′⟩ ≥0. We have Dg(x, x′)≥1
+2L∥∇g(x)− ∇g(x′)∥2. We
+note that for every x∈Rdandi= 1, . . . , n,Dfi(x, x⋆)is the same whatever the solution x⋆.
+For every t≥0, we define the Lyapunov function
+Ψt:=1
+γnX
+i=1xt
+i−x⋆2+γ
+p2χn−1
+s−1nX
+i=1ht
+i−h⋆
+i2, (38)
+Starting from (26), we have, for every t≥0,
+E
+Ψt+1| Ft
+=1
+γnX
+i=1Ehxt+1
+i−x⋆2| Fti
++γ
+p2χn−1
+s−1nX
+i=1Ehht+1
+i−h⋆
+i2| Fti
+≤1
+γnX
+i=1 
+xt
+i−γ∇fi(xt
+i)
+− 
+x⋆−γ∇fi(x⋆)2
++γ
+p2χn−1
+s−1−γnX
+i=1ht
+i−h⋆
+i2+p
+γ(χ−1 +ν)nX
+i=1ˆxt
+i−1
+nnX
+j=1ˆxt
+j2
+,
+33with
+ 
+xt
+i−γ∇fi(xt
+i)
+− 
+x⋆−γ∇fi(x⋆)2=xt
+i−x⋆2−2γ⟨∇fi(xt
+i)− ∇fi(x⋆), xt
+i−x⋆⟩
++γ2∇fi(xt
+i)− ∇fi(x⋆)2
+≤xt
+i−x⋆2−(2γ−γ2L)⟨∇fi(xt
+i)− ∇fi(x⋆), xt
+i−x⋆⟩,
+where the second inequality follows from cocoercivity of the gradient. Moreover, for every x, x′,
+Dfi(x, x′)≤ ⟨∇ fi(x)− ∇fi(x′), x−x′⟩. Therefore,
+E
+Ψt+1| Ft
+≤Ψt−(2−γL)nX
+i=1Dfi(xt
+i, x⋆)
+−γnX
+i=1ht
+i−h⋆
+i2+p
+γ(χ−1 +ν)nX
+i=1ˆxt
+i−1
+nnX
+j=1ˆxt
+j2
+.
+Telescoping the sum and using the tower rule of expectations, we get summability over tof the
+three negative terms above: for every T≥0, we have
+(2−γL)nX
+i=1TX
+t=0E
+Dfi(xt
+i, x⋆)
+≤Ψ0−E
+ΨT+1
+≤Ψ0, (39)
+γnX
+i=1TX
+t=0Ehht
+i−h⋆
+i2i
+≤Ψ0−E
+ΨT+1
+≤Ψ0, (40)
+p
+γ(1−ν−χ)nX
+i=1TX
+t=0E
+ˆxt
+i−1
+nnX
+j=1ˆxt
+j2
+≤Ψ0−E
+ΨT+1
+≤Ψ0. (41)
+TakingergodicaveragesandusingconvexityofthesquarednormandoftheBregmandivergence,
+we can now get O(1/T)rates. We use a tilde to denote averages over the iterations so far. That is,
+for every i= 1, . . . , nandT≥0, we define
+˜xT
+i:=1
+T+ 1TX
+t=0xt
+i
+and
+˜xT:=1
+nnX
+i=1˜xT
+i.
+The Bregman divergence is convex in its first argument, so that, for every T≥0,
+nX
+i=1Dfi(˜xT
+i, x⋆)≤nX
+i=11
+T+ 1TX
+t=0Dfi(xt
+i, x⋆).
+Combining this inequality with (39) yields, for every T≥0,
+(2−γL)nX
+i=1E
+Dfi(˜xT
+i, x⋆)
+≤Ψ0
+T+ 1. (42)
+34Similarly, for every i= 1, . . . , nandT≥0, we define
+˜hT
+i:=1
+T+ 1TX
+t=0ht
+i
+and we have, for every T≥0,
+nX
+i=1˜hT
+i−h⋆
+i2
+≤nX
+i=11
+T+ 1TX
+t=0ht
+i−h⋆
+i2.
+Combining this inequality with (40) yields, for every T≥0,
+γnX
+i=1E˜hT
+i−h⋆
+i2
+≤Ψ0
+T+ 1. (43)
+Finally, for every i= 1, . . . , nandT≥0, we define
+˜ˆxT
+i:=1
+T+ 1TX
+t=0ˆxt
+i
+and
+˜ˆxT:=1
+nnX
+i=1˜ˆxT
+i,
+and we have, for every T≥0,
+nX
+i=1˜ˆxT
+i−˜ˆxT2
+≤nX
+i=11
+T+ 1TX
+t=0ˆxt
+i−1
+nnX
+j=1ˆxt
+j2
+.
+Combining this inequality with (41) yields, for every T≥0,
+p
+γ(1−ν−χ)nX
+i=1E˜ˆxT
+i−˜ˆxT2
+≤Ψ0
+T+ 1. (44)
+Next, we have, for every i= 1, . . . , nandT≥0,
+∇f(˜xT
+i)2≤2∇f(˜xT
+i)− ∇f(˜xT)2+ 2∇f(˜xT)2
+≤2L2˜xT
+i−˜xT2+ 2∇f(˜xT)2. (45)
+Moreover, for every T≥0and solution x⋆to (1),
+∇f(˜xT)2=∇f(˜xT)− ∇f(x⋆)2
+≤1
+nnX
+i=1∇fi(˜xT)− ∇fi(x⋆)2
+≤2
+nnX
+i=1∇fi(˜xT)− ∇fi(˜xT
+i)2+2
+nnX
+i=1∇fi(˜xT
+i)− ∇fi(x⋆)2
+≤2L2
+nnX
+i=1˜xT
+i−˜xT2+4L
+nnX
+i=1Dfi(˜xT
+i, x⋆). (46)
+35There remains to control the terms˜xT
+i−˜xT2: we have, for every T≥0,
+nX
+i=1˜xT
+i−˜xT2≤2nX
+i=1(˜xT
+i−˜xT)−(˜ˆxT
+i−˜ˆxT)2
++ 2nX
+i=1˜ˆxT
+i−˜ˆxT2
+≤2nX
+i=1˜xT
+i−˜ˆxT
+i2
++ 2nX
+i=1˜ˆxT
+i−˜ˆxT2
+. (47)
+For every i= 1, . . . , nandt≥0,
+ˆxt
+i=xt
+i−γ 
+∇fi(xt
+i)−ht
+i
+so that, for every i= 1, . . . , nandT≥0,
+˜xT
+i−˜ˆxT
+i=γ1
+T+ 1TX
+t=0∇fi(xt
+i)−γ˜hT
+i
+and
+˜xT
+i−˜ˆxT
+i2
+=γ21
+T+ 1TX
+t=0∇fi(xt
+i)−˜hT
+i2
+≤2γ21
+T+ 1TX
+t=0∇fi(xt
+i)− ∇fi(x⋆)2+ 2γ2˜hT
+i−h⋆
+i2
+≤4Lγ21
+T+ 1TX
+t=0Dfi(xt
+i, x⋆) + 2γ2˜hT
+i−h⋆
+i2
+. (48)
+Combining (45), (46), (47), (48), we get, for every T≥0,
+nX
+i=1∇f(˜xT
+i)2≤2L2nX
+i=1˜xT
+i−˜xT2+ 2n∇f(˜xT)2
+≤2L2nX
+i=1˜xT
+i−˜xT2+ 2L2nX
+i=1˜xT
+i−˜xT2+ 4LnX
+i=1Dfi(˜xT
+i, x⋆)
+= 4L2nX
+i=1˜xT
+i−˜xT2+ 4LnX
+i=1Dfi(˜xT
+i, x⋆)
+≤8L2nX
+i=1˜xT
+i−˜ˆxT
+i2
++ 8L2nX
+i=1˜ˆxT
+i−˜ˆxT2
++ 4LnX
+i=1Dfi(˜xT
+i, x⋆)
+≤32L3γ21
+T+ 1nX
+i=1TX
+t=0Dfi(xt
+i, x⋆) + 16L2γ2nX
+i=1˜hT
+i−h⋆
+i2
++ 8L2nX
+i=1˜ˆxT
+i−˜ˆxT2
++ 4LnX
+i=1Dfi(˜xT
+i, x⋆).
+36Taking the expectation and using (39), (43), (44) and (42), we get, for every T≥0,
+nX
+i=1Eh∇f(˜xT
+i)2i
+≤32L3γ21
+T+ 1nX
+i=1TX
+t=0E
+Dfi(xt
+i, x⋆)
++ 16L2γ2nX
+i=1E˜hT
+i−h⋆
+i2
++ 8L2nX
+i=1E˜ˆxT
+i−˜ˆxT2
++ 4LnX
+i=1E
+Dfi(˜xT
+i, x⋆)
+.
+≤32L3γ2
+2−γLΨ0
+T+ 1+ 16L2γΨ0
+T+ 1+8L2γ
+p(1−ν−χ)Ψ0
+T+ 1+4L
+2−γLΨ0
+T+ 1
+=32L3γ2+ 4L
+2−γL+ 16L2γ+8L2γ
+p(1−ν−χ)Ψ0
+T+ 1.
+Hence, with γ= Θ p
+Lpc
+n
+,χsatisfying δ≤χ≤1−ν−δfor some δ >0, and h0
+i=∇fi(x0),
+for every i∈[n], then for every ϵ >0, we have
+nX
+i=1Eh∇f(˜xT
+i)2i
+≤ϵ (49)
+after
+O 
+L2
+prn
+cx0−x⋆2
+ϵ!
+(50)
+iterations and
+O 
+L2rn
+cx0−x⋆2
+ϵ!
+(51)
+communication rounds.
+We note that LT does not yield any acceleration: the communication complexity is the same
+whatever p. CC is effective, however, since we communicate much less than dfloats during every
+communication round.
+This convergence result applies to Algorithm 2. ˜xT
+iin (36) is an average of all xt
+i, including
+the ones for clients not participating in the next communication round. The result still applies
+toTAMUNA , with, for every i∈[n],˜xT
+idefined as the average of the x(r,ℓ)
+iwhich are actually
+computed, since this is a random subsequence of all xt
+i.
+37

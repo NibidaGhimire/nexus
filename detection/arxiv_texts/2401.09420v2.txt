@@ -1,0 +1,1110 @@
+IEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 1
+LIONHEART : A Layer-based Mapping Framework
+for Heterogeneous Systems with Analog In-Memory
+Computing Tiles
+Corey Lammie, Member, IEEE, Yuxuan Wang, Student Member, IEEE, Flavio Ponzina, Member, IEEE,
+Joshua Klein, Member, IEEE, Hadjer Benmeziane, Member, IEEE, Marina Zapater, Member, IEEE,
+Irem Boybat Senior Member, IEEE, Abu Sebastian Fellow, IEEE,
+Giovanni Ansaloni, Member, IEEE, David Atienza, Fellow, IEEE
+Abstract —When arranged in a crossbar configuration, resistive
+memory devices can be used to execute Matrix-Vector Multipli-
+cations (MVMs), the most dominant operation of many Machine
+Learning (ML) algorithms, in constant time complexity. Nonethe-
+less, when performing computations in the analog domain, novel
+challenges are introduced in terms of arithmetic precision and
+stochasticity, due to non-ideal circuit and device behaviour. More-
+over, these non-idealities have a temporal dimension, resulting
+in a degrading application accuracy over time. Facing these
+challenges, we propose a novel framework, named LionHeart , to
+obtain hybrid analog-digital mappings to execute Deep Learning
+(DL) inference workloads using heterogeneous accelerators. The
+accuracy-constrained mappings derived by LionHeart showcase,
+across different Convolutional Neural Networks (CNNs) and
+one transformer-based network, high accuracy and potential for
+speedup. The results of the full system simulations highlight
+run-time reductions and energy efficiency gains that exceed
+6×, with a user-defined accuracy threshold for a fully digital
+floating point implementation. LionHeart is open-sourced here:
+https://github.com/IBM/lionheart.
+Index Terms —AIMC, DNNs, Heterogeneous Systems, Map-
+ping, System Simulation
+I. I NTRODUCTION
+DEEP Learning (DL)-based solutions have been applied in
+various industrial and scientific applications, including
+computer vision, natural language processing, and speech
+recognition. Nowadays, State-Of-The-Art (SOTA) DL models
+require significant memory to store their parameters (i.e.,
+weights and biases), and billions of Multiply-Accumulate
+(MAC) operations per inference. These extreme computing
+and memory requirements pose a challenge to deploy DL
+workloads on edge devices, whose form factor and energy
+budget require limited computing capabilities and memory
+size. However, the execution of DL workloads at the edge
+represents a very attractive prospect, as it would allow the
+Corresponding authors: I. Boybat and G. Ansaloni
+Corey Lammie, Hadjer Benmeziane, Irem Boybat, and Abu Sebastian are
+with IBM Research - Zurich. email: ibo@zurich.ibm.com
+Flavio Ponzina, Yuxuan Wang, Giovanni Ansaloni, and David Atienza are
+with the Embedded Systems Lab, ´Ecole Polytechnique F ´ed´erale (EPFL).
+Joshua Klein, previously with EPFL, is currently with the Systems In-
+tegration Department of imec vzw in Leuven, Belgium. email: gio-
+vanni.ansaloni@epfl.ch
+Marina Zapater is with the School of Engineering and Management Vaud
+(HEIG-VD) in the University of Applied Sciences Western Switzerland
+Mapped Layers
+Network Heterogeneous PUsFig. 1. LionHeart heterogeneously maps layers of ML networks to digital or
+analog resources, maximizes performance by exploiting AIMC acceleration,
+while at the same time abiding to accuracy constraints.
+processing of data samples close to where it is collected, re-
+sulting in several benefits, including reduced latency, a higher
+degree of security and privacy, improved bandwidth efficiency,
+as well as increased resiliency. To enable DL within the tiny
+resource envelopes of edge devices, workload optimization is
+key. To this end, many research works have proposed dedicated
+hardware solutions, customized for DL workloads [1], [2].
+Such accelerators leverage the structured organization of
+ML algorithms, such as Deep Neural Networks (DNNs) and
+transformers, which are composed of layers sequences that, for
+the most part, implement linear algebra computing kernels.
+In turn, these can be effectively supported by hardware ar-
+chitectures by exploring their parallelism, whether employingarXiv:2401.09420v2  [cs.ET]  24 Feb 2025IEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 2
+reprogrammable logic or fixed-function implementations, such
+as Tensor Processing Units (TPUs) [3]. A disruptive approach
+in this space is In-Memory Computing (IMC), for which
+storage and computation is performed at the same physical
+location, avoiding the well-known memory wall problem.
+Different IMC approaches have been proposed in the liter-
+ature, operating at varying levels of the memory hierarchy
+and leveraging different technologies. We summarize this
+landscape in Section II. Among them, Analog In-Memory
+Computing (AIMC) is emerging as a particularly appealing
+alternative. The AIMC computing paradigm is based on cross-
+bar architectures, with devices having variable conductance
+connecting rows and columns. By leveraging Ohm’s law and
+Kirchhoff’s current law, AIMC accelerators can be used to
+perform matrix-vector operations between an input vector (en-
+coded using Word-Line (WL) voltages) and a matrix (encoded
+using conductance) in linear time [4], i.e., the time required
+to write inputs and read-back outputs.
+An important drawback hampering the widespread adoption
+of AIMC is its sensitivity to device and circuit-related varia-
+tions such as temporal conductance variations, device stochas-
+ticity, and circuit non-idealities, which can adversely affect
+accuracy [2]. Many ongoing efforts investigate these effects
+and propose strategies to mitigate them, including Hardware-
+Aware (HWA) retraining [5] and model co-optimization [6].
+However, none of these works adequately addresses the ac-
+curacy challenge from a system perspective, i.e. how AIMC
+acceleration can be leveraged to speed up ML execution while
+faithfully modeling and controlling the ensuing noise-induced
+accuracy degradation.
+We herein aim at filling this gap. To this end, we present
+herein a novel framework that enables the effective exploration
+of hybrid digital/analog mappings of DL models (Fig. 1),
+taking into account the current limitations of AIMC which
+affect accuracy. Our framework effectively navigates the trade-
+off between run-time, performance, and accuracy degradation.
+Recognizing the exponential relation between the number of
+MVMs that can be executed in either the digital or analog
+domain, and the possible mapping solutions, we herein in-
+troduce an accuracy-driven heuristic that, by considering the
+largest MVM operations first (in terms of MAC operations),
+reduces the exploration problem to that of linear complexity.
+The main contributions presented in this work are summarized
+as follows:
+•We present a novel accuracy-driven training framework,
+able to explore the space of hybrid digital/analog imple-
+mentations of DNNs. The framework allocates different
+layers to digital or analog resources to minimize run-
+time while constraining the adverse effect of analog
+computations on accuracy. Additionally, it is hardware-
+agnostic, meaning it can be applied to AIMC crossbars
+adopting different device technologies;
+•We derive a set of optimized hybrid mappings ensuring
+user-defined accuracy levels for a number of DNNs
+trained for CIFAR-10 and CIFAR-100 image classifi-
+cation, in addition to a transformer-based network for
+Stanford Question Answering Dataset (SQuAD) – a
+Natural Language Processing (NLP) task;•We showcase, that for all of these networks, a sizable
+share of their workload can be executed in the analog
+domain, even for degradation thresholds as low as 0.5%
+with respect to floating-point precision implementations;
+•We investigate the speedup-accuracy tradeoff achieved by
+our mappings. To this end, we perform power and per-
+formance evaluations on different types of ML workloads
+using a cycle-accurate simulator based on gem5-X [4];
+•We compare our optimal mappings to those obtained from
+prior work (DIANA [7] and Harmonica [8]), and evaluate
+the variability of the achieved mappings, in addition to
+their accuracy and MAC ratio;
+•For one network, we hardware-aware train all possible
+mappings and establish a upper-bound for comparison;
+•Finally, we recognize and address the real-world system
+accuracy degradation caused by temporal variation of pro-
+grammed AIMCs crossbars at a user-desired evaluation
+time, teval.
+II. B ACKGROUND AND RELATED WORK
+A. In-Memory Computing
+Traditional von Neumann computing systems involve sepa-
+rate processing and memory units, which consume significant
+energy and introduce additional latency when data is moved
+between them. IMC is a non-von Neumann computational ap-
+proach, in which computation and storage are performed at the
+same physical location. Several different IMC architectures,
+which aim to blend computation and storage, have emerged
+in recent years [9]. Architectures can utilize IMC at different
+levels of the memory hierarchy, for example, when interfacing
+main memory [10], as part of smart caches [11], or as
+functional units that augment processor pipelines and register
+files [4]. While we consider this last scenario in our experi-
+mental evaluation when evaluating speedups, our methodology
+is agnostic with respect to the integration choice, because
+we abstract architectural aspects when performing application
+mapping to analog/digital resource. From a technology per-
+spective, both SRAM- and DRAM-based IMC architectures
+have been proposed [2]. Computation in these architectures
+can be achieved by taking advantage of charge sharing when
+simultaneously activating multiple memory rows. A promising
+alternative, which we focus on in this paper, is that of
+employing Non-V olatile Memory (NVM) devices, organized in
+a crossbar arrangement [2]. These devices, used to encode net-
+work weights in a differential mapping scheme, are employed
+at the junction of word- and bit-lines, and their resistances
+are modulated according to the target weight value at compile
+time.
+As depicted in Fig. 2, AIMC crossbars encode inputs
+as word line voltages using Digital-to-Analog Converters
+(DACs), and currents, representative of MVMs results, are
+collected across bit lines into Analog-to-Digital Converters
+(ADCs). Operations on AIMC crossbars are performed in
+parallel, and hence, can be realized in constant time complex-
+ity. For instance, a 256 ×256 Phase Change Memory (PCM)
+crossbar is shown to perform a total of 65,536 MAC operations
+in 130ns in Le Gallo et al. [12]. However, as computation isIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 3
+Input VectorDAC
+DAC
+DACADCADCADC
+Fig. 2. (a)Depiction of an AIMC tile and its underlying compute mechanism.
+Each memristor, as depicted, is representative of a unit cell2.
+performed in the analog domain, outputs are affected by non-
+deterministic noise, deviating from expected results. This is
+due to a number of device and circuit non-idealities, including
+temporal and temperature-dependent conductance variations,
+device stochasticity, ADC mismatch, and IR drop [5].
+B. Hardware-Aware Training
+Analog HWA offline training is a common approach to miti-
+gate the AIMC device and circuit non-idealities, by making the
+model more robust for deployment. When performing HWA
+training, weight-noise is injected during forward propagation
+passes. Mathematically, this is expressed as follows:
+yi=αout
+ifadc X
+j(wij+σwξij)(fdac(xj)+σinpξj)+σoutξi
++βi,
+(1)
+where fadcandfdacmodel the analog-to-digital and digital-to-
+analog processes, with dynamic scaling and range clipping,
+andξdenotes Gaussian noise. σindicates noise sampled
+from a zero-centered normal distribution. In addition to train-
+ing noise-resilient weights, it is also possible to train other
+parameters, such as the input (DAC) bounds of each tile,
+using back-propagation. We employ the open-source AIH-
+WKIT toolkit [5] to expose these behaviours using system-
+level explorations in LionHeart , allowing both the realistic
+characterization of analog non-idealities and analog HWA
+2AIMC tiles may be realized using different architectures [13], [14],
+most prominently, pseudo-crossbar or conventional memory, where the input
+injection ways are different, and the single-bit-multi-bit encoding capabilities
+are also different. LionHeart is architecture agnostic.
+(c)
+Scaled Dot-
+Product
+Attention
+FC
+FC
+FCConcatK
+VQFC
+Digital |Analog Execution Self-Attention
+BlockFig. 3. Mapping of (a)FC and (b)CONV layers to device conductances.
+Weights are linearly scaled and mapped between Gmin andGmax .(c)
+Mapping/execution flow of a self-attention block when the maximum analog
+MAC ratio is achieved.
+retraining. While the toolkit, and by extension, the LionHeart
+framework can be used to model other device technologies,
+such as Resistive Random-Access Memory (RRAM), in this
+paper, we model PCM. The PCM device technology was
+chosen as compared to other device technologies, it utilizes
+fab–friendly materials and can achieve high conductance pre-
+cision. Section IV-B3 details the specific assumptions made
+during analog HWA retraining.
+C. Computational Complexity and Execution of Convolutional
+and FC Layers Using IMC
+FC layers execute a number of MAC operations which
+is linearly proportional to the number of input and output
+elements. Specifically, they have a complexity of O(MN ),
+withMandNrepresenting the number of input and output
+features, respectively. A CONV layer that applies Ffilters to
+compute an output feature map of size Wo×Ho×Frequires a
+number of MAC operations in the order of O(WoHoCK2F),
+where Krepresents the kernel size and Cthe number of input
+channels.
+Weights of FC layers can be computed directly using the
+MVM operation, whereas weights of CONV layers can be
+transformed to MVMs using the im2col algorithm [15] (see
+Fig. 3). Using im2col , weights of CONV layers are unfolded
+and indexed as a matrix, where each column of the matrixIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 4
+Fig. 4. (a)High-level overview of our proposed framework. (b)The validation accuracy at the desired evaluation time ( teval =1d) and training loss of a
+candidate AIMC layer during analog HWA retraining. Training is considered converged when, for a user-defined convergence window, the training loss does
+not decrease. (c)High-level overview of analog HWA retraining.
+contains the unrolled values of a filter. For both layer types,
+unfolded weight matrices are typically much larger than the
+attainable dimensions of AIMC tiles. For both layer types,
+unfolded weight matrices are typically much larger than the
+attainable dimensions of AIMC tiles, e.g., all convolutional
+layers of ResNet20 require 32 256 ×256 tiles. Hence, tiling
+can be employed to partition large matrices into a number of
+discrete tiles. This strategy requires an additional computing
+step to aggregate partial results, which is performed per tile,
+rather than per element [4]. Unless otherwise stated, we utilize
+a distributed weight mapping scheme, in which larger matrix
+areevenly distributed among tiles.
+For self-attention blocks, we consider mapping the first three
+FC layers of each head and the last FC layer after concatena-
+tion. FC layers within the scaled-dot product attention are not
+considered, as they have dynamic weights, which for AIMC
+require constant reprogramming during infererence.
+D. Related Work
+Most related work, which perform application mapping on
+AIMC-accelerated systems, consider resource limitations as
+their main (or only) constraint. PUMA [16] employs compiler
+analysis passes to define which parts of the application have
+the most potential for speedup, while AERO [17] formulates
+this same problem as a cost function minimization. Potential
+issues introduced by non-idealities and noisy environments,
+characterizing AIMC devices, are overlooked in the above-
+mentioned works. They are similarly disregarded in [18]
+and [19], where all FC and CONV layers are executed using
+AIMC tiles, without attempting to control induced accuracy
+degradation. Some consideration of the effect of analog com-
+puting on accuracy is included in [7], where the authors
+propose a hybrid solution where the first and last layers of
+DNNs are executed on digital resources, postulating that these
+two layers are more sensitive to noise.
+Two recent works present input channel-wise weight selec-
+tion methods to map to heterogeneous analog-digital resources.
+The first, Harmonica [20], does so without employing any re-
+training strategy. The input is assumed to already be HWA
+trained, and some layers are confined to be implementedusing digital resources. For channels of unconfined layers, the
+Hessian sensitivity [21] is determined. These are then ordered
+from the most sensitive to the least sensitive. The (next) most
+sensitive channel is converted to digital and the accuracy of
+the network is determined. This process is repeated until the
+accuracy of the network drops below a pre-defined threshold.
+Harmonica is described in full in Algorithm 1 of [20].
+The second, ODiMO [22], relies on the unique approach of
+training a supernetwork, where for each channel, both digital
+and AIMC implementations are trained simultaneously. After
+the network is trained, for each channel, either the digital
+or AIMC implementation is pruned. Analog computation is
+modelled using 2-bit quantization. Both of these methods do
+not consider (i) the variability of analog tiles as well as (ii)
+the temporal evolution of analog weights (conductances).
+The complexity of devising high-performance, but accuracy-
+constrained mappings, is compounded by the varying size and
+sensitivity towards noise of the different layers in a DNN
+structure. Moreover, the number of possible mappings makes
+exhaustive exploration impractical, even for simple cases, as
+discussed, in the context of hardware quantization, in [23].
+For example, even when layer-wise mapping is considered, a
+relatively low-depth model like AlexNet, composed of just
+seven layers, would therefore present 27possible analog-
+digital combinations. All of these would have to be trained and
+tested to arrive at an exact solution to the mapping problem.
+In contrast to Harmonica and ODiMO, we employ a heuristic-
+based layer-wise mapping strategy, which scales linearly with
+respect to the number of layers, as it only considers one target
+candidate layer at a time.
+III. L IONHEART FRAMEWORK
+A high-level depiction of our framework is presented in
+Fig. 4. The input DNN is assumed to be pre-trained in floating-
+point precision. Our methodology consists of: 1 a MAC-
+based layer ranking (ordering) phase, in which the layers
+are indexed according to their computational requirements,
+2 - 4 an optimization loop, evaluating layers greedily as
+possible candidates for AIMC (analog) acceleration, and 5 a
+full system evaluation phase, where the full-system frameworkIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 5
+TABLE I
+THE NUMBER OF LAYERS ,WEIGHTS ,AND THE TOP -1 ( BASELINE ,
+FLOATING -POINT )ACCURACY OF EACH EVALUATED NETWORK .
+Model Weights Top-1 Acc./F1 (%)
+(# Mappable Layers) CIFAR-10 CIFAR-100 CIFAR-10 CIFAR-100
+ResNet8 (10) 77,360 77,968 87.38 59.40
+ResNet20 (20) 268,336 270,522 90.52 65.15
+MobileNet (15) 3,195,328 3,206,282 90.15 63.05
+VGG-16 (14) 14,715,584 14,761,664 92.79 69.51
+AlexNet (7) 15,378,112 15,562,432 91.29 65.70
+(# Mappable Layers) SQuAD SQuAD
+MobileBERT (169) 24,844,544190.2
+1We use the following definition: https://huggingface.co/docs/
+transformers/model doc/mobilebert.
+in [4] is used to estimate run time. In the remainder of this
+section, we detail those different components.
+MAC-based Layer Ranking 1 : Ordering is performed by
+calculating the number of MAC operations required by each
+layer. Note that this step only has to be performed once, as the
+number of MACs only depends on the DNN layer structure.
+Mapper 2 : During the optimization loop, layers are consid-
+ered, one at a time, in descending order with respect to their
+size (i.e., the number of required MACs), and mapped to either
+analog or digital Processing Units (PUs). The rationale behind
+this approach is that larger layers have more redundancy
+and, hence, more leeway to compensate for the perturbations
+induced by analog computing [5], [6]. Furthermore, the accel-
+eration of a high number of MACs with AIMC computing has
+the potential to achieve higher speedups. Initially, a selected
+layer is tentatively considered as AIMC-accelerated. Its imple-
+mentation is then transformed from its digital representation
+to an analog model provided by AIHWKIT, which accounts
+for non-idealities (noise, temporal drift, etc.).
+Trainer 3 : The transfer of a layer from digital to analog
+in the modeling environment usually has a large detrimen-
+tal effect on accuracy. Nonetheless, most of the accuracy
+degradation at the desired evaluation time, teval, can be often
+countered with re-training. To this end, for each iteration,
+the entire network (both digital and analog layers) undergoes
+retraining, until no decrease in the loss function is observed
+inside a convergence window (see Fig. 4b). The width of
+the convergence window is a tuneable hyper-parameter of our
+framework, but can be small in practice (we set it to 5 epochs
+for the experiments in Section IV-D) .
+Evaluator 4 : The DNN model accuracy after re-training
+with the achieved mapping is then compared to the user-
+specified drop threshold, i.e., the maximum drop between
+the floating-point and the average validation accuracy at the
+desired evaluation time. If the optimized model adheres to
+this constraint, the tentative AIMC acceleration of the layer,
+is confirmed. On the contrary, the optimization step is rolled
+back, and the layer is assigned for digital execution. The
+optimization loop proceeds by considering a further layer in
+its next iteration, and ends when all layers have been analyzed.
+Full System Evaluation 5 : After the achieved mapping
+has been determined, performance and energy statistics are
+obtained using the ALPINE framework [4]. ALPINE is a sys-tem simulator extending gem5-X [24] by providing hardware-
+validated models of AIMC accelerators. We employ it to col-
+lect performance statistics representative of AIMC-accelerated
+systems.
+While not investigated in this paper, it is possible to extend
+the methodology of LionHeart to co-apply different techniques
+to further improve accuracy, e.g., tunable ADC resolutions in
+RAELLA [25].
+IV. E VALUATION
+A. Experimental Setup
+For the considered DNNs, similarly to [7] and [8] we
+evaluate the performance of LionHeart on the CIFAR-10
+dataset [26]. Moreover, we also provide outcomes on the more
+challenging CIFAR-100 dataset. [26]. We consider five DNN
+architectures targeting edge devices, as listed in Table I, where
+the size of the last FC layer is modified according to the
+number of output classes (10 and 100, respectively).
+While the degree to which a DNN architecture is parameter-
+ized for a given dataset is difficult to determine quantitatively,
+the DNN architectures were selected such that they range
+from being under- to over-parameterized so that they are
+representative of a broader range of networks and chosen tasks.
+To demonstrate the generality of LionHeart beyond CNNs,
+we also apply it to the MobileBERT transformer benchmark,
+processing on the SQuAD dataset [27]3.
+We collect results using CIFAR-10 and CIFAR-100 for the
+first five DNN architectures targeting edge devices as listed
+in Table I. Additionally, we collect results using SQuAD for
+MobileBERT. The number of weights of these networks range
+from≈78K to ≈25M. Data is split into training, validation,
+and testing sets. For CIFAR-10 and CIFAR-100, the validation
+dataset was obtained by splitting the original training dataset
+into two separate datasets, comprising 90% of training images
+and the remaining 10% of validation images. The same ran-
+domly sampled validation set was used for all experiments. For
+SQuAD, the pre-existing development set (comprising 10% of
+all inputs) was used as the validation set. The test sets of all
+datasets were solely used for final model evaluation.
+B. Training and Evaluation Strategies
+1) Initial hyper-parameter exploration: Our framework as-
+sumes that the input DNN is pre-trained in floating-point
+precision. The selected models differ in depth, size, and
+complexity, and hence require different hyperparameters to
+achieve optimal training performance. For all networks listed
+in Table I, we empirically determined two sets of hyper-
+parameters, pertaining to the analog and digital domain, re-
+spectively. Then, these were applied to the networks. These are
+listed in Table II. Further details on the adopted experimental
+setups in the two domains are provided in the following.
+3We refer to the SQuAD 1.1 dataset as SQuAD throughout the paper.IEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 6
+Fig. 5. For (a,b) ResNet8, (c,d) ResNet20, (e,f) AlexNet, (g,h) VGG16, (i,j) MobileNetV2, and (k,l) MobileBERT, the MAC ratio (as a percentage) and
+corresponding test set accuracies (F1 scores for SQuAD) at t=1d. The MAC ratio quantity represents the ratio between the number of MACs performed
+using AIMC and the total number of MACs
+2) Digital training: For all CNNs, networks were trained
+using floating-point precision until the training loss did not
+decrease for five consecutive epochs. For MobileBERT, a fixed
+number (3) of training epochs was used. All networks were
+trained with cross-entropy loss in conjunction with Stochastic
+Gradient Descent (SGD) with momentum.
+3) Analog HWA re-training: To perform analog HWA
+re-training, the weights of the trained digital networks were
+employed as a starting point. The IBM AIHWKIT was used to
+inject noise during forward propagations. We refer the reader
+to [5] for a comprehensive tutorial on HWA training using
+IBM AIHWKIT. To configure the behavior of AIMC tiles and
+HWA training, the IBM AIHWKIT utilizes different config-urations which are defined using a standardized data class
+data structure. A number of pre-defined configurations are
+provided. We used the provided InferenceRPUConfig()
+configuration and PCMLikeNoiseModel phenomenological
+inference model.
+The following additional modifications were made to the
+simulation configuration: (i) biases are assumed to be digital
+(i.e., they are not encoded on the last column of AIMC
+tiles). (ii) Channel- (i.e., column-) wise weight scaling, which
+has a negligible performance impact, is performed, where
+weights are mapped to a per-channel conductance range during
+learning after each mini-batch. (iii) The size of each AIMC tile
+is assumed to be 256x256. (iv) Layers that span across multipleIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 7
+TABLE II
+SHARED TRAINING HYPER -PARAMETERS FOR THE CIFAR-10/
+CIFAR-100 AND SQUAD TASKS .
+Parameter CIFAR-10/CIFAR-100 SQuAD
+Optimizer SGD + Momentum
+Loss Function Cross Entropy
+LR Scheduler CosineAnneling Linear
+Tmax 50 3
+Batch Size 256 8
+Digital
+LR 0.057 0.05
+Momentum 0.867 0.99
+Weight Decay 0 0.00054
+Analog
+LR 0.024 0.02
+Momentum 0.775 0.9
+Weight Decay 0 0.003
+AIMC tiles are assumed to be split evenly. (v) During training,
+multiplicative Gaussian noise is applied to unit weight values,
+with a standard deviation of 0.08, extracted from hardware
+measurements provided by the authors of [12].
+4) Accuracy evaluation: As AIMC hardware is inherently
+stochastic, multiple evaluation instances are required to deter-
+mine representative performance metrics. Consequently, accu-
+racy was measured 20 times and averaged across experiments
+to obtain the values reported in Section IV-D. We consid-
+ered five user-defined accuracy4thresholds of [0.5%, 1.0%,
+3.0%, 5.0%, 10.0%]. Moreover, analog NVM devices such
+as PCM are susceptible to temporal conductance drift. Since
+the behavior of AIMC hardware can evolve over time, we
+explore in Section VI accuracy metrics for AIMC accelerators
+programmed considering drift levels predicted at [one second
+(i.e., t= 1s), one minute (i.e., t= 60 s), one hour (i.e.,
+t= 3600 s), one day (i.e., t= 86400 s)]. These are then
+evaluated at different points in time, to assess the effect of
+a mismatch between predicted and actual drift.
+5) Full System Evaluation: The target simulated system
+for this work is a high-performance edge processor with an
+in-order ARM CPU core running at a frequency of 2.3GHz,
+with a 64KB each L1 data and instruction caches, 1MB of
+L2 cache, and 8GB of 2400MHz DDR4 RAM, as detailed in
+Table IV. The software stack for the target DNNs includes the
+DNNs accelerated via the Eigen C++ library, running in user-
+space atop the Linux 5.4 kernel, and an Ubuntu 16.04 LTS
+disk image. Each implementation resulting from a LionHeart
+mapping is run for 10 inferences to reduce simulation noise.
+Measured execution time deviations among different runs of
+the same mappings never exceeded 4% of the run-time.
+C. Baselines
+LionHeart (in all graphs, referred to as LH) is evaluated
+by comparing the accuracy and performance achieved with
+respect to two baselines: (i) Fully digital . The floating-point
+4For SQuAD, instead of considering the accuracy, the F1 score is
+considered as a percentage value.DNN model input of our methodology, where none of its
+layers is accelerated using AIMC. It achieves the highest
+accuracy, but presents the longest run-time. (ii) Fully-analog .
+A DNN implementation executing all FC and CONV layers
+with static weights using AIMC. This baseline represents the
+opposite of the fully-digital : it maximizes performance, while
+potentially resulting in very large accuracy degradation. In
+Section V, we provide a further comparative evaluation with
+state of the art strategies, namely Ueyoshi et al. [7] (i.e.,
+DIANA) and Harmonica [8].
+D. Accuracy Evaluation
+For five different drop thresholds and baseline configu-
+rations, we determined the ratio between MACs performed
+using AIMC and the total number of MACs for CIFAR-10,
+CIFAR-100 and SQuAD (see Fig. 5). As expected, for all
+networks the All Digital configuration has the highest test set
+accuracy and the All Analog configuration has the lowest test
+set accuracy. The proposed LionHeart configurations exhibit
+a gradual transition from the accuracy of the largest to the
+smallest test set and a corresponding decrease in the digi-
+tal/analog MAC ratio between all configurations. Thus, it en-
+ables exploration of the performance/accuracy space exposed
+by AIMC acceleration. Critically, the design space is navigated
+in a controlled way, that is, abiding to a user-defined accuracy
+degradation constraint. In this way, configurations exhibiting
+both high performance (high ratio of AIMC acceleration) and
+high accuracy can be derived. As an example, almost 60%
+of the computation can be AIMC-accelerated in the ResNet-8
+network for an accuracy threshold of 5%, while an all-analog
+alternative would have a decrease in accuracy of 20%.
+For a small number of networks and datasets, it is observed
+that the All Analog configuration has a higher test set accu-
+racy than some of the LionHeart configurations; particularly
+those with larger drop thresholds, e.g., 10%. Moreover, some
+LionHeart configurations with larger drop thresholds have a
+higher accuracy than others with smaller drop thresholds. To
+this end, we make the following observations. First, heuristic-
+based methods are inherently stochastic in outcome. While
+we investigate the variability of LionHeart and related work
+in Section V, in this section, we first investigate the one-shot
+behavior of LionHeart in earnest. Second, LionHeart enforces
+aglobal drop threshold, meaning that if a network fails to
+converge when a layer is retrained using HWA training, a large
+accuracy drop can be incurred (as large as this threshold).
+This can result in a sub-optimal outcome if one of the first
+layers incurs a large accuracy drop, as all subsequent layers
+are subjected to the remaining drop threshold.
+Lastly, given a fixed accuracy threshold, LionHeart does
+not penalize configurations for being close to this threshold.
+This means that while in practice it would not make sense to
+specify, if an accuracy drop of X% was indeed specified, and
+the accuracy drop of the fully-analog configuration was X-
+N%, the resulting mapping would not be penalized for being
+between X-N% and X%.
+We observe that no obvious pattern emerges regarding the
+topological order of layers in our explorations, other thanIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 8
+TABLE III
+RATIO OF CONFIGURATIONS WHERE A LAYER IS AIMC- ACCELERATED ,
+PER LAYER TYPE AND TOPOLOGICAL LOCATION IN THE MOBILE BERT
+ENCODER .
+Encoder Block Location First Middle (Avg.) Last
+Encoder Layer Average Retention in Analog (%)
+Bottleneck 45 52 46
+Attention 78 81 61
+FFN0 80 68 56
+FFN1 75 74 62
+FFN2 68 70 66
+Intermediate 48 75 48
+Output 45 52 40
+TABLE IV
+ARCHITECTURAL PARAMETERS FOR FULL SYSTEM SIMULATION .
+CPU Model 1x In-Order @ 2.3GHz
+ISA ARMv8
+Supply V oltage VDD 1.3V
+L1 Data/Instruction Cache 64kB
+L2 Cache 1MB
+Memory 8GB DDR4 @ 2400MHz
+AIMC Tile Latency 100ns
+AIMC Tile Data Transfer Bandwidth 4GB/s
+AIMC Tile Energy Efficiency 20 TOp/s/W
+CPU + SIMD (Baseline) Peak Efficiency 22.8 GOp/s/W
+that CONV layers are more likely to be AIMC-accelerated
+compared to FC ones. For the same layer type, whether or
+not a layer will be executed in the analog domain depends
+instead on the trained weights, and noton the layers and the
+network topology, thus mandating exploration heuristics such
+asLionHeart . A similar conclusion can be reached for the
+MobileBERT case. Again, the choice of accelerated layers
+does not follow a clear topological pattern, as we report in
+Table III, where the conversion percentage is reported for the
+first and last, in addition to the average of all middle encoder
+blocks. The first attention layers are more amenable to be
+executed in AIMCs, but this is not the case for Bottleneck
+layers.
+From our analysis, for both CNNs and transformer-based
+networks, we observe that the first layer is usually one of
+the most sensitive. The intermediate layers are generally
+seen to be more sensitive than the last layer. Our analyses
+demonstrate that, especially for larger networks with a more
+complex topology, properly mapping layers to digital or analog
+resources is non-trivial.
+E. Performance Evaluation
+InLionHeart , the workload associated with DL models and
+their layers are assumed to be architecture-agnostic, i.e., the
+ratio of analog MAC to total MAC operations is used as a
+proxy for speedup and energy efficiency.
+This approach allows to derive hybrid mappings in a
+hardware-agnostic way, while also avoiding impractically
+lengthy simulations. On the other hand, it does not allow to di-
+rectly quantify the performance and efficiency of mappings on
+a target architecture. To inspect this aspect, and also validate
+Fig. 6. (a) Speedup and (b) energy efficiency gain resulting from different
+application mapping strategies, when performing an inference on benchmark
+DNNs. Data is normalized with respect to a fully digital execution with the
+ARM NEON SIMD co-processor in lieu of AIMC acceleration.
+the link between MAC ratio and performance/efficiency for
+one system configuration, we herein execute entire inferences
+for the three largest CNN benchmarks (AlexNet, VGG16 and
+MobileNetV2) and measure the ensuing run-times, including
+computations not pertaining to FC nor CONV layers. We
+investigate mappings derived by LionHeart , with varying
+maximum accuracy degradation thresholds.
+As a test vehicle, we adopted a simulated system featuring
+a single-core in-order CPU clocked at 2.3GHz and a two-level
+cache hierarchy, modelled within the ALPINE framework [4].
+The architecture embeds tightly-coupled AIMCs, governed by
+dedicated extensions to the ARM instruction set supported by
+the CPU. Table IV lists the architectural parameters of the test
+system, which mirror those considered in [4] for the single-
+core, higher performance scenario.
+To align the performance experiments with state-of-the-art
+low-power edge-domain devices, all DNN implementations
+are quantized to INT8 precision. The fully digital baseline
+architecture utilizes the ARM Neon SIMD co-processor in lieu
+of the tightly-coupled AIMC tiles. Note that due to the effects
+of memory transactions and latencies, the effective Op/s of
+both the AIMC-enabled and baseline systems are a fraction of
+the peak Op/s, at 57% and 35%, respectively.
+The CPU in the evaluated system architecture uses cus-
+tomized ISA extensions to access AIMC tiles that are tightly
+coupled to the CPU cores, without requiring the traversal of
+the memory hierarchy for data transmission [4]. The exten-
+sion instructions are implemented using unused opcodes in
+the ARMv8 architecture. During inference, three instructions
+are used: CM QUEUE , which places packed inputs in the
+input memory of an selected AIMC tile, CM PROCESS ,
+which operates the AIMC tiles and performs MVMs, and
+CM DEQUEUE , which retrieves the outputs from selected
+AIMC tiles and places them in destination registers. For all
+speedup and efficiency gain factor evaluations, it is assumed
+that a single CPU core is used and the required number of
+tiles to map all analog weights for the evaluated network are
+tightly coupled to this core.
+In Fig. 6, we report the obtained speedups (with respect to
+fully-digital baselines) and efficiency gain factors. In order toIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 9
+Fig. 7. Approximate Pareto front of the achieved LionHeart mappings, and operational points of both variants of the Harmonica and FLMS methods. For
+each network, the elbow for LionHeart , i.e., the optimal operating point, is highlighted using a darker hue value.
+align the performance experiments with state-of-the-art low-
+power edge-domain devices, all DNN implementations are
+quantized to int8 precision. Additionally, the fully digital base-
+line architecture utilizes the ARM Neon SIMD co-processor
+in lieu of the tightly-coupled AIMC tiles. Note that due to
+the effects of memory transactions and latencies, the effective
+Op/s of both the AIMC-enabled and baseline systems are a
+fraction of the peak Op/s, at 57% and 35% respectively.
+These results highlight that the achievable speed-ups are
+highly dependent on the DNN structure. In particular, even
+when all layers are computed in the analog domain, which
+is an upper bound for speedup and efficiency in our setting,
+only a speedup of 24% can be reached in the MobileNet
+benchmark. Such (comparatively) low run-time performance
+improvement is caused by the lower degree of data reuse
+of the depthwise separable convolutions employed in this
+network, which shift the balance between computation and
+memory access requirements toward the latter, limiting the
+benefit of accelerating MACs. However, even in this case,
+LionHeart , with a limited maximum accuracy degradation of
+5%, still captures almost all of the available speedup and
+energy efficiency gains.
+AlexNet and VGG16, which do not employ separable
+convolutions, instead present more potential speedup (660%
+in the full-analog case for VGG16, 550% for AlexNet), due
+to the higher locality of the employed computations (which
+leads to less cache misses and memory-induced stalls). Even
+in those cases, LionHeart can harness a large part of the
+potential speedup if enough accuracy leeway is allowed. For
+a 5% accuracy degradation, a 425% speedup was measured
+in AlexNet and a 285% one in VGG16. AlexNet proved to
+be the most robust of the investigated networks. Finally, it
+can be noticed that system-level energy gains closely follow
+speedups. Indeed, AIMCs tiles are not a major contribu-
+tor to overall system power (as opposed to processors and
+memories). Instead, they shorten run-time, ultimately lowering
+energy requirements. This is achieved both by allowing the
+execution of MVMs in constant time and by encoding DNN
+weights in the crossbar structure itself, hence easing the
+pressure on the memory hierarchy.TABLE V
+OPTIMIZED HYPER -PARAMETERS USED FOR DIANA AND HARMONICA .
+Parameter ResNet8 ResNet20 MobileNet VGG-16 AlexNet
+Optimizer SGD + Momentum
+Loss Function Cross Entropy
+LR Scheduler CosineAnneling
+Tmax 200
+Batch Size 64
+Digital
+LR 0.0945 0.00184 0.01866 0.0516 0.0157
+Momentum 0.86 0.99 0.94 0.88 0.9
+Weight Decay 0.00045 0.00017 0.00085 0.00058 0.00011
+Analog
+LR 0.0617 0.0882 0.0898 0.00619 0.00529
+Momentum 0.9 0.82 0.9 0.9 0.99
+Weight Decay 0.0008 0.00042 0.00037 0.00037 0.00091
+V. C OMPARISON TO RELATED WORK
+We compare against two established heuristic-based meth-
+ods, DIANA [7] and Harmonica [8]. Comparisons are made
+using the CIFAR-10 dataset, as this dataset was originally used
+for evaluation by both of these methods. For DIANA (referred
+to as First-Last Mapping Strategy (FLMS) to encompass the
+more generic approach of executing only the first and last
+layer in high-precision), we consider two scenarios: (i) where
+the original network is in floating-point precision, akin to
+LionHeart , and (ii) where the original network is HWA-
+trained.
+For Harmonica, we only consider layer-wise mappings, as
+channel-wise mappings are too computationally expensive,
+i.e., they require exploration of a much larger search space
+dependent on the number of channels rather than the num-
+ber of layers, to be explored exhaustively. Two scenarios
+are also considered: (i) where the mapped network is not
+retrained (Harmonica) and (ii) where the mapped network
+is retrained using HWA retraining (Harmonica T). The input
+to Harmonica is assumed to be HWA-trained. This is prob-
+lematic, as HWA training requires exhaustive hyper-parameter
+optimization to achieve optimal results [5] when all layers are
+implemented using AIMC hardware. This is time demanding
+and computationally expensive. We avoid comparisons with
+ODiMO due to their use of a channel-wise split, which
+markedly reduces the analog utilization, as evidenced by their
+lower analog mac ratio [22].IEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 10
+Fig. 8. For the optimal LionHeart configuration, and both variations of the Harmonica and FLMS methods, (a-e) the MAC ratio (as a percentage) between
+the number of MACs performed using AIMC and the total number of MACs, and (f-j) the corresponding test set accuracies at t=1d. All experiments are
+repeated n= 5 times.
+To establish strong baselines for downstream comparison
+toLionHeart , for each DNN architecture, we performed
+hyper-parameter optimization for HWA training using the
+Optuna [28] library. Specifically, we employed the Tree-
+structured Parzen Estimator (TPESampler) and the Median
+pruning algorithm (MedianPruner) optimization algorithms
+over 10 trials. The resulting new hyper-parameters are listed
+in Table V.
+FLMS and Harmonica do not determine mappings for
+different MAC ratio and accuracy values. Consequently, we
+determine the optimal LionHeart mappings by generating an
+approximate Pareto front in Fig. 7. Additionally, we determine
+and compare the average operational point for each method
+(FLMS and Harmonica). It is observed that the operational
+points of these methods are captured either onorunderneath
+LionHeat’s Pareto front, meaning that LionHeart discovers the
+same or even better mapping configurations along its front.
+To perform further comparisons using a single operational
+point in Fig. 8 for each method including LionHeart , we select
+the elbow for each network. The elbow method transverses
+operational points along the Pareto front from left-most point
+(where the quantity encoded using the y-axis is maximized) to
+the right-most point (where the quantity encoded using the x-
+axis is maximized). The optimal operation point, or elbow,
+is distinguished by the fact that before reaching it, the y-
+axis quantity remains almost unchanged, and after reaching
+it, rapidly decreases [29].
+In Fig. 8, it can be observed that for all networks, both
+variants of FLMS result in a high (near 100%) MAC ratio with
+zero variance. Although the resulting accuracy values have a
+small variance, they are unpredictable , i.e., compared to other
+configurations, the average test accuracy varies greatly across
+networks. Moreover, for most (4/5) networks, compared toother configurations, the accuracy values are the lowest.
+On average, both variants of Harmonica yield higher accu-
+racy values when compared to FLMS, however, the average
+MAC ratios are low and the variability of both the MAC ratios
+and accuracy values are larger. When the mapped networks
+from Harmonica are retrained using HWA retraining, i.e., for
+Harmonica T, the average accuracy values increase. It is noted
+that these network exhibit similarly variability to the networks
+originally generated from Harmonica.
+LionHeart consistently achieves competitive accuracy val-
+ues with reduced variation compared to both Harmonica
+variants, for all networks expect ResNet20, while maintaining
+relatively high MAC ratios. For the single network (ResNet20)
+where LionHeart performs sub-optimally, it has a significantly
+higher MAC ratio with respect to other configurations (not
+including FLMS). It is speculated that the reason Harmonica
+does not perform at least as well with respect to accuracy,
+is that at the beginning, in contrast to LionHeart , it requires
+an already HWA retrained network, and does notretrain any
+layers. LionHeart begins with a stronger baseline (a pre-trained
+floating-point network) and performs retraining, providing an
+opportunity for accuracy losses to be recovered when a layer
+is converted to analog.
+From Fig. 7, if another point along the Pareto front is
+taken with a smaller MAC ratio, the resulting test precision
+significantly improves, that is, for a MAC ratio of 85.63%, the
+test accuracy is 88.36%. This is larger than the average test
+accuracy for the other aforementioned configurations.
+VI. T EMPORAL DRIFT AND EVALUATION TIMEANALYSIS
+We study the impact of varying the evaluation time, teval,
+used during analog HWA retraining on the simulated inference
+time of the system. In Fig. 9, these metrics are reported for allIEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 11
+Fig. 9. The impact of temporal drift when varying teval in [0, 86400] for
+the ResNet8 network evaluated on CIFAR-100.
+configurations (except All Digital , which does not have a tem-
+poral dimension) using the ResNet8 network and CIFAR-100
+dataset. For both sets of mappings, mostly unique intermediate
+layers are retained in analog. Due to the (relatively) small drop
+threshold, the first and last layers for each are in digital. It
+can be seen that the test accuracy decreases as a function of
+the drift time. Moreover, as the proportion of analog MACs
+increases, the robustness to drift decreases. Most notably, for
+theAll Analog configuration, independent of the evaluation
+time, the test accuracy decreases significantly ( >10%). For
+all other configurations, no significant degradation is observed
+untilt >1h. However, the temporal dependence of the test set
+accuracy is effected. Unsurprisingly, when a larger evaluation
+time is specified, the initial test set accuracy (at t=0) is also
+larger. While varied, for most configurations the robustness to
+drift is observed to improve as the evaluation time is increased.
+This is significant because, when our methodology is used, a
+hard constraint on the average behavior of the drop in accuracy
+can be enforced at a given drift (evaluation) time.
+Fig. 10. Approximate Pareto front of the achieved LionHeart mappings,
+operational points of both variants of the Harmonica and FLMS methods,
+and the analog hardware-aware retraining ceiling for ResNet8 evaluated on
+CIFAR-10.
+VII. C OMPARISON TO STANDARD HARDWARE -AWARE
+RETRAINING
+Finally, to compare LionHeart and other methods to stan-
+dard hardware-aware retraining, we retrain all 1,024 mappings
+of ResNet8 and compute the exact Pareto front in Fig. 10,
+which is indicative of the ceiling orbest case scenario when
+all analog layers are retrained at the same time using the same
+convergence criteria for all other experiments. It can be seen
+that for MAC ratio values smaller than 80%, LionHeart is
+extremely effective. For a MAC ratio of ≈60%, LionHeart
+exceeds this ceiling, indicating that progressively training
+analog layers can result in increased accuracy. This is in
+agreement with prior work [30].
+VIII. C ONCLUSION
+In this paper, we have presented LionHeart , an accuracy-
+driven framework for mapping DL workloads on hybrid
+analog-digital systems. The effectiveness of our method was
+demonstrated by deploying five different DNNs trained for
+image classification to heterogeneous PUs. Both the MAC
+ratio between analog and digital operations and the effect
+of temporal drift were considered to enforce varying user-
+specified constraints. Performance evaluation was carried out
+for three DNNs using a simulated ARMv8-based proces-
+sor with tightly coupled AIMC tiles. The optimal mappings
+ofLionHeart were compared to related work, and it was
+demonstrated that LionHeart achieved state-of-the-art results.
+Finally, additional analysis was performed by investigating the
+effects of temporal drift and the variation of the evaluation
+time. Future work entails the hardware-based architecture-
+level exploration and investigation of the additional training
+time/complexity overhead that is incurred.
+REFERENCES
+[1] Y . Chen, Y . Xie, L. Song, F. Chen, and T. Tang, “A survey
+of accelerator architectures for deep neural networks,” Engineering ,IEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 12
+vol. 6, no. 3, pp. 264–274, 2020. [Online]. Available: https:
+//www.sciencedirect.com/science/article/pii/S2095809919306356
+[2] X. Yang, B. Taylor, A. Wu, Y . Chen, and L. O. Chua, “Research progress
+on memristor: From synapses to computing systems,” IEEE Transactions
+on Circuits and Systems I: Regular Papers , vol. 69, no. 5, pp. 1845–
+1857, 2022.
+[3] A. Shahid and M. Mushtaq, “A Survey Comparing Specialized Hardware
+And Evolution In TPUs For Neural Networks,” in 2020 IEEE 23rd
+International Multitopic Conference (INMIC) . IEEE, Nov 2020.
+[4] J. Klein et al. , “ALPINE: Analog In-Memory Acceleration With Tight
+Processor Integration for Deep Learning,” IEEE Trans. on Computers ,
+vol. 72, no. 7, 2023.
+[5] M. Le Gallo, C. Lammie, J. B ¨uchel, F. Carta, O. Fagbohungbe,
+C. Mackin, H. Tsai, V . Narayanan, A. Sebastian, K. El Maghraoui,
+and M. J. Rasch, “Using the IBM analog in-memory hardware
+acceleration kit for neural network training and inference,” APL
+Machine Learning , vol. 1, no. 4, p. 041102, 11 2023. [Online].
+Available: https://doi.org/10.1063/5.0168089
+[6] H. Benmeziane et al. , “AnalogNAS: A neural network design framework
+for accurate inference with analog in-memory computing,” in 2023 IEEE
+International Conference on Edge Computing and Communications
+(EDGE) , 2023.
+[7] K. Ueyoshi et al. , “DIANA: An End-to-End Energy-Efficient Digital
+and ANAlog Hybrid Neural Network SoC,” in 2022 IEEE International
+Solid- State Circuits Conference (ISSCC) , 2022.
+[8] P. Behnam, U. Kamal, A. Shafiee, A. Tumanov, and S. Mukhopadhyay,
+“Harmonica: Hybrid accelerator to overcome imperfections of mixed-
+signal dnn accelerators,” in 2024 IEEE International Parallel and
+Distributed Processing Symposium (IPDPS) , 2024, pp. 619–630.
+[9] N. Verma, H. Jia, H. Valavi, Y . Tang, M. Ozatay, L.-Y . Chen, B. Zhang,
+and P. Deaville, “In-memory computing: Advances and prospects,” IEEE
+Solid-State Circuits Magazine , vol. 11, no. 3, pp. 43–55, 2019.
+[10] N. Hajinazar, G. F. Oliveira, S. Gregorio, J. D. Ferreira, N. M. Ghiasi,
+M. Patel, M. Alser, S. Ghose, J. G ´omez-Luna, and O. Mutlu, “SIM-
+DRAM: a framework for bit-serial SIMD processing using DRAM,” in
+Proceedings of the 26th ACM International Conference on Architectural
+Support for Programming Languages and Operating Systems . ACM,
+apr 2021.
+[11] W. Simon, Y . Qureshi, M. Rios, A. Levisse, M. Zapater, and D. A.
+Alonso, “Blade: An in-cache computing architecture for edge devices,”
+2020. [Online]. Available: https://www.semanticscholar.org/paper/e0af
+1fca1808230ac720257376697123c4bdf134
+[12] M. Le Gallo et al. , “64-Core Mixed-Signal In-Memory Compute Chip
+Based on Phase-Change Memory for Deep Neural Network Inference,”
+Nature Electronics , vol. 6, no. 9, pp. 680–693, Jul 2023. [Online].
+Available: https://doi.org/10.1038/s41928-023-01010-1
+[13] S. Yu, H. Jiang, S. Huang, X. Peng, and A. Lu, “Compute-in-memory
+chips for deep learning: Recent trends and prospects,” IEEE Circuits
+and Systems Magazine , vol. 21, no. 3, pp. 31–56, 2021.
+[14] Z. Sun, S. Kvatinsky, X. Si, A. Mehonic, Y . Cai, and R. Huang,
+“A full spectrum of computing-in-memory technologies,” Nature
+Electronics , vol. 6, no. 11, pp. 823–835, 2023. [Online]. Available:
+https://doi.org/10.1038/s41928-023-01053-4
+[15] A. V . Trusov, E. E. Limonova, D. P. Nikolaev, and V . V . Arlazarov,
+“p-im2col: Simple yet efficient convolution algorithm with flexibly con-
+trolled memory overhead,” IEEE Access , vol. 9, pp. 168 162–168 184,
+2021.
+[16] A. Ankit et al. , “PUMA,” in Proceedings of the Twenty-Fourth Interna-
+tional Conference on Architectural Support for Programming Languages
+and Operating Systems , 2019.
+[17] S. Yang et al. , “AERO: Design Space Exploration Framework for
+Resource-Constrained CNN Mapping on Tile-Based Accelerators,” IEEE
+Journal on Emerging and Selected Topics in Circuits and Systems ,
+vol. 12, no. 2, pp. 508–521, 2022.
+[18] L. Song, X. Qian, H. H. Li, and Y . Chen, “PipeLayer: A Pipelined
+ReRAM-Based Accelerator for Deep Learning,” in 2017 IEEE
+International Symposium on High Performance Computer Architecture
+(HPCA) , 2017. [Online]. Available: https://www.semanticscholar.org/pa
+per/6b3c06f148deba3926eff3c22ddf4dfd1195ac8a
+[19] H. Jin et al. , “ReHy: A ReRAM-Based Digital/Analog Hybrid PIM
+Architecture for Accelerating CNN Training,” IEEE Trans. on Parallel
+and Distributed Systems , 2021. [Online]. Available: https://www.sema
+nticscholar.org/paper/5ddbb41eaa61581af398a7a236bda28e5ecd0cee
+[20] P. Behnam, U. Kamal, and S. Mukhopadhyay, “An algorithm-hardware
+co-design framework to overcome imperfections of mixed-signal dnn
+accelerators,” ArXiv , vol. abs/2208.13896, 2022. [Online]. Available:
+https://api.semanticscholar.org/CorpusID:251929459[21] S. Dash, Y . Luo, A. Lu, S. Yu, and S. Mukhopadhyay, “Robust
+processing-in-memory with multibit reram using hessian-driven mixed-
+precision computation,” IEEE Transactions on Computer-Aided Design
+of Integrated Circuits and Systems , vol. 41, no. 4, pp. 1006–1019, 2022.
+[22] M. Risso, A. Burrello, G. M. Sarda, L. Benini, E. Macii, M. Poncino,
+M. Verhelst, and D. J. Pagliari, “Precision-aware latency and energy
+balancing on multi-accelerator platforms for dnn inference,” in 2023
+IEEE/ACM International Symposium on Low Power Electronics and
+Design (ISLPED) , 2023.
+[23] M. Rios et al. , “Bit-Line Computing for CNN Accelerators Co-Design
+in Edge AI Inference,” IEEE Trans. on Emerging Topics in Computing ,
+2023.
+[24] Y . M. Qureshi et al. , “Gem5-X: A Gem5-Based System Level Simu-
+lation Framework to Optimize Many-Core Platforms,” in 2019 Spring
+Simulation Conference (SpringSim) . IEEE, 2019.
+[25] T. Andrulis, J. S. Emer, and V . Sze, “Raella: Reforming the arithmetic
+for efficient, low-resolution, and low-loss analog pim: No retraining
+required!” in Proceedings of the 50th Annual International Symposium
+on Computer Architecture , ser. ISCA ’23. New York, NY , USA:
+Association for Computing Machinery, 2023. [Online]. Available:
+https://doi.org/10.1145/3579371.3589062
+[26] A. Krizhevsky, “Learning multiple layers of features from tiny images,”
+2009. [Online]. Available: https://api.semanticscholar.org/CorpusID:
+18268744
+[27] P. Rajpurkar, J. Zhang, K. Lopyrev, and P. Liang, “Squad: 100,
+000+ questions for machine comprehension of text,” CoRR , vol.
+abs/1606.05250, 2016. [Online]. Available: http://arxiv.org/abs/1606.0
+5250
+[28] T. Akiba, S. Sano, T. Yanase, T. Ohta, and M. Koyama, “Optuna: A next-
+generation hyperparameter optimization framework,” in Proceedings
+of the 25th ACM SIGKDD International Conference on Knowledge
+Discovery & Data Mining , ser. KDD ’19. New York, NY , USA:
+Association for Computing Machinery, 2019, p. 2623–2631. [Online].
+Available: https://doi.org/10.1145/3292500.3330701
+[29] C. Shi, B. Wei, S. Wei, W. Wang, H. Liu, and J. Liu, “A
+quantitative discriminant method of elbow point for the optimal number
+of clusters in clustering algorithm,” EURASIP Journal on Wireless
+Communications and Networking , vol. 2021, no. 1, p. 31, 2021.
+[Online]. Available: https://doi.org/10.1186/s13638-021-01910-w
+[30] M. J. Rasch et al. , “Hardware-Aware Training for Large-Scale
+and Diverse Deep Learning Inference Workloads Using In-Memory
+Computing-Based Accelerators,” Nat. Communications , vol. 14, no. 1,
+2023.
+Dr. Corey Lammie is a post-doctoral researcher
+in the IMC group at IBM Research - Zurich. He
+completed a PhD in Computer Engineering at James
+Cook University (JCU) in March, 2023, where he
+also completed his undergraduate degrees in Elec-
+trical Engineering (Honours) and IT, in 2018. He
+has received several awards and fellowships in-
+cluding the intensely competitive 2020-2021 IBM
+international PhD Fellowship, a Domestic Prestige
+Research Training Program Scholarship, and the
+2020 CAS Society Pre-Doctoral Grant. Dr. Lammie
+has served as a guest editor for IEEE Journal on Emerging and Selected Topics
+in Circuits and Systems (JETCAS). In addition, he has served as a reviewer
+for several IEEE journals, and as a TC member for a number of conferences.
+Yuxuan Wang is a PhD student and doctoral as-
+sistant at the Embedded Systems Laboratory of the
+´Ecole Polytechnique F ´ed´erale (EPFL), Switzerland,
+where she obtained her Master’s degree in Elec-
+trical Engineering in 2023. Her research interests
+include In-Memory Computing (IMC) and software-
+hardware co-optimization for efficient Deep Neural
+Network (DNN) acceleration.IEEE TRANSACTIONS ON EMERGING TOPICS IN COMPUTING 13
+Dr. Flavio Ponzina received the M.Sc. degree in
+Computer Engineering from Politecnico di Torino,
+Italy, in 2018, and the Ph.D degree in Electronic
+Engineering from EPFL, Switzerland, in 2023. He
+is currently a postdoctoral researcher at University
+of California, San Diego, United States. His main
+research interests include low power architectures
+and AI-based systems optimization.
+Joshua Klein is a Researcher in the system inte-
+gration department of imec, Belgium, specializing
+in modeling of near- and IMC accelerators and
+full systems. He previously worked in the ESL
+of the ´Ecole Polytechnique F ´ed´erale de Lausanne
+(EPFL), Switzerland, where he received his Ph.D.
+in Electrical Engineering in 2024. He received his
+B.Sc. in Computer Engineering in 2017 magna cum
+laude and his M.Sc. in Electrical and Computer
+Engineering in 2019 from Boston University, USA.
+Dr. Hadjer Benmeziane is an IBM researcher,
+specializing in hardware-aware NAS for emerging
+AI accelerators such as AIMC. She received her
+PhD from Universit ´e Polytechnique des Hauts-de-
+France in August 2023, following her Master’s and
+Engineering degree in Computer Science from Ecole
+Sup´erieure d’Informatique, Algiers, Algeria. Her
+work on Analog NAS received the prestigious IEEE
+open source science award and best paper award at
+IEEE Services Computing 2023 Symposium.
+Dr. Marina Zapater is an Associate Professor in
+the REDS Institute at the School of Engineering
+and Management of Vaud (HEIG-VD) of the Uni-
+versity of Applied Sciences Western Switzerland
+(HES- SO) since 2020. She received her Ph.D.
+degree in Electronic Engineering from Universidad
+Polit´ecnica de Madrid, Spain, in 2015. Her research
+interests include thermal, power, and performance
+design and optimization of complex heterogeneous
+architectures.
+Dr. Irem Boybat received the BSc degree in elec-
+tronics engineering from Sabanci University, Turkey,
+in 2013, and the MSc and PhD degrees in electri-
+cal engineering from ´Ecole Polytechnique F ´ed´erale
+(EPFL), Switzerland, in 2015 and 2020, respectively.
+She is a research staff member with IBM Research
+– Zurich. Her research interests include in-memory
+computing for AI systems, neuromorphic comput-
+ing, and emerging resistive memory.
+Dr. Abu Sebastian is a Distinguished Research
+Scientist at IBM Research – Zurich. He received a
+B. E. (Hons.) degree in Electrical and Electronics
+Engineering from BITS Pilani, India, in 1998 and
+M.S. and Ph.D. degrees in Electrical Engineering
+(minor in Mathematics) from Iowa State University
+in 1999 and 2004, respectively. He was a contributor
+to several key projects in the space of storage and
+memory technologies and currently manages the
+research effort on IMC at IBM Research – Zurich.
+In 2015, he was awarded the European Research
+Council (ERC) consolidator grant and in 2020, he was awarded an ERC Proof-
+of-concept grant. He was elected an IBM Master Inventor in 2016. In 2019,
+he received the Ovshinsky Lectureship Award for his contributions to ”Phase-
+change materials for cognitive computing” and in 2023, he was conferred the
+title of Visiting Professor in Materials by University of Oxford.
+Dr. Giovanni Ansaloni received the PhD degree in
+informatics from USI, in 2011. He is a researcher
+with the Embedded Systems Laboratory of EPFL
+(Lausanne, CH). He previously worked as a post-doc
+with the University of Lugano (USI, CH) between
+2015 and 2020, and with EPFL between 2011 and
+2015. His research efforts focus on domain-specific
+and ultra-low-power architectures and algorithms for
+edge computing systems, including hardware and
+software optimization techniques.
+Dr. David Atienza received the PhD degree in com-
+puter science and engineering from UCM, Spain,
+and IMEC, Belgium, in 2005. He is a full pro-
+fessor of electrical and computer engineering, and
+head of the Embedded Systems Laboratory (ESL)
+with EPFL, Switzerland. His research interests in-
+clude system-level design methodologies for multi-
+processor system-on-chip (MPSoC) servers and edge
+AI architectures. He is an ACM Fellow.

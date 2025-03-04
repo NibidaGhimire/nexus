@@ -1,0 +1,1596 @@
+IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 1
+AdvSQLi : Generating Adversarial SQL Injections
+against Real-world WAF-as-a-service
+Zhenqing Qu*, Xiang Ling*†, Ting Wang, Xiang Chen, Member, IEEE, Shouling Ji, Member, IEEE,
+Chunming Wu†
+Abstract —As the first defensive layer that attacks would hit,
+the web application firewall (WAF) plays an indispensable role
+in defending against malicious web attacks like SQL injection
+(SQLi). With the development of cloud computing, WAF-as-a-
+service, as one kind of Security-as-a-service, has been proposed
+to facilitate the deployment, configuration, and update of WAFs
+in the cloud. Despite its tremendous popularity, the security
+vulnerabilities of WAF-as-a-service are still largely unknown,
+which is highly concerning given its massive usage. In this paper,
+we propose a general and extendable attack framework, namely
+AdvSQLi , in which a minimal series of transformations are
+performed on the hierarchical tree representation of the original
+SQLi payload, such that the generated SQLi payloads can not
+only bypass WAF-as-a-service under black-box settings but also
+keep the same functionality and maliciousness as the original
+payload. With AdvSQLi , we make it feasible to inspect and
+understand the security vulnerabilities of WAFs automatically,
+helping vendors make products more secure.
+To evaluate the attack effectiveness and efficiency of AdvSQLi ,
+we first employ two public datasets to generate adversarial
+SQLi payloads, leading to a maximum attack success rate of
+100% against state-of-the-art ML-based SQLi detectors. Further-
+more, to demonstrate the immediate security threats caused by
+AdvSQLi , we evaluate the attack effectiveness against 7 WAF-as-
+a-service solutions from mainstream vendors and find all of them
+are vulnerable to AdvSQLi . For instance, AdvSQLi achieves an
+attack success rate of over 79% against the F5 WAF. Through
+in-depth analysis of the evaluation results, we further condense
+out several general yet severe flaws of these vendors that cannot
+be easily patched.
+Index Terms —web security, WAF-as-a-service, SQL Injection,
+adversarial payloads
+I. I NTRODUCTION
+With the continuous evolution and global deployment of the
+internet, web services are playing increasingly important roles
+of social infrastructure in daily lives. On the other hand, they
+are also being exposed to world-wide threats from different
+This work is supported by the National Key R&D Program of China
+(No.2022YFB2901305), the “Pioneer” and “Leading Goose” R&D Program
+of Zhejiang (No.2022C01085), and the Fundamental Research Funds for the
+Central Universities (Zhejiang University NGICS Platform). Xiang Ling is
+also supported by the National Natural Science Foundation of China under
+No.62202457.
+Zhenqing Qu, Xiang Chen, Shouling Ji, Chunming Wu are with the
+College of Computer Science and Technology, Zhejiang University, Hangzhou
+310027, China (e-mail: quzhenqing@zju.edu.cn, wasdnsxchen@gmail.com,
+sji@zju.edu.cn, wuchunming@zju.edu.cn). Xiang Ling is with the Institute
+of Software, Chinese Academy of Science, Beijing 100190, China (e-mail:
+lingxiang@iscas.ac.cn). Ting Wang is with the Department of Computer
+Science at Stony Brook University, Stony Brook, NY 11794-2424, United
+States (e-mail: twang@cs.stonybrook.edu).
+*Zhenqing Qu and Xiang Ling contribute equally to this research.
+†Xiang Ling and Chunming Wu are the co-corresponding authors.locations, with different scales and through different methods.
+Common web threats [1] include SQL injection (SQLi), cross-
+site scripting, cross-site request forgery, and distributed denial-
+of-service, to name just a few. According to [2], [3], [4], SQLi
+is one of the most common and threatening attack methods, by
+which the attacker exploits security vulnerabilities by perform-
+ing SQL queries on the database, thereby directly accessing
+unauthorized information, creating new user permissions, or
+even taking control of the underlying system.
+In particular, as illustrated in Figure 1(a), suppose there
+is a web server with a back-end script and a correspond-
+ing database. A normal client Alice can send a request of
+“getinfo?uid=1”, and receive her information. However, if an
+attacker maliciously crafts an SQLi payload ( i.e., “1’ or 1
+= 1 - - + ”) within the request as shown in Figure 1(b), the
+attacker can receive all users’ information because the “ or 1
+= 1” makes the querying condition to be satisfied.
+To mitigate malicious requests like the SQLi in the wild, the
+web application firewall (WAF) is one of the most widely used
+and effective defensive systems [5], [6], [7]. WAF is normally
+deployed in the front of the back-end script, indicating that
+any request from clients must be detected and filtered by the
+WAF. Only requests detected as benign will be forwarded to
+the back-end script for further processing. Therefore, WAFs
+play a pivotal role in the immediate response to emerging
+security vulnerabilities. For example, during the outbreak of
+the log4shell vulnerability, Cloudflare, among other vendors,
+acted promptly by implementing detection rules within their
+WAF infrastructure [8]. To date, extensive research efforts have
+proposed tremendous WAF strategies to defend against SQLi.
+These strategies can be broadly categorized into signature-
+based (a.k.a rule-based) SQLi detection and machine learning
+(ML)-based SQLi detection [9]. Signature-based SQLi detec-
+tion [10], [11], [12] is a traditional but effective strategy which
+takes advantage of various rules pre-defined by domain experts
+to detect malicious requests. Moreover, motivated by the great
+success of ML obtained from various tasks, a variety of ML-
+based SQLi detectors [13], [14], [15] have been proposed and
+implemented, which learn to discriminate malicious requests
+based on the supervision of previously labelled datasets.
+Nevertheless, regardless of which kind of strategies are
+adopted in WAFs, it is quite troublesome to deploy, configure,
+and update the signatures or models for effectively and timely
+protection of the web server [16]. With the development of
+cloud computing, WAF-as-a-service, as one kind of Security-
+as-a-service, has been proposed to facilitate the deployment,
+configuration, and update of WAFs. The administrator whoarXiv:2401.02615v3  [cs.CR]  9 Jan 2024IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 2
+manages the web server only needs to redirect all requests to
+the interfaces of WAF-as-a-service provided by vendors, such
+that malicious requests like SQLi can be detected and filtered
+before being forwarded to the web server.
+Despite the tremendous popularity and impressive perfor-
+mance of WAF-as-a-service in detecting malicious requests,
+the security vulnerabilities of WAFs are still largely unknown,
+which is highly concerning given the massive usage of WAF-
+as-a-service in the cloud. For instance, Peter M managed to
+bypass Akamai’s WAF, triggering a server-side template injec-
+tion (SSTI) vulnerability in a Spring Boot application, which
+then led to remote command execution [17]. In a similar vein,
+the AON team used encoded payloads to successfully bypass
+Cloudflare’s WAF, enabling them to exploit the Object Graphic
+Navigation Language (OGNL) injection vulnerability [18]. To
+inspect and understand the security vulnerabilities of WAFs
+automatically, we propose AdvSQLi , a general and extendable
+attack framework that can effectively and efficiently generate
+adversarial SQLi payloads to bypass real-world WAF-as-a-
+service under the black-box settings, as the feedback output
+of WAF-as-a-service to the attacker typically is binary. With a
+large and diverse set of payloads, we are capable of systemat-
+ically assessing and understanding the security vulnerabilities
+within WAFs.
+In particular, AdvSQLi first represents the original SQLi
+payload with a hierarchical tree and then employs a weighted
+mutation strategy based on the context-free grammar to gen-
+erate a set of equivalent SQLi payloads, which keep the
+same functionality and maliciousness as the original SQLi
+payload. Finally, AdvSQLi exploits the Monte-Carlo tree
+search as a novel approach to efficiently guide the exploration
+of adversarial SQLi payloads in the vast space.
+Extensive evaluation results demonstrate that AdvSQLi
+outperforms all baseline attack methods with regard to the
+attack effectiveness and efficiency, achieving a maximum
+success rate of 100% against ML-based SQLi detection mod-
+els within fewer queries. Furthermore, we also evaluate the
+attack effectiveness of AdvSQLi against 7 WAF-as-a-service
+solutions in the wild from mainstream vendors ( i.e., AWS,
+Cloudflare, F5, Fortinet, Wallarm, CSC, and ModSecurity)
+under 4 practical request methods, and draw a conclusion that
+the generated payloads can bypass most of them, indicating
+the immediate threats caused by AdvSQLi . For instance,
+AdvSQLi achieves the attack success rate of over 79%
+against the F5 WAF. To summarize, we make the following
+contributions.
+•We present and implement AdvSQLi , in which a weighted
+mutation strategy based on context-free grammar is first
+proposed to generate a vast space of equivalent SQLi
+payloads. Then, the Monte-Carlo tree search is exploited to
+efficiently select the adversarial payload from the vast space.
+Manual changes are unnecessary when attacking different
+WAF-as-a-service concerning unique payloads under kinds
+of request methods, namely, AdvSQLi is a broad-spectrum
+attack framework that works out of the box with strong
+generalizability and extensibility.
+•To the best of our knowledge, this is the first work system-
+atically assesses the security vulnerabilities of real-worldWAF-as-a-service solutions based on adversarial SQLi pay-
+loads under strict black-box settings.
+•Extensive evaluation results demonstrate that AdvSQLi not
+only achieves a maximum success rate of 100% against
+state-of-the-art SQLi detection models but also bypasses
+7 mainstream commercial WAF-as-a-service products with
+high attack success rates.
+II. P ROBLEM FORMULATION
+In this section, we present the threat model of this paper.
+A. Adversary’s Goal
+Given an SQLi detector f:X → Y , which maps a pay-
+loadx∈ X to a corresponding label y∈ Y={0,1}(i.e.,
+0 indicates benign and 1 indicates malicious), an adversary
+aims to generate an adversarial payload xadvwhich can be
+misclassified by f,i.e.,f(xadv)̸=f(x).
+We consider a realistic scenario that an SQLi payload x
+which is originally correctly classified as malicious by f
+(i.e.,f(x) = 1 ), while the adversary attempts to generate an
+adversarial SQLi payload xadvfrom xwith minimal efforts,
+such that xadvcan not only bypass the SQLi detector ( i.e.,
+f(xadv) = 0 ) but also preserves the same semantics ( i.e.,
+functionality and maliciousness) as xas follows.
+arg min
+Tf(xadv)
+s.tf(x) = 1
+xadv=T(x)
+Sem(xadv) =Sem(x)(1)
+in which Tdenotes the adversarial function that generates
+adversarial payload xadvfrom the input payload x, while
+Sem(x)is the semantic analyzer to check if xandxadvare
+semantic-equivalent.
+B. Adversary’s Capability
+In this paper, we consider a classic but strict black-box
+attack in the problem space [19], [20], in which the adversary
+limits the attack surface to the testing phase while does
+not have any information on the target SQLi detector ( e.g.,
+architectures, parameters, feature representations, etc.) except
+for the input and output. According to the output information
+of different SQLi detectors in the wild, the black-box attacks
+can be further divided into two cases. The first is the black-
+box attacks with probability ( BB w/ prob. ), in which the target
+SQLi detector ( e.g., ML-based SQLi detectors) can output the
+predicted label ( i.e.,y= 0 or1) as well as the corresponding
+probability ( i.e.,py∈[0,1]). The second is the black-box
+attacks without probability ( BB w/o prob. ), in which the
+target SQLi detector can only output the predicted label ( i.e.,
+y= 0 or1). In fact, for the adversary that targets most WAF-
+as-a-service in the wild, it is a strict black-box attack, i.e.,
+BB w/o prob. , by which the adversary can only judge by the
+HTTP status code.IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 3
+select info from user where id = ‘1’;Alice’s  InfoUser Alicehttps://examples.com/getInfo?uid=1 Alice’s Info
+Back-endScriptDatabase
+(a) The innocent user Alice can get her own information.
+https://examples.com/getInfo?uid=1’ or 1 = 1 --+ OrdinaryAttackerAll Users’ Infoselect info from user where id =‘1’ or 1 = 1 --’;All Users’  Info
+SQLi Payload
+Back-endScriptDatabase
+(b) The ordinary attacker performs SQLi attack and steals all users’ information.
+select info from user where id = ‘1’;Alice’s  InfoUser AlicegetInfo?uid=1 Alice’s InfogetInfo?uid=1 Alice’s InfoWAF-as-a-service
+Back-endScriptDatabase
+(c) Alice can still get her own information.
+getInfo?uid=1’ or 1 = 1 --+ 403 ForbiddenCannot Reach
+OrdinaryAttacker
+WAF-as-a-serviceBack-endScriptDatabase
+(d) The ordinary attacker’s request is blocked by the WAF-as-a-service.
+WAF-as-a-service
+getInfo?uid=1’ || 0x1 /*!=*/0x1/*foo*/ --+ All Users’ Infoselect info from user where id = ‘1’ || 0x1 /*!=*/0x1/*foo*/ -- ’;All Users’  InfoAdvSQLiBack-endScriptDatabase
+getInfo?uid=1’ || 0x1 /*!=*/0x1/*foo*/ --+ All Users’ Info
+(e)AdvSQLi successfully bypasses the WAF-as-a-service and steals all users’ information.
+Fig. 1. Illustration of how our proposed attack AdvSQLi can bypass the WAF-as-a-service to acquire all users’ information, compared with the ordinary
+attacker and the innocent user. Note that the architecture of the infrastructures in production environments may be more complicated than in this diagram, yet
+it does not impact the effectiveness of AdvSQLi .
+III. R ELATED WORK AND CHALLENGES
+This section provides a brief study description of untargeted
+black-box testing and adversarial attacks in the traditional
+domains, and their difference with our task.
+Automated Black-box Testing (Untargeted Attacks). In
+the last decade, there has been abundant research on em-
+ploying algorithms to facilitate vulnerability discovery [21],
+including finding vulnerabilities in applications and firewalls
+to reduce the manual workload. Tripp et al. [22] proposed XSS
+Analyzer, a learning-based black-box testing method for web
+applications. It learns from failed attempts to prune the search
+space. Further, Appelt et al. [7], [23] proposed ML-Driven,
+a search-based approach that combines ML and evolutionary
+algorithms (EAs) to test the detection capabilities of WAFs.
+ML-Driven selects payloads with high bypassing probabilities
+and mutates them with the help of EAs to generate payloads.
+Zhang et al. [3] proposed ART4SQLi, an adaptive random
+testing method for SQLi vulnerability detection, which is
+based on the context-free grammar to parse and extract payload
+features. ART4SQLi chooses payloads far from the initial
+payload from existing collections until it bypasses the target
+WAF. Amouei et al. [24] proposed RAT, which clusters similar
+payloads based on n-gram features.
+Automated WAF Bypassing (Targeted Attacks). The
+above work proposes valuable concepts, e.g., learning-based
+methods that can speed up the vulnerability discovery process.
+However, they do not need to preserve the functionality of
+the payload, but only need to find an arbitrary payload thatcan trigger the vulnerability. On the contrary, with the process
+of finding semantic-preserving payloads for a failed payload,
+the targeted attacks, can systematically assess the security
+vulnerabilities based on a diverse set of malicious payloads.
+Demetrio et al. [25] proposed WAF-A-MoLE, a tool that can
+evade ML-based WAFs for failed payloads. They first defined
+7 string-based SQLi payload mutation operators and employed
+a priority queue to guide the mutation process. Specifically,
+WAF-A-MoLE repeatedly mutates the initial payload to gen-
+erate several payloads and selects the mutated payload with the
+lowest malicious score as the initial payload for the next round,
+until it bypasses the target WAF or reaches the termination
+condition. Inspired by the work of evading malware detectors,
+Wang et al. [26] proposed a WAF evasion framework based on
+RL. They followed the mutation operators in [25] and defined
+a feature vector of three levels of histograms to represent
+theState of the SQLi payload. After training with Deep
+Q-learning (DQN) and Proximal Policy Optimization (PPO)
+algorithms, the RL Agent can select an optimal mutation
+operator according to the current State . Hemmati et al. [27]
+improved [26] in several aspects, including expanding the
+mutation methods, defining State based on the FastText, etc.
+However, the above approaches are not satisfactory in
+some aspects. Firstly, the mutation methods depend on string
+replacement based on regular expression (RE), which is
+not semantic-preserving. According to the Chomsky hier-
+archy [28], the RE-based rule descriptions ( i.e., rule-based
+grammar) cannot fully cover the program-language-based at-IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 4
+tack payloads ( e.g., SQLi payloads). That is, the string-based
+mutation method may miss mutable parts of the payload.
+Besides, it is possible to damage the original function of
+the SQLi payload, which we will prove through subsequent
+evaluations. In addition, the binary output and the practical
+limitation of probing attempts by WAF-as-a-service further
+challenge the adaptability of priority queue and RL methods in
+real-world scenarios, necessitating a more strategic and sparing
+use of mutation attempts [29], [30]. Literature in other security
+fields [31], [32], [33] also pointed out that approaches based
+on RL cannot achieve surprising results in such problems due
+to limitations such as the representation of feature state.
+Adversarial Attacks. In traditional adversarial attack tasks,
+such as images [34], the adversary performs small disturbances
+in the continuous space without affecting the presentation form
+to evaluate the vulnerabilities of image classification models.
+However, as to generating adversarial SQLi payloads, the
+adversary can only perform problem space transformations in
+the discrete space. Moreover, the gradient-based optimization
+methods ( e.g., FGSM [35]) in continuous space cannot be
+applied to guide our attack procedure, as an SQLi payload
+is a discrete object and the adversary does not have any
+information of f[36]. Previous work in adversarial NLP
+presents valuable mutation methods in the discrete space. For
+example, Li et al. [37] proposed several mutation methods to
+deceive ML-based text understanding models. As the meaning
+of the text is likely to be preserved by human readers after
+these slight character changes [38], these mutation methods
+are acceptable. However, these works cannot be applied to
+generate SQLi payloads, as the generated payload has to
+keep the same functionality and maliciousness as the original
+one [19].
+Key Challenges . In conclusion, the principal challenges we
+encounter in effectively and efficiently generating payloads
+that bypass detection are twofold:
+1) Semantic Preservation: There is a critical absence
+of a truly semantic-preserving mutation method for SQLi
+payload generation. 2) Optimization in Discrete Space: The
+default strategy in the vast and discrete problem space has
+been to employ random transformations. This approach lacks
+efficiency due to the immense search space and is further
+complicated by semantic constraints.
+However, extant methods that leverage reinforcement learn-
+ing (RL) and priority queues fall short in the context of real-
+world WAF-as-a-service applications. Therefore, it becomes
+crucial to develop a mutation approach that not only preserves
+the semantics of SQLi payloads but also an optimization
+strategy that is tailored for black-box attacks within this
+problem space.
+IV.AD VSQL I: ADVERSARIAL SQL IGENERATION
+In order to address the aforementioned challenges in by-
+passing WAF-as-a-service for profits, we propose a general and
+extendable attack framework AdvSQLi to generate adversarial
+SQLi payloads. Figure 2 illustrates the framework overview
+ofAdvSQLi . In particular, AdvSQLi first represents the
+original SQLi payload with a hierarchical tree to perform fine-
+grained and customized processing for each node. Further,on the basis of the hierarchical tree, AdvSQLi employs a
+weighted mutation strategy based on the context-free grammar
+to generate a set of equivalent SQLi payloads, which keep
+the same functionality and maliciousness as the original one.
+With the two steps, we implement a semantic-preserving
+mutation method according to the semantics, characteristics,
+and constraints of the original payload. Finally, AdvSQLi
+exploits the Monte-Carlo tree search as a novel approach to
+efficiently guide the exploration of adversarial SQLi payloads
+in the vast space. In the Monte-Carlo tree search, the malicious
+scores feedback by WAFs are unnecessary. That is, AdvSQLi
+is capable of attacking real-world WAFs.
+A. Hierarchical Tree Representation
+Normally, a HTTP URL ( e.g., https://examples.com/
+getInfo?uid=1) consists of four elements: schema ( i.e.,
+“https”), domain name ( i.e., “examples.com”), path to the
+resource ( i.e., “getInfo”) and the parameter(s) ( i.e., “?uid=1”)
+with multiple pairs of key ( i.e., “uid”) and value ( i.e., “1”,
+also termed as payload). In fact, the process of SQL injection
+attack is limited to the core part of URL, i.e., the parameter
+value(s), and keeps other parts unchanged. For example, the
+SQLi attack can inject a malicious payload of “'or 1 = 1 - -
++” at the end of the original payload of “1”, resulting in a
+malicious URL, i.e., https://examples.com/getInfo?uid=1' or 1
+= 1 - -+.
+Recall that the goal of AdvSQLi is to generate adversarial
+SQLi payloads based on the original SQLi payload. Therefore,
+AdvSQLi should not only be limited to the payload of the
+original SQLi ( i.e., 1' or 1 = 1 - -+), but also ensure that
+the generated adversarial SQLi has the same functionality
+and maliciousness as the original injection. To address this
+problem, according to the different roles played by different
+parts in the original SQLi, we divide the original SQLi payload
+into three modules, i.e., left boundary ( i.e., “1'”), query ( i.e.,
+“ or 1 = 1”) and right boundary ( i.e., “- -+”), and further
+limit the attack surface of AdvSQLi to the module of query
+in the original SQLi payload. In particular, both the left
+boundary and the right boundary are restricted to unchanged,
+so that the functionality of the original SQLi is preserved.
+The query is the core module of the original SQLi payload
+and is needed to be further processed and manipulated for
+generating adversarial SQLi payloads. What is more, instead
+of simply treating the query in the original SQLi payload as
+a sequence of strings [25], [26], [27], we further represent
+it with a hierarchical tree. Formally, for the hierarchical
+tree representation, each parent (non-leaf) node is an SQL
+statement that assembles all tokens from its ordered child
+nodes from left to right, and each leaf node is the atomic
+token ( e.g., integer, the keyword of ‘or’, etc) in SQL.
+On the basis of the hierarchical tree representation, we can
+perform more fine-grained and customized processing for each
+node according to its unique characteristics and constraints,
+which could facilitate the generation of adversarial SQLi
+payloads based on mutation as in the following subsection.IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 5
+1’ or 1 = 1 --+Tautology1 = 1Query Treeor 1 = 1DMLor123456DMLor
+DML=Integer1Integer0x1DMLselect 1Taut.1 = 1String‘foo’WhiteSpace123465DMLlikeDMLliKETaut.2 <> 3BoolTrueBoolNot False\n\tDMLORDML||Comment/*!or*/
+Integer1Integer‘name’Integer0x1String‘1’ABC
+MCTSRootNodeHierarchical Tree Representation 
+1’ || 0x1 /*!=*/ 0x1/*foo*/--+I. Selection(Tree Policy)Mutation with Context-free Grammar
+Monte-Carlo Tree Search Guided SearchAfter a few rounds
+Finish the search
+All Selections ChainTautology0x1 /*!=*/ 0x1Query Tree|| 0x1 /*!=*/ 0x1/*foo*/DML||Integer0x1Integer0x1123456Final Hierarchical Tree Comment/*!=*/Comment/*foo*/II. Expansion(Tree Policy)III. Simulation(Default Policy)IV. BackpropagationSQLi payload blocked by WAF
+SQLi payload which can bypass WAFSearch SpaceSQL Hierarchical TreeCFGCFGCFGCFGCFGCFG………………Comment/*foo*/Comment/*!=*/BestChild#0#1#23B3A3C5A5B5C1C
+#0#1#2#33B3A3C1C5A5B5C4A#0#1#2#3△Reach Max Step3B3A3C1C5A5B5C4A#0#1#2#33B3A3C1C5A5B5C4A3B5A4A6C1BPayload Reconstruction  WhiteSpaceInteger1DML=Integer13B:Comment/*foo*/WhiteSpace5A:Comment/*!=*/DML=
+4A:Integer1Integer0x112
+3
+Fig. 2. The pipeline of AdvSQLi : It first represents the original SQLi payload with a hierarchical tree, and then employs a weighted mutation strategy based
+on the context-free grammar to generate a set of equivalent SQLi payloads, which keep the same functionality and maliciousness as the original one. Then,
+it exploits MCTS to efficiently guide the exploration of adversarial SQLi payloads in the vast space. It is noted that only parts of the Hierarchical Tree are
+shown for simplicity.
+B. Mutation with Context-free Grammar
+In order to generate both functionality-preserving and
+maliciousness-preserving adversarial SQL injection, our pro-
+posed AdvSQLi resorts to the problem space attack methods,
+i.e., manipulating the original SQL injection payload xwith
+a minimal cost of transformations, so that the generated
+adversarial SQL injection payload xadvcan bypass the target
+SQLi detector ( e.g., WAF-as-a-service). We first limit the
+transformation to addition and replacement on the original
+SQLi payloads and then propose a weighted mutation strategy
+based on the context-free grammar (CFG) to generate a set of
+candidate adversarial SQLi payloads, which keeps the same
+functionality and maliciousness as the original SQLi payload.
+That is, for each node and subtree in the tree representation
+of the original SQLi payload, our weighted mutation strategy
+can generate a set of candidate actions that can be applied to
+the original SQLi payload for generating a corresponding set
+of candidate adversarial SQLi payloads.
+In the weighted mutation strategy, we first present the
+context-free grammar Gwhich is formally defined as a 4-
+tuple G= (S, V, Σ, R). In particular, Sis the set of starting
+symbols, which is associated with the nodes and subtrees of
+the hierarchical tree; Vis a finite set of non-terminal symbols,
+which is used to expand the scope of generation, representing
+intermediate states i.e., potential generation targets; Σis a
+finite set of terminal symbols disjoint from V, indicating the
+actual contents of generation. Ris a set of predefined rules
+that are used to iteratively transform the original SQLi payload
+into another equivalent form of SQLi payload that preserves
+the original functionality and maliciousness.
+Taking the subtree of tautology ( i.e., “1 = 1”) in the
+hierarchical tree representation as an example, we can use G
+to generate a set of candidate equivalent forms. Alternatively,TABLE I
+Examples of mutation methods. * means that the operator is flexible for
+different request methods.
+Mutation Example
+Case Swapping or 1 = 1 →oR 1 = 1
+Whitespace Substitution * or 1 = 1 → \ tor1\n=1
+Comment Injection * or 1 = 1 →/*foo*/or 1 =/*bar*/1
+Comment Rewriting /*foo*/or 1 = 1 →/*1.png*/or 1 = 1
+Integer Encoding or 1 = 1 →or 0x1 = 1
+Operator Swapping or 1 = 1 →or 1 like 1
+Logical Invariant or 1 = 1 →or 1 = 1 and ‘a’ = ‘a’
+Inline Comment union select →/*!union*/ /*!50000select*/
+Where Rewritingwhere xxx →where xxx and True
+where xxx →where (select 0) or xxx
+DML Substitution *or 1 = 1 → || 1 = 1
+and name = ‘foo’ →&& name = ‘foo’
+Tautology Substitution‘1’ = ‘1’ →2<> 3
+1 = 1→rand() ¿= 0
+1 = 1→(select ord(’r’) regexp 114) = 0x1
+the tautology can be transformed into a boolean expression
+that turns out to be true STrue (i.e., one of the non-terminal
+symbols) or terminal symbols, e.g., string τ, complex τ
+and numeric τ. For the non-terminal STrue , we can either
+directly transform it into one of terminal symbols Σtrue
+(e.g., “2<>3”,“True”, “Not False”), or another non-terminal
+symbol in a recursive way, which could finally generate one
+of candidate SQLi payload “true \n&&/**foo*/select 1 \tand
+2<>3”.
+With the above tree representation and the CFG, in addition
+to covering the mutation operators in the baseline methods,
+we propose several novel and practical mutation operators
+(e.g.,Inline Comment ,Where Rewriting ,DML Substitution ,IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 6
+and Tautology Substitution in Table I). With the following
+two examples, we stress that our semantic-based method is
+more general ( i.e., covering more surface of payloads) and
+safe ( i.e., semantic-preserving). 1) The existing methods can
+only identify “1=1” in payloads for mutation, while with the
+benefit of semantic-based matching, AdvSQLi can mutate for
+“1=1”, “1 = 1”, “-3.7 = -3.7”, “1 = 1.0”, “‘foo’=‘foo”’. 2) The
+existing methods mutate “rlike” to “r=” and mutate “order” to
+“||der”, to name a few, which will invalidate the entire payload.
+Algorithm 1: Main Procedure of AdvSQLi
+Input : payload x, max steps s, computational budget ,
+black-box situation p, WAF clsf.
+Output: attack result, final score, final payload x′.
+1t←BuildTree (x); // Section IV-A
+2t∗←ExploreOperationalNodes (t);
+3M←CFG(t∗); // Section IV-B
+4s←Min(s, len (t∗)); // Max Steps.
+5state←MCTSState (t, M, p ); // Init State.
+6node←MCTSNode (state ); // Root Node.
+7fori←1tosdo
+8 forj←1tobudget do
+9 expand node←TreePolicy (node);
+10 reward ←DefaultPolicy (expand node);
+11 Backup (expand node, reward );
+12 node′←BestChild (node);
+13 x′←ConstructPayload (node′);
+14 score←clsf(x′);
+15 ifscore < threshold ofclsf then
+16 Return True, score, x′;
+17 node←node′;
+18Return False ;
+C. MCTS Guided Search
+As our CFG-based mutation method can theoretically gen-
+erate infinite candidates, we employ the Monte-Carlo tree
+search (MCTS) to solve it, which has proven effective in
+AlphaGo [39]. In AdvSQLi , MCTS is to continuously build
+a search tree, where each node represents a state of the
+SQLi hierarchical tree, and the edges correspond to mutations,
+i.e., replacements of the node in the SQLi hierarchical tree.
+Commonly, MCTS contains four steps: Selection is to find
+the best node worth exploring in the search tree employing
+the Upper Confidence Bounds (UCB) algorithm (Equation 2),
+i.e., the most worth exploring state of the SQL hierarchy
+tree. Expansion is to perform an operation randomly and
+create a new child node, which means choosing a node in the
+hierarchical tree and replacing it with one of the equivalent
+replacements generated by CFG. Simulation is to continue
+the “game” until reaching the maximum number of mutation
+steps. Then, we can get its score. Back-propagation is to
+provide feedback on the score of the newly expanded node to
+all the previous parent nodes, and update the score and visit
+times of these nodes to facilitate the calculation of the UCB
+score later.
+score ucb= arg max
+v′∈children of v(Q(v′)
+N(v′)+cs
+2 lnN(v)
+N(v′)) (2)
+Besides, v′andvrepresent the current node and its parent
+node respectively, Qrepresents the cumulative quality value,Nrepresents the visit times, and cis a parameter that can
+trade off between exploitation and exploration [40].
+The overall process of AdvSQLi is shown in Algorithm 1.
+First, we represent the SQLi payload as a hierarchical tree t
+(line 1), i.e., the first part of Figure 2. After that, we find all
+operable nodes in t(line 2), in other words, nodes such as
+database table names are set to a locked state. We use CFG to
+generate equivalent nodes (or subtrees) for all operable nodes
+(line 3), i.e., the second part of Figure 2. Then, we create the
+root node of MCTS, which contains the computational budget
+and our hierarchical tree (lines 5-6). Further, we call MCTS
+within the max steps s(lines 8-13), which is reflected in the
+third part of Figure 2. According to the state after each round
+of the game, we can judge whether we win, i.e., reconstructing
+the SQLi payload based on the chain of all MCTS selections
+(line 14). At last, we can obtain the bypassing payload.
+V. E VALUATION
+Next, we conduct an empirical evaluation of AdvSQLi .
+We consider black-box settings with or without probability
+situations, which respectively correspond to state-of-the-art
+ML-based SQLi detectors and commercial WAF-as-a-service
+products. Under both settings, we compare AdvSQLi with a
+set of state-of-the-art attacks. Note that due to their different
+optimization strategies ( e.g., MCTS, RL, priority queue), it
+is challenging to find a unified configuration. Instead, we
+adopt a two-stage approach that first assesses the validity of
+payloads and then conducts other evaluations. Specifically, the
+evaluation is designed to answer the following key questions:
+•RQ1: Semantic preservation. IsAdvSQLi able to preserve
+the original semantics of payloads?
+•RQ2: Attack effectiveness against ML-based SQLi detec-
+tion. IsAdvSQLi effective against state-of-the-art ML-based
+SQLi detectors?
+•RQ3: Attack effectiveness against WAF-as-a-service. Is
+AdvSQLi effective against real-world WAF-as-a-service?
+•RQ4: Ablation study. What is the effectiveness of each
+individual mutation method?
+Datasets. We evaluate the attack performance of AdvSQLi
+on two commonly used datasets HPD and SIK, and our
+own dataset MDD . More precisely, HPD [41] is shorted for
+the HttpParamsDataset which not only includes all malicious
+SQLi payloads from CSIC [42], but also plenty of SQLi
+payloads generated by sqlmap [43]. The two types of SQLi
+payloads in HPD are widely used in SQLi detection [44],
+[45], [46]. SIK [47] is shorted for the SQL injection dataset
+in Kaggle, which is employed as the evaluation dataset in
+one of our baseline attack methods. For each dataset, as the
+number of benign samples in each dataset is about twice
+that of malicious samples, we randomly select 3,000 samples
+(2,000 benign samples and 1,000 malicious samples) as the
+validation set and the testing set, respectively, and make
+the remaining samples as the training set. However, due to
+the diversity of samples in the above datasets, we cannot
+build corresponding runtime environments in a short time.
+In response, to verify the functionality and maliciousness of
+the generated payloads dynamically, we manually constructedIEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 7
+MDDBack-end with multipleruntime environments
+AdvSQLi/Baseline
+(a) For RQ1 : Employ the back-ends of various runtime environments to verify
+the functionality and maliciousness of generated payloads.
+HPD/SIKML-based SQLi detectorsAdvSQLi/Baseline
+(b) For RQ2 : Use ML-based SQLi detectors to evaluate the effectiveness and
+efficiency. The datasets are used in the training, validation and testing phases.
+MDD/HPD/SIK
+Back-end with SQLi Vulnerability.
+WAF-as-a-services from 7 vendorsAdvSQLi/Baseline
+(c) For RQ3 andRQ4 : Evaluate the effectiveness when attacking commercial
+WAFs. The datasets are only used in the testing phase.
+Fig. 3. Workflow of evaluation.
+MDD , including prevalent SQLi payloads with union-based
+injection, blind injection, error-based injection, and so on.
+TABLE II
+Summary statistics of datasets. The number before or after “/” denotes the
+number of benign/malicious payloads.
+Datasets Training Validation Testing Total
+HPD 15,304/8,852 2,000/1,000 2,000/1,000 30,156
+SIK 12,840/9,168 2,000/1,000 2,000/1,000 28,008
+MDD - - -/100 100
+Target Models. The target WAFs are divided into two cate-
+gories to cover black-box with and without probability situa-
+tions:
+1) SQLi Detection Models. We use the character-based
+anomaly detection model WAF-Brain [48] as one of our target
+models, which is a state-of-the-art AI-based WAF and is
+widely used by previous work [25], [26]. However, given the
+unsatisfactory generalization of WAF-Brain on our datasets,
+we train two classification models ( i.e., CNN [49], [50], [51]
+and LSTM [52], [53]) based on state-of-the-art SQLi detection
+and text classification literature. We use “=”, “ |”, “,” and “ ”
+as keywords for vocabulary segmentation and train both CNN
+and LSTM models at the word level on HPD and SIK datasets
+using PyTorch. The performance of the three models is shown
+in Table III. As subsequent evaluations show that the WAF-
+Brain is too easy to bypass at FPR of 1% and 1‰, we manually
+designate a threshold of 0.1 following the settings of [26].
+2) Real-world WAF-as-a-service Solutions. To verify the
+real-world attack effectiveness of AdvSQLi , we purchase and
+deploy 7 WAF-as-a-service solutions from mainstream vendors
+including Amazon Web Services (AWS), F5, Cyber Security
+Cloud (CSC), Fortinet, Cloudflare, Wallarm, and the state-
+of-the-art open-sourced WAF ModSecurity. Specifically, we
+employ the following real-world settings to configure andTABLE III
+Performance of target models. δmeans the threshold calculated by FPR.
+Target
+ModelDatasetAUC
+(%)FPR=1% FPR=1‰
+Acc (%) δ Acc (%) δ
+WAF-Brain HPD 99.14 85.80 0.333 62.18 0.500
+WAF-Brain SIK 96.97 68.45 0.286 54.25 0.572
+CNN HPD 99.96 99.45 0.044 99.90 0.159
+CNN SIK 99.99 99.45 0.007 99.85 0.145
+LSTM HPD 99.96 99.45 0.002 99.90 0.006
+LSTM SIK 99.99 99.50 0.025 99.90 0.105
+deploy them: A WS, F5, CSC, Fortinet: We create four
+Access Control Lists (ACLs) on AWS. Further, we subscribe
+to the rules of these vendors and integrate them into the
+corresponding ACL. Cloudflare: We subscribe to its pro plan
+to enable the full-blown WAF. Wallarm: We deploy a Wallarm
+node on the Google Cloud Platform. ModSecurity: We build
+ModSecurity based on Nginx and embed the latest version of
+the OWASP CoreRuleSet (CRS) in it.
+Attack Methods. Previous research has made some progress
+in generating adversarial SQLi payloads. 1) WAF-A-MoLE :
+Demetrio et al. [25] defined 7 mutation methods based on
+regular expression, and used a priority queue to guide their
+mutation process ( i.e., payloads with low scores are used as
+the initial payloads for the next round). 2) Wang et al. [26] and
+Hemmati et al. [27] followed the mutation operators in [25],
+and they proposed a search strategy based on RL [54]. We
+useWAF-A-MoLE as one of the baseline methods. Since
+neither [26] nor [27] has open-sourced attack modules, we
+implement their method based on DQN and call it DRL. In ad-
+dition, to evaluate the effectiveness of the MCTS method and
+to explore the upper limit of attack, we implement two variants
+ofAdvSQLi : 1)AdvSQLi(R) , which randomly combines
+the candidate nodes of the hierarchical tree. 2) AdvSQLi(A) ,
+which performs permutations on the candidates of all nodes.
+TABLE IV
+Attack methods. “Both” means it is suitable for both black-box with and
+without probability situations, i.e., ML-based SQLi detection and real-world
+WAF-as-a-service.
+Method Capability Mutate Method Search Strategy
+WAF-A-MoLE BB w/ prob. String-based Priority Queue
+DRL BB w/ prob. String-based RL (DQN)
+AdvSQLi Both Semantic-based MCTS
+AdvSQLi(R) Both Semantic-based Random
+AdvSQLi(A) Both Semantic-based Violent
+Metrics and Parameters. The metrics of our attack evalu-
+ations are: (i) Attack Success Rate (ASR) represents the
+percentage of malicious samples that can bypass the WAF after
+the attack. (ii) Validity of Generated Payloads (VGP) reflects
+the feature of semantic-preserving of an attack method. (iii)
+Query refers to the query number we perform on a payload
+to bypass WAF. Here are some parameters that may affect
+the running results: In AdvSQLi andWAF-A-MoLE , the key
+parameters are Step and Budget . Recall from Algorithm 1
+that the outer loop (lines 6-16) is constrained by Step, which
+repetitively builds a search tree and updates the optimal node .
+Moreover, the inner loop (lines 7-10) is constrained by Budget,IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 8
+which iteratively builds and extends the search tree under
+the current root node . As for WAF-A-MoLE , we treat the
+size of each priority queue as the budget and the number of
+priority queue rounds as a step. Therefore multiple queries
+are performed in a step in WAF-A-MoLE andAdvSQLi .
+Besides, the number of steps and queries are equal in DRL
+andAdvSQLi(R) .
+A. RQ1: Semantic Preservation
+Evaluation setup. We propose a dynamic method to perform
+the semantic-preserving assessment, i.e., comparing the run-
+ning results of the generated payloads and the original one.
+Figure 3(a) sketches the workflow. Specifically, we first create
+two databases (MySQL 5.7 and MySQL 8.0) and build the
+corresponding tables, columns, and data based on MDD. Then,
+we integrate these databases in back-end scripts (PHP 5.6,
+PHP 7.4, and Python 3.7) with SQLi vulnerabilities. This
+leaves us with 6 web services where we can steal information
+through SQLi attacks. Furthermore, we mutate the samples in
+MDD utilizing AdvSQLi andWAF-A-MoLE , and then send
+the mutated payloads to these web services to observe the
+running results. Since the mutation modules of WAF-A-MoLE
+andDRL are identical, we only evaluate WAF-A-MoLE . In this
+context, we evaluate the relationship between VGP and attack
+steps. Roughly, we generate about 10,000 mutated payloads
+with WAF-A-MoLE andAdvSQLi , respectively. Moreover,
+to determine the subsequent parameters for a fair comparison,
+we evaluate the relationship between ASR and attack steps of
+WAF-A-MoLE based on multiple models.
+Results. From Figure 4, we can see that the payloads mutated
+byAdvSQLi are always valid (VGP is 1.0), i.e., preserving
+the original functionality and maliciousness. This is insep-
+arable from our semantic-based mutation method. However,
+the string-based mutation method in WAF-A-MoLE andDRL
+mutates “rlike” to “r=” and mutate “order” to “ ||der”, to
+name a few, which do damage the original semantics of the
+payloads and invalidate them. For example, half of the mutated
+payloads generated by the string-based mutation method are
+invalid when the number of attack steps is 4. Besides, Figure 4
+shows that both the VGP and ASR curves of WAF-A-MoLE
+tend to be flat when the attack step is larger than 10. For
+a fair comparison, we take the number of attack steps at 10
+as the default parameter of WAF-A-MoLE for the subsequent
+evaluations.
+Answer to RQ1: AdvSQLi is semantic-preserving, while
+the baseline methods ( i.e.,WAF-A-MoLE andDRL) fail
+to preserve semantics. Namely, the adversarial payloads
+generated by AdvSQLi maintain the original functionality
+and maliciousness.
+B. RQ2: Attack Effectiveness against ML-based SQLi Detec-
+tion
+Evaluation setup. We evaluate the attack effectiveness and
+efficiency by utilizing the attack methods in Table IV to attack
+the models in Table III. We set the maximum number of steps
+of each attack method to 10 and set the default budget of
+Fig. 4. VGP of AdvSQLi and relationship between VGP and ASR of
+WAF-A-MoLE . The horizontal blue line means that the VGP of AdvSQLi
+is always 100%. The descending orange line refers to the changing trend of
+the VGP of WAF-A-MoLE with the number of attack steps, which is the
+average value under various runtime environments. The rising lines refer to
+the changing trend of the ASR with the number of attack steps.
+AdvSQLi andWAF-A-MoLE to 10. Besides, we set the query
+number of attempts of AdvSQLi(R) to 10,000 for efficiency.
+(a) HPD-LSTM(FPR=1%)
+ (b) SIK-CNN(FPR=1%)
+Fig. 5. Relationships between ASR and Query (within 100) when attacking
+against SQLi detection. The grey dotted line results from the AdvSQLi(R)
+under the default settings.
+Results. 1) Effective. The middle part of Table V shows
+the ASR results of attacking against SQLi detection under
+default settings. Intuitively, SQLi detection based on anomaly
+detection, CNN, and LSTM are all vulnerable to adversarial
+attacks. For example, several attack methods can achieve ASRs
+of 100% on WAF-Brain. We find that AdvSQLi is better than
+other attack methods in terms of higher ASRs. For instance,
+the ASR of AdvSQLi is twice that of WAF-A-MoLE , three
+times that of AdvSQLi(R) , and seven times that of DRL
+when attacking against the LSTM model (FPR=1‰) under the
+SIK dataset. 2) Efficient. Figure 5 sketches the relationships
+between ASR and Query. It is clear that AdvSQLi always out-
+performs other methods, regardless of the number of queries.
+In most cases, the ASRs of AdvSQLi surpass AdvSQLi(R)
+within dozens of queries. Compared with other baseline meth-
+ods, the effectiveness of WAF-A-MoLE gradually surpasses
+others with the increase of queries. However, it still tends to
+be stable in the end and cannot exceed AdvSQLi .
+Parameters adjustment. We conduct detailed evaluationsIEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 9
+TABLE V
+The ASR results of attacking against SQLi detection when under default settings and when increasing the number of attack steps to 20. WAM means
+WAF-A-MoLE .δmeans the threshold calculated by FPR.
+Dataset Target SQLi
+DetectionδFNR
+(%)Attack Success Rate (%)
+Parameter: Step = 10 (Default) Parameter: Step = 20
+WAM DRL AdvSQLi(R) AdvSQLi AdvSQLi(A) WAM DRL AdvSQLi(R) AdvSQLi AdvSQLi(A)
+HPDWAF-Brainδ=0.10.100 0.1 75.56 4.15 97.34 99.97 98.01 99.86 8.62 97.47 99.93 98.04
+WAF-Brain1%0.333 31.3 100 69.62 100 100 99.59 100 86.15 100 100 100
+WAF-Brain1‰0.500 76.7 100 81.95 100 100 100 100 90.40 100 100 100
+CNN1%0.044 0.1 9.34 6.97 7.94 26.46 25 11.48 7.54 9.58 27.03 26.12
+CNN1‰0.159 0.1 13.68 9.44 13.28 34.90 32.9 16.88 10.54 14.78 36.27 34.93
+LSTM1%0.002 0.1 10.18 3.90 9.34 23.62 16.8 14.41 4.40 11.34 23.99 20.32
+LSTM1‰0.006 0.1 11.41 5.04 11.08 26.03 18.2 15.85 5.47 13.08 26.43 22.72
+SIKWAF-Brainδ=0.10.100 0.5 77.12 13.89 98.06 100 99.16 99.93 24.40 99.48 100 100
+WAF-Brain1%0.286 62.5 99.93 65.31 99.93 100 99.64 100 82.15 100 100 100
+WAF-Brain1‰0.572 91.5 100 98.85 100 100 100 100 100 100 100 100
+CNN1%0.007 0.1 25.16 11.01 12.48 35.97 27 29 12.98 15.55 39.74 32.23
+CNN1‰0.145 0.2 44.12 25.05 27.42 56.78 45 49.30 27.25 35.64 58.48 52.40
+LSTM1%0.025 0.0 36.50 9.87 20.57 78.80 61.40 49.53 10.77 31.03 83.10 74.20
+LSTM1‰0.105 0.1 42.61 12.45 27.53 91.36 74.90 56.52 13.58 39.87 95.03 84.68
+to further explore the impact of the parameters mentioned
+above on the effectiveness and efficiency of different attack
+methods. We first increase the maximum number of steps of
+AdvSQLi andWAF-A-MoLE to 20 and repeat all evaluations.
+In order to explore the impact of the computational budget on
+the attack results, we increase the budget of AdvSQLi and
+WAF-A-MoLE to 20.
+Results. 1) Step. The results of ASR are shown in the
+right part of Table V. Evidently, the ASRs of various attack
+methods increase more or less. However, AdvSQLi still has
+an absolute advantage over the baseline methods. 2) Budget.
+From Table VI, we can observe that the ASRs improve as the
+budget increases for almost all models. Moreover, when the
+budget is 20, WAF-A-MoLE is still not better than AdvSQLi
+with budget 10, which proves the advantage of AdvSQLi .
+Answer to RQ2: AdvSQLi is more effective and efficient
+than all baseline methods, achieving higher ASRs with
+fewer queries.
+C. RQ3: Attack Effectiveness against WAF-as-a-service
+Evaluation setup. We deploy a modified version of SQLi-
+labs [55] with the underlying database on the Google Cloud
+Platform. Further, we protect it by utilizing seven real-world
+WAFs in turn by modifying DNS resolutions and forwarding
+traffic. In this case, AdvSQLi acts as a client to continuously
+send attack requests to the protected web service.
+Real-world adaptation. Note that, our modified back-end web
+service supports 4 common HTTP request methods ( i.e., GET,
+GET(JSON), POST, and POST(JSON)) corresponding to com-
+prehensive real-world situations. We fine-tune the mutation
+process in AdvSQLi adaptively to preserve the semantics
+of the generated payloads across different request methods,
+e.g.,\nneeds to be encoded as %0A for non-JSON requests
+and the “ #” sign cannot be present in comments ( /*#*/ )TABLE VI
+The ASR results under budget is 10 and 20. WAM means WAF-A-MoLE
+DatasetTarget SQLi
+DetectionAttack Success Rate (%)
+Budget=10 Budget=20
+WAM AdvSQLi WAM AdvSQLi
+HPDWBδ=0.175.56 99.97 99.56 100
+WB1%100 100 100 100
+WB1‰100 100 100 100
+CNN1%9.34 26.46 10.54 27.83
+CNN1‰13.68 34.90 14.71 36.87
+LSTM1%10.18 23.62 11.58 24.59
+LSTM1‰11.41 26.03 12.21 27.09
+SIKWBδ=0.177.12 100 99.59 100
+WB1%99.93 100 100 100
+WB1‰100 100 100 100
+CNN1%25.16 35.97 26.49 38.64
+CNN1‰44.12 56.78 46.62 58.22
+LSTM1%36.50 78.8 41.23 82
+LSTM1‰42.61 91.36 48.21 94.49
+when sending the payload via GET. As for the baseline
+methods, the mutation methods of WAF-A-MoLE andDRL
+are identical, and do not support attacking black-box WAFs
+given their score-based attack guidance. Therefore, we im-
+plement a random search-based variant for WAF-A-MoLE
+and perform the same adaptations in mutation methods. We
+employ WAF-A-MoLE to attack the web service protected by
+ModSecurity and elide the results of other WAF-as-a-service
+for experimental efficiency.
+Results. Table VII illustrates the FNR and ASR results of
+attacking against 7 WAF-as-a-service, and Table VIII shows
+the ASR and Query results of AdvSQLi andWAF-A-MoLE
+against ModSecurity.IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 10
+TABLE VII
+Results of attacking against real-world WAFs. A(R) means AdvSQLi(R).
+WAFaaSRequest
+MethodHPD SIK
+FNR
+(%)ASR(%) FNR
+(%)ASR(%)
+A(R) AdvSQLi A(R) AdvSQLi
+AWSGET 5.3 15.21 18.69 8.2 10.80 14.39
+GET(JSON) 60.2 86.43 89.45 63.4 96.45 99.73
+POST 3.4 29.19 30.02 14.5 26.46 31.97
+POST(JSON) 60.2 84.17 89.45 63.4 96.17 99.73
+F5GET 40.7 70.66 82.46 45.1 69.95 79.60
+GET(JSON) 40.5 67.73 83.87 43.7 61.99 82.06
+POST 35.6 70.50 83.7 41.9 66.09 80.72
+POST(JSON) 35.4 71.05 85.76 40.5 60.50 82.69
+Cyber
+Security
+CloudGET 19.7 63.14 77.33 37.1 50.08 70.27
+GET(JSON) 20 65.75 77.38 37.1 53.26 70.91
+POST 19.7 63.26 75.22 37.1 46.97 70.38
+POST(JSON) 20 64.50 74.50 37.1 52.46 71.38
+FortinetGET 8.8 48.25 53.40 14.2 45.16 55.19
+GET(JSON) 9.7 78.07 83.17 15.7 73.40 81.24
+POST 8.8 48.9 53.40 14.0 45.75 55.06
+POST(JSON) 9.7 77.52 83.17 15.5 73.58 81.28
+Cloud-
+flareGET 8.1 20.13 21.33 18.8 26.39 32.43
+GET(JSON) 17.7 35.60 37.79 29.2 55.73 58.13
+POST 47.1 35.35 35.92 63.2 47.96 48.77
+POST(JSON) 47.1 35.16 35.92 63.2 47.96 49.05
+WallarmGET 1.4 16.94 18.76 6.5 24.20 33.94
+GET(JSON) 1.4 16.94 18.76 6.4 24.17 34.01
+POST 1.4 15.14 17.28 6.7 20.52 31.26
+POST(JSON) 2.4 16.79 17.40 7.6 23.86 32.24
+Mod-
+SecurityGET 0.1 5.74 11.61 3.3 5.63 10.88
+GET(JSON) 20.1 42.59 49.06 30.9 49.73 58.32
+POST 0.1 5.44 10.61 3.5 4.53 9.55
+POST(JSON) 0.1 4.90 10.61 3.5 4.50 9.55
+1) FNR directly reflects the protection effectiveness of
+WAFs. In general, the protective effects of each WAF are
+uneven. Classified according to different request methods, in
+the majority of cases, the FNRs of the two GET-based request
+methods are greater than or equal to those for POST-based
+methods, which means that the protection of the latter is
+stricter. If this is not a design flaw, it is likely that the vendor
+deliberately did it. When making requests to web services
+via POST, there is typically a larger attack payload, leading
+vendors to implement stricter protective measures. In contrast,
+GET requests, which generally do not carry such complex
+content, may be subject to more lenient scrutiny to prevent
+the accidental interception of legitimate traffic. Further, we
+can divide WAFs into four categories by inferring WAF’s
+responses to different requests based on FNRs: 1)F5, CSC,
+Fortinet, and Wallarm treat the four request methods equally.
+2)Cloudflare implements different strategies based on whether
+the request method is GET or POST. 3)AWS treats the
+payload separately based on whether the request parameter
+is in JSON type. 4)ModSecurity processes requests via
+GET(JSON) separately, yet treats the remaining three request
+methods equally. Alarmingly, both AWS and Cloudflare have
+FNRs of over 60% on the SIK dataset. In other words, morethan 60% of malicious requests will be directly forwarded to
+the back-end service. On the contrary, Fortinet and Wallarm
+perform well as their FNRs are low and relatively even among
+different request methods.
+2) ASR illustrates the robustness of a WAF against adver-
+sarial attacks. If a WAF exhibits high FNRs and ASRs simulta-
+neously, it is evident that its protective effect is unsatisfactory.
+Overall, our attacks against WAF-as-a-service are successful.
+The ASRs against AWS on the SIK dataset even reached
+99.73%. Besides, the ASRs of each WAF have a similar
+distribution to FNRs, which further confirms our conclusion
+that we have drawn above on the effectiveness of WAFs. By
+analyzing the ASRs, we can find that when requesting web
+services in JSON-type parameters, ASRs are much higher
+than non-JSON. It is a great security risk given the current
+development trend of web services, i.e., more and more web
+services are designed based on the decoupled architecture,
+most of which use JSON to transfer data.
+TABLE VIII
+The ASR and Query results of AdvSQLi andWAF-A-MoLE against
+ModSecurity. The average query is calculated based on successful samples
+crossed in both attack methods. WAM means WAF-A-MoLE.
+Dataset Request MethodASR(%) Average Query
+AdvSQLi WAM AdvSQLi WAM
+HPDGET 11.61 6.61 9.80 30.11
+GET(JSON) 49.06 47.02 10.15 18.91
+POST 10.61 5.61 10.66 29.66
+POST(JSON) 10.61 5.31 9.93 30.31
+SIKGET 10.88 7.34 10.67 31.5
+GET(JSON) 58.32 48.05 10.26 32.65
+POST 9.55 7.36 10.37 30.44
+POST(JSON) 9.55 5.80 10.65 30.32
+The four WAFs hosted on AWS (AWS, F5, CSC, and
+Fortinet) are less capable of preventing SQLi than other WAFs.
+Wallarm is effective because it has low FNRs and ASRs.
+Besides, Fortinet has ASRs many times higher than FNRs,
+which means that it cannot defend against adversarial attacks
+very well. Interestingly, ModSecurity shows the strongest
+robustness if we ignore the shortcomings in the defense of
+GET(JSON) requests, which means that open-sourced tools
+may have natural advantages. Comparing the two attack
+methods we proposed, overall, AdvSQLi has much higher
+ASRs than AdvSQLi(R) against all WAF-as-a-service. We
+can see from Table VII that in hard-to-attack situations (such
+as ModSecurity), the ASRs of AdvSQLi are twice that of
+AdvSQLi(R) . From Table VIII, we can see that AdvSQLi
+is more effective and efficient than WAF-A-MoLE , as it
+achieves nearly twice the ASRs with only one-third queries
+ofWAF-A-MoLE in several cases.
+Answer to RQ3: All WAF-as-a-service under tests are vul-
+nerable to AdvSQLi . More importantly, some vendors have
+severe deficiencies, e.g., the insufficiency in parsing JSON-
+type parameters. AdvSQLi is more effective than the baseline
+methods when attacking against real-world WAF-as-a-service.IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 11
+D. RQ4: Ablation Study
+Overall conclusion. In addition to analyzing the ASR results,
+it is meaningful to know the root causes of bypassing, i.e.,
+the concrete vulnerabilities of WAFs. We automatically an-
+alyze all bypass samples in RQ3 based on the hierarchical
+trees to conclude more comprehensively. Supplemented by
+manual methods, we get the conclusions in Figure 6 within
+the format of Table I. Intuitively, individual attack methods
+are not always effective in attacking all WAF-as-a-service.
+The mutation methods we propose ( i.e.,Inline Comment and
+DML Substitution ) and Whitespace Substitution are the most
+effective methods. Interesting, just adding some comments
+into the SQLi payloads can bypass F5, Fortinet, Wallarm, and
+ModSecurity in some cases. We speculate that the detection
+signatures in these WAFs are not robust, causing these by-
+passes.
+Fig. 6. Effective mutation methods in bypassing WAF-as-a-service. Full circle
+means that this action is effective in most cases; Half circle indicates that it
+may work under specific payloads or combined with other mutations.
+Case studies. Hereafter, we further analyze the vulnerabilities
+through specific examples. We select three representative pay-
+loads from MDD, which can steal table names, column names,
+and sensitive information. There is no doubt that the WAFs
+(AWS, F5, and Cloudflare) will block them if we directly
+send them to the web service. At this time, we input the
+above payloads into AdvSQLi and none of the three WAFs
+intercepted our carefully constructed payloads. By analyzing
+the bypassing payloads, we can find that replacing whitespaces
+with control characters ( i.e.,Whitespace Substitution ) can
+bypass AWS. Furthermore, if we replace Data Manipulation
+Language (DML) tokens with inline comments, we can bypass
+F5 and Cloudflare.
+In summary, these case studies further verify our conjecture:
+vendors’ detection signatures are non-robust, causing severe
+vulnerabilities.
+Answer to RQ4: Effective mutation methods for specific
+WAFs and different payloads are unique. Combining multiple
+mutation methods, AdvSQLi is much more effective in
+bypassing mainstream WAF-as-a-service solutions due to their
+vulnerable detection signatures for semantic matching and
+regular expression matching.
+Fig. 7. Examples that can bypass WAF-as-a-service.
+VI. D ISCUSSION
+A. Responsible Disclosure
+We reported the above results to the affected vendors by
+submitting vulnerability reports and contacting their technical
+support staff and security researchers via emails. Up until now,
+three vendors have mitigated the flaws, and four vendors are
+working:
+F5: The F5 Security Incident Response Team responded to
+our email quickly and said that they would “reach out to the
+respective team”. Three weeks after our report, we were told
+that they had updated the rules for AWS WAF and the issue
+was addressed.
+Cloudflare : We submitted our findings to Cloudflare
+through its supporting system and the HackerOne platform.
+After productive communications, we were informed that the
+WAF team had “deployed some changes”, yet they would not
+tell us the details.
+Wallarm : They attached great importance to our report and
+declared that they “are doing everything to resolve it as soon
+as possible”. A month after our report, we learned from the
+update from the Wallarm detection team that the issue has been
+resolved and the ruleset for SQLi detection is now “wider and
+more accurate”.
+A WS : The AWS Security Team replied to our email and
+proceeded to investigate it immediately. After a thorough
+investigation, they said they “will make a change to mitigate
+the behavior” and will inform us “once they’ve released the
+related improvements”.
+Fortinet andCyber Security Cloud : After getting in touch
+with these vendors through their support email, we learned
+that they had confirmed the flaws and proceeded to solve them.
+Their words are “plan to address some of these” and “improve
+the rules in later update”, yet we have not received any new
+updates.
+ModSecurity : We reached the rules team (OWASP CRS)
+and engine team (Trustwave ModSecurity Security Team)
+respectively. One CRS co-leader confirmed that CRS did have
+flaws and ModSecurity is insufficient in parsing query strings
+in JSON format, yet they can do little beyond digging through
+JSON with their rules. Their developers are still working
+with us based on our detailed conclusions. While the security
+researcher from ModSecurity said that the lack of JSON
+parsing is not due to some bug or malfunction. ModSecurity
+would not parse JSON objects in query arguments or request
+headers by design. Yet he admitted that “the absence couldIEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 12
+sometimes make writing effective rules more cumbersome”,
+and they plan to implement the feature in ModSecurity v3.1.1.
+B. Potential Defenses
+We conduct a preliminary exploration of two potential
+defense methods, i.e., adversarial training (AT) and pre-
+processing (PP).
+Adversarial training. We can improve the robustness of
+ML-based WAF through AT [56]. Firstly, we attack the
+CNN1%model with 8852 SQLi payloads in the training set of
+HPD to obtain adversarial examples, using the AdvSQLi(R)
+attack method here for time considerations. Next, we add
+the 1341 xadv to the training set and retrain the CNN1%
+model according to the previous settings. Then, we re-attack
+the new model with SQLi payloads from the test set. From
+Table IX, we can see that the performance of the CNN model
+dropped slightly after AT, e.g., the ASR of AdvSQLi(R) has
+dropped by 32.9%, and the ASR of AdvSQLi has dropped
+by 30.59%. AT might be effective in defending AdvSQLi .
+However, the limitation is that it needs to have sufficient
+adversarial samples for training or know the details of the
+attack strategy [37]. Therefore, AT is limited in defending
+against unknown adversarial attacks because attackers usually
+do not disclose their methods.
+Pre-processing. Just like dead code removal in programs,
+we use some pre-processing methods to remove the “noise”
+in SQLi payloads: unify the capitalization of letters ,remove
+comments ,remove control symbols , and so on. From Table IX,
+we can see that the ASRs dropped by less than 10% on both
+attack modes. Therefore, AdvSQLi is robust to common pre-
+processing methods.
+TABLE IX
+THEASR RESULTS AFTER DEFENSES . AT MEANS ADVERSARIAL
+TRAINING AND PPMEANS PRE -PROCESSING .
+Defense
+ModeAUC
+(%)Accuracy
+(%)ASR (%)
+AdvSQLi(R) AdvSQLi
+- 99.959 99.90 7.94 26.46
+AT 99.854 96.10 5.32 18.36
+PP 99.959 99.90 6.32 25.18
+C. Rethinking WAF-as-a-service
+Most real-world mainstream vendors employ the signature-
+based detection strategy combining semantic analysis and
+regular expression matching, which we have proven seriously
+vulnerable. For ML-based WAF, the direct detection ability in
+the laboratory environment is passable, however, the effect
+of defending against adversarial attacks is not gratifying.
+Intriguingly, there are vendors, such as Wallarm [57], already
+using ML technology to supplement the detection signatures
+adaptively and achieve feasible defense effects with low FNR
+and ASR. This inspires us: can vendors build more promising
+WAFs by better utilizing AI methods or even implementing a
+WAF with multi-modal detection mechanisms?D. Limitations and Future Work
+There are some naturally inherent limitations to this kind of
+work. Even though these do not affect the overall conclusion,
+we discuss them in the following for completeness.
+1) Dataset: We try our best to find open-sourced datasets,
+as there is no benchmark dataset for SQLi. One may argue that
+the baseline method [25] presented a dataset [58] containing
+both benign and malicious SQL samples. However, in our task,
+benign samples should be ordinary HTTP request parameters,
+and malicious samples should be constructed HTTP request
+parameters containing SQL statements. Therefore, we have to
+exclude the dataset in [25] and only find two commonly used
+datasets of SIK and HPD probably due to the potential security
+risks or intellectual property.
+2) Verification of semantic-preserving: To the best of our
+knowledge, there is no practical way to check whether two
+SQLi payloads are semantic-equivalent other than comparing
+the running results [59]. Therefore preliminary evaluations
+(RQ1) without the protection of WAF-as-a-service are per-
+formed. Although the results show that our atomic-level mu-
+tation methods are semantic-preserving, we cannot guarantee
+strict semantic equivalence in all possible cases due to the
+assorted types of SQLi payloads.
+3) Manual definition of CFG: The manual definitions of
+CFG are to ensure that AdvSQLi will not invalidate the SQLi
+payloads or cause unexpected damage. It may have limitations,
+such as making the generated payloads limited by prior knowl-
+edge. Yet we have mitigated this by, e.g., recursively definition
+of CFG to enrich the diversity of the generated payloads.
+Besides, as we have provided the corresponding interfaces,
+subsequent researchers who want to extend AdvSQLi only
+need to add simple entries in CFG.
+Next, we will continue tracking vendors’ feedback until
+they fix the flaws completely. We shall implement the method
+of automatically analyzing and summarising the payloads
+based on the hierarchical tree to discover more generalized
+bypass patterns, which we could embed into other tools ( e.g.,
+sqlmap) or provide to vendors. In addition, we plan to extend
+our framework to other domains, such as cross-site scripting
+attacks, webshell, etc. Besides, we will explore the integration
+of multi-factor authentication schemes into WAF systems, such
+as three-factor authentication based on extended chaotic maps
+and quantum-resistant two-factor authentication [60], [61],
+[62], to augment the defensive strength and robustness of web
+systems reliant on WAFs.
+VII. C ONCLUSION
+We conduct the first systematic and comprehensive study
+on the security vulnerabilities of WAFs in the cloud, by
+proposing and implementing AdvSQLi . With this general
+and extendable attack framework that works out of the box,
+attackers can bypass WAF-as-a-service solutions of different
+vendors for unique payloads effortlessly. Extensive evaluation
+results demonstrate that AdvSQLi can effectively and effi-
+ciently bypass both state-of-the-art ML-based SQLi detectors
+and commercial WAF-as-a-service solutions from mainstream
+vendors. Moreover, we condense out several fundamental de-
+ficiencies of real-world WAF-as-a-service, e.g., the vulnerableIEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 13
+detection mechanisms, the non-robust signatures, and the flaws
+in parsing JSON-type parameters, which have successfully
+helped mainstream vendors improve their products.
+REFERENCES
+[1] Cloudflare, Inc., “What is web application security?” https://www.
+cloudflare.com/learning/security/what-is-web-application-security,
+2022.
+[2] A. Pramod, A. Ghosh, A. Mohan, M. Shrivastava, and R. Shettar,
+“Sqli detection system for a safer web application,” in 2015 IEEE
+International Advance Computing Conference (IACC) . IEEE, 2015,
+pp. 237–240.
+[3] L. Zhang, D. Zhang, C. Wang, J. Zhao, and Z. Zhang, “Art4sqli:
+The art of sql injection vulnerability discovery,” IEEE Transactions on
+Reliability , vol. 68, no. 4, pp. 1470–1489, 2019.
+[4] W. Tian, J. Xu, K.-M. Lian, Y . Zhang, and J.-f. Yang, “Research on
+mock attack testing for sql injection vulnerability in multi-defense level
+web applications,” in The 2nd International Conference on Information
+Science and Engineering . IEEE, 2010, pp. 1–5.
+[5] S. Prandl, M. Lazarescu, and D.-S. Pham, “A study of web application
+firewall solutions,” in International Conference on Information Systems
+Security . Springer, 2015, pp. 501–510.
+[6] A. M. Vartouni, M. Teshnehlab, and S. S. Kashi, “Leveraging deep
+neural networks for anomaly-based web application firewall,” IET In-
+formation Security , vol. 13, no. 4, pp. 352–361, 2019.
+[7] D. Appelt, C. D. Nguyen, and L. Briand, “Behind an application
+firewall, are we safe from sql injection attacks?” in 2015 IEEE 8th
+international conference on software testing, verification and validation
+(ICST) . IEEE, 2015, pp. 1–10.
+[8] S. Rushil and C. Thomas, “How cloudflare security
+responded to log4j 2 vulnerability,” https://blog.cloudflare.com/
+how-cloudflare-security-responded-to-log4j2-vulnerability/, 2021.
+[9] S. Applebaum, T. Gaber, and A. Ahmed, “Signature-based and machine-
+learning-based web application firewalls: A short survey,” Procedia
+Computer Science , vol. 189, pp. 359–367, 2021.
+[10] I. Ristic, Modsecurity handbook . Feisty Duck, 2010.
+[11] G. Buehrer, B. W. Weide, and P. A. Sivilotti, “Using parse tree validation
+to prevent sql injection attacks,” in Proceedings of the 5th international
+workshop on Software engineering and middleware , 2005, pp. 106–113.
+[12] R. Ezumalai and G. Aghila, “Combinatorial approach for preventing
+sql injection attacks,” in 2009 IEEE International Advance Computing
+Conference . IEEE, 2009, pp. 1212–1217.
+[13] T. Liu, Y . Qi, L. Shi, and J. Yan, “Locate-then-detect: Real-time web
+attack detection via attention-based deep neural networks.” in IJCAI ,
+2019, pp. 4725–4731.
+[14] I. Corona, D. Ariu, and G. Giacinto, “Hmm-web: A framework for the
+detection of attacks against web applications,” in 2009 IEEE Interna-
+tional Conference on Communications . IEEE, 2009, pp. 1–6.
+[15] D. Kar, S. Panigrahi, and S. Sundararajan, “Sqligot: Detecting sql
+injection attacks using graph of tokens and svm,” Computers & Security ,
+vol. 60, pp. 206–225, 2016.
+[16] M. D. Junior and N. F. Ebecken, “A new waf architecture with machine
+learning for resource-efficient use,” Computers & Security , vol. 106, p.
+102290, 2021.
+[17] O. Charlie, “Akamai waf bypassed via spring
+boot to trigger rce,” https://blog.cloudflare.com/
+how-cloudflare-security-responded-to-log4j2-vulnerability/, 2022.
+[18] F. Tameesh, “Red team case study: Bypass-
+ing cloudflare waf for successful ognl injection,”
+https://www.aon.com/cyber-solutions/aon cyber labs/
+red-team-case-study-bypassing-cloudflare-waf-for-successful-ognl-injection/,
+2020.
+[19] F. Pierazzi, F. Pendlebury, J. Cortellazzi, and L. Cavallaro, “Intriguing
+properties of adversarial ml attacks in the problem space,” in 2020 IEEE
+Symposium on Security and Privacy (SP) . IEEE, 2020, pp. 1332–1349.
+[20] B. Biggio and F. Roli, “Wild patterns: Ten years after the rise of
+adversarial machine learning,” Pattern Recognition , vol. 84, pp. 317–
+331, 2018.
+[21] M. Felderer, M. B ¨uchler, M. Johns, A. D. Brucker, R. Breu, and
+A. Pretschner, “Security testing: A survey,” in Advances in Computers .
+Elsevier, 2016, vol. 101, pp. 1–51.
+[22] O. Tripp, O. Weisman, and L. Guy, “Finding your way in the testing
+jungle: a learning approach to web security testing,” in Proceedings of
+the 2013 International Symposium on Software Testing and Analysis ,
+2013, pp. 347–357.[23] D. Appelt, C. D. Nguyen, A. Panichella, and L. C. Briand, “A machine-
+learning-driven evolutionary approach for testing web application fire-
+walls,” IEEE Transactions on Reliability , vol. 67, no. 3, pp. 733–757,
+2018.
+[24] M. Amouei, M. Rezvani, and M. Fateh, “Rat: Reinforcement-learning-
+driven and adaptive testing for vulnerability discovery in web application
+firewalls,” IEEE Transactions on Dependable and Secure Computing ,
+2021.
+[25] L. Demetrio, A. Valenza, G. Costa, and G. Lagorio, “Waf-a-mole: evad-
+ing web application firewalls through adversarial machine learning,” in
+Proceedings of the 35th Annual ACM Symposium on Applied Computing ,
+2020, pp. 1745–1752.
+[26] X. Wang and H. Han, “Evading web application firewalls with
+reinforcement learning,” CUHK 2021 Course IERG5350 , 2020.
+[Online]. Available: https://openreview.net/forum?id=m5AntlhJ7Z5
+[27] M. Hemmati and M. A. Hadavi, “Using deep reinforcement learning
+to evade web application firewalls,” in 2021 18th International ISC
+Conference on Information Security and Cryptology (ISCISC) . IEEE,
+2021, pp. 35–41.
+[28] N. Chomsky, “Three models for the description of language,” IRE
+Transactions on information theory , vol. 2, no. 3, pp. 113–124, 1956.
+[29] S. Das, T. Yurek, Z. Xiang, A. Miller, L. Kokoris-Kogias, and L. Ren,
+“Practical asynchronous distributed key generation,” in 2022 IEEE
+Symposium on Security and Privacy (SP) . IEEE, 2022, pp. 2518–2534.
+[30] D. Wang, Z. Zhang, P. Wang, J. Yan, and X. Huang, “Targeted on-
+line password guessing: An underestimated threat,” in Proceedings of
+the 2016 ACM SIGSAC conference on computer and communications
+security , 2016, pp. 1242–1254.
+[31] H. S. Anderson, A. Kharkar, B. Filar, D. Evans, and P. Roth, “Learning
+to evade static pe machine learning malware models via reinforcement
+learning,” arXiv preprint arXiv:1801.08917 , 2018.
+[32] C. Wu, J. Shi, Y . Yang, and W. Li, “Enhancing machine learning based
+malware detection model by reinforcement learning,” in Proceedings
+of the 8th International Conference on Communication and Network
+Security , 2018, pp. 74–78.
+[33] Z. Fang, J. Wang, B. Li, S. Wu, Y . Zhou, and H. Huang, “Evading
+anti-malware engines with deep reinforcement learning,” IEEE Access ,
+vol. 7, pp. 48 867–48 879, 2019.
+[34] X. Ling, S. Ji, J. Zou, J. Wang, C. Wu, B. Li, and T. Wang, “DEEPSEC:
+A uniform platform for security analysis of deep learning model,” in
+IEEE Symposium on Security and Privacy (S&P) . San Francisco, USA:
+IEEE, 2019, pp. 673–690.
+[35] I. J. Goodfellow, J. Shlens, and C. Szegedy, “Explaining and harnessing
+adversarial examples,” arXiv preprint arXiv:1412.6572 , 2014.
+[36] M. Schwarzl, P. Borrello, G. Saileshwar, H. M ¨uller, M. Schwarz, and
+D. Gruss, “Practical timing side-channel attacks on memory compres-
+sion,” in 2023 IEEE Symposium on Security and Privacy (SP) . IEEE,
+2023, pp. 1186–1203.
+[37] J. Li, S. Ji, T. Du, B. Li, and T. Wang, “Textbugger: Generat-
+ing adversarial text against real-world applications,” arXiv preprint
+arXiv:1812.05271 , 2018.
+[38] G. Rawlinson, “The significance of letter position in word recognition,”
+IEEE Aerospace and Electronic Systems Magazine , vol. 22, no. 1, pp.
+26–27, 2007.
+[39] D. Silver, A. Huang, C. J. Maddison, A. Guez, L. Sifre, G. Van
+Den Driessche, J. Schrittwieser, I. Antonoglou, V . Panneershelvam,
+M. Lanctot et al. , “Mastering the game of go with deep neural networks
+and tree search,” nature , vol. 529, no. 7587, pp. 484–489, 2016.
+[40] L. Kocsis and C. Szepesv ´ari, “Bandit based monte-carlo planning,” in
+European conference on machine learning . Springer, 2006, pp. 282–
+293.
+[41] Morzeux, “Http params dataset,” https://github.com/Morzeux/
+HttpParamsDataset, 2020.
+[42] C. T. Gim ´enez, A. P. Villegas, and G. ´A. Mara ˜n´on, “Http data set
+csic 2010,” Information Security Institute of CSIC (Spanish Research
+National Council) , 2010.
+[43] sqlmapproject, “sqlmap,” https://github.com/sqlmapproject/sqlmap,
+2022.
+[44] M. Ring, S. Wunderlich, D. Scheuring, D. Landes, and A. Hotho, “A
+survey of network-based intrusion detection data sets,” Computers &
+Security , vol. 86, pp. 147–167, 2019.
+[45] G. D. L. T. Parra, P. Rad, K.-K. R. Choo, and N. Beebe, “Detecting
+internet of things attacks using distributed deep learning,” Journal of
+Network and Computer Applications , vol. 163, p. 102662, 2020.
+[46] C. Luo, Z. Tan, G. Min, J. Gan, W. Shi, and Z. Tian, “A novel web attack
+detection system for internet of things via ensemble classification,” IEEEIEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 14
+Transactions on Industrial Informatics , vol. 17, no. 8, pp. 5810–5818,
+2020.
+[47] S. S. H. Shah, “sql injection dataset,” https://www.kaggle.com/
+syedsaqlainhussain/sql-injection-dataset, 2021.
+[48] B.-L. S. team, “Waf-brain - the clever and efficient firewall for the web,”
+https://github.com/BBV A/waf-brain, 2019.
+[49] Y . Zhang and B. Wallace, “A sensitivity analysis of (and practitioners’
+guide to) convolutional neural networks for sentence classification,”
+arXiv preprint arXiv:1510.03820 , 2015.
+[50] T. Mikolov, E. Grave, P. Bojanowski, C. Puhrsch, and A. Joulin, “Ad-
+vances in pre-training distributed word representations,” arXiv preprint
+arXiv:1712.09405 , 2017.
+[51] A. Rakhlin, “Convolutional neural networks for sentence classification,”
+GitHub , 2016.
+[52] K. Zhang, “A machine learning based approach to identify sql injection
+vulnerabilities,” in 2019 34th IEEE/ACM International Conference on
+Automated Software Engineering (ASE) . IEEE, 2019, pp. 1286–1288.
+[53] Y . Yu, G. Liu, H. Yan, H. Li, and H. Guan, “Attention-based bi-lstm
+model for anomalous http traffic detection,” in 2018 15th International
+Conference on Service Systems and Service Management (ICSSSM) .
+IEEE, 2018, pp. 1–6.
+[54] R. S. Sutton and A. G. Barto, Reinforcement learning: An introduction .
+MIT press, 2018.
+[55] Audi-1, “Sqli-labs,” https://www.github.com/Audi-1/sqli-labs, 2014.
+[56] I. J. Goodfellow, J. Shlens, and C. Szegedy, “Explaining and harnessing
+adversarial examples,” arXiv preprint arXiv:1412.6572 , 2014.
+[57] Wallarm, “Wallarm node (ai-based ng-waf instance) by wallarm,” https:
+//aws.amazon.com/marketplace/pp/prodview-5rl4dgi4wvbfe.
+[58] zangobot, “Waf-a-mole dataset,” https://github.com/zangobot/wafamole
+dataset, 2020.
+[59] R. Zhong, Y . Chen, H. Hu, H. Zhang, W. Lee, and D. Wu, “Squirrel:
+Testing database management systems with language validity and cov-
+erage feedback,” in Proceedings of the 2020 ACM SIGSAC Conference
+on Computer and Communications Security , 2020, pp. 955–970.
+[60] Q. Wang, D. Wang, C. Cheng, and D. He, “Quantum2fa: efficient
+quantum-resistant two-factor authentication scheme for mobile devices,”
+IEEE Transactions on Dependable and Secure Computing , 2021.
+[61] S. Roy, A. K. Das, S. Chatterjee, N. Kumar, S. Chattopadhyay, and
+J. J. Rodrigues, “Provably secure fine-grained data access control over
+multiple cloud servers in mobile cloud computing based healthcare
+applications,” IEEE Transactions on Industrial Informatics , vol. 15,
+no. 1, pp. 457–468, 2018.
+[62] S. Qiu, D. Wang, G. Xu, and S. Kumari, “Practical and provably secure
+three-factor authentication protocol based on extended chaotic-maps for
+mobile lightweight devices,” IEEE Transactions on Dependable and
+Secure Computing , vol. 19, no. 2, pp. 1338–1351, 2020.
+APPENDIX
+Context-Free Grammar
+1 Sτ→STrue|τstring |τcomplex |τnumber
+2 S∀→finline comment (∀)
+3 S∀word→fswap case(∀word)
+4 S∀number →fchange base(∀number )
+5 SWhere →Σwhere ·SFalse ·Σor|Σwhere ·STrue·Σand
+6 S→Σ|Sγ
+7 Sγ→Sγleft·Sγbody·Sγright
+8 SFalse→Σfalse|SFalse ·S·Σor·S·Σfalse
+9 STrue→Σtrue|STrue·S·Σand·S·Σtrue
+10 Sγleft→Σslash·Sγasterisk
+11 Sγright→Sγasterisk ·Σslash
+12 Sγasterisk →Sγasterisk ·Σasterisk |Σasterisk
+13 Sγbody→γchars ·γsentence ·γbenign
+Fig. 8. A simplified version of context-free grammar for generating semantic
+replacements. Sis the starting symbol; Σ,τ,fandγare all terminal symbols;
+Specifically, findicates that it needs to pass in values, such as changing the
+case of any word (line 3); τmeans tautology and γrefers to comments.Here we describe the workflow of context-free grammar
+inAdvSQLi with an detailed example: Suppose we have a
+node of “1 = 1” in the hierarchical SQLi representation tree.
+According to its semantic of tautology, we can mutate it to
+terminal symbols of string-type tautology( τstring , like “‘foo’
+like ‘foo”’ in Table X), complex tautology ( τcomplex , such as
+“(select ord(’r’) regexp 114) = 0x1”), number-type tautology
+(τnumber , such as “0x2 = 2”) or feed it into an entry of “true”
+boolean expression ( STrue ) for further processing, as shown
+in the first line of Figure 8. Here the algorithm chooses the
+latter one, i.e., line 1 →line 2 in Figure 9. Deep into rule 9 of
+Figure 8, STrue can be mutated to terminal symbols of “true”
+boolean expression ( e.g., 1, select 1, 2 <>3 in Table X) or be
+mutated into a recursive nested form combined with whites-
+paces and “or” expression ( STrue·S·Σand·S·Σtrue).
+Afterwards, we can see that it uses rule 9, rule 6, rule 7
+and rule 10 in Figure 8 respectively, and finally generates
+a candidate SQLi payload “true \n&&/**foo*/select 1 \tand
+2<>3”, which is semantically equivalent to “1 = 1”.
+It is paramount that the context-free grammar (including
+starting symbols, non-terminal symbols, terminal symbols, and
+predefined rules) are manually defined, which is to ensure that
+AdvSQLi will not invalidate the generated SQLi payloads or
+cause unexpected damage. Subsequent researchers only need
+to add simple items in the interfaces of our grammar if they
+want to extend it.
+TABLE X
+EXAMPLES OF TERMINAL SYMBOLS IN CFG. Σ,τ,fANDγARE ALL
+TERMINAL SYMBOLS ; SPECIFICALLY ,fINDICATES THAT IT NEEDS TO
+PASS IN VALUES ,SUCH AS CHANGING THE CASE OF ANY WORD (LINE 3
+OFFIGURE 1);τMEANS TAUTOLOGY AND γREFERS TO COMMENTS .
+Σ Examples
+Σslash /
+Σasterisk *
+Σ ,\t,\n
+Σor or,||
+Σand and, &&
+Σfalse 0, select 0, 2=3, false
+Σtrue 1, select 1, 2 <>3, true
+γchars a21r*!, skx9 {1-, 2sd.$5s, sd2j3znm, 39nsq1
+γsentence hello world, today is dog, over the alphabet
+γbenign provincia=burgos, login=karina9, pic=1.gif
+finline comment union→/*!union*/, where →/*!where*/
+fswap case select→sElECt, OR →or, from →FrOM
+fchange base 1→0x1, 256 →0x100, 176 →select 176
+τnumber 78 = 78, 1 = 1, 2021 like 2021, 0x2 = 2
+τstring ‘6’ like ‘6’, ‘foo’ like ‘foo’, ‘bar’ = ‘bar’
+τcomplex(select ord(‘r’) regexp 114) = 0x1,
+(select 1) = (select ord(‘r’) between 114 and 115)
+In addition to line 9 in Figure 8, some of the other rules
+(e.g., line 8 and line 12) are also defined recursively, which
+might cause an endless loop, i.e., terminal symbols can never
+be reached in generating the candidate SQLi payload. To
+address this issue, instead of simply defining the max depth
+of recursion, we present a weighted mutation strategy (Algo-
+rithm 2) by employing a decay rate D(e.g., 0.5). The weight
+of a non-terminal character Vbeing selected will decrease
+exponentially according to D,e.g., the weight of selecting V
+for the third time is 0.53.IEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 15
+Fig. 9. An example of using context-free grammar to generate an equivalent replacement for “1 = 1”. The contents of the same color connected by arrows
+indicate the states before and after one step generation
+Algorithm 2: Weighted CFG Generation
+Data: CFG Rules R, Entry Symbol sym, Decay Rate
+D, Chosen Counts C
+Result: Generated sentence sentence
+1sentence ←EmptyString ;
+2weights ←EmptyList ;
+3fore in R[sym] do
+4 ife in C then
+5 weights.append (DC[e])
+6 else
+7 weights.append (1.0)
+// Weighted selection function.
+8rand sym←R[sym][WeightedChoice
+(weights )] ;
+9C[rand sym]←C[rand sym]+1;
+10fors in rand sym do
+11 ifs in R then
+// Call itself recursively.
+12 sentence ←sentence +Self (R, s, D, C ) ;
+13 else
+14 sentence ←sentence +s;
+15C[rand sym]←C[rand sym]−1;
+16return sentence ;
+Besides, it is worth mentioning that the above-mentioned
+context-free grammar (including starting symbols, non-
+terminal symbols, terminal symbols, and predefined rules) are
+manually defined, which is to ensure that AdvSQLi will not
+invalidate the generated SQLi payloads or cause unexpected
+damage. Subsequent researchers only need to add simple itemsin the interfaces of our grammar if they want to extend it.
+Experimental performance consumption
+As the findings in RQ2, AdvSQLi demonstrates a capability
+to achieve a higher attack success rate with fewer interaction
+steps. To provide a deeper understanding of the associated
+time and performance overheads, we conduct the following
+experiments.
+We reimplement the experiments in RQ2, which are carried
+out on an Ubuntu 20.04 server, equipped with 64GB RAM
+and powered by an Intel(R) Xeon(R) Silver 4210R CPU.
+The primary objective was to assess both the runtime and
+memory consumption. It’s important to emphasize that the
+reported memory consumption values represent the average
+taken from continuous sampling throughout the entire experi-
+ment duration. We benchmarked against two baseline methods,
+WAF-A-MoLE andDRL, and also assessed both AdvSQLi(A)
+– a simplified version of our primary approach and AdvSQLi,
+our core method.
+As shown in Table XI, the memory consumption across dif-
+ferent methods is fairly consistent, with only minor differences
+observed. In most scenarios, AdvSQLi consumes about 10%
+additional memory compared to the other techniques, marking
+its competitive efficiency. DRL emerges as the fastest method.
+This speed can be attributed to its pre-completed training
+phase. During the attack, DRL only needs to select the most
+suitable mutation method based on the current payload state.
+As anticipated, AdvSQLi does demand the most time, which
+is closely tied to the construction and search processes of its
+Monte Carlo tree. Although AdvSQLi exhibits a higher time
+overhead, its vastly superior attack success rate compared to
+the baseline methods justifies this cost. When we distribute thisIEEE TRANSACTIONS ON INFORMATION FORENSICS AND SECURITY 16
+TABLE XI
+The consumption results of attacking against SQLi detection under the settings same with #Table V . WAM means WAF-A-MoLE . The time and memory
+consumption of DRL only involves the inference phase and does not include the pre-training phase. The time consumption of attacking WAF-Brain models
+is limited by the inference speed.
+Dataset Target SQLi
+DetectionConsumption
+Time (s) Memory (MB)
+AdvSQLi(R) AdvSQLi WAM DRL AdvSQLi(R) AdvSQLi WAM DRL
+HPDWAF-Brainδ=0.1554.53 2240.03 4713.73 1751.27 344.55 369.34 355.98 397.46
+WAF-Brain1%135.02 315.48 577.12 564.39 344.08 365.68 361.01 388.27
+WAF-Brain1‰18.42 51.97 198.96 53.76 342.88 362.49 343.59 382.28
+CNN1%293.44 1161.01 1029.56 198.52 350.72 370.13 340.38 376.7
+CNN1‰290.83 982.02 950.73 179.91 351.07 370.53 343.74 373.76
+LSTM1%654.28 2218.46 1036.59 223.82 350.55 371.04 355.3 375.66
+LSTM1‰639.42 2154.88 983.12 221.69 350.41 370.82 350.55 383.88
+SIKWAF-Brainδ=0.1483.96 1817.85 5434.94 1342 346.52 372.88 356.02 373.04
+WAF-Brain1%91.95 183.19 362.42 383.37 339.86 367.58 343.88 379.64
+WAF-Brain1‰6.82 21.51 52.23 26.8 341.22 364.02 356.68 366.52
+CNN1%266.19 1015.42 1009.42 183.85 350.77 376.21 355.51 378.28
+CNN1‰252.28 976.15 955.46 179.08 351.45 378.1 354.65 370.32
+LSTM1%525.8 1925.24 954.07 232.8 352.42 377.26 357.17 373.65
+LSTM1‰509.53 1865.95 920.89 223.93 349.9 376.39 356.19 375.16
+time consumption across 1000 samples, the results provide a
+worthy trade-off for its efficacy.
+Zhenqing Qu is a graduate student at Zhejiang
+University. His research focuses on web security and
+data-driven security. He has spoken at Black Hat
+Asia 2022. He is a member of the Azure Assassin
+Alliance CTF Team. Additionally, he has reported
+several severe defects to mainstream security ven-
+dors, which were confirmed and fixed quickly.
+Xiang Ling is currently an assistant professor at
+Institute of Software, Chinese Academy of Sciences.
+He received his PhD degree from Zhejiang Univer-
+sity. His research focuses on data-driven security, AI
+security and program analysis. His work has been
+published top-ranked conferences and journals, like
+IEEE S&P, INFOCOM, ICSE, TNNLS and TKDD.
+Ting Wang is an Associate Professor and Empire
+Innovation Scholar in the Department of Computer
+Science at Stony Brook University. He received
+his Ph.D. degree from Georgia Tech. He conducts
+research at the interface of machine learning, pri-
+vacy, and security. His recent work focuses on
+improving AI technologies in terms of security as-
+surance, privacy preservation, and decision-making
+transparency.
+Xiang Chen received the B.Eng. and M.Eng. de-
+grees from Fuzhou University, in 2019 and 2022,
+respectively. He is currently pursuing the Ph.D.
+degree with the College of Computer Science and
+Technology, Zhejiang University, China. He has pub-
+lished papers in IEEE INFOCOM and IEEE ICNP.
+He received the Best Paper Award from IEEE/ACM
+IWQoS 2021 and the Best Paper Candidate from
+IEEE INFOCOM 2021. His research interests in-
+clude programmable networks and network security.
+Shouling Ji is a ZJU 100-Young Professor in the
+College of Computer Science and Technology at
+Zhejiang University and a Research Faculty in the
+School of Electrical and Computer Engineering at
+Georgia Institute of Technology (Georgia Tech). He
+received a Ph.D. degree in Electrical and Computer
+Engineering from Georgia Institute of Technology
+, a Ph.D. degree in Computer Science from Geor-
+gia State University, and B.S. (with Honors) and
+M.S. degrees both in Computer Science from Hei-
+longjiang University. His current research interests
+include Data-driven Security and Privacy, AI Security and Big Data Analytics.
+He is a member of ACM, IEEE, and CCF and was the Membership Chair of
+the IEEE Student Branch at Georgia State University (2012-2013).
+Chunming Wu is currently a Professor with the Col-
+lege of Computer Science and Technology, Zhejiang
+University. He is also the Associate Director of the
+Research Institute of Computer System Architecture
+and Network Security, Zhejiang University, and the
+Director of the Fluctlight Security Lab. His research
+interests include network security, reconfigurable
+network and next-generation network infrastructures.
+He has published more than 90 papers in a series of
+international journals, magazines, and conferences,
+e.g., CCS, S&P, USENIX, INFOCOM, ToN, etc.

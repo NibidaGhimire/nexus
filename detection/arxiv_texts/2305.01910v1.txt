@@ -1,0 +1,939 @@
+Distributional Instance Segmentation: Modeling Uncertainty and High
+Conﬁdence Predictions with Latent-MaskRCNN
+YuXuan Liu1;2, Nikhil Mishra1;2, Pieter Abbeel1;2, Xi Chen1
+Abstract — Object recognition and instance segmentation are
+fundamental skills in any robotic or autonomous system.
+Existing state-of-the-art methods are often unable to capture
+meaningful uncertainty in challenging or ambiguous scenes,
+and as such can cause critical errors in high-performance
+applications. In this paper, we explore a class of distributional
+instance segmentation models using latent codes that can model
+uncertainty over plausible hypotheses of object masks. For
+robotic picking applications, we propose a conﬁdence mask
+method to achieve the high precision necessary in industrial
+use cases. We show that our method can signiﬁcantly reduce
+critical errors in robotic systems, including our newly released
+dataset of ambiguous scenes in a robotic application. On a real-
+world apparel-picking robot, our method signiﬁcantly reduces
+double pick errors while maintaining high performance.
+I. INTRODUCTION
+Instance segmentation is a fundamental problem in many
+real-world robotic systems. The goal of instance segmenta-
+tion is to enumerate the objects (or instances ) that appear
+in an image, specifying which pixels in the image belong to
+each object.
+In the past few years, recent work has mostly focused on
+developing specialized architectures that make the instance
+segmentation task more amenable to deep learning. For
+example, detect-then-segment methods [1], [2], [3], [4], [5],
+[6], rely on a cascade of classiﬁcation, regression, and
+ﬁltering to ﬁrst identify a bounding box for each instance
+(a related problem known as object detection ), followed by
+an additional step to predict each instance’s mask given its
+bounding box. Another example is pixel-embedding methods
+[7], [8], which optimize pixel-level auxiliary tasks, and then
+use a specialized clustering procedure to extract instance
+predictions from the dense pixel representation.
+We observe that existing methods are not well equipped
+to deal with the inherent ambiguity that exists in the real
+world. We posit that this stems from a phenomenon we
+describe as limited distributional expressiveness , namely, that
+most instance segmentation models are designed to predict
+only onepossible segmentation hypothesis (a single set of
+objects). Making only a single prediction is limiting in terms
+of the accuracy attainable by high-performance autonomous
+systems: a robot picking application may only tolerate <1%
+of errors caused by incorrect segmentation.
+To overcome these limitations, we propose distributional
+instance segmentation which models a distribution over
+plausible hypotheses of objects. The key contributions of this
+work are:
+1Covariant.ai,2University of California, Berkeley. Correspondence to:
+yuxuanliu@berkeley.edu. Published at ICRA 2023.
+MaskRCNN Segmentation Latent-MRCNN Confidence Masks 
+Grasp on two objects Grasp on one object 
+Robot unintentionally grasps two 
+objects, causing a double pick error 
+Fig. 1. Traditional instance segmentation models such as MaskRCNN
+cannot model uncertainty over object masks. For robotics, this can result
+in critical errors such as unintentionally picking two objects. Our Latent-
+MRCNN can predict multiple hypotheses of object masks and use these to
+make high-conﬁdence predictions, reducing the rate of double pick errors.
+1. We introduce a distributional instance segmentation
+model using latent codes, Latent-MaskRCNN, which
+can predict multiple hypotheses of object masks.
+2. We propose new methods for using the output of a dis-
+tributional instance segmentation model. For robotic ap-
+plications, we propose high-precision predictions with
+Conﬁdence Masks, and we achieve high recall with
+Union-NMS.
+3. We are releasing a dataset of over 5000 annotated
+images from a real-world robotics application that high-
+lights the ambiguity in instance segmentation. We show
+our method achieves high performance on this dataset
+as well as popular driving and instance segmentation
+datasets.
+4. On a real-world apparel picking robot, our method can
+signiﬁcantly reduce critical errors while achieving a
+high level of performance (Fig. 1).arXiv:2305.01910v1  [cs.CV]  3 May 2023Segmentation labels 
+Image 
+Per instance features Conv, 
+Pooling 
+Encoder 
+Prior Conv, 
+Pooling 
+Decoder 
+Region Proposal 
+ROI-Align Classifier head, 
+box regression 
+Mask Head 
+MaskRCNN Loss Fig. 2. Overview of Latent-MaskRCNN: At training time, the encoder quses features extracted from the image xand labels yto sample a latent code
+zwhich is passed into the decoder. The decoder conditions on zand uses a typical MaskRCNN architecture to predict masks including region proposal,
+classiﬁer, box, and mask heads. At inference time, zis sampled through the prior p(zjx)which only takes the image xas input. DKL(qjjp(zjx))
+ensures the prior has good coverage over the latent space.
+II. R ELATED WORK
+Detect-then-segment methods are the most popular in-
+stance segmentation methods, and MaskRCNN belongs to
+this category. While they all ﬁrst perform object detection
+and then segment each instance given its bounding box, there
+are some variations. For example, YOLACT [9] follows the
+same structure as MaskRCNN, but uses YOLO [10] as the
+object detector instead of FasterRCNN [2]. YOLO is very
+similar to FasterRCNN, making architectural changes that
+sacriﬁce some accuracy in exchange for real-time inference
+speed. Thus, we expect YOLACT to have the same distribu-
+tional limitations as MaskRCNN. Other methods [11], [12],
+[13] explore how to express uncertainty during the detection
+step, but they consider distributions of individual boxes rather
+than over sets of object masks.
+Mask-proposal methods [14], [15], [16] aim to circum-
+vent bounding boxes as an intermediate representation. They
+are structured like FasterRCNN [2], but propose masks
+directly. Empirically, they do not behave much differently
+than MaskRCNN. Distributionally, they suffer from many
+of the same limitations as MaskRCNN: each proposal still
+models each pixel independently of the others, and they still
+rely on NMS to ﬁlter proposals.
+Pixel-embedding [7], [8], [17], [18] methods work in
+a substantially different way than either of the above two
+families. They generally optimize some auxiliary task that
+encourages pixels in the same instance to have similar rep-
+resentations. Then they rely on a clustering-based inference
+procedure to extract instance predictions from their pixelwise
+representations. However, their performance has lagged quite
+far behind that of detect-then-segment methods, which has
+made them relatively unpopular. They can model per-pixel
+uncertainty in a manner similar to a naive semantic segmen-
+tation method, but this is likely insufﬁcient for distributional
+expressiveness.
+A number of methods explore how to express uncertainty
+in other structured prediction tasks. However, many of these
+do so by training multiple replicas of the entire model or
+some subset of the parameters, and modifying the training
+objective in a way that encourages diversity amongst the
+replicas [19], [20], [21], [22]. This incurs a multiplicative
+increase in the computational cost and memory footprintrequired at training time, which can be prohibitively expen-
+sive for large models. Other latent-variable formulations [23],
+[24], [25] offer improvements on medical semantic segmen-
+tation and video segmentation tasks. We ﬁnd, however, that
+instance segmentation poses a richer set of challenges and
+has different application-speciﬁc uses.
+III. D ISTRIBUTIONAL INSTANCE SEGMENTATION WITH
+LATENT VARIABLES
+A. Latent Variable Formulation
+How can we turn instance segmentation into distribution-
+ally expressive models, while retaining the inductive biases
+of existing model architectures? Drawing on prior work in
+variational inference [23], [26] we consider a latent-variable
+formulation where we incorporate latent codes in the style of
+a variational autoencoder. If we adopt this framework, then
+an instance segmentation model becomes a conditional V AE
+that is trained to maximize the evidence lower-bound:
+logp(yjx)Ezq[logp(yjx;z)] DKL(qjjp(zjx)) (1)
+Typicallyq(zjy;x)is known as the encoder, p(yjx;z)as
+the decoder, and p(zjx)as the prior, and these components
+are all learned to maximize the lower-bound. The decoder is
+essentially an instance segmentation model in the traditional
+sense, except that it is augmented to additionally consume
+a latent code z. This general technique allows us to reuse
+any existing instance segmentation model to implement our
+decoder (and train it in the same way), with only a slight
+modiﬁcation to incorporate zas an input.
+During inference, we can sample from p(yjx)by sampling
+different latent codes z(k)p(zjx), and decoding them into
+different instance predictions y(k)p(yjx;z). This can be
+quite powerful since we can now sample multiple structured
+and expressive hypotheses for a given image.
+B. Latent-MaskRCNN
+In principle, the latent-variable method can be applied to
+any existing instance segmentation model. In this section,
+we explore how it might be applied to MaskRCNN. We call
+the resulting model Latent-MaskRCNN (Fig. 2). We chose
+MaskRCNN since it is one of the most popular instance
+segmentation models and has served as the basis for most
+state-of-the-art methods in recent years.The decoder of Latent-MaskRCNN uses the same archi-
+tecture and training objective as MaskRCNN, with the main
+change being that it needs to incorporate latent codes. To
+allow them to inﬂuence as much of the prediction as possible,
+we want to do this relatively early in the model. We chose to
+inject the latent codes directly before region proposal, so that
+they can inﬂuence region proposal network, object detection
+head, and mask head. We tile the latent codes across the
+spatial dimensions of the image and concatenate them with
+the feature maps from the Feature Pyramid Network (FPN)
+[27]. Then we use a few convolutional layers to project the
+combined feature maps back down to their original channel
+dimensionality.
+The encoder of Latent-MaskRCNN takes in an im-
+agexalong with a set of ground-truth instances y, and
+produces a distribution over latent codes q(zjy;x) =
+N((y;x);2
+(y;x)). The architecture for (y;x)and
+(y;x)takes inspiration from the mask head of MaskR-
+CNN: it acts like a ”reverse mask head” that operates on each
+ground-truth instance, and then pools features from across
+all instances. For each ground truth instance yi, we extract
+ROI-aligned features from the FPN feature maps. Then we
+use a small CNN to embed each one into a single feature
+vector. At this point, we employ a graph neural network [28]
+to accumulate information from per-instance features since
+we need to a single latent code for the entire image. After
+several graph network layers, we mean-pool across the node
+features and use a fully-connected layer to produce a mean
+and log-variance for our latent distribution. The encoder is
+only used at training time since it has access to the ground
+truth mask labels.
+At inference time, we must sample latent codes from
+the prior to produce mask samples. This prior takes in
+an imagexand produces a distribution over latent codes
+p(zjx) =N((x);2
+(x)). We apply a few convolutional
+layers to the FPN feature maps, mean-pool across the spatial
+dimensions, and then predict a mean and log-variance using
+a small MLP. For all latent distributions, we use a ﬁxed 64-
+dimension Gaussian with diagonal covariance.
+For training, we use the encoder qto sample latent
+codesz, which are passed to the Mask-RCNN decoder.
+We maximization the evidence lower bound (Equation 1)
+objective, where logp(yjx;z) =LM(x;y;z )is the usual
+Mask-RCNN loss:
+LM(x;y;z ) =LRPN +Lcls+Lbox+Lmask (2)
+DKL(qjjp(zjx))ensures the prior has good coverage over
+the encoder distribution. During inference, we sample latent
+codes from the prior (instead of from the encoder), but the
+decoder consumes them in the same way as during training.
+We found it helpful to use a KL warm-up, as is a common
+practice for training V AEs [29]. The total training loss for
+Latent-MaskRCNN then becomes:
+L(x;y) =Ezq[LM(x;y;z )] +DKL(qjjp(zjx)) (3)
+In the ﬁrst part of training, we use = 0 and increase 
+towards the end of training. This allows the latent code to
+High precision prediction 
+High recall prediction 
+Image Segmentation samples Downstream application Fig. 3. At inference time, the encoder qis discarded, and latent variables
+ziare sampled from the image xconditioned prior p(zjx). Each latent is
+decoded using p(yjx; zi)into a set of masks, which can be used for our
+high precision or recall predictions depending on the application.
+encode useful information early on as the rest of the model
+is still learning; towards the end of the training, higher 
+pushes the latent space to be covered by the prior for better
+samples. For more details on our models and code, please
+refer to our website segm.yuxuanliu.com.
+IV. A PPLYING DISTRIBUTIONAL INSTANCE
+SEGMENTATION
+Given a distributionally-expressive segmentation model, a
+natural question might be, how a downstream application
+can consume its distributional output? Instance segmentation
+often occurs at the beginning of the perception pipeline, and
+it’s not immediately clear how samples from a distributional
+segmentation model can be used downstream. Moreover,
+each application may have varying error asymmetries: failing
+to detect an object can be catastrophic in autonomous driv-
+ing but acceptable in robotic picking, while grouping two
+objects as one is a critical error in robotic picking but more
+reasonable in driving applications. In this section, we show
+how a single Latent-MaskRCNN model can be used ﬂexibly
+across a number of applications with different requirements
+(Fig. 3).
+A. High-Precision with p-Conﬁdence Masks
+In some applications, it can be very costly to make under-
+segmentation errors, when an instance’s mask is predicted to
+be larger than it actually is. For example, consider a robotic
+manipulation application, where the robot must pick objects
+one at a time and feed them into a sortation process. If the
+model undersegments an instance, it may inadvertently pick
+multiple objects, which can be an expensive error for the
+downstream application. How can we ensure that these errors
+don’t occur?
+Suppose we draw several samples from Latent-
+MaskRCNN. If two pixels belong to the same instance
+mask in many samples, then we can be reasonably conﬁdent
+that they actually do belong to the same ground-truth
+instance. Drawing on this intuition, we can then compute a
+p-conﬁdence mask , consisting of pixels that are all likely to
+be contained in a single ground-truth instance.
+For a given conﬁdence requirement p, we deﬁne a con-
+ﬁdence mask cpas a mask that is fully contained in a
+ground truth mask mwith probability at least p:P(cpSamples 
+∩ ∩ =
+Conʎʐdence Mask Fig. 4. Top: Conﬁdence Mask predictions with different p. Notice that as
+the conﬁdence requirement pincreases, single objects can be split into two,
+ambiguous object extents are reduced, and uncertain objects are eliminated
+entirely. Bottom: Constructing an empirical conﬁdence mask ^cpby taking
+intersection of samples m1; m2; m3. When an object’s extent is uncertain,
+a high conﬁdence mask prediction will only consist of pixels that are highly
+likely to be contained within an object as determined by the samples.
+m)p. Using Latent-MaskRCNN, we can approximate this
+probability as:
+P(cpm) =Ep(mjx)[1fcpmg]1
+kkX
+i=11fcpmig
+In the ﬁnite sample regime, ^cpis an empirical conﬁdence
+mask if it is contained within a sampled mask for pfraction
+of the samples.
+Now consider any subset of masks Iconsisting of one
+maskmjfrom at least kpdifferent samples. If we take the
+intersection of all of the masks in I,^cp=T
+mj2Imj, then
+this intersection mask must be contained in each of the masks
+used in the intersection ^cpmj. Therefore we have:
+1
+kX
+mj2I1f^cpmjg=jIj
+kp
+and^cpis an empirical conﬁdence mask by construction.
+Figure 4 illustrates conﬁdence mask predictions for dif-
+ferentp. Notice as the conﬁdence requirement increases, the
+unconﬁdent extents of the masks shrink, and some uncertain
+masks are eliminated. We can also see how constructing
+conﬁdence masks via intersection leads to high conﬁdence
+region predictions.
+B. Scoring Conﬁdence Masks
+Since each conﬁdence mask is an intersection of masks
+cp=T
+Imj, how should we assign the score of a conﬁdence
+mask prediction? One intuitive approach might be to take
+the average of the score siof each mask in the intersection:
+1
+jIjPsj. However, a conﬁdence mask is not an average of
+masks but rather an intersection.
+To formulate a better score for our conﬁdence mask
+prediction, consider two scenarios. In the ﬁrst scenario, the
+model is very conﬁdent about an object’s mask so it predicts
+roughly the same mask in every sample. The resulting
+conﬁdence mask cphas high IoU with each of the masks used
+in the sample mj. On the other hand, consider an unconﬁdent
+prediction where the object’s mask varies signiﬁcantly across
+samples. Here, the conﬁdence mask cprepresents a smallbut conﬁdent region of the object whose extent is highly
+uncertain. The resulting IoU between cpand eachmjwill
+be smaller than when the model is conﬁdent and masks are
+not varying across samples.
+We score each conﬁdence mask as the mean score-
+weighted IoU between the predicted mask cpand every mask
+used in the intersection:
+scp=1
+jIjX
+mj2Isjjcp\mjj
+jcp[mjj
+Whenscpis large, this indicates that cpis a conﬁdent
+intersection of masks with very similar IoU. On the other
+hand, a small scpindicates that cphas low score or IoU
+with its samples and likely does not capture the full extent
+of the object well.
+To predict a set of conﬁdence masks for an image,
+we iteratively select the highest scoring conﬁdence mask,
+excluding the pixels of all of the conﬁdence masks predicted
+so far. This algorithm greedily approximates the maximum
+scoring conﬁdence mask selection optimization.
+C. High-Recall with Union-NMS
+Other applications might be concerned about over-
+segmentation , the complement of under-segmentation. For
+example, in autonomous driving, failing to identify a pedes-
+trian, or predicting them to be smaller than they actually are,
+can lead to a catastrophic error.
+To make high-recall predictions with Latent-MaskRCNN,
+we use a procedure called Union-NMS . We ﬁrst sample
+multiple segmentations from the model, and run NMS on
+the predicted masks. It checks if any two masks mi;mj
+have IoU greater than some threshold, and then discards the
+lower-scoring one. Suppose that some mask miremains after
+we perform NMS. Then Union-NMS returns the union of mi
+with every mask that it suppressed, achieving higher recall by
+incorporating masks that would have otherwise been ignored.
+D. Vanilla Prediction with the Prior Mean
+Some applications may not have any speciﬁc performance
+requirements or may have strict inference time requirements.
+In these cases, a point estimate can be sufﬁcient. With Latent-
+MaskRCNN, we can achieve this by always decoding the
+mean of the prior: z=(x)where(x)is the mean of the
+priorp(zjx)(for Gaussian p(zjx), it is also the mode of the
+distribution). We found that this scheme typically matches or
+yields a small improvement over MaskRCNN predictions,
+suggesting that Latent-MaskRCNN strictly increases the ex-
+pressiveness of MaskRCNN and no performance is lost by
+using a more expressive distribution.
+V. E XPERIMENTS
+We conducted experiments seeking to answer the follow-
+ing questions:
+1. Can Latent-MaskRCNN with Conﬁdence Masks make
+high-precision predictions across a variety of datasets?
+2. Can Union-NMS make high-recall predictions?
+3. Can Latent-MaskRCNN reduce critical double pick
+errors in robotic picking applications?TABLE I
+EVALUATION OF MASKRCNN AND LATENT -MASKRCNN ACROSS VARIOUS DATASETS AND METRICS .
+COCO Cityscapes Apparel-5k
+Method MR@HP AR mAP MR@HP AR mAP MR@HP AR mAP
+MaskRCNN 20.0 66.0 35.0 25.3 55.1 35.8 23.6 39.9 26.9
+Latent Union NMS 7.4 72.3 26.5 17.7 57.5 33.6 13.6 61.4 34.1
+Latent Conﬁdence Mask 22.0 48.1 30.5 28.0 48.6 34.1 42.4 41.8 35.1
+Latent Prior Mean 19.5 65.8 35.3 25.7 53.8 35.0 26.9 49.4 34.3
+A. Datasets
+To help us answer these questions, we compared MaskR-
+CNN and Latent-MaskRCNN across several datasets, each
+with its own set of challenges.
+COCO [30]: This large dataset is the standard benchmark
+for instance segmentation. There are many object categories
+and a huge variety in image composition.
+Cityscapes [31]: A real-world dataset from an autonomous
+driving application. Although it is smaller and more special-
+ized than COCO, it is still a popular benchmark for instance
+segmentation. One notable challenge is that there are many
+background instances that are still important to segment (e.g.
+pedestrians), but the limited image resolution can introduce
+some uncertainty.
+Apparel-5k : We collected this dataset of roughly 5000
+images from a robot picking application. We use 4198 images
+in the training set and 463 in the validation set. There
+is only one object category, but the images exhibit a lot
+of inherent ambiguity due to complex occlusions, lighting,
+transparency, etc. We are releasing this dataset on our website
+segm.yuxuanliu.com for the broader community to build
+upon our work.
+For each dataset, we trained both MaskRCNN and Latent-
+MaskRCNN on 8 GPUs using MaskRCNN’s released hyper-
+parameters and training schedules. We use the same publicly
+available train/val splits for all experiments and datasets. We
+used a Resnet-50 backbone [32], initialized from pretrained-
+Imagenet [33] weights (for COCO) or pretrained COCO
+weights (for other datasets). Inference with MaskRCNN
+can take 80-100ms depending on the number of objects,
+and inference with Latent-MaskRCNN can take 500-1000ms
+depending on the number of samples and objects.
+B. Evaluating p-Conﬁdence Masks
+In Section IV-A, we introduced high precision predic-
+tions with p-Conﬁdence masks to address the problem of
+under-segmentation. In those cases, we care that predictions
+have high Intersection-over-Prediction: IoP (mi;g) =jmi\gj
+jmij.
+When IoP is high, errors due to under-segmentation are less
+likely to occur.
+When evaluating models in this regime, we need to
+trade off precision (in terms of IoP) with recall (to avoid
+degenerate solutions). To do this, we consider the max recall
+at high precision (MR@HP):
+MR@HP =1
+jpjjjX
+pi2p;j2max
+t:Precision (j)piRecall (t;j)For a given precision threshold piand IoP threshold j,
+we can compute the max recall that each model achieves
+(or zero, if it never achieves precision pi). The MR@HP
+metric is the average of these recalls, over a range of
+precision threshold pand IoP thresholds . For high pre-
+cision use-cases, we care about performance at high val-
+ues of these thresholds, therefore we use p==
+[0:75;0:8;0:85;0:9;0:95].
+In Table I, we evaluated Latent-MaskRCNN using both the
+prior-mean scheme from Section IV-D as well as conﬁdence
+masks with a conﬁdence level p= 0:9. Across all three
+datasets, we ﬁnd that latent conﬁdence masks yield the best
+performance in terms of MR@HP. As for mAP, we ﬁnd that
+Latent Prior Mean can match if not exceed the performance
+of MaskRCNN on all three datasets. On the challenging
+Apparel-5k dataset, we ﬁnd that Latent Conﬁdence Mask
+and Latent Prior Mean signiﬁcantly outperform MaskRCNN
+in terms of MR@HP and mAP. Overall, we ﬁnd that Latent-
+MaskRCNN is a strict improvement over MaskRCNN by
+matching overall detection performance in terms of mAP
+and offering the best high-precision performance in terms of
+MR@HP.
+C. Evaluating Union NMS
+For the over-segmentation problem, we introduced the
+Union NMS method in Section IV-C. In such cases, we
+care that we have high recall (that we detect every in-
+stance that exists), and that each mask prediction has high
+IoG (intersection-over-ground-truth): IoG (mi;g) =jmi\gj
+jgj.
+To capture both of these considerations, we consider the
+average-recall (AR) [30] using IoG. This measures both
+recall while also penalizing over-segmentation (are there any
+predicted masks that are too small).
+We evaluated Latent-MaskRCNN using both its prior-
+mean (Section IV-D) and Union-NMS. In Table I, we show
+that the prior-mean predictions are similar to MaskRCNN
+on all three datasets, while Union-NMS achieves substan-
+tially higher AR (using IoG). This suggests that Latent-
+MaskRCNN with Union NMS can more effectively cover
+different modes of uncertainty, for high-recall applications.
+D. Can conﬁdence masks reduce double pick errors on
+Apparel-5K?
+In a robotic picking application, it is costly for the robot to
+pick up two items accidentally, thinking it had only picked
+one item since it affects inventory counts and downstream
+orders. For the Apparel-5k dataset, we can estimate the
+double pick rate of a model’s segmentation prediction by2.0 2.5 3.0 3.5
+Double Pick Rate % (lower better)0.700.750.800.850.90Pickable Area Fraction (higher better)0.1
+0.2
+0.3
+0.40.50.6
+0.70.8
+0.9
+1.0 MaskRCNNDouble Pick Rate VS Pickable Area
+MaskRCNN
+p-Confidence MaskFig. 5. Latent conﬁdence masks achieve lower double pick rates and
+generally more pickable area compared to MaskRCNN.
+approximating the robot’s gripper as a circle with a ﬁxed
+radius in pixel space. Then, we randomly sample circles on
+the image and count the number of circles Dthat land within
+one predicted mask but more than one ground truth mask.
+We divide this by the number of circles Nthat land within
+one predicted mask, to arrive at the estimated double pick
+rateR=D
+N. Empirically we ﬁnd that this simulated double
+pick rate is correlated with double pick rates on a real robot.
+Another metric that we are concerned with in industrial
+robot picking is pickable area, the amount of visible surfaces
+that the robot can pick from. A model that predicts higher,
+more accurate pickable areas enables the robot to have more
+ﬂexibility in its grasping strategy. To this end, we compute
+the area of all the predicted masks over the area of all the
+ground truth masks, as the fraction of pickable area available.
+We compare MaskRCNN and Latent-MaskRCNN with
+varyingp-conﬁdence masks in Figure 5. We ﬁnd that Latent-
+MaskRCNN outperforms MaskRCNN in fraction of pick-
+able area and double pick rate in all cases. Moreover, the
+tunable parameter pin Latent conﬁdence masks allows for
+application-speciﬁc tradeoffs between double pick rate and
+pickable area. Higher values of ptend to correspond to lower
+double pick rate and less pickable area, as the conﬁdence
+requirement for each prediction is increased. With traditional
+MaskRCNN, only one double pick rate and pickable area
+fraction is realizable since no tunable knob exists.
+E. Can conﬁdence masks reduce double pick errors on a
+real-world apparel-picking robot?
+To evaluate whether our dataset evaluation translates
+to real-robot performance, we compare MaskRCNN and
+Latent-MaskRCNN on an apparel-picking robot. We use an
+ABB1300 with a 9-cup suction gripper to pick apparel items
+in polybags between two totes (Fig. 1). The robot uses two
+overhead camera systems to perform instance segmentation
+and then grasp point generation. The grasp points are opti-
+mized to land as many suction cups as possible on a single
+object detected by the segmentation model.
+For our evaluation, we only change which segmentation
+model is used while holding other parts of the systemTABLE II
+APPAREL -PICKING ROBOT EVALUATION .INDICATES A STATISTICALLY
+SIGNIFICANT DIFFERENCE
+Method Double Pick Rate Average Sealed Cups
+MaskRCNN 4.40%4.76
+Latent-MRCNN 0.82%4.91
+constant, including hardware, object set, and grasp point
+generation. Each segmentation model is trained on the same
+Apparel-5k dataset. We run each model with several hundred
+grasps and record the number of double picks, grasps that
+unintentionally pick two objects. In an industrial warehouse
+application, these double picks are very costly errors since
+they result in incorrect inventory counts and cause errors
+in downstream sortation and order fulﬁllment systems. A
+typical high automation warehouse can tolerate at most 1%
+double pick rate before the robot is causing more problems
+than it solves.
+We also measure the average number of sealed cups on a
+grasped item, since the suction holding force is proportional
+to the number of sealed cups. Grasps that use less sealed
+cups tend to result in more dropped objects, which leads
+to jams, lost inventory, and costly human intervention. A
+robotic system can reduce double pick rate by shrinking
+object mask sizes, chopping up bigger masks into smaller
+ones, or only using a single small suction cup. However,
+all of these approaches indiscriminately reduce the suction
+holding force on all items, whereas our approach will be
+conservative only when ambiguity is present.
+Table II reports the results of our apparel-picking experi-
+ments. We ﬁnd that Latent-MaskRCNN with 0.9-Conﬁdence
+mask signiﬁcantly reduces the double pick rate. This vali-
+dates our simulated ﬁndings on Apparel-5K in Section V-D.
+Moreover, Latent-MaskRCNN achieves slightly better aver-
+age number of sealed cups, suggesting that suction stability
+was not sacriﬁced. This suggests that our method can make
+high-conﬁdence predictions and make the appropriate trade-
+offs in the face of uncertainty.
+VI. D ISCUSSION
+We proposed a new family of models that builds on
+top of existing instance segmentation models by using la-
+tent variables to achieve more distributional expressiveness.
+Latent-MaskRCNN can express a wide range of uncertainty
+where existing instance segmentation models often fall short.
+We can leverage uncertainty expressed by the model using
+Conﬁdence Masks and Union-NMS to achieve high precision
+and high recall respectively. These methods demonstrate
+strong performance across robotics, autonomous driving, and
+general object datasets. On a real apparel-picking robot, we
+ﬁnd that our model can signiﬁcantly reduce the rate of critical
+errors while maintaining high performance. Finally, we have
+highlighted the importance of distributional expressiveness
+and hope that future work in instance segmentation can
+continue to build on top of our work and datasets shared
+in this paper.REFERENCES
+[1] R. Girshick, “Fast R-CNN,” in Proc. IEEE Int. Conf. Comp. Vis. , 2015,
+pp. 1440–1448.
+[2] S. Ren, K. He, R. Girshick, and J. Sun, “Faster r-cnn: Towards
+real-time object detection with region proposal networks,” in Proc.
+Advances in Neural Inf. Process. Syst. , 2015, pp. 91–99.
+[3] K. He, G. Gkioxari, P. Doll ´ar, and R. Girshick, “Mask R-CNN,” in
+Proc. IEEE Int. Conf. Comp. Vis. , 2017, pp. 2961–2969.
+[4] R. Girshick, J. Donahue, T. Darrell, and J. Malik, “Rich feature
+hierarchies for accurate object detection and semantic segmentation,”
+inProc. IEEE Conf. Comp. Vis. Patt. Recogn. , 2014, pp. 580–587.
+[5] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, and
+S. Zagoruyko, “End-to-end object detection with transformers,” in
+ECCV , 2020.
+[6] H. Zhang, F. Li, S. Liu, L. Zhang, H. Su, J. Zhu, L. M. Ni, and
+H.-Y . Shum, “Dino: Detr with improved denoising anchor boxes for
+end-to-end object detection,” 2022.
+[7] A. Arnab and P. H. S. Torr, “Pixelwise instance segmentation with
+a dynamically instantiated network,” in Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition (CVPR) , July
+2017.
+[8] M. Bai and R. Urtasun, “Deep watershed transform for instance
+segmentation,” in Proc. IEEE Conf. Comp. Vis. Patt. Recogn. , 2017,
+pp. 5221–5229.
+[9] D. Bolya, C. Zhou, F. Xiao, and Y . J. Lee, “Yolact: Real-time instance
+segmentation,” Proc. IEEE Int. Conf. Comp. Vis. , 2019.
+[10] J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, “You only look
+once: Uniﬁed, real-time object detection,” in Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , 2016, pp. 779–788.
+[11] D. Hall, F. Dayoub, J. Skinner, H. Zhang, D. Miller, P. Corke,
+G. Carneiro, A. Angelova, and N. Sunderhauf, “Probabilistic object
+detection: Deﬁnition and evaluation,” 03 2020, pp. 1020–1029.
+[12] A. Harakeh, M. Smart, and S. L. Waslander, “Bayesod: A bayesian
+approach for uncertainty estimation in deep object detectors,” 2020
+IEEE International Conference on Robotics and Automation (ICRA) ,
+pp. 87–93, 2020.
+[13] D. Miller, N. Sunderhauf, H. Zhang, D. Hall, and F. Dayoub, “Bench-
+marking sampling-based probabilistic object detectors,” in Proceed-
+ings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) Workshops , June 2019.
+[14] X. Chen, R. Girshick, K. He, and P. Doll ´ar, “Tensormask: A foundation
+for dense object segmentation,” Proc. IEEE Int. Conf. Comp. Vis. ,
+2019.
+[15] E. Xie, P. Sun, X. Song, W. Wang, X. Liu, D. Liang, C. Shen,
+and P. Luo, “Polarmask: Single shot instance segmentation with
+polar representation,” in Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition (CVPR) , June 2020.
+[16] B. Cheng, I. Misra, A. G. Schwing, A. Kirillov, and R. Girdhar,
+“Masked-attention mask transformer for universal image segmenta-
+tion,” 2022.
+[17] D. Neven, B. D. Brabandere, M. Proesmans, and L. V . Gool, “Instance
+segmentation by jointly optimizing spatial embeddings and clustering
+bandwidth,” in Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR) , June 2019.
+[18] L. Rumberger, L. Mais, and D. Kainmueller, Probabilistic Deep
+Learning for Instance Segmentation , 01 2020, pp. 445–457.
+[19] B. Lakshminarayanan, A. Pritzel, and C. Blundell, “Simple and scal-
+able predictive uncertainty estimation using deep ensembles,” arXiv
+preprint arXiv:1612.01474 , 2016.
+[20] A. Guzman-Rivera, D. Batra, and P. Kohli, “Multiple choice learning:
+Learning to produce multiple structured outputs.” in NIPS , vol. 1,
+no. 2. Citeseer, 2012, p. 3.
+[21] C. Rupprecht, I. Laina, R. DiPietro, M. Baust, F. Tombari, N. Navab,
+and G. D. Hager, “Learning in an uncertain world: Representing
+ambiguity through multiple hypotheses,” in Proceedings of the IEEE
+International Conference on Computer Vision , 2017, pp. 3591–3600.
+[22] B.-B. Gao, C. Xing, C.-W. Xie, J. Wu, and X. Geng, “Deep label
+distribution learning with label ambiguity,” IEEE Transactions on
+Image Processing , vol. 26, no. 6, pp. 2825–2838, 2017.
+[23] S. A. A. Kohl, B. Romera-Paredes, C. Meyer, J. D. Fauw, J. R.
+Ledsam, K. H. Maier-Hein, S. M. A. Eslami, D. J. Rezende,
+and O. Ronneberger, “A probabilistic u-net for segmentation of
+ambiguous images,” CoRR , vol. abs/1806.05034, 2018. [Online].
+Available: http://arxiv.org/abs/1806.05034[24] W. Jang, D. Wei, X. Zhang, B. D. Leahy, H. Y . Yang,
+J. Tompkin, D. Ben-Yosef, D. Needleman, and H. Pﬁster, “Learning
+vector quantized shape code for amodal blastomere instance
+segmentation,” CoRR , vol. abs/2012.00985, 2020. [Online]. Available:
+https://arxiv.org/abs/2012.00985
+[25] C.-C. Lin, Y . Hung, R. Feris, and L. He, “Video instance segmentation
+tracking with a modiﬁed vae architecture,” in 2020 IEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition (CVPR) , 2020,
+pp. 13 144–13 154.
+[26] D. P. Kingma and M. Welling, “Auto-Encoding Variational Bayes,”
+in2nd International Conference on Learning Representations, ICLR
+2014, Banff, AB, Canada, April 14-16, 2014, Conference Track Pro-
+ceedings , 2014.
+[27] T.-Y . Lin, P. Dollar, R. Girshick, K. He, B. Hariharan, and S. Belongie,
+“Feature pyramid networks for object detection,” in Proc. IEEE Conf.
+Comp. Vis. Patt. Recogn. , July 2017.
+[28] Z. Wu, S. Pan, F. Chen, G. Long, C. Zhang, and P. S. Yu,
+“A comprehensive survey on graph neural networks,” 2019, cite
+arxiv:1901.00596Comment: updated tables and references. [Online].
+Available: http://arxiv.org/abs/1901.00596
+[29] I. Higgins, L. Matthey, A. Pal, C. Burgess, X. Glorot,
+M. Botvinick, S. Mohamed, and A. Lerchner, “beta-vae: Learning
+basic visual concepts with a constrained variational framework,”
+in5th International Conference on Learning Representations,
+ICLR 2017, Toulon, France, April 24-26, 2017, Conference
+Track Proceedings . OpenReview.net, 2017. [Online]. Available:
+https://openreview.net/forum?id=Sy2fzU9gl
+[30] T.-Y . Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan,
+P. Doll ´ar, and C. L. Zitnick, “Microsoft coco: Common objects in
+context,” in Proc. Eur. Conf. Comp. Vis. Springer, 2014, pp. 740–
+755.
+[31] M. Cordts, M. Omran, S. Ramos, T. Rehfeld, M. Enzweiler, R. Be-
+nenson, U. Franke, S. Roth, and B. Schiele, “The cityscapes dataset
+for semantic urban scene understanding,” in Proc. IEEE Conf. Comp.
+Vis. Patt. Recogn. , 2016, pp. 3213–3223.
+[32] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for
+image recognition,” in Proc. IEEE Conf. Comp. Vis. Patt. Recogn. ,
+June 2016.
+[33] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei,
+“Imagenet: A large-scale hierarchical image database,” in Proc. IEEE
+Conf. Comp. Vis. Patt. Recogn. Ieee, 2009, pp. 248–255.APPENDIX
+A. Latent-MaskRCNN Architecture and Training
+In this section, we explain the architecture of Latent-
+MaskRCNN (Section III-B) in more detail. See Figure 6 for
+a visual overview.
+In our experiments, we use latent codes of a ﬁxed vector
+dimensionality z2Rd. We found that d= 64 was a
+reasonable choice that worked for all datasets.
+In the decoder (Figure 6 (a)), we tile the latent codes across
+the spatial dimensions of the image and concatenate them
+with the feature maps coming out of the FPN. Then we use
+a few convolutional layers to project the combined feature
+maps back down to their original channel dimensionality.
+The rest of the model (region-proposal, classiﬁer head,
+mask head) uses these latent-augmented feature maps but is
+otherwise unchanged from MaskRCNN. As we discussed in
+Section III-B, this scheme allows the latent codes to inﬂuence
+every stage of the prediction.
+The encoder (Figure 6 (b)) produces a Gaussian distri-
+bution over latent codes based on both the image and the
+ground-truth instances. For each instance yi, we extract RoI-
+aligned features from the FPN feature maps, as well as of the
+ground-truth instance masks. Then we use a small CNN to
+embed each one into a single feature vector. At this point, we
+want to accumulate information from among the per-instance
+features, and produce a latent representation of a ﬁxed size.
+To do this, we employ a graph neural network (GNN, [28]),
+where each instance constitutes a node in a fully-connected
+graph. After several graph network layers, we mean-pool
+across the node features and use a fully-connected layer to
+produce a mean and log-variance for our latent code.
+The prior (Figure 6 (c)) also predicts a Gaussian distri-
+bution over latent code, but it does not have access to the
+ground-truth instances. Instead, we apply a few convolutional
+layers to the FPN feature maps, mean-pool across the spatial
+dimensions, and then predict a mean and log-variance using
+a small MLP.
+Consider the following training objective, and observe that
+it is equivalent to the standard V AE objective when = 1.
+L(x;y) =Ezq(zjy;x)[logp(yjx;z)] DKL(q(zjy;x)jjp(zjx))
+When training V AEs, it is common to use a KL warmup,
+whereis ramped up from 0 over the ﬁrst few epochs of
+training. This helps encourage the latent codes to become
+more informative since there is no penalty for using them at
+the beginning of training (when the encoder is untrained and
+they are uninformative).
+We trained all models on a single 8-GPU machine
+(1080Ti) of our internal cluster. Training takes roughly 20-
+30 hours for each model, depending on the dataset (on
+par with MaskRCNN). Our code is available at https:
+//segm.yuxuanliu.com
+B. Qualitative Evaluation of Samples
+In this section, we qualitatively explore what kinds of
+uncertainty Latent-MaskRCNN can express. In Figure 7, we
+Ground-truth instances Per-instance features Pooled feature Latent distribution (posterior)
+FPN features
+FPN features Latent distribution (prior)(c) Prior(b) Encoder
+Backbone FPN
+Region Proposal
+Mask Head
+Latent Code
+RGB
+Classiﬁer Head
+(a) DecoderFig. 6. The architecture of Latent-MaskRCNN. (a) The decoder is
+exactly the same as MaskRCNN, except that, before region proposal, we
+augment the FPN feature maps with a latent code. (b) The encoder takes
+the (non-augmented) FPN feature maps and a list of ground-truth instances
+and predicts a diagonal Gaussian distribution over latent codes. (c) The
+prior takes the (non-augmented) FPN feature maps and predicts a diagonal
+Gaussian distribution over latent codes.
+visualize samples from the model on images from various
+datasets, and observe that it does capture several distinct
+types of ambiguity:
+Category confusion: Latent-MaskRCNN can express
+meaningful uncertainty in the classiﬁcation head. In row
+2, MaskRCNN conﬁdently classiﬁes this sink as a toilet,
+while different samples from Latent-MaskRCNN classify it
+as toilet, sink, and bowl.
+Category imprecision: Even when the class of an instance
+is obvious, there still may be ambiguity in how the cate-
+gory is deﬁned. For example, in row 1, both MaskRCNN
+and Latent-MaskRCNN are (correctly) conﬁdent that this
+instance is a trafﬁc light. However, depending on how you
+deﬁne exactly what constitutes the extent of the trafﬁc
+light, the instance mask may look very different. Latent-
+MaskRCNN samples a wide range of plausible possibilities,
+but MaskRCNN picks a single (in this case incorrect) mode.
+Object and mask ambiguity: Latent-MaskRCNN lets us
+sample from a distribution over sets of objects. For example,
+in row 3, we see that the samples contain different numbers
+of objects, variety in bounding boxes, and variety in instance
+masks. Even though none of the samples are perfect, they are
+all plausible and all markedly better than MaskRCNN.
+In row 2, we see examples where Latent-MaskRCNN’s
+hypotheses express uncertainty in both mask and bounding(1)Ground-T ruth Image MaskRCNN Latent Sample 1 Latent Sample 2 Latent Sample 3 Latent Sample 4
+(2)
+(3)Fig. 7. Each row corresponds to a single image. Columns 1-2 show the original image and a zoomed-in version. The remaining columns show instance
+masks, and the word above the image is the class of the instance. Column 3 is the ground truth, column 4 is MaskRCNN’s prediction, and columns 5-8
+are samples from Latent-MaskRCNN.
+box, while MaskRCNN picks a single mode.
+C. Metrics
+In this section, we describe in detail the application-
+speciﬁc metrics that we used in Section IV.
+First, we provide a brief overview of the mAP (mean
+average precision) metric that is commonly used to evaluate
+instance segmentation predictions. We say that a predicted in-
+stance and a ground-truth constitute a match if they have the
+same class, and their masks are within some IoU threshold of
+each other. We iterate through the predicted instances in order
+of decreasing conﬁdence and determine which ones have
+a matching ground-truth instance (note that each ground-
+truth instance can only appear in one match). The predicted
+instances that appear in a match are considered true positives,
+and the remaining ones are considered false positives. We
+can then plot a precision-recall curve using this information,
+and compute the area under the curve. Typically this is done
+for each class, and we obtain the average precision (AP)
+by averaging across classes. Note that the AP still depends
+on the IoU threshold that we choose. The mean average
+precision (mAP) that is typically reported is the AP averaged
+across several IoU thresholds ( 0:5;0:55;:::; 0:9;0:95).
+mAP is a well-balanced metric, in the sense that it equally
+penalizes over-segmentation and under-segmentation, and
+considers both precision and recall. However, for speciﬁc
+applications like the ones we discussed in Sections V-B and
+IV-C, we may want different metrics that better reﬂect the
+asymmetric costs of different types of errors.
+For the high-precision use cases like the one discussed in
+Section V-B, we considered the max recall at high precision
+(MR@HP). We perform the matching procedure in a similar
+manner to mAP, except that we use IoP instead of IoU. Next,
+for a given precision threshold piand IoP threshold j, we
+can compute the recall that each model achieves (or zero, ifit never achieves precision pi). The MR@HP metric is the
+average of these recalls, over a range of precision threshold
+pand IoP thresholds :
+MR@HP =1
+jpjjjX
+pi2p;j2max
+t:Precision (j)piRecall (t;j)
+For the evaluation in Section V-B, we use p==
+[0:75;0:8;0:85;0:9;0:95].
+AR was introduced in [30] and is gaining popularity in the
+instance segmentation community as a complement to mAP.
+It also uses the matching procedure that mAP does, but then
+it simply averages each method’s recall over the standard
+range of IoU thresholds.
+For high-recall use cases like the one discussed in Sec-
+tion IV-C, we considered the average recall (AR), but using
+IoG instead of IoU. This measures both recall (did the
+model predict all the instances?) while also penalizing over-
+segmentation (are there any predicted masks that are too
+small).
+D. Algorithms
+In Section IV, we proposed Conﬁdence Masks and Union
+NMS as two applications of Latent-MaskRCNN. Algorithm 1
+details the iterative greedy conﬁdence mask prediction, and
+Algorithm 2 details the Union NMS procedure.
+E. Uncertainty
+In Section IV-B, we proposed a scoring method for con-
+ﬁdence mask predictions. Existing models such as MaskR-
+CNN tend to be extremely conﬁdent in general, even when
+they are wrong. However, a distributionally-expressive model
+should be able to express more calibrated conﬁdence scores.
+To evaluate whether these scores correlate well with mask
+quality, we compare the computed score with the IoU be-
+tween the predicted mask and the closest ground-truth maskAlgorithm 1: Conﬁdence Mask
+Given: conﬁdence requirement p,ksamples ofy
+each with masks mj2y
+InitializeM fg to be a set of predicted masks
+while masks inMhave score>0:1do
+formh2yido
+Compute the area of the intersection
+Ijg=jmh\mjnMjwith all other masks
+mj2yg
+LetCbe the set of masks with the kphighest
+Ijgwhere each mask must come from a
+uniqueyg
+Compute the intersection m
+h=T
+m2CmnM
+ignoring predicted masks M
+Add mask with highest score arg maxsm
+htoM
+Algorithm 2: Union-NMS
+Given: MasksM=fmign
+i=1sorted by conﬁdence,
+IoU threshold 
+InitializeS fg to an empty map
+fori= 1 :ndo
+ifi2Kthen
+continue
+S[i] fg
+forj=i+ 1 :ndo
+ifIoU(mi;mj)> then
+AddjtoS[i]
+InitializeU fg
+fori2keys(S)dom mi
+forj2S[i]do
+m m[mj
+AddmtoU
+Result:U
+(which indicates how correct the mask is). Figure 8 plots
+these two quantities on the Apparel-5k dataset. We see that
+MaskRCNN almost always has full conﬁdence (regardless of
+the IoU), while the Latent-MaskRCNN produces conﬁdence
+scores that are reasonably correlated with the mask accuracy.
+Table III also shows ROC AUC where we use each
+model’s score to predict when the ground truth IoU exceeds
+some threshold IoU (cp;G)0:5. Across all three datasets,
+Latent-MaskRCNN has higher AUCs compared to MaskR-
+CNN, suggesting its scores are more predictive of mask
+quality. This suggests that a distributionally expressive model
+like Latent-MaskRCNN with the proposed conﬁdence mask
+scoring can be more effective at measuring uncertainty.
+When we proposed p-conﬁdence masks in Section V-B, we
+wanted each conﬁdence mask to be contained within some
+object with probability p. To evaluate this, we can compare
+the fraction of predictions made by each conﬁdence mask
+that have IoP >0:95with the conﬁdence requirement p.
+Figure 8 shows the IoP quantiles for different conﬁdenceTABLE III
+ROC AUC USING SCORES TO PREDICT GROUND TRUTH IOU>0:5
+Method COCO Cityscapes Apparel-5k
+MaskRCNN 0.7372 0.8443 0.7756
+Conﬁdence Mask 0.7941 0.8666 0.9435
+0.00 0.25 0.50 0.75 1.00
+Score of predicted mask0.000.250.500.751.00IoU(predicted, ground truth)Predicted Score VS IoU
+MaskRCNN Confidence Mask
+0.25 0.50 0.75 1.00
+p used in confidence mask0.40.6Predictions with IoP > 0.95Confidence Mask VS IoP Fraction
+MaskRCNN
+Confidence Mask
+Fig. 8. Left: Correlation of predicted score with ground truth IoU of each
+mask on the Apparel-5k dataset. Latent conﬁdence mask scores tend to
+be more correlated while MaskRCNN is overconﬁdent. Right: Increasing
+the conﬁdence requirement pincreases the IoP of the predictions while
+MaskRCNN can only realize one IoP distribution.
+maskp’s on Apparel-5k. We generally ﬁnd that increasing
+the conﬁdence requirement, p, also increases the IoP of the
+predictions. Meanwhile, MaskRCNN can only achieve one
+distribution of IoP’s since no knobs control the conﬁdence
+of its outputs.

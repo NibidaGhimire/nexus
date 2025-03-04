@@ -1,0 +1,880 @@
+NEMTO: Neural Environment Matting for
+Novel View and Relighting Synthesis of Transparent Objects
+Dongqing Wang Tong Zhang Sabine S ¨usstrunk
+School of Computer and Communication Sciences, EPFL
+{dongqing.wang, tong.zhang, sabine.susstrunk }@epfl.ch
+Abstract
+We propose NEMTO, the first end-to-end neural render-
+ing pipeline to model 3D transparent objects with complex
+geometry and unknown indices of refraction. Commonly
+used appearance modeling such as the Disney BSDF model
+cannot accurately address this challenging problem due to
+the complex light paths bending through refractions and
+the strong dependency of surface appearance on illumina-
+tion. With 2D images of the transparent object as input,
+our method is capable of high-quality novel view and re-
+lighting synthesis. We leverage implicit Signed Distance
+Functions (SDF) to model the object geometry and pro-
+pose a refraction-aware ray bending network to model the
+effects of light refraction within the object. Our ray bend-
+ing network is more tolerant to geometric inaccuracies than
+traditional physically-based methods for rendering trans-
+parent objects. We provide extensive evaluations on both
+synthetic and real-world datasets to demonstrate our high-
+quality synthesis and the applicability of our method.
+1. Introduction
+Modeling transparent objects is important for VR/AR
+applications as the former are abundant in the real world.
+Unlike opaque objects with close-to-zero light transmission,
+transparent objects allow light to pass through. Such refrac-
+tion and reflection create complex light paths and give trans-
+parent objects highly environment-dependent appearances.
+Consequently, the appearance and geometry of transparent
+objects are much more entangled than those of opaque ob-
+jects [31]. A slight error in object geometry can lead to a
+global change in appearance [42], as the light path for each
+ray may thus vary substantially. For these reasons, deriving
+material and object geometry from images of a transparent
+object is a highly ill-posed and challenging problem.
+Existing work for modeling transparent objects can be
+classified into two categories. One assumes known indices
+of refraction (IOR) and reconstructs the complex geometry
+of transparent objects through either physical devices and
+structured backlights [9, 24, 37, 38, 40, 42] or neural net-
+Figure 1. Given as input multi-view images captured under natural
+illumination, NEMTO is capable of high-quality novel view syn-
+thesis and relighting through optimizing an end-to-end neural rep-
+resentation for a transparent object. NEMTO disentangles geome-
+try and illumination-dependent appearance, which previous neural
+rendering methods, such as PhySG [45], cannot.
+works that model geometry with analytical refraction [23].
+The other [3] focuses on optimizing the refractive ray path
+in the scene without modeling the object surface geome-
+try. However, neither approach is optimal for synthesizing
+novel views and relighting for transparent objects with com-
+plex geometry . In this work, we propose a new framework
+that combines recent advances in Neural Inverse Render-
+ing [5, 6, 29, 45, 47, 48] to overcome these limitations.
+Traditionally, physically-based rendering follows Snell’s
+Law to render transparent objects. However, object appear-
+ance highly depends on geometry estimation, and jointly
+optimizing both is highly ill-posed. Therefore, our key con-
+tribution is incorporating a physically-guided Ray Bending
+Network (RBN) to disentangle object geometry and light re-
+fraction. RBN takes the learned geometry [44] as prior, and
+models light refraction by mapping the incoming ray direc-
+tion directly to the refracted ray direction exiting the object.
+Our method does not assume a homogeneous refractive in-
+1arXiv:2303.11963v2  [cs.CV]  4 Apr 2024Methods A B C D E F G Task
+NeRF [26] ✗ ✓ ✗ ✗ ✓ ✓ ✗
+Img-Based
+SynthesisEikonal [3] ✓ ✓ ✗ ✗ ✓ ✓ ✗
+IDR [44] ✗ ✓ ✗ ✓ ✓ ✓ ✗
+PhySG, ... [45, 48] ✗ ✓ ✓ ✓ ✓ ✗ ✓
+NEMTO (Ours) ✓ ✓ ✓ ✓ ✓ ✓ ✗
+Geo.
+Est.[40, 24, 42] ✓ ✗ ✗ ✓ ✗ ✗ ✗
+TLG [23] ✓ ✗ ✗ ✓ ✓ ✗ ✗
+Table 1. Comparison of relevant methods. The first group fo-
+cuses on image-based novel view synthesis and relighting, while
+the second estimates transparent object geometry. (A)can model
+light refraction for non-opaque objects, (B)allows direct novel
+view synthesis w/ unknown IOR ,(C)allows direct scene relighting
+w/ unknown IOR ,(D)can model object surface, (E)does not re-
+quire complex setup for image capture, i.e no patterned backlight,
+turntables, etc., (F)can model transparent materials w/ unknown
+IOR,(G)allows estimation of illumination during training.
+dex or a fixed number of bounces [3, 31], and models the
+object’s surface with the zero-level set of the Signed Dis-
+tance Function (SDF). NEMTO thus has the potential to
+handle a wider range of complex geometry and better adapt
+to various refractive media than existing transparent object
+modeling [3, 23]. Furthermore, our RBN can improve the
+estimated geometry by better disentangling it from the ap-
+pearance of the object than other neural rendering meth-
+ods [44, 45]. NEMTO thus makes it practical to model
+transparent objects in various scenarios, by working with
+unknown refractive indices and natural environment illumi-
+nation. Tab. 1 lists the pros and cons of image-based models
+on novel view and relight synthesis, along with methods fo-
+cusing on geometry estimation for transparent objects. We
+identify the first group as our baseline because the second
+cannot synthesize views without knowing the object IOR.
+Experiments show that NEMTO can synthesize higher qual-
+ity novel views and relighting through our representation of
+transparent objects than all of our baseline methods.
+To summarize, our contributions are as follows:
+• We propose NEMTO, the first end-to-end method for
+novel view synthesis and scene relighting for transpar-
+ent objects , shown in Fig. 1. Our method can disentan-
+gle transparent object geometry and appearance.
+• We design a physically-guided Ray Bending Network
+(RBN) for predicting ray paths traversing through the
+transparent object. The network prediction has better
+error tolerance for the estimated geometry than analyti-
+cally calculated refraction.
+• NEMTO can easily be adapted to real-world transparent
+objects and achieve high-quality image-based synthesis.
+2. Related Work
+Neural Rendering. Neural rendering algorithms with im-
+plicit scene representation fall into two categories, volume-based and surface-based methods. V olume-based methods,
+e.g. NeRF [26], enable photo-realistic novel view synthesis
+by representing the scene as a Multilayer Perceptron (MLP)
+based radiance field [5, 36, 43]. These methods often can-
+not distill radiance near the object surface, which is dis-
+advantageous in our case as light refraction strongly relies
+on ray-surface intersections as prior. Surfaced-based meth-
+ods [44] directly optimize the underlying geometry with
+SDFs and estimate object surface with higher accuracy.
+Both representations have evolved to model appearance
+via the rendering equation [19] i.e., to jointly estimate the
+scene geometry, appearance, and illumination of the scene
+using existing 2D images [4, 5, 36, 45, 47, 48]. These
+methods assume that objects have opaque surfaces and light
+paths are non-refractive throughout the scene, and model
+appearance with the Disney BRDF model [7, 20]. They pro-
+vide insights into solving the highly ill-posed inverse ren-
+dering problem, but cannot work for transparent objects. In
+our model, we design an MLP for ray refraction prediction
+to allow modeling of light through non-opaque objects.
+Environment Matting. Environment matting captures the
+reflection and refraction of environment light by transparent
+objects. It represents illumination as texture maps and re-
+covers refraction through pixel-texel correspondence. With
+a structured backlight as background, the light path through
+the object in the front can be approximately computed
+[9, 49]. Inspired by traditional environment matting tech-
+niques for transparent object shape reconstruction, Chen et
+al. [8] design a deep learning network to estimate the en-
+vironment matting as a refractive flow field. These above
+methods require a controlled dark room to capture images
+without ambient light. Wexler et al . [38] develop an en-
+vironment matting algorithm that works with natural scene
+backgrounds, but that method requires complex camera se-
+tups and structured background light. In our method, we ap-
+proximate environment matting through a neural network.
+We directly map camera rays to refracted rays and optimize
+by comparing projected pixels on the environment maps to
+ground truth pixels. Our method does not require a complex
+physical setup and is more adaptive to inaccurate geometry.
+Transparent Object Modeling. Forward rendering of
+transparent objects is well-understood given Snell’s Law.
+Inversely rendering transparent objects and reconstructing
+the geometry from images, however, remains challenging.
+Kutulakos et al. [22] first prove that a ray path through two-
+interface refractive media can be recovered theoretically.
+Given this insight, previous methods estimating transpar-
+ent geometry use controlled setups for light path acquisition
+such as light field probes [37], polarized imagery [15], X-
+ray CT scanner [32], and transmission imaging [21]. Wu et
+al. [40] and Lyu et al. [24] use turntables in front of static
+structured backlights to reconstruct geometry, but our work<latexit sha1_base64="9RH/dQ8q3LUhemGQuCtyCn9Aq98=">AAAB/XicbVDLSsNAFJ34rPUVHzs3g0Wom5KIr2XRjcsK9gFNCJPppB06eTBzI9ZQ/BU3LhRx63+482+ctFlo64GBwzn3cs8cPxFcgWV9GwuLS8srq6W18vrG5ta2ubPbUnEqKWvSWMSy4xPFBI9YEzgI1kkkI6EvWNsfXud++55JxePoDkYJc0PSj3jAKQEteeZ+4DkwYECqTkhg4AfZw/jYMytWzZoAzxO7IBVUoOGZX04vpmnIIqCCKNW1rQTcjEjgVLBx2UkVSwgdkj7rahqRkCk3m6Qf4yOt9HAQS/0iwBP190ZGQqVGoa8n84hq1svF/7xuCsGlm/EoSYFFdHooSAWGGOdV4B6XjIIYaUKo5DorpgMiCQVdWFmXYM9+eZ60Tmr2ee3s9rRSvyrqKKEDdIiqyEYXqI5uUAM1EUWP6Bm9ojfjyXgx3o2P6eiCUezsoT8wPn8AfPeVQw==</latexit>f✓(x)<latexit sha1_base64="WhDBrc9jD0EhhIFkdKuQB94MAws=">AAAB8nicbVDLSgMxFM3UV62vqks3wSK4KjPia1l047KCfcB0KJk004ZmkiG5I5ahn+HGhSJu/Rp3/o2ZdhbaeiBwOOdecu4JE8ENuO63U1pZXVvfKG9WtrZ3dveq+wdto1JNWYsqoXQ3JIYJLlkLOAjWTTQjcShYJxzf5n7nkWnDlXyAScKCmAwljzglYCW/FxMYhVH2NK30qzW37s6Al4lXkBoq0OxXv3oDRdOYSaCCGON7bgJBRjRwKti00ksNSwgdkyHzLZUkZibIZpGn+MQqAxwpbZ8EPFN/b2QkNmYSh3Yyj2gWvVz8z/NTiK6DjMskBSbp/KMoFRgUzu/HA64ZBTGxhFDNbVZMR0QTCralvARv8eRl0j6re5f1i/vzWuOmqKOMjtAxOkUeukINdIeaqIUoUugZvaI3B5wX5935mI+WnGLnEP2B8/kDOOSROg==</latexit>x<latexit sha1_base64="NDPkfu+WvQlUiMxpgGXDlM+XvRw=">AAAB8XicbVDLSgMxFL1TX7W+qi7dBIvgqsyIr2XRjcsK9oFtKZk004ZmMkNyRyhD/8KNC0Xc+jfu/Bsz7Sy09UDgcM695Nzjx1IYdN1vp7Cyura+UdwsbW3v7O6V9w+aJko04w0WyUi3fWq4FIo3UKDk7VhzGvqSt/zxbea3nrg2IlIPOIl5L6RDJQLBKFrpsRtSHPlBqqb9csWtujOQZeLlpAI56v3yV3cQsSTkCpmkxnQ8N8ZeSjUKJvm01E0Mjykb0yHvWKpoyE0vnSWekhOrDEgQafsUkpn6eyOloTGT0LeTWUKz6GXif14nweC6lwoVJ8gVm38UJJJgRLLzyUBozlBOLKFMC5uVsBHVlKEtqWRL8BZPXibNs6p3Wb24P6/UbvI6inAEx3AKHlxBDe6gDg1goOAZXuHNMc6L8+58zEcLTr5zCH/gfP4A8UeRHA==</latexit>nFirst IntersectionSurface NormalGeometry Network<latexit sha1_base64="/23tWWxXPXRnCuiZj/yXw4eOQek=">AAAB+nicbVDLSsNAFL2pr1pfqS7dBIvgqiTia1l047JKX9CEMJlO2qGTSZiZKCX2U9y4UMStX+LOv3HSZqGtBwYO59zLPXOChFGpbPvbKK2srq1vlDcrW9s7u3tmdb8j41Rg0sYxi0UvQJIwyklbUcVILxEERQEj3WB8k/vdByIkjXlLTRLiRWjIaUgxUlryzaobITUKwux+6rutEVHIN2t23Z7BWiZOQWpQoOmbX+4gxmlEuMIMSdl37ER5GRKKYkamFTeVJEF4jIakrylHEZFeNos+tY61MrDCWOjHlTVTf29kKJJyEgV6Mg8qF71c/M/rpyq88jLKk1QRjueHwpRZKrbyHqwBFQQrNtEEYUF1VguPkEBY6bYqugRn8cvLpHNady7q53dntcZ1UUcZDuEITsCBS2jALTShDRge4Rle4c14Ml6Md+NjPloyip0D+APj8wd6pJQo</latexit>R⇥Ray Bending Network
+<latexit sha1_base64="9RH/dQ8q3LUhemGQuCtyCn9Aq98=">AAAB/XicbVDLSsNAFJ34rPUVHzs3g0Wom5KIr2XRjcsK9gFNCJPppB06eTBzI9ZQ/BU3LhRx63+482+ctFlo64GBwzn3cs8cPxFcgWV9GwuLS8srq6W18vrG5ta2ubPbUnEqKWvSWMSy4xPFBI9YEzgI1kkkI6EvWNsfXud++55JxePoDkYJc0PSj3jAKQEteeZ+4DkwYECqTkhg4AfZw/jYMytWzZoAzxO7IBVUoOGZX04vpmnIIqCCKNW1rQTcjEjgVLBx2UkVSwgdkj7rahqRkCk3m6Qf4yOt9HAQS/0iwBP190ZGQqVGoa8n84hq1svF/7xuCsGlm/EoSYFFdHooSAWGGOdV4B6XjIIYaUKo5DorpgMiCQVdWFmXYM9+eZ60Tmr2ee3s9rRSvyrqKKEDdIiqyEYXqI5uUAM1EUWP6Bm9ojfjyXgx3o2P6eiCUezsoT8wPn8AfPeVQw==</latexit>f✓(x)
+<latexit sha1_base64="WhDBrc9jD0EhhIFkdKuQB94MAws=">AAAB8nicbVDLSgMxFM3UV62vqks3wSK4KjPia1l047KCfcB0KJk004ZmkiG5I5ahn+HGhSJu/Rp3/o2ZdhbaeiBwOOdecu4JE8ENuO63U1pZXVvfKG9WtrZ3dveq+wdto1JNWYsqoXQ3JIYJLlkLOAjWTTQjcShYJxzf5n7nkWnDlXyAScKCmAwljzglYCW/FxMYhVH2NK30qzW37s6Al4lXkBoq0OxXv3oDRdOYSaCCGON7bgJBRjRwKti00ksNSwgdkyHzLZUkZibIZpGn+MQqAxwpbZ8EPFN/b2QkNmYSh3Yyj2gWvVz8z/NTiK6DjMskBSbp/KMoFRgUzu/HA64ZBTGxhFDNbVZMR0QTCralvARv8eRl0j6re5f1i/vzWuOmqKOMjtAxOkUeukINdIeaqIUoUugZvaI3B5wX5935mI+WnGLnEP2B8/kDOOSROg==</latexit>x<latexit sha1_base64="NDPkfu+WvQlUiMxpgGXDlM+XvRw=">AAAB8XicbVDLSgMxFL1TX7W+qi7dBIvgqsyIr2XRjcsK9oFtKZk004ZmMkNyRyhD/8KNC0Xc+jfu/Bsz7Sy09UDgcM695Nzjx1IYdN1vp7Cyura+UdwsbW3v7O6V9w+aJko04w0WyUi3fWq4FIo3UKDk7VhzGvqSt/zxbea3nrg2IlIPOIl5L6RDJQLBKFrpsRtSHPlBqqb9csWtujOQZeLlpAI56v3yV3cQsSTkCpmkxnQ8N8ZeSjUKJvm01E0Mjykb0yHvWKpoyE0vnSWekhOrDEgQafsUkpn6eyOloTGT0LeTWUKz6GXif14nweC6lwoVJ8gVm38UJJJgRLLzyUBozlBOLKFMC5uVsBHVlKEtqWRL8BZPXibNs6p3Wb24P6/UbvI6inAEx3AKHlxBDe6gDg1goOAZXuHNMc6L8+58zEcLTr5zCH/gfP4A8UeRHA==</latexit>n
+<latexit sha1_base64="2Fnf6pQoRxD1B6VtjauBn2UJefg=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GU6Tyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJMlmmo=</latexit>!t<latexit sha1_base64="wabfcL/LhLUkYduSaaslyqg3Jjc=">AAACBXicbVC7TsMwFHXKq5RXgBEGiwqJqUoQr7GChbFI9CE1UeQ4TmvVsSPbQaqiLiz8CgsDCLHyD2z8DU6bAVquZPnonHt1zz1hyqjSjvNtVZaWV1bXquu1jc2t7R17d6+jRCYxaWPBhOyFSBFGOWlrqhnppZKgJGSkG45uCr37QKSigt/rcUr8BA04jSlG2lCBfeiFgkVqnJjPEwkZoMBLkB6GcU4ngV13Gs604CJwS1AHZbUC+8uLBM4SwjVmSKm+66Taz5HUFDMyqXmZIinCIzQgfQM5Sojy8+kVE3hsmAjGQprHNZyyvydylKjCqOksHKp5rSD/0/qZjq/8nPI004Tj2aI4Y1ALWEQCIyoJ1mxsAMKSGq8QD5FEWJvgaiYEd/7kRdA5bbgXjfO7s3rzuoyjCg7AETgBLrgETXALWqANMHgEz+AVvFlP1ov1bn3MWitWObMP/pT1+QOmbJlT</latexit>!i<latexit sha1_base64="1BVly+8c9f1hNJyZS3lksBZsQMM=">AAACJ3icbVDLSgMxFM34tr6qLt0Ei6AgZUZ8rUR047JKq0KnDJn0ThuaSYYkI5Zh/saNv+JGUBFd+idmasXngZDDuedy7z1hwpk2rvvqjIyOjU9MTk2XZmbn5hfKi0vnWqaKQoNKLtVlSDRwJqBhmOFwmSggccjhIuwdF/WLK1CaSVE3/QRaMekIFjFKjJWC8oEfE9MNo+wsD/x6FwxZ90PJ27of28+XMXRIwDbxp+06/+Ii3wjKFbfqDoD/Em9IKmiIWlB+8NuSpjEIQznRuum5iWllRBlGOeQlP9WQENojHWhaKkgMupUN7szxmlXaOJLKPmHwQP3ekZFYF4tbZ7Gi/l0rxP9qzdRE+62MiSQ1IOjHoCjl2EhchIbbTAE1vG8JoYrZXTHtEkWosdGWbAje75P/kvOtqrdb3TndrhweDeOYQitoFa0jD+2hQ3SCaqiBKLpBd+gRPTm3zr3z7Lx8WEecYc8y+gHn7R2ix6cF</latexit>R⇥(!i,x,n)Sphere TracingNeural SDF<latexit sha1_base64="WhDBrc9jD0EhhIFkdKuQB94MAws=">AAAB8nicbVDLSgMxFM3UV62vqks3wSK4KjPia1l047KCfcB0KJk004ZmkiG5I5ahn+HGhSJu/Rp3/o2ZdhbaeiBwOOdecu4JE8ENuO63U1pZXVvfKG9WtrZ3dveq+wdto1JNWYsqoXQ3JIYJLlkLOAjWTTQjcShYJxzf5n7nkWnDlXyAScKCmAwljzglYCW/FxMYhVH2NK30qzW37s6Al4lXkBoq0OxXv3oDRdOYSaCCGON7bgJBRjRwKti00ksNSwgdkyHzLZUkZibIZpGn+MQqAxwpbZ8EPFN/b2QkNmYSh3Yyj2gWvVz8z/NTiK6DjMskBSbp/KMoFRgUzu/HA64ZBTGxhFDNbVZMR0QTCralvARv8eRl0j6re5f1i/vzWuOmqKOMjtAxOkUeukINdIeaqIUoUugZvaI3B5wX5935mI+WnGLnEP2B8/kDOOSROg==</latexit>x
+<latexit sha1_base64="NDPkfu+WvQlUiMxpgGXDlM+XvRw=">AAAB8XicbVDLSgMxFL1TX7W+qi7dBIvgqsyIr2XRjcsK9oFtKZk004ZmMkNyRyhD/8KNC0Xc+jfu/Bsz7Sy09UDgcM695Nzjx1IYdN1vp7Cyura+UdwsbW3v7O6V9w+aJko04w0WyUi3fWq4FIo3UKDk7VhzGvqSt/zxbea3nrg2IlIPOIl5L6RDJQLBKFrpsRtSHPlBqqb9csWtujOQZeLlpAI56v3yV3cQsSTkCpmkxnQ8N8ZeSjUKJvm01E0Mjykb0yHvWKpoyE0vnSWekhOrDEgQafsUkpn6eyOloTGT0LeTWUKz6GXif14nweC6lwoVJ8gVm38UJJJgRLLzyUBozlBOLKFMC5uVsBHVlKEtqWRL8BZPXibNs6p3Wb24P6/UbvI6inAEx3AKHlxBDe6gDg1goOAZXuHNMc6L8+58zEcLTr5zCH/gfP4A8UeRHA==</latexit>n<latexit sha1_base64="2Fnf6pQoRxD1B6VtjauBn2UJefg=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GU6Tyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJMlmmo=</latexit>!t
+<latexit sha1_base64="vdOtEPwUnRzQUk2InlemWNWdXyE=">AAAB+HicbVDLSsNAFJ34rPXRqEs3g0VwVRLxtSy6cVnBPqAJYTKdtEMnkzBzI9TQL3HjQhG3foo7/8ZJm4W2Hhg4nHMv98wJU8E1OM63tbK6tr6xWdmqbu/s7tXs/YOOTjJFWZsmIlG9kGgmuGRt4CBYL1WMxKFg3XB8W/jdR6Y0T+QDTFLmx2QoecQpASMFds1jQAIvJjAKoxymgV13Gs4MeJm4JamjEq3A/vIGCc1iJoEKonXfdVLwc6KAU8GmVS/TLCV0TIasb6gkMdN+Pgs+xSdGGeAoUeZJwDP190ZOYq0ncWgmi4R60SvE/7x+BtG1n3OZZsAknR+KMoEhwUULeMAVoyAmhhCquMmK6YgoQsF0VTUluItfXiads4Z72bi4P683b8o6KugIHaNT5KIr1ER3qIXaiKIMPaNX9GY9WS/Wu/UxH12xyp1D9AfW5w86FZN6</latexit>⌘tRefracted Direction“RefractiveIndex”Rendered RGB
+<latexit sha1_base64="wabfcL/LhLUkYduSaaslyqg3Jjc=">AAACBXicbVC7TsMwFHXKq5RXgBEGiwqJqUoQr7GChbFI9CE1UeQ4TmvVsSPbQaqiLiz8CgsDCLHyD2z8DU6bAVquZPnonHt1zz1hyqjSjvNtVZaWV1bXquu1jc2t7R17d6+jRCYxaWPBhOyFSBFGOWlrqhnppZKgJGSkG45uCr37QKSigt/rcUr8BA04jSlG2lCBfeiFgkVqnJjPEwkZoMBLkB6GcU4ngV13Gs604CJwS1AHZbUC+8uLBM4SwjVmSKm+66Taz5HUFDMyqXmZIinCIzQgfQM5Sojy8+kVE3hsmAjGQprHNZyyvydylKjCqOksHKp5rSD/0/qZjq/8nPI004Tj2aI4Y1ALWEQCIyoJ1mxsAMKSGq8QD5FEWJvgaiYEd/7kRdA5bbgXjfO7s3rzuoyjCg7AETgBLrgETXALWqANMHgEz+AVvFlP1ov1bn3MWitWObMP/pT1+QOmbJlT</latexit>!i<latexit sha1_base64="vdOtEPwUnRzQUk2InlemWNWdXyE=">AAAB+HicbVDLSsNAFJ34rPXRqEs3g0VwVRLxtSy6cVnBPqAJYTKdtEMnkzBzI9TQL3HjQhG3foo7/8ZJm4W2Hhg4nHMv98wJU8E1OM63tbK6tr6xWdmqbu/s7tXs/YOOTjJFWZsmIlG9kGgmuGRt4CBYL1WMxKFg3XB8W/jdR6Y0T+QDTFLmx2QoecQpASMFds1jQAIvJjAKoxymgV13Gs4MeJm4JamjEq3A/vIGCc1iJoEKonXfdVLwc6KAU8GmVS/TLCV0TIasb6gkMdN+Pgs+xSdGGeAoUeZJwDP190ZOYq0ncWgmi4R60SvE/7x+BtG1n3OZZsAknR+KMoEhwUULeMAVoyAmhhCquMmK6YgoQsF0VTUluItfXiads4Z72bi4P683b8o6KugIHaNT5KIr1ER3qIXaiKIMPaNX9GY9WS/Wu/UxH12xyp1D9AfW5w86FZN6</latexit>⌘t<latexit sha1_base64="2Fnf6pQoRxD1B6VtjauBn2UJefg=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GU6Tyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJMlmmo=</latexit>!t
+<latexit sha1_base64="vdOtEPwUnRzQUk2InlemWNWdXyE=">AAAB+HicbVDLSsNAFJ34rPXRqEs3g0VwVRLxtSy6cVnBPqAJYTKdtEMnkzBzI9TQL3HjQhG3foo7/8ZJm4W2Hhg4nHMv98wJU8E1OM63tbK6tr6xWdmqbu/s7tXs/YOOTjJFWZsmIlG9kGgmuGRt4CBYL1WMxKFg3XB8W/jdR6Y0T+QDTFLmx2QoecQpASMFds1jQAIvJjAKoxymgV13Gs4MeJm4JamjEq3A/vIGCc1iJoEKonXfdVLwc6KAU8GmVS/TLCV0TIasb6gkMdN+Pgs+xSdGGeAoUeZJwDP190ZOYq0ncWgmi4R60SvE/7x+BtG1n3OZZsAknR+KMoEhwUULeMAVoyAmhhCquMmK6YgoQsF0VTUluItfXiads4Z72bi4P683b8o6KugIHaNT5KIr1ER3qIXaiKIMPaNX9GY9WS/Wu/UxH12xyp1D9AfW5w86FZN6</latexit>⌘t<latexit sha1_base64="A6+difMFqV503tLBZka3EP6m5S8=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GUyTyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJAbmmg=</latexit>!r
+<latexit sha1_base64="GbhnTGB3NaoS0nHvURqiZrvcgZo=">AAACZXicfVFNT+MwEHUCC6W7QPkQFw5rbbUSe9gqQXwdEVw4stIWkJqqcpxJa9WxI3sCVCF/khtXLvwNnNID0NWOZPnpzXvyzHOcS2ExCJ48f2Hxy9JyY6X59dvq2nprY/PK6sJw6HIttbmJmQUpFHRRoISb3ADLYgnX8fi87l/fgrFCq784yaGfsaESqeAMHTVoPezvRdoJjBiOkBmj78ooYziK01JVVcQTjTSKtUzsJHMXjXQGQzaIEO7RaUT1i/7HT3+/N895B6120AmmRedBOANtMqvLQesxSjQvMlDIJbO2FwY59ktmUHAJVTMqLOSMj9kQeg4qloHtl9OUKvrTMQlNtXFHIZ2y7x0ly2w9qFPWG9jPvZr8V69XYHrSL4XKCwTF3x5KC0lR0zpymggDHOXEAcaNcLNSPmKGcXQf03QhhJ9XngdX+53wqHP456B9ejaLo0F2yQ+yR0JyTE7JBbkkXcLJs9fwNrxN78Vf9bf9nTep7808W+RD+d9fAf1mvEY=</latexit>2( !n·!i) !n !i
+<latexit sha1_base64="2Fnf6pQoRxD1B6VtjauBn2UJefg=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GU6Tyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJMlmmo=</latexit>!t
+<latexit sha1_base64="A6+difMFqV503tLBZka3EP6m5S8=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GUyTyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJAbmmg=</latexit>!rViewing Direction<latexit sha1_base64="wabfcL/LhLUkYduSaaslyqg3Jjc=">AAACBXicbVC7TsMwFHXKq5RXgBEGiwqJqUoQr7GChbFI9CE1UeQ4TmvVsSPbQaqiLiz8CgsDCLHyD2z8DU6bAVquZPnonHt1zz1hyqjSjvNtVZaWV1bXquu1jc2t7R17d6+jRCYxaWPBhOyFSBFGOWlrqhnppZKgJGSkG45uCr37QKSigt/rcUr8BA04jSlG2lCBfeiFgkVqnJjPEwkZoMBLkB6GcU4ngV13Gs604CJwS1AHZbUC+8uLBM4SwjVmSKm+66Taz5HUFDMyqXmZIinCIzQgfQM5Sojy8+kVE3hsmAjGQprHNZyyvydylKjCqOksHKp5rSD/0/qZjq/8nPI004Tj2aI4Y1ALWEQCIyoJ1mxsAMKSGq8QD5FEWJvgaiYEd/7kRdA5bbgXjfO7s3rzuoyjCg7AETgBLrgETXALWqANMHgEz+AVvFlP1ov1bn3MWitWObMP/pT1+QOmbJlT</latexit>!i<latexit sha1_base64="A6+difMFqV503tLBZka3EP6m5S8=">AAACB3icbVDLSsNAFJ3UV62vqEtBBovgqiTia1l047KCfUATwmQ6aYdOZsLMRCghOzf+ihsXirj1F9z5N07aLLT1wjCHc+7lnnvChFGlHefbqiwtr6yuVddrG5tb2zv27l5HiVRi0saCCdkLkSKMctLWVDPSSyRBcchINxzfFHr3gUhFBb/Xk4T4MRpyGlGMtKEC+9ALBRuoSWy+zBMxGaI88GKkR2GUyTyw607DmRZcBG4J6qCsVmB/eQOB05hwjRlSqu86ifYzJDXFjOQ1L1UkQXiMhqRvIEcxUX42vSOHx4YZwEhI87iGU/b3RIZiVVg1nYVDNa8V5H9aP9XRlZ9RnqSacDxbFKUMagGLUOCASoI1mxiAsKTGK8QjJBHWJrqaCcGdP3kRdE4b7kXj/O6s3rwu46iCA3AEToALLkET3IIWaAMMHsEzeAVv1pP1Yr1bH7PWilXO7IM/ZX3+AJAbmmg=</latexit>!r<latexit sha1_base64="rmmgxstdBgEV/uD8TbCarsoVsIo=">AAAB83icbVDLSgMxFL1TX7W+qi7dBIvgqsyIr2XRjQsXFewDOkPJpJk2NJMJSUYoQ3/DjQtF3Poz7vwbM+0stPVA4HDOvdyTE0rOtHHdb6e0srq2vlHerGxt7+zuVfcP2jpJFaEtkvBEdUOsKWeCtgwznHalojgOOe2E49vc7zxRpVkiHs1E0iDGQ8EiRrCxkn/f92NsRmGUqWm/WnPr7gxomXgFqUGBZr/65Q8SksZUGMKx1j3PlSbIsDKMcDqt+KmmEpMxHtKepQLHVAfZLPMUnVhlgKJE2ScMmqm/NzIcaz2JQzuZJ9SLXi7+5/VSE10HGRMyNVSQ+aEo5cgkKC8ADZiixPCJJZgoZrMiMsIKE2NrqtgSvMUvL5P2Wd27rF88nNcaN0UdZTiCYzgFD66gAXfQhBYQkPAMr/DmpM6L8+58zEdLTrFzCH/gfP4AS42R3w==</latexit>Lr<latexit sha1_base64="1riCowfpn10su2d6pecOGqJ1D1Q=">AAAB83icbVDLSsNAFL2pr1pfVZdugkVwVRLxtSy6ceGign1AE8pkOmmHTiZh5kYoob/hxoUibv0Zd/6NkzYLbT0wcDjnXu6ZEySCa3Scb6u0srq2vlHerGxt7+zuVfcP2jpOFWUtGotYdQOimeCStZCjYN1EMRIFgnWC8W3ud56Y0jyWjzhJmB+RoeQhpwSN5N33vYjgKAgznParNafuzGAvE7cgNSjQ7Fe/vEFM04hJpIJo3XOdBP2MKORUsGnFSzVLCB2TIesZKknEtJ/NMk/tE6MM7DBW5km0Z+rvjYxEWk+iwEzmCfWil4v/eb0Uw2s/4zJJkUk6PxSmwsbYzguwB1wximJiCKGKm6w2HRFFKJqaKqYEd/HLy6R9Vncv6xcP57XGTVFHGY7gGE7BhStowB00oQUUEniGV3izUuvFerc+5qMlq9g5hD+wPn8ATpeR4Q==</latexit>Lt=
+=Env. MapViewing Ray
+(a)(b)(c)<latexit sha1_base64="wabfcL/LhLUkYduSaaslyqg3Jjc=">AAACBXicbVC7TsMwFHXKq5RXgBEGiwqJqUoQr7GChbFI9CE1UeQ4TmvVsSPbQaqiLiz8CgsDCLHyD2z8DU6bAVquZPnonHt1zz1hyqjSjvNtVZaWV1bXquu1jc2t7R17d6+jRCYxaWPBhOyFSBFGOWlrqhnppZKgJGSkG45uCr37QKSigt/rcUr8BA04jSlG2lCBfeiFgkVqnJjPEwkZoMBLkB6GcU4ngV13Gs604CJwS1AHZbUC+8uLBM4SwjVmSKm+66Taz5HUFDMyqXmZIinCIzQgfQM5Sojy8+kVE3hsmAjGQprHNZyyvydylKjCqOksHKp5rSD/0/qZjq/8nPI004Tj2aI4Y1ALWEQCIyoJ1mxsAMKSGq8QD5FEWJvgaiYEd/7kRdA5bbgXjfO7s3rzuoyjCg7AETgBLrgETXALWqANMHgEz+AVvFlP1ov1bn3MWitWObMP/pT1+QOmbJlT</latexit>!iForward Rendering<latexit sha1_base64="ZqoKZNopQtfjWgIQFG10BW9KKTA=">AAAB+nicbVDLSgMxFM34rPU11aWbYBHqpsyIr2VREJcV7AM6Q8lkMm1oJhmSjFLGfoobF4q49Uvc+Tdm2llo64HA4Zx7uScnSBhV2nG+raXlldW19dJGeXNre2fXruy1lUglJi0smJDdACnCKCctTTUj3UQSFAeMdILRde53HohUVPB7PU6IH6MBpxHFSBupb1e8GOlhEGU3k5qHQ6GP+3bVqTtTwEXiFqQKCjT79pcXCpzGhGvMkFI910m0nyGpKWZkUvZSRRKER2hAeoZyFBPlZ9PoE3hklBBGQprHNZyqvzcyFCs1jgMzmQdV814u/uf1Uh1d+hnlSaoJx7NDUcqgFjDvAYZUEqzZ2BCEJTVZIR4iibA2bZVNCe78lxdJ+6TuntfP7k6rjauijhI4AIegBlxwARrgFjRBC2DwCJ7BK3iznqwX6936mI0uWcXOPvgD6/MH3peTwg==</latexit>F(·)=Pixel Loss
+<latexit sha1_base64="9Mdg7pZys8mYg4W9XtctB4PJ1U4=">AAACGnicbVDLSsNAFJ34tr6qLt0MFkEXhkR8LcVuXFawD2hKmUxv6uDkwcyNWEK+w42/4saFIu7EjX/jpK2g1gMDh3POZe49fiKFRsf5tKamZ2bn5hcWS0vLK6tr5fWNho5TxaHOYxmrls80SBFBHQVKaCUKWOhLaPo31cJv3oLSIo6ucJBAJ2T9SASCMzRSt+x6sgEKqRcyvPaDrJrvflOV79F96iHcYda30c49VUS75YpjO0PQSeKOSYWMUeuW371ezNMQIuSSad12nQQ7GVMouIS85KUaEsZvWB/ahkYsBN3JhqfldMcoPRrEyrwI6VD9OZGxUOtB6Jtksbb+6xXif147xeC0k4koSREiPvooSCXFmBY90Z5QwFEODGFcCbMr5ddMMY6mzZIpwf178iRpHNjusX10eVg5Ox/XsUC2yDbZJS45IWfkgtRInXByTx7JM3mxHqwn69V6G0WnrPHMJvkF6+MLDyKg5g==</latexit>kC(r) g.t.k
+<latexit sha1_base64="i2fz9BmWwVa/VgPde78Hdy4dzbA=">AAACLHicbVDLSsNAFJ3UV62vqEs3g0WoCCURXxuh2I1LBVuFppTJdNIOnWTCzI1QQj7Ijb8iiAtF3PodTtoKtfXCMIdzz+Wee/xYcA2O82EVFhaXlleKq6W19Y3NLXt7p6lloihrUCmkevCJZoJHrAEcBHuIFSOhL9i9P6jn/ftHpjSX0R0MY9YOSS/iAacEDNWx654vRVcPQ/N5qi8rcIgvsRcS6PtBKjN8hAFPa2TIeqST/ip4lpU6dtmpOqPC88CdgDKa1E3HfvW6kiYhi4AKonXLdWJop0QBp4JlJS/RLCZ0QHqsZWBEQqbb6ejYDB8YposDqcyLAI/Y6YmUhDr3apS5Rz3by8n/eq0Egot2yqM4ARbR8aIgERgkzpPDXa4YBTE0gFDFjVdM+0QRCibfPAR39uR50DyuumfV09uTcu1qEkcR7aF9VEEuOkc1dI1uUANR9IRe0Dv6sJ6tN+vT+hpLC9ZkZhf9Kev7B7MTqIk=</latexit>⇢(t)=o+t!i<latexit sha1_base64="i2fz9BmWwVa/VgPde78Hdy4dzbA=">AAACLHicbVDLSsNAFJ3UV62vqEs3g0WoCCURXxuh2I1LBVuFppTJdNIOnWTCzI1QQj7Ijb8iiAtF3PodTtoKtfXCMIdzz+Wee/xYcA2O82EVFhaXlleKq6W19Y3NLXt7p6lloihrUCmkevCJZoJHrAEcBHuIFSOhL9i9P6jn/ftHpjSX0R0MY9YOSS/iAacEDNWx654vRVcPQ/N5qi8rcIgvsRcS6PtBKjN8hAFPa2TIeqST/ip4lpU6dtmpOqPC88CdgDKa1E3HfvW6kiYhi4AKonXLdWJop0QBp4JlJS/RLCZ0QHqsZWBEQqbb6ejYDB8YposDqcyLAI/Y6YmUhDr3apS5Rz3by8n/eq0Egot2yqM4ARbR8aIgERgkzpPDXa4YBTE0gFDFjVdM+0QRCibfPAR39uR50DyuumfV09uTcu1qEkcR7aF9VEEuOkc1dI1uUANR9IRe0Dv6sJ6tN+vT+hpLC9ZkZhf9Kev7B7MTqIk=</latexit>⇢(t)=o+t!i<latexit sha1_base64="kBmxD57wt5O/lNS1uGfetY1ms/8=">AAACCnicbVC7TsMwFHV4lvIKMLIEKqSyVAniNVZ0YSwSfUhNVDmO01h17Mh2kKooMwu/wsIAQqx8ARt/g9NmgJYrWT46517dc4+fUCKVbX8bS8srq2vrlY3q5tb2zq65t9+VPBUIdxCnXPR9KDElDHcUURT3E4Fh7FPc88etQu89YCEJZ/dqkmAvhiNGQoKg0tTQPHIjqDI3hiryw6yV53XX5zSQk1h/roj46dCs2Q17WtYicEpQA2W1h+aXG3CUxpgpRKGUA8dOlJdBoQiiOK+6qcQJRGM4wgMNGYyx9LLpKbl1opnACrnQjylryv6eyGAsC3O6s/As57WC/E8bpCq89jLCklRhhmaLwpRailtFLlZABEaKTjSASBDt1UIRFBApnV5Vh+DMn7wIumcN57JxcXdea96UcVTAITgGdeCAK9AEt6ANOgCBR/AMXsGb8WS8GO/Gx6x1yShnDsCfMj5/AA04myI=</latexit>ˆC(⇢)
+<latexit sha1_base64="kBmxD57wt5O/lNS1uGfetY1ms/8=">AAACCnicbVC7TsMwFHV4lvIKMLIEKqSyVAniNVZ0YSwSfUhNVDmO01h17Mh2kKooMwu/wsIAQqx8ARt/g9NmgJYrWT46517dc4+fUCKVbX8bS8srq2vrlY3q5tb2zq65t9+VPBUIdxCnXPR9KDElDHcUURT3E4Fh7FPc88etQu89YCEJZ/dqkmAvhiNGQoKg0tTQPHIjqDI3hiryw6yV53XX5zSQk1h/roj46dCs2Q17WtYicEpQA2W1h+aXG3CUxpgpRKGUA8dOlJdBoQiiOK+6qcQJRGM4wgMNGYyx9LLpKbl1opnACrnQjylryv6eyGAsC3O6s/As57WC/E8bpCq89jLCklRhhmaLwpRailtFLlZABEaKTjSASBDt1UIRFBApnV5Vh+DMn7wIumcN57JxcXdea96UcVTAITgGdeCAK9AEt6ANOgCBR/AMXsGb8WS8GO/Gx6x1yShnDsCfMj5/AA04myI=</latexit>ˆC(⇢)Figure 2. Overview of NEMTO framework . (a) Geometry Network . For each viewing ray ρ(t) =o+tωi, we query geometry network
+fθthrough sphere tracing for the ray-surface intersection. (b) Ray Bending Network. We map the viewing direction ωidirectly to the
+final refracted ray ωtexiting the object geometry with surface normal nand intersection xas prior. As we use an environment map
+as illumination, the radiance evaluated through refraction only depends on the ray direction, not the location that the ray exits from. (c)
+Forward Rendering. To render ρ(t), we analytically calculate reflection direction ωrthrough ωiandn. We then use our physically-inspired
+rendering algorithm with predicted “refractive index” ηtand evaluate the environment map through ωtandωr.
+does not require these special setups. Neural networks are
+later introduced with analytical refraction modeling to ap-
+proach the problem. Li et al. [23] assume known environ-
+ment illumination and IOR to only optimize for geometry
+with one neural network on all kinds of geometry. Bem-
+anaet al. [3] synthesize novel views for transparent objects
+with unknown IOR, but only work with simple geometry
+such as a sphere. Our work doesn’t assume known IORs or
+restrict the light refraction to two bounces. By directly es-
+timating object-specific light refractions, NEMTO synthe-
+sizes photo-realistic novel views and relighting for trans-
+parent objects on casually-captured images.
+3. Method
+3.1. Problem Formulation
+Each input dataset contains Nmulti-view images
+{In}N
+n=1andNobject masks {Qn}N
+n=1of a transparent
+object with unknown IOR, and an environment map Γ :
+RH×W×3for scene illumination. Object masks and the en-
+vironment map can be generated by preprocessing image
+data, which we detail in the supplementary. We assume the
+images are captured under static distant illumination repre-
+sented by the environment map. Separately estimating illu-
+mination can compensate for entanglement between geom-
+etry and lighting, as transparent object appearance is highly
+correlated to scene illumination. We relax the assumptions
+that light bounces twice within the transparent media in Li
+et al. [23] and do not require two reference points on eachray [22]. The model architecture is summarized in Figure 2.
+3.2. Geometry Network
+We adopt implicit signed distance functions (SDFs) [44]
+to represent object geometry due to their adaptive resolu-
+tion and memory efficiency [30]. Specifically, we represent
+the geometry as a zero-level set zθof an MLP neural net-
+work fθ:R3→Rmapping a 3D location xto its SDF
+value z∈R,θbeing its optimizable weights. Concretely,
+zθ={x∈R3|fθ(x) = 0}. We optimize geometry with
+silhouette loss through {Qn}N
+n=1and regularize the neural
+SDF with IGR regulariztion [13] for a smooth and realistic
+object surface, detailed in Sec. 3.5.
+To find the intersection point xbetween the viewing ray
+ρ(t) =o+tωiand implicit geometry surface, we perform
+ray casting through sphere tracing [14] starting from the in-
+tersection between ρ(t)and the bounding box of the object.
+The surface normal of an SDF at xis directly given by its
+first order derivative: n=∇xf, therefore enabling gradient
+flow between normal and geometry optimization.
+3.3. Ray bending Network
+To render each viewing ray through the transparent
+object in a physically-plausible manner, we design our
+model to be consistent with the rendering equation [19] and
+physically-based material model.
+Light Refraction and Reflection Modeling. To model a
+transparent object, one can analytically calculate the lightpath of an incident ray through the object given the perfect
+specular reflection and transmission exhibited by its smooth
+dielectric materials [31]. Specifically, all scattering of radi-
+ance for a given ray shares a single outgoing direction.
+As shown in Fig. 2. (b), for a 3D point xon object sur-
+face, we denote the incoming ray direction as ωi, the unit
+surface normal as n, the angle between ωiandnasβi.
+Likewise denote reflected and transmitted ray direction as
+ωrandωtwithβrandβt. Analytically, βr=βi, and ac-
+cording to Snell’s Law,
+ηtsinβt=ηisinβi, (1)
+where ηiandηtare defined as the indices of refraction of
+the medium through which the incoming and outgoing ray
+travels, respectively. The analytical reflected ray direction
+is expressed as:
+ωr= 2(n·ωi)n−ωi, (2)
+while the analytical refracted ray direction is formulated as
+ωa=−ηi
+ηt(ωi−(ωi·n)n)−nr
+1−(ηi
+ηt)2(1−(ωi·n)2).
+(3)
+Neural Environment Matting. The accuracy of the ana-
+lytically evaluated refracted light direction is highly corre-
+lated to the quality of the estimated geometry, which makes
+it difficult to simultaneously optimize the geometry and
+light refraction through the object. To overcome this issue,
+we discard the analytical solution ωafor refraction mod-
+eling in Eq. (3) and utilize a neural environment matting
+method. Our ray bending network (RBN) directly estimates
+ωt, mapping incident rays intersecting the scene object to
+the final refracted ray direction, thereby learning how the
+transparent object refracts environment light and implicitly
+represents the refractive index through the network.
+As shown in Fig. 2 (b), our modeling of light refrac-
+tion passing through transparent media is expressed as a
+function R, which takes as input the viewing direction
+ωi, the first intersection point xbetween the viewing ray
+ρ(t) =o+tωiand the implicit geometry surface, and the
+surface normal nof point x. The function output is the
+refracted direction ωtfor the viewing ray ρexiting the ge-
+ometry and the “refractive index” ηtatx. By incorporat-
+ingxandnas priors, we can account for complex view-
+ing effects, such as total internal reflection, which depends
+on the angle between the surface normal, viewing direction
+and the concavity of the geometry. We approximate this
+function using a Multi-Layer Perceptron (MLP) network
+RΘ: (ωi,x,n)→(ωt, ηt). To handle high-frequency ray
+refractions, we apply positional encoding [33] to the view-
+ing direction and surface intersection.
+Our light path modeling stems from two important in-
+tuitions inspired by traditional environment matting tech-
+niques for transparent objects: (1) we assume the scene tocontain a single object that is transparent, and we assume
+the contribution of radiance on each ray segment exiting the
+object is negligible except for one main refracted ray; (2)
+the scene illumination will be modeled with an environment
+map and each ray comes from an infinite distance. From
+these observations, the final evaluated radiance of each cam-
+era ray that intersects with the scene object only depends on
+its direction upon exiting the object. In the next section,
+we present our differentiable forward rendering algorithm
+to work with these assumptions.
+3.4. Forward Rendering
+The recursive hemispherical integral of the rendering
+equation for evaluating each viewing ray does not have a
+closed-form solution and has to be numerically evaluated
+with the Monte Carlo method [35]. We provide an approx-
+imate evaluation of the final radiance as the combination of
+reflected radiance at incident ray and refracted radiance at
+outgoing ray through the Fresnel term. Our rendering mod-
+ule is differentiable and designed for physical plausibility.
+For transparent objects with smooth surfaces, the view-
+dependent reflected radiance Lrat each incident point is
+only dependent on the the reflected ray direction [31, 36]:
+Lr∝Z
+fr(ωr,ωi)Li(ωi)dωi=E(ωr), (4)
+whileωiis related to ωrthrough Eqn. (2). We propose the
+assumption that an analogous relationship exists between
+refracted radiance at the incident location and the final re-
+fracted ray direction. Specifically,
+Lt∝Z
+fr(ωt,ωi)Li(ωi)dωi=E(ωt), (5)
+where E:R3→R3maps unit ray direction ω(·)to a 3-
+channel RGB color. We reference the RGB value on our
+estimated environment map by the 2D coordinate obtained
+through texture mapping from the viewing direction.
+We use the Fresnel equation to compute the incident en-
+ergy split between reflection and transmission, therefore the
+reflected and transmitted radiance is proportional to the in-
+cident ray radiance at the surface intersection. For unpolar-
+ized transparent objects, the Fresnel reflectance is given by
+r∥=ηtcosβi−ηicosβt
+ηtcosβi+ηicosβt, (6)
+r⊥=ηicosβi−ηtcosβt
+ηicosβi+ηtcosβt, (7)
+where r∥gives the reflectance for parallel polarized light,
+andr⊥is the reflectance for perpendicular polarized light.
+Since we assume light to be unpolarized, the Fresnel re-
+flectance Frcan be analytically written as,
+Fr=1
+2(r2
+∥+r2
+⊥). (8)
+Due to the conservation of energy, the energy transmittance
+Ftis therefore given by Ft= 1−Fr.The final radiance for a given ray ρis then evaluated as:
+ˆC(ρ) =Fr⊙E(ωr) +η2
+i
+η2
+t(1−Fr)⊙E(ωt),(9)
+with⊙denotes element-wise multiplication, and ηi=
+1.00028 being the IOR for air.
+3.5. Optimization
+As the joint optimization of geometry and light refrac-
+tion of transparent objects is highly ill-posed, we enforce
+different priors to generate visually plausible solutions.
+For each batch, we sample the set of all pixels Pfrom the
+input image dataset to get Mpatches, each of m×mneigh-
+boring pixels. Therefore a training batch contains m2M
+pixels we denote as PM⊂P.PMcan be subdivided
+into two non-overlapping sets of pixels PMiandPMode-
+pending on whether the pixel contains the object or not,
+|PMo|+|PMi|=m2M. Each pρ∈PMis rendered by
+one camera ray ρ(t) =o+tωiwith origin oand viewing
+direction ωi. We apply masked rendering and mask out non-
+intersecting rays for the loss functions. Specifically, through
+sphere tracing, if ρhits the object surface, pρ∈PMi, oth-
+erwise pρ∈PMoand its rendered radiance ˆC(ρ) = 0 .
+The Pixel loss for PMis obtained through the ground
+truth RGB ˜Cpforpρ∈PMiand rendered radiance ˆC(ρ),
+Lpix=1
+|PMi|X
+pr∈PMi∥ˆC(ρ)−˜Cp∥1. (10)
+For ray refraction estimation, we use two losses: Lrgfor
+each ray ρthat hits the object with viewing direction ωito
+guide its refracted direction ωtexiting the object toward the
+analytical solution ωaobtained by Eq. (3) through cosine
+similarity,
+Lrg=1
+|PMi|X
+ωi:pρ∈PMi[1−ωt·ωa
+max(∥ωt∥2· ∥ωa∥2,0)].
+(11)
+We employ a weight decaying strategy on Lrgto provide
+initial physically-guided supervision for RBN on refraction.
+Additionally, we utilize a patch-based loss term Lrsfor ray
+hits to encourage locally smooth refraction directions, as
+we assume that most transparent objects are locally smooth
+given their smooth dielectric material. For each m×m
+patch containing only ray hits, we penalize the mean of
+variance on the estimated refraction directions. Along with
+Lpix, the RBN can better compensate the inaccuracy on esti-
+mated geometry than strictly following analytical solution.
+For geometry optimization, we employ a silhouette loss
+from input masks {Qn}N
+n=1and focus on non-intersecting
+rays. For each ray ρ:pρ∈PMo, we uniformly sample K
+points on ρwithin the object bounding box and query fθfor
+the minimal SDF value zkto penalize on ray miss with thecross-entropy CE αloss with logit parameterized by α,
+Lsil=1
+|PMo|X
+pρ∈PMoCEα(zk). (12)
+In order to impose a constraint on the learned function fθto
+ensure that it is an approximate SDF, we randomly sample
+Vpoints {vi}V
+i=1inside the bounding box and adopt the
+loss by Implicit Geometric Regularization (IGR) [13]:
+Le=Ev(∥∇vfθ∥2−1)2. (13)
+The overall loss function of our optimization is defined
+as the weighted sum of each loss with λ(·)as weight terms:
+L=λpixLpix+λeLe+λsilLsil
++λrgLrg+λrsLrs.(14)
+4. Experiments
+4.1. Synthetic Data Evaluation
+Datasets. We use the 4 mesh objects of kitty, cow, bear, and
+key-mouse from [41, 45], and render each object with the
+smooth dielectric BSDF model with Mitsuba 3 [18] under
+an environmental light emitter. For synthetic dataset evalu-
+ations we set interior IOR to 1.4723 for glass and exterior
+IOR to 1.00028 for air. We also create datasets with interior
+IOR set to 1.2, and 2.4 for ablation studies. We uniformly
+sample 200 camera poses on the upper hemisphere around
+each object following the Fibonacci lattice and randomly
+assign 100 each for training and testing. We obtain object
+masks through data pre-processing [12].
+Baseline. As discussed in Sec. 2 and shown in Tab. 1, no
+other work studies the same problem as ours, i.e., modeling
+refraction for transparent objects with complex geometry
+by neural networks for novel view and relighting synthe-
+sis. We, therefore, classify our baselines based on different
+tasks: NeRF [26] and Eikonal Fields [3] on novel view
+synthesis; IDR [44] on novel view synthesis and geometry
+reconstruction; PhySG [45] on novel view and relighting
+synthesis, and geometry reconstruction. As geometry is not
+our aimed task to improve, extracted mesh quality is only to
+show that RBN effectively disentangles geometry and ray
+refraction on appearance. We do not include comparisons
+with volume-based neural relighting methods [5, 36] as they
+share the same appearance model with PhySG.
+Novel View Synthesis. A qualitative comparison of our
+method and baseline methods is shown in Fig. 3. NeRF
+and Eikonal Fields model object appearance as MLP-based
+volume and cannot distill radiance properly around the ob-
+ject surface. However, when modeling refractive objects
+with complex geometry, it is important to locate the sur-
+face for accurate refraction direction estimation. Eikonal
+fields relies on user-defined bounding boxes, resulting in
+failure cases where the opaque scene and the refractiveFigure 3. Qualitative comparison with baseline methods on Novel View Synthesis. We compare our novel view synthesis on transparent
+objects with the methods that we identify as most relevant to ours, NeRF [26], Eikonal Field [3], IDR [44], and PhySG [45]. Our method
+outperforms the others on the high-frequency details caused by ray refraction.
+Figure 4. Qualitative results on Relighting for synthetic
+datasets. We show that our network can faithfully relight the
+object with unseen environment illumination, unlike PhySG [45].part cannot be separated. Meanwhile, IDR and PhySG are
+surface-based methods, but IDR models appearance as a
+light field [39] and cannot correctly interpolate the high-
+frequency change of the refracted environment illumination
+on object appearance. PhySG uses Disney BSDF [7] which
+does not work for non-opaque objects and therefore fails to
+correctly disentangle geometry and appearance.
+We report quantitative evaluation on novel view synthe-
+sis with metrics including PSNR, SSIM, and LPIPS [46]
+through testing on held-out images in Tab. 3. Our method
+significantly outperforms all of our baselines on synthesiz-
+ing novel views for accurately modeling the refraction di-
+rection of each ray intersected with geometry.
+Relight Synthesis. We provide a qualitative comparison of
+relighting synthesis in Fig. 4. As the environment map used
+during training is natural and unstructured unlike in prior
+works [24, 40], many pixels share similar radiance, but our
+learned refractions are not overfitted on the training illumi-
+nation; they are aligned with the true refractions. We relightSynthetic ↓Chamfer L1(10−3)
+Method Kitty Bear Key Mouse Cow
+IDR [44] 4.30 3.66 3.70 11.66
+PhySG [45] 87.67 67.43 31.61 52.17
+NEMTO 2.22 1.71 2.27 2.60
+Table 2. Quantitative evaluation on recovered meshes of syn-
+thetic datasets. We report the chamfer distance metric [11] on
+g.t. mesh versus extracted meshes as a quantitative measure for
+reconstructed geometry quality. NEMTO achieves better results
+than baseline methods that models object surfaces.
+Figure 5. Experiments on different transparent media. We
+show that NEMTO works for different transparent media other
+than glass. The learned ηtis adaptive to different media and al-
+lows our model to synthesize faithful results.
+each scene with an unseen environment map to test the cor-
+rectness of the object refraction. PhySG fails on this task
+as it does not model refractive material, resulting in incor-
+rect appearance decomposition [7]. We report quantitative
+evaluation w.r.t ground truth relighting in Tab. 3.
+Disentanglement on Geometry and Appearance. We
+evaluate our extracted geometry on synthetic datasets with
+ground truth mesh through the Chamfer distance metric and
+compare our geometry with those of surfaced-based meth-
+ods. In Fig 4, the geometry of PhySG is entangled with
+surface appearance, i.e. the appearance under the original
+illumination is imprinted on the surface and raised geome-
+try. Tab. 2 shows that IDR does better than PhySG, though
+still worse than ours. Our geometry and refracted appear-
+ance are better separated due to our modeling of ray refrac-
+tion and optimizations.
+Robustness to different refractive indices. We conducted
+experiments on transparent objects rendered with various
+IORs to showcase the robustness of our framework to IOR
+changes. Our approach is suitable for different types of re-
+fractive materials, as demonstrated in Fig. 5. Note that our
+predicted ηtfor the blending of ray refraction and reflection
+is also adaptive to different IOR, as shown in the case for
+IOR = 2.4, the reflected radiance is adequately brighter than
+in IOR = 1.4723 and 1.2.Novel View Relighting
+Method PSNR ↑SSIM↑LPIPS ↓PSNR ↑SSIM↑LPIPS ↓
+NeRF [26] 21.274 0.837 0.171 - - -
+Eikonal [3] 15.866 0.452 0.589 - - -
+IDR [44] 22.695 0.851 0.152 - - -
+PhySG [45] 19.981 0.791 0.203 15.412 0.749 0.237
+SDF-A 21.758 0.828 0.145 17.846 0.787 0.192
+w/oLrg 15.659 0.746 0.221 14.585 0.713 0.238
+w/oLrs 21.623 0.811 0.163 19.026 0.823 0.149
+NEMTO 26.582 0.924 0.083 25.147 0.918 0.098
+Table 3. Quantitative Evaluations. We present the average result
+on all synthetic datasets. The first three methods are not capable of
+relighting. Our method performs significantly better on both novel
+view and relighting synthesis than all of our baseline methods and
+ablation experiments.
+Figure 6. Qualitative ablation on SDF-A . SDF-A shows that
+jointly optimizing refraction and geometry is prone to error. Our
+approach performs significantly better than this naive approach.
+Figure 7. Ablation on losses for ray refraction optimizations.
+Each experiment is trained with a frozen geometry network to
+demonstrate the effect of each loss term on ray bending.
+4.2. Ablation Studies
+We perform the following ablation studies to demon-
+strate the effectiveness of Our RBN, Lrg, andLrs.
+Ablation on ray bending network. We implemented aInputDatasetNEMTOGround TruthEnvmap Region
+Figure 8. Qualitative results on novel view synthesis for real-
+world captured data. We show the novel view synthesis of
+NEMTO on our captured real-world dataset compared to ground
+truth. The rightmost column displays chosen regions from the en-
+vironment map as a reference for their corresponding refractions
+in our synthesis.
+Method PSNR ↑SSIM↑LPIPS ↓
+NStudio 24.67 0.79 0.23
+NEMTO 27.34 0.85 0.17
+Table 4. Quantitative comparison between NeRFStudio [34]
+and NEMTO on novel view synthesis . We evaluate both meth-
+ods on our captured cat dataset NEMTO renders better results due
+to its better capture of refractions.
+naive version of our method SDF-A without using RBN.
+It renders transparent objects with analytical refraction to
+demonstrate the effectiveness of our RBN and neural envi-
+ronment matting method over the use of a physically-based
+differentiable renderer on transparent objects. As shown in
+Fig. 6, our method synthesizes more accurate results when
+jointly optimizing for geometry and light refraction, which
+are better disentangled. This is evident from the smoother
+surfaces of our method due to Lrs. NEMTO estimated
+smoother surface normal than SDF-A, and gives much more
+faithful ray refractions.
+Ablation on LrgandLrs.For experiments on the refrac-
+tion guiding and refraction smoothness loss, we fix the op-
+timized geometry and only show different optimization re-
+sults for refraction prediction. The lower part of Tab. 3
+shows quantitative evaluation that our complete architec-
+ture performs better than without each of these loss terms.
+NEMTO Relight
+Original Envmap
+Relight Envmap
+Figure 9. Qualitative results on relighting synthesis for real-
+world captured data . Our captured environment map is shown
+in the top left. NEMTO can render visually-plausible relighted
+transparent objects.
+Fig. 7 compares the learned refraction from each ablation
+experiment: in column (b) without Lrg, the model cannot
+learn the correct direction; in column (c) without Lrs, the
+optimized ray refraction is around the true scope but shows
+wrong wave-patterned artifacts.
+4.3. Real World Data Evaluation
+Datasets. For real-world evaluation, we have two sets of
+experiments. Firstly, we use 4 datasets of transparent ob-
+jects with complex geometry (dog, monkey, pig, and mouse
+shape) from TLG [23]. As TLG only provides 10-12 im-
+ages for each object, we render training data using the pro-
+vided ground truth CT-scanned meshes and environment
+illuminations. Our evaluations are performed on their re-
+leased real-world images. Details of all our dataset genera-
+tion procedures can be found in the supplementary.
+Additionally, we captured a real-world transparent object
+with sufficient training images to assess the applicability of
+NEMTO on real-world captured data. Details of our dataset
+capture procedure are in the supplementary materials.
+Qualitative results on the captured dataset. Fig. 8 and 9
+show the rendered results from NEMTO trained on captured
+real-world data. Despite the inaccuracy in real-world cam-
+era poses and captured environment maps, NEMTO synthe-
+sizes faithful and visually-plausible novel views and relight-
+ing results. In Fig. 8, we select geometric regions that pro-
+duce approximately two bounces of refraction and compare
+synthesized refractions with the corresponding sections on
+the Envmap. From these comparisons, we show that our
+refraction synthesis is quite realistic.
+Quantitative results on the captured dataset. To quan-
+titatively evaluate the performance of NEMTO on the cap-
+tured real-world dataset, we provide a comparison on theFigure 10. Qualitative results on image synthesis and extracted geometry for ‘rendered’ real-world data. We compare our extracted
+geometry, novel view synthesis, and relighting with the extracted geometry and rendering layer of TLG [23], which restricts the light
+bounce within transparent media to only two bounces.
+quality of novel view synthesis between NEMTO and the
+combined implementation ‘nerfacto’ from several SOTA
+NeRF models [1, 2, 25, 28] from NeRFStudio [34] in Tab. 4.
+NEMTO renders high-frequency refraction details that are
+closer to ground truth than ‘nerfacto’ which cannot work
+with light transmission.
+Qualitative results on the ‘rendered’ real-world
+datasets. Fig. 10 shows our results for real-world images
+trained with synthetic data. Our method is able to predict
+accurate ray refraction for transparent objects and pro-
+duces a smoother surface normal prediction on geometry
+extraction than TLG. TLG designed a novel differentiable
+rendering layer for physically-based transparent object
+modeling, but it only renders up to two bounces of refrac-
+tion, whereas our method does not pose an upper bound
+on the number of ray bounces. Moreover, TLG does not
+work with an unknown IOR for transparent objects. Note
+that, although TLG claims to require only 10-12 images
+for testing, it requires rendering a large-scale synthetic
+dataset with 1.5k HDR (High Dynamic Range) envmaps
+for training, which is unnecessary in our case.
+5. Limitations and Conclusion
+Limitations. There are a few limitations to our work. First,
+although NEMTO does not assume homogeneous IOR of
+transparent media, there is no explicit supervision for het-
+erogeneous transparent objects. With the introduction ofappropriate loss functions such as from Eikonal Render-
+ing [17], we believe NEMTO can be extended for a wider
+variety of transparent media. Secondly, our model requires
+a preprocessing of image data for environment illumina-
+tion and object masks, as we cannot jointly optimize illu-
+mination along with geometry and object appearance for
+transparent objects. Lastly, NEMTO focuses on unpolar-
+ized transparent objects and does not provide experiments
+on polarized transparent media [10, 16, 27].
+Conclusion. We have presented NEMTO, an end-to-end
+pipeline for novel view and relighting synthesis of transpar-
+ent objects with complex geometry. Our method jointly op-
+timizes geometry and highly illumination-dependent object
+appearance and generates high-quality synthesis.
+6. Acknowledgement
+This work was supported in part by the Swiss National
+Science Foundation via the Sinergia grant CRSII5-180359.
+The authors thank Ziyi Zhang for his technical support at
+the early stage of this work, and thank Yufan Ren, Ehsan Pa-
+jouheshgar, Martin Everaert, Bahar Aydemir, Deblina Bhat-
+tacharjee, Michele Vidulis, and Merlin Nimier-David for
+their time spent on proof-reading and kind suggestions dur-
+ing the paper writing.References
+[1] Jonathan T Barron, Ben Mildenhall, Matthew Tancik, Peter
+Hedman, Ricardo Martin-Brualla, and Pratul P Srinivasan.
+Mip-nerf: A multiscale representation for anti-aliasing neu-
+ral radiance fields. In Proceedings of the IEEE/CVF Inter-
+national Conference on Computer Vision , pages 5855–5864,
+2021. 9
+[2] Jonathan T. Barron, Ben Mildenhall, Dor Verbin, Pratul P.
+Srinivasan, and Peter Hedman. Mip-nerf 360: Unbounded
+anti-aliased neural radiance fields. CVPR , 2022. 9
+[3] Mojtaba Bemana, Karol Myszkowski, Jeppe Revall Frisvad,
+Hans-Peter Seidel, and Tobias Ritschel. Eikonal fields for
+refractive novel-view synthesis. In Special Interest Group on
+Computer Graphics and Interactive Techniques Conference
+Proceedings , pages 1–9, 2022. 1, 2, 3, 5, 6, 7
+[4] Sai Bi, Zexiang Xu, Pratul Srinivasan, Ben Mildenhall,
+Kalyan Sunkavalli, Milo ˇs Ha ˇsan, Yannick Hold-Geoffroy,
+David Kriegman, and Ravi Ramamoorthi. Neural re-
+flectance fields for appearance acquisition. arXiv preprint
+arXiv:2008.03824 , 2020. 2
+[5] Mark Boss, Raphael Braun, Varun Jampani, Jonathan T. Bar-
+ron, Ce Liu, and Hendrik P.A. Lensch. Nerd: Neural re-
+flectance decomposition from image collections. In Proceed-
+ings of the IEEE/CVF Conference on International Confer-
+ence on Computer Vision (ICCV) , 2021. 1, 2, 5
+[6] Mark Boss, Varun Jampani, Raphael Braun, Ce Liu,
+Jonathan T. Barron, and Hendrik P.A. Lensch. Neural-
+pil: Neural pre-integrated lighting for reflectance decompo-
+sition. In Advances in Neural Information Processing Sys-
+tems (NeurIPS) , 2021. 1
+[7] Brent Burley and Walt Disney Animation Studios.
+Physically-based shading at disney. In Transactions on
+Graphics (Proceedings of SIGGRAPH) , volume 2012, pages
+1–7. vol. 2012, 2012. 2, 6, 7
+[8] Guanying Chen, Kai Han, and Kwan-Yee K Wong. Tom-
+net: Learning transparent object matting from a single im-
+age. In Proceedings of the IEEE/CVF Conference on Com-
+puter Vision and Pattern Recognition (CVPR) , pages 9233–
+9241, 2018. 2
+[9] Yung-Yu Chuang, Douglas E Zongker, Joel Hindorff, Brian
+Curless, David H Salesin, and Richard Szeliski. Environ-
+ment matting extensions: Towards higher accuracy and real-
+time capture. In Proceedings of the 27th annual conference
+on Computer Graphics and Interactive Techniques , pages
+121–130, 2000. 1, 2
+[10] Zhaopeng Cui, Jinwei Gu, Boxin Shi, Ping Tan, and Jan
+Kautz. Polarimetric multi-view stereo. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , pages 1558–1567, 2017. 9
+[11] Christian Diller. Chamfer distance for pytorch, 2022.
+https://github.com/otaheri/chamfer_
+distance . 7
+[12] Kaleido AI GmbH. Remove image background., 2022.
+https://www.remove.bg/ . Accessed 2022-11. 5
+[13] Amos Gropp, Lior Yariv, Niv Haim, Matan Atzmon, and
+Yaron Lipman. Implicit geometric regularization for learningshapes. In Proceedings of Machine Learning and Systems
+(ICML) , pages 3569–3579, 2020. 3, 5
+[14] John C Hart. Sphere tracing: A geometric method for the
+antialiased ray tracing of implicit surfaces. The Visual Com-
+puter , 12(10):527–545, 1996. 3
+[15] Cong Phuoc Huynh, Antonio Robles-Kelly, and Edwin Han-
+cock. Shape and refractive index recovery from single-
+view polarisation images. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition
+(CVPR) , pages 1229–1236. IEEE, 2010. 2
+[16] Cong Phuoc Huynh, Antonio Robles-Kelly, and Edwin Han-
+cock. Shape and refractive index recovery from single-
+view polarisation images. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition
+(CVPR) , pages 1229–1236, 2010. 9
+[17] Ivo Ihrke, Gernot Ziegler, Art Tevs, Christian Theobalt, Mar-
+cus Magnor, and Hans-Peter Seidel. Eikonal rendering: Ef-
+ficient light transport in refractive objects. Transactions on
+Graphics (Proceedings of SIGGRAPH) , 26(3):59–es, 2007.
+9
+[18] Wenzel Jakob, S ´ebastien Speierer, Nicolas Roussel, Merlin
+Nimier-David, Delio Vicini, Tizian Zeltner, Baptiste Nicolet,
+Miguel Crespo, Vincent Leroy, and Ziyi Zhang. Mitsuba 3
+renderer, 2022. https://mitsuba-renderer.org. 5
+[19] James T Kajiya. The rendering equation. In Proceedings
+of the 13th annual conference on Computer Graphics and
+Interactive Techniques , pages 143–150, 1986. 2, 3
+[20] Brian Karis and Epic Games. Real shading in unreal engine
+4.Proc. Physically Based Shading Theory Practice , 4(3):1,
+2013. 2
+[21] Jaewon Kim, Ilya Reshetouski, and Abhijeet Ghosh. Ac-
+quiring axially-symmetric transparent objects using single-
+view transmission imaging. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition
+(CVPR) , pages 3559–3567, 2017. 2
+[22] Kiriakos N Kutulakos and Eron Steger. A theory of refractive
+and specular 3d shape by light-path triangulation. Interna-
+tional Journal of Computer Vision , 76(1):13–29, 2008. 2,
+3
+[23] Zhengqin Li, Yu-Ying Yeh, and Manmohan Chandraker.
+Through the looking glass: Neural 3d reconstruction of
+transparent shapes. In Proceedings of the IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition (CVPR) ,
+pages 1262–1271, 2020. 1, 2, 3, 8, 9
+[24] Jiahui Lyu, Bojian Wu, Dani Lischinski, Daniel Cohen-
+Or, and Hui Huang. Differentiable refraction-tracing for
+mesh reconstruction of transparent objects. Transactions on
+Graphics (Proceedings of SIGGRAPH) , 39(6):1–13, 2020. 1,
+2, 6
+[25] Ricardo Martin-Brualla, Noha Radwan, Mehdi SM Sajjadi,
+Jonathan T Barron, Alexey Dosovitskiy, and Daniel Duck-
+worth. Nerf in the wild: Neural radiance fields for uncon-
+strained photo collections. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition ,
+pages 7210–7219, 2021. 9
+[26] Ben Mildenhall, Pratul P. Srinivasan, Matthew Tancik,
+Jonathan T. Barron, Ravi Ramamoorthi, and Ren Ng. Nerf:Representing scenes as neural radiance fields for view syn-
+thesis. In Computer Vision–ECCV 2020: 15th European
+Conference, 23-28 August 2020, Proceeding , 2020. 2, 5, 6, 7
+[27] D. Miyazaki and K. Ikeuchi. Inverse polarization raytracing:
+estimating surface shapes of transparent objects. In Proceed-
+ings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR) , volume 2, pages 910–917 vol.
+2, 2005. 9
+[28] Thomas M ¨uller, Alex Evans, Christoph Schied, and Alexan-
+der Keller. Instant neural graphics primitives with a mul-
+tiresolution hash encoding. ACM Transactions on Graphics
+(ToG) , 41(4):1–15, 2022. 9
+[29] Jacob Munkberg, Jon Hasselgren, Tianchang Shen, Jun Gao,
+Wenzheng Chen, Alex Evans, Thomas M ¨uller, and Sanja Fi-
+dler. Extracting triangular 3d models, materials, and lighting
+from images. In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition (CVPR) , pages
+8280–8290, 2022. 1
+[30] Jeong Joon Park, Peter Florence, Julian Straub, Richard
+Newcombe, and Steven Lovegrove. Deepsdf: Learning con-
+tinuous signed distance functions for shape representation. In
+Proceedings of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition (CVPR) , pages 165–174, 2019.
+3
+[31] Matt Pharr, Wenzel Jakob, and Greg Humphreys. Physically
+based rendering: From theory to implementation . Morgan
+Kaufmann, 2016. 1, 2, 4
+[32] Jonathan Dyssel Stets, Alessandro Dal Corso, Jannik Boll
+Nielsen, Rasmus Ahrenkiel Lyngby, Sebastian Hoppe Nes-
+gaard Jensen, Jakob Wilm, Mads Brix Doest, Carsten
+Gundlach, Eythor Runar Eiriksson, Knut Conradsen, et al.
+Scene reassembly after multimodal digitization and pipeline
+evaluation using photorealistic rendering. Applied Optics ,
+56(27):7679–7690, 2017. 2
+[33] Matthew Tancik, Pratul P. Srinivasan, Ben Mildenhall, Sara
+Fridovich-Keil, Nithin Raghavan, Utkarsh Singhal, Ravi Ra-
+mamoorthi, Jonathan T. Barron, and Ren Ng. Fourier fea-
+tures let networks learn high frequency functions in low di-
+mensional domains. NeurIPS , 2020. 4
+[34] Matthew Tancik, Ethan Weber, Evonne Ng, Ruilong Li,
+Brent Yi, Terrance Wang, Alexander Kristoffersen, Jake
+Austin, Kamyar Salahi, Abhik Ahuja, David Mcallister,
+Justin Kerr, and Angjoo Kanazawa. Nerfstudio: A modular
+framework for neural radiance field development. In ACM
+SIGGRAPH 2023 Conference Proceedings . ACM New York,
+NY , USA, 2023. 8, 9
+[35] Eric Veach. Robust Monte Carlo methods for light transport
+simulation . Stanford University, 1998. 4
+[36] Dor Verbin, Peter Hedman, Ben Mildenhall, Todd Zickler,
+Jonathan T. Barron, and Pratul P. Srinivasan. Ref-NeRF:
+Structured view-dependent appearance for neural radiance
+fields. Proceedings of the IEEE/CVF Conference on Com-
+puter Vision and Pattern Recognition (CVPR) , 2022. 2, 4,
+5
+[37] Gordon Wetzstein, David Roodnick, Wolfgang Heidrich, and
+Ramesh Raskar. Refractive shape from light field distor-
+tion. In Proceedings of the IEEE/CVF Conference on In-ternational Conference on Computer Vision (ICCV) , pages
+1180–1186. IEEE, 2011. 1, 2
+[38] Ydo Wexler, Andrew Fitzgibbon, and Andrew Zisserman.
+Image-based environment matting. In Proceedings, Euro-
+graphics Workshop on Rendering , pages 289–299, 2002. 1,
+2
+[39] Daniel N Wood, Daniel I Azuma, Ken Aldinger, Brian Cur-
+less, Tom Duchamp, David H Salesin, and Werner Stuetzle.
+Surface light fields for 3d photography. In Proceedings of
+the 27th annual conference on Computer Graphics and In-
+teractive Techniques , pages 287–296, 2000. 6
+[40] Bojian Wu, Yang Zhou, Yiming Qian, Minglun Cong, and
+Hui Huang. Full 3d reconstruction of transparent objects.
+Transactions on Graphics (Proceedings of SIGGRAPH) ,
+37(4), jul 2018. 1, 2, 6
+[41] Jiankai Xing, Fujun Luan, Ling-Qi Yan, Xuejun Hu, Houde
+Qian, and Kun Xu. Differentiable rendering using rgbxy
+derivatives and optimal transport. Transactions on Graph-
+ics (Proceedings of SIGGRAPH) , 41(6), dec 2022. 5
+[42] Jiamin Xu, Zihan Zhu, Hujun Bao, and Wewei Xu. A hy-
+brid mesh-neural representation for 3d transparent object re-
+construction. Computational Visual Media Journal (CVMJ) ,
+2023. 1, 2
+[43] Lior Yariv, Jiatao Gu, Yoni Kasten, and Yaron Lipman. V ol-
+ume rendering of neural implicit surfaces. Advances in Neu-
+ral Information Processing Systems (NeurIPS) , 34:4805–
+4815, 2021. 2
+[44] Lior Yariv, Yoni Kasten, Dror Moran, Meirav Galun, Matan
+Atzmon, Ronen Basri, and Yaron Lipman. Multiview neu-
+ral surface reconstruction with implicit lighting and mate-
+rial. Advances in Neural Information Processing Systems
+(NeurIPS) , 3, 2020. 1, 2, 3, 5, 6, 7
+[45] Kai Zhang, Fujun Luan, Qianqian Wang, Kavita Bala, and
+Noah Snavely. Physg: Inverse rendering with spherical gaus-
+sians for physics-based material editing and relighting. In
+Proceedings of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition (CVPR) , pages 5453–5462,
+2021. 1, 2, 5, 6, 7
+[46] Richard Zhang, Phillip Isola, Alexei A Efros, Eli Shecht-
+man, and Oliver Wang. The unreasonable effectiveness of
+deep features as a perceptual metric. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) , 2018. 6
+[47] Xiuming Zhang, Pratul P Srinivasan, Boyang Deng, Paul De-
+bevec, William T Freeman, and Jonathan T Barron. Nerfac-
+tor: Neural factorization of shape and reflectance under an
+unknown illumination. Transactions on Graphics (Proceed-
+ings of SIGGRAPH) , 40(6):1–18, 2021. 1, 2
+[48] Yuanqing Zhang, Jiaming Sun, Xingyi He, Huan Fu, Rongfei
+Jia, and Xiaowei Zhou. Modeling indirect illumination for
+inverse rendering. In Proceedings of the IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition (CVPR) ,
+2022. 1, 2
+[49] Douglas E Zongker, Dawn M Werner, Brian Curless, and
+David H Salesin. Environment matting and compositing.
+InProceedings of the 26th annual conference on Computer
+Graphics and Interactive Techniques , pages 205–214, 1999.
+2

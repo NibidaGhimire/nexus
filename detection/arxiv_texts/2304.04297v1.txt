@@ -1,0 +1,664 @@
+AI-assisted Automated Workﬂow for Real-time X-ray Ptychog-
+raphy Data Analysis via Federated Resources
+Anakha V Babu, Tekin Bicer, Saugat Kandel, Tao Zhou, Daniel J. Ching, Steven Henke, Sini ˇsa Veseli, Ryan Chard, Antonino Miceli,
+Mathew Joseph Cherukara
+Argonne National Laboratory, Lemont, Illinois, USA
+Abstract
+We present an end-to-end automated workﬂow that uses
+large-scale remote compute resources and an embedded GPU
+platform at the edge to enable AI/ML-accelerated real-time anal-
+ysis of data collected for x-ray ptychography. Ptychography is a
+lensless method that is being used to image samples through a si-
+multaneous numerical inversion of a large number of diffraction
+patterns from adjacent overlapping scan positions. This acquisi-
+tion method can enable nanoscale imaging with x-rays and elec-
+trons, but this often requires very large experimental datasets and
+commensurately high turnaround times, which can limit experi-
+mental capabilities such as real-time experimental steering and
+low-latency monitoring. In this work, we introduce a software
+system that can automate ptychography data analysis tasks. We
+accelerate the data analysis pipeline by using a modiﬁed version
+of PtychoNN – an ML-based approach to solve phase retrieval
+problem that shows two orders of magnitude speedup compared
+to traditional iterative methods. Further, our system coordinates
+and overlaps different data analysis tasks to minimize synchro-
+nization overhead between different stages of the workﬂow. We
+evaluate our workﬂow system with real-world experimental work-
+loads from the 26ID beamline at Advanced Photon Source and
+ThetaGPU cluster at Argonne Leadership Computing Resources.
+Introduction
+Neural networks (NN) are considered universal approxima-
+tors and have been successful in solving problems in computer vi-
+sion, natural language processing, autonomous control, and many
+others [1]. Machine learning (ML) based alternate approaches for
+inverse imaging problems have recently received signiﬁcant atten-
+tion and have shown considerable success for medical imaging,
+computational photography, computational microscopy, geophys-
+ical imaging, and other applications [2]. For synchrotron radiation
+facilities speciﬁcally, ML-based reconstruction approaches have
+shown promise for x-ray imaging in the Bragg coherent diffrac-
+tion imaging, high-energy diffraction microscopy, and ptychog-
+raphy modalities [3–5]. These ML-based approaches typically
+consist of two important components. First, the NN is trained us-
+ing previously acquired (data, solution) pairs. Second, the trained
+NN is deployed to invert new experimental data. This NN-based
+inversion is often a single-shot procedure that can be orders of
+magnitude faster than typical iterative inversion techniques, and
+this offers the possibility for real-time experimental feedback with
+high-resolution imaging data.
+Ptychography is a particularly important high-resolution co-
+herent diffraction imaging (CDI) technique that has enabled
+nanoscale imaging in a range of x-ray and electron microscopyapplications, including the imaging of integrated circuits [6],
+biological specimens like algae [7], and strain imaging of
+nanowires [8, 9], and even the atomistic (sub-angstrom) scale
+imaging of nanostructures [10, 11]. In a typical x-ray pty-
+chography experimental setup, a focused coherent x-ray beam
+is scanned across a sample and a large number of far-ﬁeld in-
+tensity diffraction patterns are acquired at the detector. The na-
+ture of the CDI experiment is such that the phase information is
+lost and hence conventional iterative methods are used to retrieve
+the phase using the measured intensity. The iterative reconstruc-
+tion techniques developed for ptychography are typically data and
+compute-intensive and require many (hundreds to thousands of)
+iterations over the measurement data [12]. With advances in ac-
+celerator technology, such as the upcoming upgrade of Argonne
+Photon Source (APS), the data rates of modern x-ray ptychogra-
+phy instruments are expected to increase by orders of magnitude,
+which, in turn, will require large-scale compute resources that can
+provide peta- to exa-FLOPS throughput to perform conventional
+ptychography analysis tasks [13]. This raises prohibitive compu-
+tational requirements for real-time data analysis using traditional
+ptychography algorithms.
+The use of neural networks in real-time ptychographic re-
+construction presents an attractive proposition, but it requires
+addressing some key logistical challenges. Considering the in-
+creased coherence and brilliance of next-generation light sources
+such as the APS-U, the NN training has to deal with huge amounts
+of data and will be performed at a remote high-performance com-
+puting (HPC) resource to achieve fast training by leveraging vast
+computational throughput. However, real-time feedback to the
+beamline is not possible with remote HPC for NN inference due
+to the latency involved in the data transfer [14]. Thus it is es-
+sential to implement the inference at the edge or as close to the
+data generating source to enable real-time data analysis. With the
+availability of low-cost embedded GPUs and dedicated AI/ML
+hardware accelerators, the feed-forward computations in the NN
+are feasible with high throughput [15]. The trained model can
+periodically be deployed to an edge device for low-latency oper-
+ations, such as experimental steering and/or monitoring. Further,
+once the reconstructions of the trained model meet user quality
+metrics, valuable HPC resources can be released and used for
+other tasks. This motivates the need for developing a workﬂow
+system that will automatically monitor the data acquisition pro-
+cess and can efﬁciently use remote HPC resources for faster data
+processing, ML training, and edge inference.arXiv:2304.04297v1  [cs.CV]  9 Apr 2023Related Work
+Many reconstruction algorithms have been developed for
+ptychography over the years [16–19]. The parallelization of these
+algorithms and their efﬁcient execution on high-end compute re-
+sources and accelerators, such as GPUs, have also gained atten-
+tion [19–21]. The 3D ptychography experiments further elevate
+the computational demands of the data analysis tasks, which ex-
+tends the 2D ptychography with tomography or laminography
+techniques, increasing the size of collected datasets to several or-
+ders of magnitude [12, 22]. Although most of the 3D reconstruc-
+tion tasks are performed with single-pass direct methods (due to
+their computationally less demanding nature), high-quality 3D re-
+constructions still rely on iterative techniques. Therefore parallel
+and distributed [23, 24], memory-centric [25], high-performance
+3D reconstruction algorithms [26] and techniques, which can pro-
+vide quasi-real-time results [27], have been developed [28, 29].
+For extremely large-scale 3D datasets, parallelization of single-
+pass ﬁltered-back projection methods is also studied [30, 31].
+However, the analysis of large-scale experimental datasets (for
+both direct and iterative methods) requires the usage of clusters
+and supercomputers, which are typically difﬁcult to interact with.
+Several runtime and workﬂow systems have been developed in or-
+der to ease the usage of these resources [32–35], their executions
+have been demonstrated for synchrotron image analysis tasks [36–
+38], including ptychography workﬂows [39]. Although these re-
+sources can provide massive computational throughput, they are
+still limited in terms of their feedback latency due to job schedul-
+ing, data movement, and resource allocation overheads; therefore,
+the usage of edge devices that are close to the data acquisition is
+desirable for low-latency tasks.
+AI/ML techniques have been used to alleviate computational
+demands of ptychography data analysis and improve the output
+image quality, including for both 2D [40–42] and 3D ptychogra-
+phy [43–45]. Surrogate models that replace the phase retrieval
+algorithms have recently shown promising results with very short
+inference times [3, 4, 46]. These models have been deployed to
+edge computing devices, such as NVIDIA Jetson, that enable real-
+time feedback for scientists as well as other downstream tasks that
+require low-latency data analysis [5, 47]. The training of these
+AI/ML models, however, can be time-consuming and need high-
+end GPUs. Further, the variety of samples and features that need
+to be learned by these models can be massive, which necessitates
+continuous learning.
+In this work, we complement existing work via incorporating
+AI/ML training with our workﬂow system [39, 47]. Speciﬁcally,
+we perform high-latency (continuous) training tasks at high-end
+compute resources, whereas the low-latency feedback operations
+are carried out at the beamline using an edge device (NVIDIA
+Jetson). The loosely-coupled execution between training and in-
+ference tasks enables us to provide close to real-time results while
+providing high-quality outputs with up-to-date AI/ML models.
+Objective
+This work focuses on the automation of ML-accelerated x-
+ray ptychography data analysis for 2D image reconstruction and
+providing a live visualization of phase predictions made by the
+edge device located close to the data acquisition machine. The
+workﬂow system has several processing components, for instance,
+the data transfer between the local data acquisition system to theremote HPC and then initiating the reconstructions for training
+the ML model. Once the training is complete, the trained model
+is pushed to the edge device from the remote HPC. Our work-
+ﬂow system coordinates different processing components, for ex-
+ample, the communication between the data acquisition system
+and remote HPC, implementing remote function calls in the HPC
+resources using available resources, and performing model up-
+dates on the edge device without interrupting the data visualiza-
+tion. Under the hood, our system handles complex tasks, such as
+job scheduling, task synchronization, resource authentication and
+management.
+Methodology and Experimental Design
+The automated workﬂow for real-time ptychography data
+analysis can be visualized as shown in Figure 1. It has mainly
+four different stages: (i) data acquisition, (ii) phase retrieval, (iii)
+neural network training, and (iv) live AI/ML inference. We ex-
+plain each of these stages in the following subsections.
+Data Acquisition
+The experiment was carried out on the hard x-ray nanoprobe
+beamline (26ID) at the APS. The photon energy was 10.4 keV .
+The sample was a 1.5 mm thick Tungsten ﬁlm etched into random
+patterns. X-ray ptychographic images, the diffraction patterns,
+were collected using a medipix3 detector with 55 mm pixel size,
+sitting at 1.55 m downstream of the sample. A Fresnel zone plate
+with 160 mm diameter and 30 nm outermost zone width was used
+for the focusing. The optics were intentionally defocused by -150
+mm to produce an overfocused beam with an FWHM of about 600
+nm. Each ptychographic scan follows an optimized spiral path of
+963 data points with a step size of 50 nm.
+Workﬂow System Components
+We implement the data analysis pipeline using Globus tools;
+namely, Automate [48], funcX [49], and Transfer [50] services.
+Listing 1. Example of a Globus Automate ﬂow deﬁnition.
+f" StartAt ": " Init ", -> Beginning state
+" States ": f -> State definitions
+" Init ": f -> Init state
+" Type ": " Action ",
+" ActionUrl ": " https : //.../ transfer ", ...
+" Parameters ": f
+" src . $": "..." , " dest . $": "..." ,
+" items ": [ ... ]
+g, ...
+" Next ": " Analyze "
+g, ... -> See Listing 3
+The Globus Automation Services helps end users implement
+the steps (or stages) of the workﬂow using a JSON-based ﬂow
+deﬁnition language. These stages consist of action s, which are
+collectively called ﬂows, including data transfer and remote func-
+tion execution. These actions are typically triggered or executed
+via interacting with other services’ application programming in-
+terfaces (APIs). An example of a ﬂow deﬁnition is given in List-
+ing 1. The StartAt has the value of initial state for the workﬂow,
+which points to the Init . The following States entry consists of
+the deﬁnition of the workﬂow states with Init state deﬁned at the
+beginning. The Init state performs a data transfer action, where
+the source, destination, and items (folders or ﬁles) are passed as
+parameters. The Next key points to the next state in the workﬂow,X-ray beamFocusing opticsSampleDetector
+DiffractionPatternsBeamlineComputer
+Data AcquisitionPhase RetrievalNN Training Live AI Inference1234
+funcXglobus
+funcX
+globus endpoint
+Training data prep.
+Training data pair
+Trained   model BeamlineComputer
+pvAstream
+edge devicepvAstream
+TikeFigure 1. An automated workﬂow for accelerating the x-ray ptychography data analysis using federated resources. Step (1) represents the data acquisition
+process during a ptychography experiment. The acquired diffraction patterns are transferred to the HPC resources and fed into ptychographic reconstruction
+tasks as illustrated in step (2). The reconstructed 2D real-space images are then used for training the PtychoNN model (step (3)). The model training is a
+continuous process, i.e. the workﬂow system keeps reconstructing the real-space 2D images as the measurement data become available and used for training.
+The trained up-to-date model is deployed to the beamline periodically for real-time inference as shown in step (4). We use Globus tools and services to perform
+data transfer, remote function calls, authentication, and task and resource management.
+which is Analyze (see Listing 3).
+Globus Automate uses the authentication infrastructure pro-
+vided by Globus Auth, therefore the services that are integrated
+with Globus Auth can beneﬁt from the single sign-on authentica-
+tion layer [51]. This capability signiﬁcantly eases the interaction
+between many actions such as the management of data transfer,
+interaction with storage systems, and compute resources.
+Listing 2. Function registration to funcX service and sample usage.
+from funcx .sdk. client import FuncXClient
+# Python function to be run
+def ptycho_func (** data ): ...
+main (): ...
+fxc = FuncXClient () -> Get funcX client to
+... interact with service
+# Serialize the local python function and
+# store it at funcX cloud service
+fxid = fxc . register_function ( ptycho_func )
+fxep = getEndPointAddress ()
+...
+# Execute ptycho_func at fxep endpoint
+fxc . run ( params , -> Param . to pass
+endpoint_id = fxep , -> Remote resource
+function_id = fxid ) -> Func . to run
+We use the funcX service to perform remote function exe-
+cution. The remote execution of python functions using funcX
+involves two main steps: (1) registration of user-deﬁned python
+functions to funcX cloud service and (2) execution of func-
+tions on the target compute resources. Step (2) requires inter-
+action between funcX cloud service and endpoints as the user-
+deﬁned functions need to be serialized, transferred, and sched-
+uled for execution. These steps are shown in Listing 2. Specif-ically, fxc.register function(...) andfxc.run(...) .
+The funcX functions in Listing 2 are used for registering and trig-
+gering the user-deﬁned python function ( ptycho func(...) ).
+The funcX service resolves which function to run and where to
+runit with functions idandendpoint idparameters, respec-
+tively. Registered funcX functions can be invoked within a Globus
+automation, as shown in Listing 3. The funcX endpoints manage
+the large-scale compute resources via the system’s job scheduler.
+Listing 3. Globus Automate funcX action implementation in ﬂow deﬁnition.
+... -> See Listing 1
+" Analyze ": f -> Another state def.
+" Type ": " Action ", ...
+" ActionUrl ": " https :// automate . funcx . org ",
+" Parameters ": f
+" tasks ": [ f" endpoint . $": "..." ,
+" function . $": "..." ,
+" payload . $": "..."
+g]g,
+" Next ": " Fin " -> Next state
+g,
+" Fin ": f... -> Final state
+" End ": True
+g, #Fin g# States , g -> End of state defs .
+The workﬂow data transfer actions are performed by the
+Globus Transfer service. The transfer service, similar to the funcX
+service, handles the data movement operations using a cloud ser-
+vice that interacts with endpoints. The data transfer operations are
+fault tolerant and can handle extremely large data movements.
+Our workﬂow system automatically performs the transfer of
+the acquired ptychography data from beamline to compute cluster,
+initiates the reconstruction tasks, triggers the model training, anddeploys the up-to-date model to the edge using Globus services
+(between facilities), workﬂow scripts (at the compute cluster), and
+pvAccess (at the beamline). Globus services seamlessly integrate
+with Globus Auth and provide secure access to large-scale high-
+end storage and compute resources.
+Phase Retrieval
+Step 1 in Fig. 1 illustrates a typical ptychography experimen-
+tal setup that is used to acquire diffraction patterns. During an ex-
+periment, many of these diffraction patterns are collected which
+can result in TB-scale measurement data. The ptychographic re-
+construction process aims to recover the phase information and
+reconstruct 2D real-space images from diffraction patterns. The
+data acquisition process can be modeled with yi+1=F(d;p;yi)
+formula. Here, dcorresponds to diffraction patterns (measured
+data on detector) with their corresponding scanning positions, p
+is the probe information, and yiis the (initial) guess for the im-
+aged sample [52]. The ptychographic reconstruction process tries
+to iteratively converge a set of values for yi+1that is consistent
+with the measurement data ( d) while solving the phase retrieval
+problem.
+We used Tike (version 0.22) [53] to implement the ptycho-
+graphic reconstruction operations. Tike provides several itera-
+tive solvers, including conjugate gradient, difference map, least
+square, and regularized ptychographic iterative engine (rPIE),
+where we used rPIE solver during our workﬂow execution. Fur-
+ther, the solvers are parallelized and they can efﬁciently be exe-
+cuted on multiple GPUs and nodes [52, 54]. We initiate the re-
+construction tasks via funcX service that calls an external Tike
+script with application parameters, such as the number of itera-
+tions and probes, initial estimates, and the frequency of writing
+reconstructed images.
+Neural Network Training
+In this work, we use a slightly modiﬁed version of PtychoNN
+(version 2.0), a fully convolutional neural network discussed in
+[4] for achieving live AI inference at the edge. We apply a con-
+tinuous training scheme where the training data is increased as
+the experiment progresses (with the newly collected diffraction
+patterns included in the training dataset). Therefore, the model
+will not be trained from scratch for each experimental iteration,
+instead starts from the previously saved checkpoint of the model
+with the lowest validation loss. With 10% of the training dataset
+reserved for validation, the neural network is trained using the
+PyTorch framework for 50 epochs adapting a cyclic learning rate
+policy. The learnable parameters of the model are updated using
+the adaptive moment estimation (ADAM) optimizer to minimize
+the absolute mean error (MAE) between the reference labels (re-
+constructions obtained from phase retrieval) and neural network
+outputs. The trained model with the lowest validation loss at the
+end of 50 epochs is deployed to the beamline (Jetson AGX device
+[55]) by the workﬂow system.
+Live AI/ML Inference
+The live AI inference is handled by AGX Xavier [55], an
+embedded platform from NVIDIA as shown in step (4), Fig. 1.
+AGX Xavier (Jetson series) has a compute capability of 32 TOPS
+and is designed to accelerate ML workloads for edge use cases.
+This device is physically located close to the data source or thesynchrotron beamline and hosts an EPICS [56] pvAccess client to
+process the diffraction patterns that are streamed from the beam-
+line computer using the pvAccess protocol [57]. As discussed
+in the data acquisition stage, the diffraction patterns are concur-
+rently streamed over the network from the beamline computer
+as a pvAccess stream in addition to saving the data into the ﬁle
+system. The incoming diffraction data at the edge device is pro-
+cessed by the pvAccess client to obtain a 2D image and then feed
+to the inference engine for predicting the phases. The inference
+engine uses the latest trained model from HPC and converts that
+into ONNX format, which is a hardware-independent intermedi-
+ate representation. We used the TensorRT API [58], a library pro-
+vided by NVIDIA to perform inference with reduced latency on
+NVIDIA’s embedded GPU platforms. We used a batch size of
+1 and the phase prediction obtained from the NN model is live-
+streamed to the beamline computer as a pvAccess stream. The
+live individual predictions and the overall stitched phase map of
+the sample are also provided at the user interface. A maximum
+frame rate of 100 fps is achieved with AGX Xavier as the beam-
+line computer is limited by the network bandwidth of 1 Gbps for
+512512 pixels.
+We also extended the capability of live streaming at the edge
+when the detector is running at its peak acquisition rate of 2kHz.
+Results and Discussion
+Our workﬂow system provides seamless integration between
+synchrotron radiation beamlines and compute clusters. Speciﬁ-
+cally, we tested our system on 26ID beamline at APS and per-
+formed reconstruction and model training at ALCF’s ThetaGPU
+cluster. The trained models are periodically deployed to a
+NVIDIA Jetson edge device located at beamline.
+Our experiments show that the edge computational capabil-
+ity using Jetson AGX Xavier can achieve real-time feedback up
+to 200 fps, i.e., consuming and inferring 200 diffraction patterns
+per second, while concurrently performing reconstruction and ML
+model training at the ALCF’s ThetaGPU cluster. We used Tike
+toolkit, which includes GPU-optimized reconstruction solvers, to
+perform efﬁcient phase retrieval on ThetaGPU. The Tike solvers
+are called via funcX, which also handles task and resource man-
+agement on ThetaGPU cluster.
+We also previously demonstrated the workﬂow in a ptychog-
+raphy experiment using ALCF’s ThetaGPU cluster using up to 64
+A100 GPUs (8 nodes) and 168 concurrent reconstruction work-
+ﬂows. This workﬂow can achieve a speedup of 29.6x compared
+to using a single A100 at the beamline with greater than 81%
+compute scaling efﬁciency (as shown in [39]). The new workﬂow
+system extends our previous work with AI/ML capabilities, which
+further improves the turnaround latency. If higher frame rates are
+desired at the edge, inference operations can be performed with
+multiple edge devices or other advanced NVIDIA GPUs. Our ex-
+periments show that the inference rate can reach up to 8000 fps
+using 2 RTX A6000 GPUs.
+Our workﬂow system provides basic building blocks for
+inter-facility integration via Globus tools and services. This eases
+the extension of workﬂow with additional steps (as new states in
+Globus Automate). Similarly, other data analysis workﬂows can
+easily be implemented with these building blocks [32].Acknowledgements
+Work performed at the Advanced Photon Source, Argonne
+Leadership Computing Facility and the Center for Nanoscale Ma-
+terials, all three U.S. Department of Energy Ofﬁce of Science
+User Facilities, was supported by the U.S. DOE, Ofﬁce of Ba-
+sic Energy Sciences, under Contract No. DE-AC02-06CH11357.
+We also acknowledge support from ANL’s Laboratory Directed
+Research and Development funding 2023-0104.
+References
+[1] K. Hornik. “Approximation capabilities of multilayer feedforward
+networks”. In: Neural Networks 4.2 (1991), pp. 251–257. ISSN :
+0893-6080.
+[2] G. Ongie et al. “Deep Learning Techniques for Inverse Problems
+in Imaging”. In: IEEE Journal on Selected Areas in Information
+Theory 1.1 (2020), pp. 39–56.
+[3] Y . Yao et al. “AutoPhaseNN: unsupervised physics-aware deep
+learning of 3D nanoscale Bragg coherent diffraction imaging”. In:
+npj Computational Materials 8.1 (2022), pp. 1–8.
+[4] M. J. Cherukara et al. “AI-enabled high-resolution scanning co-
+herent diffraction imaging”. In: Applied Physics Letters 117.4
+(2020), p. 044103.
+[5] Z. Liu et al. “ BraggNN : fast X-ray Bragg peak analysis using deep
+learning”. In: IUCrJ 9.1 (Jan. 2022).
+[6] M. Holler et al. “High-resolution non-destructive three-
+dimensional imaging of integrated circuits”. In: Nature 543.7645
+(2017), pp. 402–406.
+[7] J. Deng et al. “Simultaneous cryo X-ray ptychographic and ﬂuo-
+rescence microscopy of green algae”. In: Proceedings of the Na-
+tional Academy of Sciences 112.8 (2015), pp. 2314–2319.
+[8] S. O. Hruszkewycz et al. “High-resolution three-dimensional
+structural microscopy by single-angle Bragg ptychography”. In:
+Nature Materials 16.2 (Feb. 2017), pp. 244–251. ISSN : 1476-
+4660.
+[9] M. O. Hill et al. “Measuring Three-Dimensional Strain and Struc-
+tural Defects in a Single InGaAs Nanowire Using Coherent X-
+ray Multiangle Bragg Projection Ptychography”. In: Nano Letters
+18.2 (2018). PMID: 29345956, pp. 811–819.
+[10] Y . Jiang et al. “Electron ptychography of 2D materials to deep sub-
+˚angstr ¨om resolution”. In: Nature 559.7714 (July 2018), pp. 343–
+349. ISSN : 1476-4687.
+[11] Z. Chen et al. “Electron ptychography achieves atomic-resolution
+limits set by lattice vibrations”. In: Science 372.6544 (2021),
+pp. 826–831.
+[12] APS Upgrade .https://www.aps.anl.gov/APS- Upgrade .
+[Accessed: May 2021].
+[13] APS Scientiﬁc Computing Strategy . Accessed: 08-5-2022.
+[14] A. Vasanthakumaribabu. “Efﬁcient hardware implementations of
+bio-inspired networks”. PhD dissertation. New Jersey Institute of
+Technology, 2020.
+[15] A. Reuther et al. “AI Accelerator Survey and Trends”. In: CoRR
+abs/2109.08957 (2021).
+[16] V . Nikitin et al. “Photon-limited ptychography of 3D objects
+via Bayesian reconstruction”. In: OSA Continuum 2.10 (2019),
+pp. 2948–2968.
+[17] S. Marchesini et al. “SHARP: A distributed GPU-based pty-
+chographic solver”. In: Journal of applied crystallography 49.4
+(2016), pp. 1245–1252.
+[18] S. Aslan et al. “Distributed optimization with tunable learned
+priors for robust ptycho-tomography”. In: arXiv preprint
+arXiv:2009.09498 (2020).
+[19] D. A. Shapiro et al. “Ptychographic imaging of nano-materials at
+the advanced light source with the nanosurveyor instrument”. In:
+Journal of Physics: Conference Series . V ol. 849. 1. IOP Publish-
+ing. 2017, p. 012028.
+[20] X. Wang et al. “Image Gradient Decomposition for Parallel
+and Memory-Efﬁcient Ptychographic Reconstruction”. In: 2022
+SC22: International Conference for High Performance Comput-ing, Networking, Storage and Analysis (SC) . IEEE Computer So-
+ciety. 2022, pp. 86–98.
+[21] Y . S. G. Nashed et al. “Parallel ptychographic reconstruction”. In:
+Optics Express 22.26 (2014), pp. 32082–32097.
+[22] Intelligence Advanced Research Projects Activity. Rapid Analysis
+of Various Emerging Nanoelectronics .https://www.iarpa.
+gov / index . php / research - programs / raven . [Accessed:
+May 2021].
+[23] T. Bicer et al. “Trace: a high-throughput tomographic reconstruc-
+tion engine for large-scale datasets”. In: Advanced structural and
+chemical imaging 3.1 (2017), pp. 1–10.
+[24] T. Bicer et al. “Rapid tomographic image reconstruction via large-
+scale parallelization”. In: European Conference on Parallel Pro-
+cessing . Springer. 2015, pp. 289–302.
+[25] M. Hidayeto ˘glu et al. “MemXCT: Memory-centric x-ray CT re-
+construction with massive parallelization”. In: International Con-
+ference for High Performance Computing, Networking, Storage
+and Analysis . 2019, pp. 1–56.
+[26] S. Aslan et al. “Joint ptycho-tomography reconstruction through
+alternating direction method of multipliers”. In: Optics express
+27.6 (2019), pp. 9128–9143.
+[27] T. Bicer et al. “Tomographic Reconstruction of Dynamic Features
+with Streaming Sliding Subsets”. In: 2020 IEEE/ACM 2nd Annual
+Workshop on Extreme-scale Experiment-in-the-Loop Computing
+(XLOOP) . IEEE. 2020, pp. 8–15.
+[28] X. Wang et al. “Massively parallel 3D image reconstruction”.
+In:Proceedings of the International Conference for High Per-
+formance Computing, Networking, Storage and Analysis . 2017,
+pp. 1–12.
+[29] M. Hidayetoglu et al. “Petascale XCT: 3D Image Reconstruc-
+tion with Hierarchical Communications on Multi-GPU Nodes”.
+In:SC20: International Conference for High Performance Com-
+puting, Networking, Storage and Analysis . IEEE Computer Soci-
+ety. 2020, pp. 510–522.
+[30] P. Chen et al. “IFDK: A scalable framework for instant high-
+resolution image reconstruction”. In: Proceedings of the Interna-
+tional Conference for High Performance Computing, Networking,
+Storage and Analysis . 2019, pp. 1–24.
+[31] P. Chen et al. “Scalable FBP decomposition for cone-beam CT re-
+construction”. In: Proceedings of the International Conference for
+High Performance Computing, Networking, Storage and Analysis .
+2021, pp. 1–16.
+[32] R. Vescovi et al. “Linking Scientiﬁc Instruments and HPC: Pat-
+terns, Technologies, Experiences”. In: Technologies, Experiences
+().
+[33] M. Salim et al. “Balsam: Near Real-Time Experimental Data
+Analysis on Supercomputers”. In: 2019 IEEE/ACM 1st Annual
+Workshop on Large-scale Experiment-in-the-Loop Computing
+(XLOOP) . 2019, pp. 26–31.
+[34] M. Basham et al. “ Data Analysis WorkbeNch (DAWN )”. In: Jour-
+nal of Synchrotron Radiation 22.3 (May 2015), pp. 853–858.
+[35] J. Donatelli et al. “Camera: The center for advanced mathematics
+for energy research applications”. In: Synchrotron Radiation News
+28.2 (2015), pp. 4–9.
+[36] M. Klein et al. “Interactive supercomputing for experimental data-
+driven workﬂows”. In: Tools and Techniques for High Perfor-
+mance Computing . Springer, 2019, pp. 164–178.
+[37] T. Peterka et al. “A conﬁgurable algorithm for parallel image-
+compositing applications”. In: Proceedings of the Conference on
+High Performance Computing Networking, Storage and Analysis .
+IEEE. 2009, pp. 1–10.
+[38] T. Bicer et al. “Real-time data analysis and autonomous steering
+of synchrotron light source experiments”. In: IEEE 13th Interna-
+tional Conference on e-Science (e-Science) . IEEE. 2017, pp. 59–
+68.
+[39] T. Bicer et al. “High-Performance Ptychographic Reconstruction
+with Federated Facilities”. In: Driving Scientiﬁc and Engineering
+Discoveries Through the Integration of Experiment, Big Data, and
+Modeling and Simulation . Cham: Springer International Publish-
+ing, 2022, pp. 173–189. ISBN : 978-3-030-96498-6.[40] S. Aslan et al. “Joint ptycho-tomography with deep generative pri-
+ors”. In: Machine Learning: Science and Technology 2.4 (2021),
+p. 045017.
+[41] S. V . Kalinin et al. Big, deep, and smart data in scanning probe
+microscopy . 2016.
+[42] S. Venkatakrishnan et al. “Algorithm-driven Advances for Scien-
+tiﬁc CT Instruments: From Model-based to Deep Learning-based
+Approaches”. In: arXiv preprint arXiv:2104.08228 (2021).
+[43] Z. Liu et al. “Deep learning accelerated light source experiments”.
+In:2019 IEEE/ACM Third Workshop on Deep Learning on Super-
+computers (DLS) . IEEE. 2019, pp. 20–28.
+[44] Z. Wu et al. “Deep Learning-based Low-dose Tomography Re-
+construction with Hybrid-dose Measurements”. In: arXiv preprint
+arXiv:2009.13589 (2020).
+[45] Z. Liu et al. “TomoGAN: low-dose synchrotron x-ray tomogra-
+phy with generative adversarial networks: discussion”. In: JOSA
+A37.3 (2020), pp. 422–434.
+[46] M. J. Cherukara et al. “Real-time coherent diffraction inversion
+using deep generative networks”. In: Scientiﬁc reports 8.1 (2018),
+p. 16520.
+[47] A. V . Babu et al. Deep learning at the edge enables real-time
+streaming ptychographic imaging . 2022.
+[48] R. Chard et al. “Globus automation services: Research process au-
+tomation across the space–time continuum”. In: Future Genera-
+tion Computer Systems (2023).
+[49] R. Chard et al. “Funcx: A federated function serving fabric for
+science”. In: Proceedings of the 29th International symposium
+on high-performance parallel and distributed computing . 2020,
+pp. 65–76.
+[50] K. Chard et al. “Efﬁcient and secure transfer, synchronization,
+and sharing of big data”. In: IEEE Cloud Computing 1.3 (2014),
+pp. 46–55.
+[51] S. Tuecke et al. “Globus Auth: A research identity and access man-
+agement platform”. In: 2016 IEEE 12th International Conference
+on e-Science (e-Science) . IEEE. 2016, pp. 203–212.
+[52] X. Yu et al. “Scalable and accurate multi-GPU-based image recon-
+struction of large-scale ptychography data”. In: Scientiﬁc Reports
+12.1 (2022), p. 5334.
+[53] Argonne National Laboratory. Tike: A toolbox for tomographic
+reconstruction of 3D objects from ptychography data .https://
+tike.readthedocs.io . [Online accessed January-2023]. 2023.
+[54] X. Yu et al. “Topology-Aware Optimizations for Multi-GPU Pty-
+chographic Image Reconstruction”. In: International Conference
+on Supercomputing . ICS ’21. Virtual Event, USA: ACM, 2021,
+pp. 354–366. ISBN : 9781450383356.
+[55] NVIDIA Jetson AGX Xavier Developer Kit. https : / /
+developer.nvidia.com/embedded/jetson-agx-xavier-
+developer-kit . [Online; accessed 16-Nov-2021].
+[56] Experimental Physics and Industrial Control System (EPICS) .
+https://epics-controls.org .
+[57] pvAccess .https://epics-controls.org/resources-and-
+support/documents/pvaccess/ .
+[58] I. L ¨utkebohle. BWorld Robot Control Software .http://aiweb.
+techfak.uni- bielefeld.de/content/bworld- robot-
+control-software/ . [Online; accessed 19-July-2008]. 2008.
+Author Biography
+Anakha V Babu received the B.Tech degree in Electronics
+and Communication Engineering from University of Kerala, In-
+dia, in 2010 and M.tech degree in Microelectronics & VLSI design
+from the Indian Institute of Technology Bombay, Mumbai, India,
+in 2016. She completed her Ph.D. degree in Electrical Engineer-
+ing at the New Jersey Institute of Technology, New Jersey, USA, in
+2020. She worked as a postdoctoral appointee at the X-ray Sci-
+ence Division, Argonne National Laboratory (ANL), where she
+focused on implementing and automating real-time ptychography
+data analysis at the edge. She is currently working as a HardwareElectronics Engineer at the Beamline Controls and Data Acquisi-
+tion (BCDA) of the APS, ANL.
+Tekin Bicer is a computer scientist in Data Science and
+Learning division at ANL. He has expertise in HPC, large-scale
+parallel and distributed systems, and AI/ML methods, with a spe-
+cial focus on large-scale x-ray image analysis problems. He re-
+ceived his Ph.D. from Computer Science and Engineering Depart-
+ment at Ohio State University in 2014, where he studied large-
+scale computing systems that address data management and anal-
+ysis problems on high-end clusters and cloud compute resources.
+Saugat Kandel received his B.A in Physics from Amherst
+College in 2008, and his Ph.D. in Applied Physics from North-
+western University in 2021. He has since been working on AI
+and optimization approaches for ptychography and autonomous
+experimentation methods in the Computational X-ray Sciences
+group at the APS in ANL.
+Tao Zhou is an assistant scientist at the Center for Nanoscale
+Materials of ANL as well as a beamline scientist on the hard x-ray
+nanoprobe beamline at the APS. He received his PhD in Physics
+from the University of Grenoble Alpes in 2016. His main research
+focus is the development of novel x-ray diffraction imaging tech-
+niques assisted by advanced computation and machine learning
+methods.
+Daniel J. Ching received his Ph.D. for Materials Science
+from Oregon State University in 2018. He has since been work-
+ing as a computational imaging researcher for tomography and
+ptychography at ANL.
+Steven Henke received his Ph.D. in Computational Science
+from Florida State University in 2013 and his B.S. degree in
+Physics from University of Wisconsin. He is a Data Scientist at
+APS Scientiﬁc Software Engineering since 2021.
+Siniˇsa Veseli received his B.S. degree from the University of
+Zagreb, Croatia, in 1992. He received his Ph.D. in Physics at
+the University of Wisconsin-Madison in 1996. He is currently a
+member of APS Scientiﬁc Software Engineering and Data Man-
+agement Group, and working on the controls Data Acquisition
+software for the APS Upgrade, as well as on the APS Data Man-
+agement project.
+Ryan Chard received his Ph.D. in computer science from Vic-
+toria University of Wellington, New Zealand. After an appoint-
+ment as a Maria Goeppert Mayer Fellow at Argonne National
+Laboratory, he joined the Globus team to work on the develop-
+ment of cyberinfrastructure to enable scientiﬁc research.
+Antonino Miceli is the Group Leader of the Detectors group
+in the X-ray Science Division of the APS at ANL with joint ap-
+pointments at University of Chicago and Northwestern Univer-
+sity. He conducts R&D in x-ray detectors to enable scientiﬁc
+advances, and operates the APS Detector Pool, which provides
+technical services and support for APS beamlines and users. Dr.
+Miceli received his Ph.D. in physics from the University of Wash-
+ington. He joined ANL in 2005.
+Mathew Cherukara Joseph received his Ph.D. in computa-
+tional materials science and engineering from Purdue University,
+and a bachelors in materials engineering from the Indian Insti-
+tute of Technology Madras. He is currently the Group Leader
+of the Computational X-ray Science group at the APS. His re-
+search leverages AI for autonomous experimentation, materials
+characterization (metrology) beyond hardware limits and accel-
+erated materials modeling.License
+The submitted manuscript has been created by UChicago Ar-
+gonne, LLC, Operator of Argonne National Laboratory (“Ar-
+gonne”). Argonne, a U.S. Department of Energy Ofﬁce of Sci-
+ence laboratory, is operated under Contract No. DE-AC02-
+06CH11357. The U.S. Government retains for itself, and others
+acting on its behalf, a paid-up nonexclusive, irrevocable world-
+wide license in said article to reproduce, prepare derivative works,
+distribute copies to the public, and perform publicly and display
+publicly, by or on behalf of the Government. The Department
+of Energy will provide public access to these results of federally
+sponsored research in accordance with the DOE Public Access
+Plan. http://energy.gov/downloads/doe-public-access-plan.

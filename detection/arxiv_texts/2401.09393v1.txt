@@ -1,0 +1,1405 @@
+Élivágar: Efficient Quantum Circuit Search for Classification
+Sashwat Anagolum *
+Pennsylvania State UniversityNarges Alavisamani
+Georgia Institute of TechnologyPoulami Das
+University of Texas, Austin
+Moinuddin Qureshi
+Georgia Institute of TechnologyEric Kessler
+AWS Quantum TechnologiesYunong Shi
+AWS Quantum Technologies
+Abstract
+Designing performant and noise-robust circuits for Quan-
+tum Machine Learning (QML) is challenging — the design
+space scales exponentially with circuit size, and there are few
+well-supported guiding principles for QML circuit design. Al-
+though recent Quantum Circuit Search (QCS) methods attempt
+to search for performant QML circuits that are also robust
+to hardware noise, they directly adopt designs from classical
+Neural Architecture Search (NAS) that are misaligned with
+the unique constraints of quantum hardware, resulting in high
+search overheads and severe performance bottlenecks.
+We present Élivágar, a novel resource-efficient, noise-guided
+QCS framework. Élivágar innovates in all three major as-
+pects of QCS — search space, search algorithm and candi-
+date evaluation strategy — to address the design flaws in
+current classically-inspired QCS methods. Élivágar achieves
+hardware-efficiency and avoids an expensive circuit-mapping
+co-search via noise- and device topology-aware candidate
+generation. By introducing two cheap-to-compute predictors,
+Clifford noise resilience and representational capacity, Élivá-
+gar decouples the evaluation of noise robustness and perfor-
+mance, enabling early rejection of low-fidelity circuits and re-
+ducing circuit evaluation costs. Due to its resource-efficiency,
+Élivágar can further search for data embeddings, significantly
+improving performance.
+Based on a comprehensive evaluation of Élivágar on 12 real
+quantum devices and 9 QML applications, Élivágar achieves
+5.3% higher accuracy and a 271 ×speedup compared to state-
+of-the-art QCS methods.
+1. Introduction
+Quantum Machine Learning (QML) is an important class of
+quantum algorithms for the Noisy-Intermediate Scale Quan-
+tum (NISQ) [65] era, due to its applicability to real-world prob-
+lems such as classification [20, 28, 42, 80], generative model-
+ing [26, 54, 70, 96, 97] and learning physical systems [27, 41].
+QML uses variational quantum circuits to perform machine
+learning tasks. The parameters in these variational circuits are
+iteratively updated (i.e., trained ) using a classical optimizer
+until the circuit learns the input problem to high accuracy.
+*ssa5517@psu.edu
+Figure 1: Comparison of classical and quantum ML systems.
+The key challenge in designing effective near-term QML
+algorithms is to find variational circuits with good circuit per-
+formance , to accurately learn the input problem, and noise
+robustness , to avoid performance degradation. However, due
+to the complexity of device-level noise sources and the nascent
+state of QML theory, there are few established guiding prin-
+ciples in designing QML circuits. Current manually crafted
+circuits are often under-performant, and face numerous practi-
+cal issues such as vanishing gradients [84] and low fidelity.
+This challenge has motivated recent efforts in Quantum
+Circuit Search (QCS) [18, 80, 94] which aims to automat-
+ically find high-performance, noise-robust circuits. While
+promising, these methods are still preliminary, and naively
+adopt established methodologies from classical Neural Archi-
+tecture Search (NAS) [36, 53], a subfield of Machine Learning
+(ML) that searches for high-performance neural networks. As
+a result, current QCS works overlook the fundamental differ-
+ences between classical ML and QML, shown in Fig. 1.
+At the data processing level, classical ML uses multi-
+dimensional vectors to represent input data. In QML, dataarXiv:2401.09393v1  [quant-ph]  17 Jan 2024Figure 2: QuantumNAS: A state-of-the-art QCS framework.
+must be embedded into data embedding gates, the choices
+and locations of which impact circuit performance. At the
+algorithm level, QML cannot compute gradients efficiently
+via automatic differentiation as intermediate states cannot be
+copied [89] and collapse on measurement [52]. Instead, QML
+uses methods like parameter-shift rules [71] that scale poorly
+with problem size. At the compilation level, mapping classical
+neural networks with arbitrary topology onto memory is inex-
+pensive due to efficient data movement. However, due to the
+limited connectivity of NISQ devices, large routing costs are
+incurred when QML circuits do not match device topology.
+Existing QCS methods naively adopt classical ML designs,
+precluding compatibility with the unique constraints of QML.
+We explain these mismatches using QuantumNAS [80], a state-
+of-the-art QCS method. As shown in Fig. 2, QuantumNAS
+first trains a large device-agnostic SuperCircuit with fixed data
+embeddings. Next, it performs an evolutionary co-search to
+identify a performant and noise-robust circuit-qubit mapping
+pair, using the trained SuperCircuit parameters to estimate the
+performance of candidate circuits on the target device. Finally,
+it returns the best circuit-qubit mapping pair found. Other
+frameworks such as QuantumSupernet [18] follow similar
+designs, and thus also experience the following issues:
+1.They use device-agnostic search spaces, necessitating an
+additional search for logical-to-physical qubit mappings. The
+found mappings are also hardware-inefficient, since selected
+circuits usually do not match the device topology and SWAP
+gates must be inserted before circuit execution.
+2.They do not assess the impact of data embeddings on
+circuit performance as they use fixed, dataset-agnostic data
+embeddings. This leads to circuits with poor performance.
+3.They adopt strategies from classical ML relying heavily
+on gradient computation, which is expensive on quantum com-
+puters and scales poorly with circuit size.
+4.They perform expensive performance evaluation for all
+circuits. This is inefficient, since many circuits have extremelylow fidelity, and will perform poorly since their outputs will
+be severely corrupted by to device noise. Existing methods
+do not have any mechanisms to identify and eliminate the
+performance evaluation for such circuits.
+Consequently, existing QCS frameworks incur significant
+search overheads even for small circuits and problem sizes,
+and often perform poorly on QML tasks.
+To address the problems above, we propose Élivágar, a
+resource-efficient, high-performance QCS framework tailored
+to QML systems. First , Élivágar uses a device topology-
+and noise-aware circuit generation process to generate noise
+robust circuits that are hardware efficient, eliminating the
+costly circuit-mapping co-search (issue 1). Second , to miti-
+gate performance bottlenecks caused by fixed, data-agnostic
+data embeddings (issue 2), Élivágar generates circuits with dif-
+ferent data embeddings and variational gates, allowing Élivá-
+gar to search for the optimal data embedding for a QML task.
+Third , to reduce the overheads of training-based circuit evalua-
+tions (issue 3), Élivágar introduces a novel, cheap-to-compute
+performance predictor, representational capacity , for circuit
+performance evaluation. By using representational capacity,
+Élivágar eliminates the expensive training step in the QCS
+workflow while still effectively predicting circuit performance.
+Last , Élivágar makes use of the insight that evaluating noise
+robustness is much simpler than evaluating performance. By
+introducing Clifford noise resilience , a predictor of circuit
+noise robustness, it decouples these two evaluations to enable
+early rejection of low-fidelity circuits (issue 4).
+Our evaluations using 9 near-term QML benchmarks show
+that Élivágar finds circuits with 5.3% higher accuracy while
+being 271 ×faster than prior state-of-the-art QCS methods.
+Moreover, we show that the speedup of Élivágar increases
+with problem size. In summary, our contributions are:
+1.We propose a novel QCS workflow, Élivágar, that is tai-
+lored to QML systems and addresses the design flaws in cur-
+rent classically-inspired QCS methods.
+2.We show that noise-guided, topology-aware and data
+embedding-aware circuit search, on average, leads to a 5.3%
+improvement in circuit performance compared to current meth-
+ods.
+3.We show that by using representational capacity to predict
+circuit performance, the number of circuit executions in Élivá-
+gar can be improved by 22 ×- 523×relative to training-based
+evaluation strategies.
+4.We show that by performing early rejection of low-fidelity
+circuits using Clifford noise resilience, the resource efficiency
+of Élivágar can be further improved by 2 ×-20×depending on
+noise level.
+We open source Élivágar to facilitate future QCS research
+at https://github.com/SashwatAnagolum/Elivagar.
+22. Background and Motivation
+2.1. Executing quantum programs on NISQ computers
+NISQ-era devices with limited qubit connectivity and imper-
+fect operations make program executions error-prone. Op-
+erations on non-adjacent qubits are enabled using SWAPs,
+as shown in Fig. 3a, which are usually implemented using
+three 2-qubit gates, making them noisy and expensive. Prior
+works [15, 35, 48, 67, 78] show that circuit fidelity can be im-
+proved through circuit compilation techniques such as qubit
+mapping and routing , which minimize SWAPs, making it de-
+sirable to eliminate SWAPs to make circuits hardware-efficient
+and boost circuit fidelity.
+2.2. Variational circuits for QML
+Variational circuits in QML consist of data embedding gates,
+trainable variational gates, and measurement operations. The
+data embedding gates are used to transform classical data into
+quantum states by using these classical data as rotation angles
+for the data embedding gates. Once the data has been embed-
+ded, the variational gates in the circuit are used to manipulate
+the representations of the data, and measurements are applied
+by using measurement operators to extract classical data for
+post-processing, such as for computing parameter updates
+during training, or for making predictions during inference.
+After training, a QML circuit can be used for inference.
+To do so, we embed into the circuit the data to make pre-
+dictions based on, and use the learned parameter values for
+the variational gates. The circuit is executed on a quantum
+device, and measurements are performed to extract classi-
+cal data which can be post-processed to obtain predictions.
+The post-processing can potentially involve statistical analy-
+sis, decoding, or other task-specific operations transforming
+measurement outputs into meaningful results.
+Different circuits can be constructed by varying the number,
+type, and placement of gates used. Due to the large search
+space, designing performant QML circuits is challenging. As
+a result, practitioners often rely on a set of commonly used
+variational templates , such as the hardware efficient ansatz
+[45]. However, numerous works [9, 12, 28, 45] show that these
+templates tend to perform poorly on QML tasks as circuit size
+increases, motivating the search for better circuit structures.
+2.2.1. Data embedding gates
+The choice of data embedding in a QML circuit signifi-
+cantly impacts its performance, as highlighted in prior stud-
+ies [10, 62, 72, 73]. To illustrate, consider the example in
+Fig. 3b, where two circuits share the same variational gates,
+but differ in data embeddings (RX (x)and RY (x), versus RX (x)
+alone), resulting in markedly different performance outcomes.
+However, choosing a suitable data embedding for a given
+QML task is challenging due to the vast search space, lead-
+ing many QML circuits to use a fixed embedding such as an
+angle [7] or Instantaneous Quantum Polynomial-time (IQP)
+(a)
+(b)
+(c)
+Figure 3: (a) Circuit and device topology mismatch results in a large
+routing cost due to noisy SWAP gates. (b) Both circuits use the same
+trainable gates, but different data embeddings. Circuit 1 learns the
+target function f(x)but Circuit 2 fails, highlighting the importance of
+suitable data embeddings for QML tasks. (c) QML circuits consist of
+data embedding gates, trainable gates, and measurement operations.
+QML training involves running circuits on a quantum device and
+tuning parameters using a classical optimizer.
+embedding [24], regardless of the nature of the QML task.
+This often results in suboptimal performance due to the mis-
+match between the embedding used and the QML task.
+2.2.2. Training variational circuits
+Variational circuits are trained using gradient-based optimiza-
+tion in a classical-quantum feedback loop, as shown in Fig. 3c.
+However, training variational circuits is costlier than train-
+ing classical ML models. In classical ML, gradients are ef-
+ficiently computed via Automatic Differentiation (AD) [4],
+which takes constant time. However, this approach is not
+feasible on quantum computers since intermediate quantum
+states cannot be manipulated or copied due to the no-cloning
+theorem [52, 89]. Thus, alternative methods such as parameter-
+shift rules [71, 87] are used. Parameter-shift methods compute
+the gradient of a single parameter θby running two circuits
+3Table 1: Key differences between Élivágar and existing QCS methods. ES, RL, and MCTS refer to evolutionary search (ES), reinforcement
+learning (RL), and Monte Carlo tree search (MCTS), respectively.
+FrameworkSearch
+SpaceSearch
+AlgorithmCandidate
+Evaluation StrategyRuntime
+Bottleneck
+MCTS-QAOA [91] Pauli strings RL + MCTS Train circuit Sample-inefficient RL
+QCEAT [30] Random circuits ES Train circuit Gradient computation
+QuantumSupernet [18] SuperCircuit Random search SuperCircuit loss Gradient computation
+QuantumNAS [80] SuperCircuit ES SuperCircuit loss Gradient computation
+ÉlivágarDevice- and noise-
+aware circuitsNoise-guided random
+search (Sec. 4)CNR (Sec. 5)
+and RepCap (Sec. 6)–
+with shifted parameters, θ+sandθ−s(where sis a constant),
+and then computing the difference. Unfortunately, this method
+requires circuit executions scaling linearly with the number of
+circuit parameters, in contrast to the constant scaling of AD
+methods; thus, QML gradient computation scales poorly with
+the number of parameters.
+2.3. Limitations of existing QCS works
+QCS works that use reinforcement learning (RL), such as
+MCTS-QAOA [91], converge slowly due to the large action
+and state spaces involved in quantum circuit design, and in-
+cur large circuit evaluation costs during training of the RL
+model. SuperCircuit-based works such as QuantumSuper-
+net [18] and QuantumNAS [80] also result in impractical run-
+time overheads due to the high cost of SuperCircuit training
+(Section 2.2.2). These methods additionally require a circuit-
+mapping co-search which is often unable to make circuits
+hardware-efficient, leading to SWAP insertions and reduced
+circuit noise robustness (Section 2.1). Moreover, SuperCircuit-
+based works cannot search for optimal data embeddings for
+a QML task, leading to lowered performance due to data
+embedding-QML task mismatch (Section 2.2.1). Together,
+these issues hinder the ability of existing works to find perfor-
+mant circuits while maintaining low search costs.
+2.4. The necessity of a new QCS pipeline
+It is infeasible to improve significantly on existing QCS works
+since many of the prerequisites for performant, low-cost QCS
+are fundamentally incompatible with SuperCircuit-based meth-
+ods. For example, SuperCircuit training is necessary for accu-
+rate circuit performance prediction, preventing the elimination
+of training and gradient computation. However, gradient com-
+putation on quantum hardware is costly, leading to high search
+overheads. Additionally, SuperCircuit performance prediction
+is only accurate when using a fixed data embedding for allcandidate circuits, precluding the possibility of searching for
+optimal data embeddings to boost performance.
+Therefore, to enable efficient QCS, it is necessary to de-
+velop a novel QCS pipeline that accounts for the constraints
+of QML systems and NISQ-era quantum hardware. To this
+end, we propose Élivágar, a QCS framework which eschews
+using a SuperCircuit in favor of training-free predictors of
+circuit performance, avoiding the training-induced runtime
+bottlenecks of prior work. Moreover, since Élivágar does not
+use a SuperCircuit, it can search for optimal data embeddings
+and perform efficient noise-guided candidate sampling, allow-
+ing it to generate hardware-efficient circuits at neglible cost
+and outperform prior QCS works consistently. Élivágar’s key
+differences with prior QCS works are presented in Table 1.
+3. Overview of Élivágar
+As illustrated in Fig. 4, Élivágar consists of five steps:
+1.Topology- and noise-aware candidate circuit genera-
+tion: First, Élivágar generates candidate circuits and data
+embeddings in a device- and noise-aware manner.
+2.Evaluation of noise robustness: Élivágar then computes
+the Clifford noise resilience score for circuits to estimate cir-
+cuit noise robustness.
+3.Early rejection of low-fidelity circuits: Élivágar ranks
+candidate circuits based on their Clifford noise resilience and
+eliminates low-fidelity circuits.
+4.Evaluation of circuit performance: Élivágar predicts the
+performance of the remaining circuits on the target QML task
+using representational capacity.
+5.Final circuit selection: Finally, Élivágar computes com-
+posite scores combining representational capacity and Clifford
+noise resilience for the remaining candidate circuits, and re-
+turns the best circuit.
+4Figure 4: An overview of Élivágar.
+We break Élivágar down into three parts — candidate circuit
+generation (step 1, Section 4), noise-guided candidate rejec-
+tion (step 2-3, Section 5), and circuit performance estimation
+and circuit selection (step 4-5, Section 6).
+4. Candidate circuit generation
+To overcome the issues of SuperCircuit-based circuit gen-
+eration discussed in Section 1, Élivágar directly generates
+candidate circuits and data embeddings based on target device
+topology via a noise-guided sampling policy shown in Algo-
+rithm 1. This approach has the following advantages over
+SuperCircuit-based methods: 1) generating circuits based on
+device topology ensures hardware-efficiency and improves
+circuit fidelity; 2) circuits are generated along with optimal
+qubit mappings, eliminating the need for an expensive circuit-
+mapping co-search; 3) noise-guided sampling further boosts
+the average fidelity of candidate circuits; 4) generating var-
+ied data embeddings for candidate circuits improves selected
+circuit performance.
+As a result, circuits generated by Élivágar have 18.9%
+higher fidelity than device-unaware circuits optimized using
+SABRE [35] (Section 9.1). Furthermore, Élivágar obtains 6%
+higher accuracy on average when searching for data embed-
+dings than when using a fixed data embedding (Section 9.3).
+4.1. Noise-guided candidate circuit generation
+As shown in Algorithm 1, Élivágar first chooses a connected
+subgraph from the device topology, and then samples a list of
+gates to form the circuit. Gate placement choices are guided by
+subgraph connectivity, noise information such as qubit coher-
+ence times, 1- and 2-qubit gate fidelities, readout fidelities, and
+the current circuit structure. Following prior works in classical
+NAS [17, 38], Élivágar samples qubits and gate placements
+from probability distributions instead of directly choosing the
+best options to encourage candidate diversity.
+Choosing a subgraph S(V(S),E(S))for every circuit allows
+Élivágar to trivially obtain a qubit mapping for every gen-
+erated circuit by using V(S). This way, Élivágar avoids the
+expensive circuit-mapping co-search required by other QCS
+frameworks. In contrast, the evolutionary co-search used by
+QuantumNAS [80] cannot guarantee hardware-efficiency, andAlgorithm 1: Generate device-aware circuits
+Input: Device topology graph G({Vi},{Ej}); Qubit
+readout errors {Ri}; Qubit coherence times
+{T1i},{T2i}; 2-qubit gate fidelity {Qe};
+Output circuit configuration Oconf.
+Output: Candidate circuit C.
+1Sample a set of connected subgraphs {Si}with
+V(Si)=Oconf .nq∀ifrom G;
+2Select a subgraph S(V(S),E(S))from distribution
+P{Si}(S|RV(S),T1V(S),T2V(S),QE(S));
+3Initialize Cas an empty circuit;
+4Randomly sample a list Lopof 1-qubit and 2-qubit
+gates based on Oconf .nparams andOconf .nembeds ;
+5forop in L opdo
+6 ifop is a 1-qubit gate then
+7 Select a qubit q∈V(S)from distribution
+P1q(q|C,T1q,T2q);
+8 Append op(q)toC;
+9 ifop is a 2-qubit gate then
+10 Select an edge e= (q0,q1)∈E(S)from
+P2q(e|C,T1q0,T1q1,T2q0,T2q1,Qe);
+11 Append op(q0,q1)toC;
+12Select a set qmeasofOconf .nmeasqubits in V(S)from
+distribution P meas(q|RE(S));
+13Append MEASURE( qmeas) toC;
+14Randomly designate Oconf .nembeds parametric gates in
+Cfor use as data embedding gates;
+15return C;
+is very expensive: eliminating it results in Élivágar becoming
+1.4×-33.4×faster (Section 9.4). Thus, rather than use an alter-
+native co-search mechanism, Élivágar adopts a novel approach
+that completely eliminates the need for a co-search, resulting
+in higher circuit fidelity and search efficiency.
+Insight 1: Generating device-aware circuits
+Generating device- and noise-aware circuits eliminates the
+need for an expensive circuit-mapping co-search, improves
+circuit fidelity, and ensures hardware-efficiency.
+5(a)
+ (b)
+ (c)
+ (d)
+Figure 5: (a) A circuit and (b) a Clifford replica of the circuit. CNR is strongly correlated with circuit fidelity, as demonstrated using circuits
+run on (c) IBMQ-Kolkata and IBMQ-Guadeloupe, and a (d) noise model of Rigetti Aspen-M-2.
+4.2. Generating data embeddings
+Élivágar employs a simple strategy to generate data embed-
+dings: a few gates in each circuit are used as data embedding
+gates, with each gate randomly assigned one dimension of
+the input data to embed (line 14 in Algorithm 1). Despite
+the random generation of data embeddings, Élivágar lever-
+ages representational capacity (Section 6) to predict circuit
+performance with different data embeddings and select cir-
+cuits that contain the most suitable data embeddings for the
+QML task of interest. Consequently, Élivágar optimizes both
+the data embedding and the variational gates in the selected
+circuit, resulting in improved performance. By co-searching
+for data embeddings and variational gates, Élivágar unlocks
+6% higher accuracy than when using a fixed data embedding
+(Section 9.3).
+Insight 2: Searching for optimal data embeddings
+Using optimized data embeddings significantly boosts per-
+formance over QCS methods with fixed embeddings.
+5. Noise-guided candidate rejection
+A key insight of Élivágar is that predicting circuit noise ro-
+bustness is much simpler than predicting circuit performance.
+Leveraging this, Élivágar reduces the number of performance
+estimations required by identifying and discarding low-fidelity
+circuits. To do so, Élivágar defines a predictor, Clifford noise
+resilience (CNR), that accurately predicts circuit fidelity.
+While simulating a quantum circuit is exponentially costly
+in general, Clifford circuits are a class of efficiently simulable
+quantum circuits [8]. Thus, the fidelity of Clifford circuits can
+be calculated efficiently by comparing their outputs with noise-
+less classical simulation results. This enables efficient fidelity
+estimation for a circuit by using the fidelity of its Clifford
+replicas as a proxy [32], which is expensive to compute di-
+rectly for large circuits due to the high simulation cost. While
+prior works use Clifford replicas to create circuit compilation
+passes [14, 15, 68] and characterize device noise [67], Élivágar
+uses Clifford circuits to identify noise-robust circuits for QML.
+First, we elaborate on Clifford replicas and CNR, and then
+show the strong correlation between CNR and circuit fidelity.5.1. Creating Clifford replicas
+Clifford replicas of a circuit are created by substituting all
+of the non-Clifford gates in the circuit with Clifford gates.
+Previous works such as [14, 15] generate a Clifford replica for
+a circuit by substituting non-Clifford gates with the closest
+Clifford gate as measured by the diamond norm. In contrast,
+Élivágar uses multiple Clifford replicas with randomly chosen
+Clifford gates. The primary reason for this is that prior works
+deal with circuits at the compilation stage, where the parameter
+values to be used with each gate are known. In contrast, since
+Élivágar generates Clifford replicas for circuits before training,
+it is impossible to know what parameter values will be used
+with the circuit. Moreover, since gate angles will be changed
+due to training or different input data, using multiple Clifford
+replicas, each with randomly chosen Clifford gates, provides
+a reliable measure of circuit noise robustness over the course
+of training and prediction.
+Figure 5a and 5b show a circuit and one of its Clifford
+replicas. Since Clifford replicas use the same structure as the
+original circuit, circuit properties such as depth, are preserved.
+Élivágar creates multiple Clifford replicas and averages the
+fidelities of all the constructed replicas. We find that using as
+few as 16 Clifford replicas can accurately characterize circuit
+noise robustness.
+5.2. Computing CNR
+To compute the CNR for a circuit, Élivágar first collects the
+noisy outputs Pnoisy obtained by executing the generated Clif-
+ford replicas on the target quantum device. Then, it obtain the
+ideal Clifford replica outputs Pnoiseless via simulation. Élivágar
+then calculates the Total Variation Distance (TVD) between
+the noisy and noiseless outputs and computes the fidelity as
+Fid=1−TVD:
+TVD =1
+2∑
+i∈[2nq]|Pnoiseless (|i⟩)−Pnoisy(|i⟩)|. (1)
+CNR(C), the Clifford noise resilience for circuit C, is defined
+as the average fidelity of the MClifford replicas CR(i):
+CNR(C) =1
+MM
+∑
+i=1Fid(PCR(i)
+noiseless,PCR(i)
+noisy). (2)
+65.3. Candidate circuit rejection
+After computing the CNR of candidate circuits, Élivágar ranks
+circuits by CNR and by default rejects circuits with CNR
+values less than a threshold of 0.7, or outside the top 50%
+of all candidates. However, these values can be set by users
+of Élivágar as hyperparameters. All rejected circuits require
+no performance evaluation, leading to reduced resource re-
+quirements. Depending on device noise levels and threshold
+values, this rejection step can speed up Élivágar significantly.
+For example, when searching for a 250-parameter circuit on
+IBMQ-Manila with a CNR threshold of 0.9, Élivágar can re-
+ject 95% of circuits, achieving an almost 20x reduction in
+circuit executions.
+In comparison, SuperCircuit-based QCS works conflate the
+evaluation of circuit noise robustness and circuit performance,
+making the identification of low-fidelity circuits unnecessarily
+expensive. In these methods, the performance of a candidate
+circuits is evaluated using a validation data set Xvalidon the
+target device. This requires executing |Xvalid|circuits to eval-
+uate every candidate circuit. This cost is often significantly
+larger than the constant number of circuits required to compute
+CNR, making identifying low performing circuits needlessly
+costly in SuperCircuit-based frameworks.
+Figure 5c and 5d show the correlation between the CNR
+and the fidelity of circuits executed on IBMQ-Guadalupe and
+IBMQ-Kolkata, and a noise model of Rigetti Aspen-M-2. In
+all cases, CNR is highly predictive of circuit fidelity.
+Insight 3: Early rejection of low-fidelity circuits
+Noise robustness evaluation is simpler than performance
+evaluation. Evaluating noise robustness first using Clif-
+ford noise resilience enables early rejection of low-fidelity
+circuits, reducing evaluation costs.
+6. Circuit performance evaluation
+Our calculations indicate that over 90% of the circuit exe-
+cutions for SuperCircuit-based QCS methods are performed
+during SuperCircuit training, due to the high cost of comput-
+ing gradients on quantum hardware via the parameter-shift
+rule. Thus, eliminating the initial training phase of QCS is
+crucial for resource efficiency.
+Élivágar addresses this by introducing a novel, cheap-to-
+compute circuit performance predictor, representational ca-
+pacity (RepCap). RepCap requires far fewer circuit executions
+than training-based evaluation strategies, but is just as effective
+at predicting circuit performance. Fig. 6 shows the correlations
+of SuperCircuit predicted losses and RepCap with trained cir-
+cuit performance on the FMNIST-2 task. Despite not requiring
+any training, RepCap is as strong a predictor of performance
+as a trained SuperCircuit. RepCap is a strong predictor of
+circuit performance on other QML benchmarks as well, as
+shown in Fig. 7, and has a Spearman R correlation of 0.632with circuit performance over all the QML benchmarks used
+for evaluation.
+First, we define RepCap and provide some intuition about
+it, and then elaborate on how to compute RepCap. Then, we
+discuss how we combine CNR and RepCap to rank the circuits
+remaining after the noise-guided circuit elimination process.
+6.1. Predicting circuit performance using RepCap
+Intuitively, RepCap measures the intra-class similarities and
+inter-class separation of the final quantum states for a vari-
+ational circuit. As illustrated in Fig. 6a, the larger the inter-
+cluster distance and the smaller the intra-cluster distance in the
+final qubit state space, the higher the RepCap of a variational
+circuit is. A higher RepCap indicates that the circuit has a
+larger “capacity" for representing the input data, and likely
+will perform better.
+RepCap for circuit Cis defined as:
+RepCap (C) =1−∥RC−Rref∥2
+2
+2·nc·d2c, (3)
+where dcandncare the number of samples selected from
+each class and the number of classes in Xtrain, respectively.
+||·||2is the Frobenius norm. Rrefis ad×dreference matrix
+that captures the ideal circuit behaviour, i.e. Rref(i,j) =1iff
+yi=yj, and Rref(i,j) =0otherwise. RCis ad×dmatrix that
+captures pairwise similarities between the representations of
+data points xiandxjcreated by circuit C, with RC(i,j)∈[0,1].
+The entries of RCused in Eq. (3) are the induced similarity
+ISCbetween data points xiandxj, i.e.,
+RC(i,j) =ISC(xi,xj). (4)
+ISC(xi,xj)is defined as the averaged similarity of the output
+quantum states ρC(xi,θ)andρC(xj,θ)of circuit Cwhen fed
+input data xiandxjover random parameters θ. In practice, we
+use classical approximations ˆρC(xi,θ), computed via Algo-
+rithm 2, instead of states ρC(xi,θ)in order to avoid executing
+circuits for every pair of samples xiandxj:
+ISC(xi,xj) =1
+nθn
+∑
+θ=θ1Sim(ˆρC(xi,θ),ˆρC(xj,θ)) (5)
+The angles {θi}can be uniformly sampled. Then the
+similarity Sim(xi,xj)between xi,xjcan be defined as the
+one minus Total Variational Distance (TVD) between their
+output states by Cusing a randomized measurement proto-
+col [19, 23, 29],
+Sim(ˆρC(xi,θ),ˆρC(xj,θ)) =1
+nbases
+nbases
+∑
+k=11−TVD(ˆρC(xi,θ)k,ˆρC(xj,θ)k).(6)
+where nbases is the number of random bases we use to approxi-
+mate the two states.
+7(a)
+ (b)
+Figure 6: (a) Representational capacity measures the degree of intra-class similarity and inter-class separation of the quantum states created by
+a circuit. Circuit 1 has a higher representational capacity, and so is likely to perform better than Circuit 2. (b) Predicting circuit performance on
+the FMNIST-2 benchmark. RepCap predicts circuit performance as well as a SuperCircuit, despite not involving gradient computation.
+Figure 7: Representational capacity is a strong predictor of perfor-
+mance for various QML tasks.
+Algorithm 2: Constructing the classical approximation
+ˆρC(x,θ)of a representation ρC(x,θ)
+Input: Circuit C; Input data x; variational parameters
+θ; array of random rotation angles αof size
+nbases×nmeas×3.
+Output: Classical approximation ˆρC(x,θ)ofρC(x,θ)
+1Append a set of nmeasU3 gates to Cacting on the nmeas
+qubits being measured;
+2Initialize ˆρC(x,θ)as an empty list of length nbases;
+3fori=1to n bases do
+4 Execute circuit C(x,[θ,αi]);
+5 Construct probability distribution P(α,i)(x,θ)using
+the outputs of C(x,[θ,αi]);
+6 SetˆρC(x,θ)i←P
+7return ˆρC(x,θ);
+Computing RepCap requires only nc·dc·npcircuit execu-
+tions, where npis the number of parameter initializations
+we average over. In practice, we take dc=16,np=32.
+ForNCcircuits, Élivágar then requires 512· NC·nccircuit ex-
+ecutions. In contrast, SuperCircuit-based methods require
+2·t·|Xtrain|· ¯p+N·|Xvalid|circuit executions to train a Super-
+Circuit for tepochs via sampling subcircuits with ¯pparameters
+each on average, and then evaluate the performance of Nsub-
+circuits. The initial training overhead of a SuperCircuit scales
+very poorly with problem size due to the high cost of gradientcomputation, increasing the speedup of Élivágar with problem
+size. For example, Élivágar is only 44 ×faster than Quan-
+tumNAS on the 16-parameter Moons task (Section 7); for the
+72-parameter MNIST-10 task, the speedup is over 5000 ×.
+Insight 4: Predict circuit performance without training
+By analyzing the output states of a circuit for different input
+data, we can cheaply estimate circuit performance as well
+as prior work.
+6.2. Final evaluation of remaining circuits
+Élivágar combines CNR (C)and RepCap (C)to accurately pre-
+dict performance of the remaining circuits on the target device.
+The composite score Score (C)for circuit Cis given by
+Score (C) =CNR(C)αCNR×RepCap (C). (7)
+αCNRis a hyperparameter controlling the relative importance
+of CNR (C), with RepCap (C)and CNR (C)being equally im-
+portant at αCNR=1. For all experiments, we set αCNR=0.5.
+Finally, Élivágar returns the circuit with the highest Score (C).
+7. Experimental Setup
+7.1. Benchmarks
+We conduct experiments on 9 different QML benchmarks. A
+summary of the benchmarks is shown in Table 2. Train and
+Test in Table 2 refer to the number of samples used for training
+and testing, respectively. Params is the number of parameters
+in the circuits we search for in Section 8. Moons is a synthetic
+dataset generated using scikit-learn. We select a balanced
+subset of the original Bank dataset [43]. We use classes {0, 1}
+from the MNIST dataset for MNIST-2, {0, 1, 4, 8 }for MNIST-
+4,{T-shirt, Trouser }from the FMNIST dataset for FMNIST-2,
+and{T-shirt, Trouser, Bag, Ankle Boot }for FMNIST-4. For
+the MNIST and FMNIST benchmarks, we center crop the
+original images to 24x24 and downsample them to 4x4 using
+mean pooling, except for MNIST-10, which is downsampled
+to 6x6.
+8Table 2: Summary of the 9 QML benchmarks used for evaluations.
+Benchmark Classes Data Dim. Train Test Params
+Moons 2 2 0.6K 0.12K 16
+Bank 2 4 1.1K 0.12K 20
+MNIST-2 2 4x4 1.6K 0.4K 20
+MNIST-4 4 4x4 8K 2K 40
+FMNIST-2 2 4x4 1.6K 0.2K 32
+FMNIST-4 4 4x4 8K 2K 24
+V owel-2 2 10 0.6K 0.12K 32
+V owel-4 4 10 0.6K 0.12K 40
+MNIST-10 10 6x6 60K 10K 72
+Table 3: Summary of the real quantum hardware used .
+Median Error Rate ↓
+Device Qubits QV Readout 1Q 2Q
+OQC Lucy 8 – 1.3e-1 6.2e-4 4.4e-2
+Rigetti Aspen M-3 79 – 8.0e-2 1.5e-3 9.3e-2
+IBMQ Jakarta 7 32 2.6e-2 2.2e-4 8.5e-3
+IBM Nairobi 7 32 2.4e-2 2.7e-4 9.6e-3
+IBM Lagos 7 32 1.9e-2 2.1e-4 9.8e-3
+IBM Perth 7 32 2.8e-2 2.8e-4 8.7e-3
+IBM Geneva 16 32 2.7e-2 2.2e-4 1.1e-2
+IBM Guadalupe 16 32 2.0e-2 2.9e-4 8.9e-3
+IBMQ Kolkata 27 128 1.2e-2 2.3e-4 9.0e-3
+IBMQ Mumbai 27 128 1.9e-2 2.0e-4 9.6e-3
+IBM Kyoto 127 – 1.4e-2 2.5e-4 9.1e-3
+IBM Osaka 127 – 1.7e-2 2.2e-4 1.0e-2
+The V owel-2 and V owel-4 datasets are constructed by merg-
+ing 8 out of the 9 classes in the original V owel dataset, and
+selecting the 10 most significant PCA dimensions.
+7.2. Backends and compiler configurations
+The hardware devices used are listed in Table 3. We also
+use multiple noisy simulators use noise models based on
+IBM Nairobi, IBM Lagos, IBM Perth, IBMQ Jakarta, IBM
+Guadalupe, Rigetti Aspen-M-2, Rigetti Aspen-M-3, and OQC
+Lucy in order to perform evaluations, compute circuit fi-
+delity and CNR. To compute RepCap and perform circuit
+training, we use noiseless simulators from Pennylane [6] and
+TorchQuantum [80]. Before running circuits on any hardware
+device or noisy simulator, we compile the circuit using the
+default Qiskit compiler with optimization level set to 3 for all
+competing methods except for QuantumNAS, for which we
+use level 2, and Élivágar, for which we use level 0.
+7.3. Training methodology
+All circuits are trained using the same methodology to ensure
+fair comparisons. We train circuits for 200 epochs using abatch size of 128 and optimize parameters using the Adam
+optimizer with learning rate 0.01. No weight decay or learning
+rate scheduling is used. The training objective is to minimize
+the classification loss between circuit predictions and the la-
+bels of the training set. We perform training on noiseless
+simulators using the TorchQuantum package [80], and use an
+AWS ml.g4dn.xlarge instance with 16GB of memory and an
+NVIDIA T4 GPU.
+7.4. Competing methods
+We compare Élivágar to four competing methods. Every cir-
+cuit compared to, including those chosen by Élivágar, all con-
+tain the same number of parameters in order to ensure a fair
+comparison. The number of parameters used in the circuits for
+each benchmark is given in Table 2.
+Random: we randomly generate 25 circuits using the
+RXYZ + CZ gateset from [80], and report the average perfor-
+mance of the circuits.
+Human designed (baseline): We use three data embedding
+schemes (angle, amplitude, and IQP embedding) paired with
+paired with the commonly used BasicEntanglerLayers tem-
+plate from the Pennylane [6] library. We train all three circuits
+and report the average performance.
+QuantumSupernet [18]: We modify the SuperCircuit train-
+ing procedure proposed in [18] and use mini-batch gradient de-
+scent with batch size 32 instead of full-batch gradient descent
+to ensure all SuperCircuit parameters are updated sufficiently.
+All other hyperparameters are taken from [18].
+QuantumNAS [80]: We use the same hyperparameters for
+SuperCircuit training and evolutionary search as [80], and use
+the RXYZ + CZ gateset since it performs the best out of the 6
+gatesets in [80] before pruning. We do not perform iterative
+pruning for trained QuantumNAS circuits as the pruning phase
+does not contribute towards circuit search.
+7.5. Hyperparameters for Élivágar
+We randomly sample dc=16data points from each class
+ofXtrainandnp=32parameter initializations to compute
+RepCap. We use M=32Clifford replicas to compute CNR,
+and reject circuits with CNR scores less than 0.7 or outside the
+top 50%. We construct composite scores using αCNR=0.5.
+To mitigate the effects of random circuit sampling, we repeat
+our workflow 25 times, and report the average performance.
+7.6. Figure of merit
+We measure the performance of a circuit using the classifi-
+cation accuracy it obtains over a dedicated test set for each
+benchmark. We highlight the difference between circuit accu-
+racy and circuit fidelity in this work: the classification accuracy
+of a circuit is the fraction of predictions made by the circuit
+that are correct, i.e. match the ground truth label of the associ-
+ated sample for which the prediction was made; while fidelity
+measures the degree to which the outputs of a quantum circuit
+remain unaffected by hardware noise.
+9(a)
+(b)
+Figure 8: Results using (a) noisy simulations with different noise models (each bar shows the mean of 25 runs), and (b) real quantum
+hardware accessed via Amazon Braket and IBM Quantum. All plots show absolute classification accuracy (higher is better) .
+8. Results
+8.1. Performance on QML benchmarks
+Fig. 8a shows performance on 9 different QML benchmarks,
+using noisy simulators with noise models of Rigetti Aspen-M-
+3, OQC Lucy, IBM Lagos, IBM Perth, IBM Nairobi, IBMQ
+Jakarta. Fig. 8b shows the results of evaluations performed
+onreal quantum hardware . Élivágar is competitive with or
+outperforms QuantumNAS on all benchmarks except V owel-4.
+Circuit performance on the Rigetti Aspen-M-3 and OQC Lucy
+devices is worse than on the IBM devices due to their higher
+noise levels (see Table 3). On average, Élivágar achieves
+5.3% higher accuracy than QuantumNAS, and 22.6% higher
+accuracy than the human designed baseline.
+8.2. Runtime speedups
+We consider two hardware setups when measuring the speedup
+of Élivágar over QuantumNAS, which we elaborate on below.
+8.2.1. Using classical simulators
+Using classical simulators results in reduced training costs as
+gradients can be computed efficiently using backpropagation.
+Additionally, training and inference on noiseless simulators
+can be performed in a batched manner, further speeding up
+the QCS process. We provide absolute runtime values for both
+QuantumNAS and Élivágar in Table 4. Even when using classi-
+cal simulators and backpropagation, which disproportionately
+benefits training-heavy frameworks such as QuantumNAS,
+Élivágar is 11.7 ×faster than QuantumNAS on average. More-
+over, the speedup achieved by Élivágar increases with bench-
+mark size despite the reduced cost of gradient computation,
+highlighting Élivágar’s resource-efficiency.Table 4: Absolute runtimes (in minutes) for Élivágar and Quantum-
+NAS for different benchmarks when using classical simulators , and
+speedups experienced by Élivágar when running on classical simula-
+tors(C) and real quantum hardware (Q).
+Benchmark QNAS Élivágar Speedup (C) Speedup (Q)
+Moons 43.4 7.7 5.6x 44x
+V owel-4 63.3 8.9 7.0x 77x
+V owel-2 58.6 9.4 6.2x 104x
+Bank 48.9 7.6 6.4x 119x
+MNIST-2 143.6 7.8 18.6x 182x
+FMNIST-2 184.3 8.3 22.0x 282x
+FMNIST-4 228.6 11.1 20.7x 646x
+MNIST-4 174.2 15.4 11.3x 1046x
+MNIST-10 1007.8 35.5 28.4x 5220x
+GMean 11.7x 271x
+8.2.2. Using quantum hardware
+In this scenario, all training is done via the parameter-shift
+rule [87], which results in drastically increased training costs,
+as explained in Section 2. Unfortunately, the high variance in
+the times required to run circuits on quantum hardware via a
+cloud computing platform make it near impossible to reliably
+estimate runtimes via wall-clock time. Consequently, the most
+reliable way to estimate the speedup achieved by Élivágar is
+to compare the number of circuit executions required by both
+methods for each benchmark. Table 4 shows the speedups
+achieved by Élivágar, which is 271 ×times faster than Quan-
+tumNAS on average. We provide a detailed breakdown of this
+speedup in Section 9.4.
+10Table 5: Characteristics of Élivágar-generated (no optimization) and
+device-unaware random circuits (SABRE [35] + Qiskit compiler level
+3) run on real quantum hardware . Fidelity refers to the extent to
+which circuit outputs remain unaffected by noise, and is different
+from circuit accuracy (see Section 7.6).
+Policy 2Q gates2Q gates after
+compilation ↓Fidelity ↑
+OQC Lucy
+SABRE 7.04 16.22 0.595
+Élivágar 7.04 7.04 0.706
+IBM-Geneva
+SABRE 6.48 15.24 0.615
+Élivágar 6.48 6.48 0.714
+IBMQ-Kolkata
+SABRE 9.52 22.16 0.741
+Élivágar 9.52 9.52 0.848
+IBMQ-Mumbai
+SABRE 9.75 25.00 0.634
+Élivágar 9.75 9.75 0.804
+9. Performance Analysis
+9.1. Device-aware circuit generation
+To analyze Élivágar’s circuit generation strategy, we com-
+pare device-aware circuits generated via Algorithm 1 with
+randomly generated, device-unaware circuits. We generate
+pairs of device-aware and -unaware circuits with the same
+number of 1- and 2-qubit gates before compilation to ensure a
+fair comparison. Device-aware circuits are run unoptimized,
+but device-unaware circuits are optimized using level 3 of the
+Qiskit compiler and SABRE [35]. Table 5 shows that device-
+aware circuits have 18.9% higher fidelity on average. Thus,
+Élivágar’s circuit generation strategy not only eliminates the
+need for a circuit-mapping co-search, but also boosts circuit
+noise robustness, reducing performance degradation.
+9.2. Circuit statistics
+The statistics for the compiled and optimized circuits used
+for the Bank and V owel-2 benchmarks are shown in Table 6.
+Random and Human Design are noise and device unaware,
+resulting in large, deep circuits (depths 163, 260 for MNIST-4,
+and 211, 344 for MNIST-10) with many two-qubit gates even
+after optimization using level 3 of the Qiskit compiler. As a
+result, these circuits experience a large reduction in accuracy
+when run on real devices compared to their noise-free perfor-
+mance. QuantumSupernet is noise and device-aware, but uses
+a deep embedding subcircuit that requires multiple layers ofTable 6: Compiled circuit statistics for Élivágar and competing meth-
+ods run on real quantum hardware .
+Method 1Q Gates ↓2Q Gates ↓Depth ↓Acc.↑
+V owel-2 (32 params.) on IBM Nairobi
+Random 171 52 139 0.653
+Human Designed 194 52 139 0.508
+QuantumSupernet 118 51 104 0.533
+QuantumNAS 67 9 37 0.716
+Élivágar 61 7 30 0.825
+MNIST-4 (40 params.) on IBM Lagos
+Random 201 60 163 0.552
+Human Designed 252 155 260 0.550
+QuantumSupernet 218 122 206 0.300
+QuantumNAS 61 5 32 0.625
+Élivágar 45 4 20 0.642
+MNIST-10 (72 params.) on IBM Osaka
+Random 89 87 211 0.128
+Human Designed 355 228 344 0.113
+QuantumNAS 121 22 55 0.190
+Élivágar 107 24 49 0.178
+Figure 9: Each component of Élivágar - device- and noise-aware
+circuit generation, RepCap, and CNR - contributes to the final ac-
+curacy of the selected circuit. All values are absolute classification
+accuracies obtained on noisy simulators . Each bar shows the mean
+of 25 runs.
+entangling CRY gates, and thus undergoes significant accuracy
+reduction as well. The circuits found by QuantumNAS and
+Élivágar are much shallower due to the evolutionary search
+and CNR incentivizing the selection of shallow, noise-robust
+circuits, respectively.
+However, despite being similarly noise-robust and shallow,
+the circuits found by Élivágar perform significantly better than
+those found by QuantumNAS, likely due to the difference in
+the embeddings used by the circuits. We explore the effect of
+searching for data embeddings in detail in Section 9.3.
+119.3. Breakdown of performance improvement
+We break down Élivágar’s performance improvement into
+three parts: device-aware circuit generation (Section 4), Rep-
+Cap and data embeddings (Section 6), and CNR (Section 5)
+in Fig. 9. We use 8 benchmarks from Table 2, and compare
+Élivágar to three baselines: (1) device- and noise-unaware cir-
+cuits, (2) hardware-efficient device- and noise-aware random
+circuits generated via Algorithm 1, and (3) circuits found by
+Élivágar using only RepCap, i.e. without using CNR to rank
+circuits.
+Using device- and noise-aware circuits increases accuracy
+over device-unaware circuits by 5%, further demonstrating the
+improved noise-robustness of circuits generated using Algo-
+rithm 1. The biggest accuracy improvement (6%) is obtained
+by using RepCap to select circuits instead of choosing ran-
+domly, highlighting the importance of strong predictors of
+circuit performance.
+Using RepCap to select circuits allows Élivágar to search
+for both data embeddings and variational gates. To isolate the
+effect of searching for data embeddings, we compare Élivágar
+with versions of Élivágar that use fixed angle [7] and IQP
+embeddings [24]. We evaluate the three versions of Élivágar
+using a noiseless simulator to eliminate the effects of noise.
+As shown in Fig. 10, Élivágar obtains 5.5% and 20% higher
+accuracy when searching for data embeddings than when using
+a fixed angle and IQP embedding, respectively. This is because
+searching for embeddings allows Élivágar to co-search for
+suitable combinations of embeddings and variational gates,
+allowing it to find higher performance circuits than when
+using a fixed embedding. Thus, almost all of the accuracy
+gains achieved by using RepCap is due to the data embedding
+search, reinforcing the significance of data embeddings in
+determining performance on QML tasks.
+Finally, using CNR in addition to RepCap further increases
+accuracy by 2% on average. Using both predictors results in
+better performance than only using RepCap as while using
+RepCap leads to Élivágar choosing circuits with high noiseless
+accuracy, RepCap is not device- and noise-aware and thus
+may choose circuits that are not noise-robust, leading to large
+accuracy degradations when run on real hardware. Using both
+predictors allows Élivágar to balance circuit learning capability
+and expressivity with circuit noise robustness to find a circuit
+that can accurately learn the target dataset while also being
+robust to hardware noise.
+9.4. Breakdown of runtime speedup
+When training on quantum hardware, the speedup of Élivá-
+gar over QuantumNAS comes from (1) using representational
+capacity for performance evaluation, (2) early rejection of
+low-fidelity circuits, and (3) eliminating the circuit-mapping
+co-search by generating device-aware circuits. Using repre-
+sentational capacity speeds up Élivágar by 16 ×−78×for the
+benchmarks in Section 8, growing with problem size. Since
+Figure 10: Performance of Élivágar when searching for data em-
+beddings versus when using a fixed data embedding. All values are
+absolute classification accuracies obtained on noiseless simulators .
+Each bar shows the mean of 25 runs.
+(a)
+(b)
+Figure 11: Results on real quantum hardware when performing
+training and inference with and without (a) QuantumNAT [82] and
+(b) QTN-VQC [66]. All values are absolute classification accuracies.
+we use conservative CNR hyperparameter values, the speedup
+due to early rejection for all tasks is 2 ×. Eliminating the
+circuit-mapping co-search provides a speedup of 1.4 ×−33.4×,
+growing with problem size.
+9.5. Compatibility with other QML frameworks
+Élivágar is compatible with frameworks targeting the data
+preprocessing and training stages of the QML pipeline, such
+as QTN-VQC [66] and QuantumNAT [82], and makes no
+assumptions about how these tasks are performed. These
+frameworks can be combined with Élivágar to further boost
+circuit performance. Fig. 11a compares the performance of
+Élivágar and QuantumNAS with and without QuantumNAT
+[82], a framework that aims to increase the noise robustness of
+circuits during training and inference. Élivágar obtains 2.2%
+higher accuracy than QuantumNAS + QuantumNAT, and 5.5%
+higher accuracy when paired with QuantumNAT.
+12We further combine Élivágar and QuantumNAS with QTN-
+VQC, a framework that performs classical preprocessing of
+input data via a trainable tensor network, with results shown
+in Fig. 11b. Even when using QTN-VQC, which significantly
+boosts performance due to the added classical trainable param-
+eters in the tensor network used for preprocessing, Élivágar
+outperforms QuantumNAS by 2.4% on average.
+10. Related works
+10.1. Quantum Machine Learning
+Several theoretical works have illustrated potential quan-
+tum advantage in tasks such as classification [1, 28] and
+regression [62]. Various approaches to QML have been
+proposed, including using quantum circuits as kernel meth-
+ods [9, 21, 23, 24, 28, 33, 41, 72, 85], and as quantum neu-
+ral networks [5, 20, 34, 51, 57, 66, 75, 76, 81, 97]. Multiple
+works [1, 76] introduced metrics that estimate circuit perfor-
+mance, but they are unsuitable for QCS due to their high cost.
+10.2. Noise-aware quantum compilation and training
+Recent compilation works explore different circuit transfor-
+mations to improve noise robustness, including gate cancel-
+lation [31, 49, 90], qubit mapping and routing [3, 39, 40, 44,
+47, 50, 55, 56, 77, 79, 88], error mitigation [13, 16, 58, 59], cir-
+cuit synthesis [60, 61, 63, 86, 93], and pulse-level optimiza-
+tions [22, 37, 46, 74]. Some of these works [13, 14, 67] use
+Clifford replicas to characterize device noise or create en-
+hanced compilation passes. Élivágar, in contrast, applies Clif-
+ford replicas to QML, and uses them to perform a noise-guided
+search for QML circuits. Other works [82, 83] focus on in-
+creasing noise robustness for QML circuits through improved
+training procedures, an approach complementary to Élivágar,
+as these techniques can be combined with Élivágar to improve
+the training of circuits selected by Élivágar.
+10.3. QCS for Variational Quantum Algorithms (VQAs)
+A few studies have explored QCS for VQAs [11], such as
+QAOA [91], VQE [30], and state preparation [25, 92, 94].
+These works largely adopt techniques from classical NAS.
+For example, QCEAT [30] is similar to evolutionary search-
+based NAS [69], and MCTS-QAOA [91] uses a reinforcement
+learning-based search algorithm inspired by [2, 95]. These
+frameworks can be extended to perform QCS for QML tasks,
+despite being originally designed for VQAs. However, since
+they rely on classically-inspired search and candidate evalua-
+tion mechanisms, these methods face the same issues as QCS
+works for QML, and are extremely slow even for small QML
+tasks. We compare Élivágar with [30, 91] in Table 1.
+10.4. Data embeddings
+Several works [10, 62, 73] have theoretically investigated the
+effect of data embeddings on circuit performance through the
+lens of generalization bounds and Fourier series. These worksfocus on developing theory that relates the data embeddings
+used to trained circuit performance. As such, they use simpli-
+fied settings that do not account for hardware noise or limited
+device connectivity, and place strict constraints of the struc-
+tures of the circuits used. Thus, they cannot be used as tools
+for QCS directly. In contrast, Élivágar solves the near-term
+problem of identifying performant circuits for QML applica-
+tions on NISQ hardware, which is a fundamentally different
+task. Élivágar, however, applies these theoretical insights on
+data embeddings to QCS by searching for both optimal data
+embeddings and variational gates for a QML task, which al-
+lows Élivágar to outperform prior QCS works.
+10.5. QCS for QML
+A few studies have focused on QCS for QML tasks, such
+as QuantumNAS [80] and QuantumSupernet [18]. These
+methods are both based on the classical Supernet [64] frame-
+work, and have been extensively discussed in Section 1, and
+compared with Élivágar in Section 8. Élivágar eschews the
+SuperCircuit that [18, 80] use in favor of a novel QCS pipeline
+that leverages training- and gradient-free circuit performance
+and noise robustness predictors to avoid expensive gradient
+computation. Thus, Élivágar avoids the runtime bottlenecks of
+SuperCircuit-based QCS frameworks, and is able to perform
+QCS with low overheads. In Table 1, we present a summary
+of the differences between Élivágar and prior works.
+11. Conclusion
+In this work, we present Élivágar, a noise-guided, resource-
+efficient QCS framework that searches for high-performance
+variational quantum circuits for QML tasks. Élivágar pro-
+poses that QCS methods should be tailored to QML tasks
+and carefully consider realistic constraints of QML algorithms
+and NISQ quantum hardware. Based on this proposal, Élivá-
+gar addresses the issues in current classically-inspired QCS
+methods and innovates in all important aspects of QCS with
+its topology-aware and data embedding-aware search space,
+noise-guided search algorithm, and two-stage circuit evalua-
+tion strategy. Comprehensive experimental results show that
+Élivágar significantly outperforms leading QCS methods while
+achieving much more favorable resource efficiency and scal-
+ability. Due to its resource efficiency and improved search
+space, Élivágar provides a powerful tool for enabling new
+research in QML and noise-aware quantum compilation.
+Acknowledgements
+S.A. thanks Sidharth Ramanan for fruitful discussions and
+comments on various drafts. Y .S. thanks Gushu Li for helpful
+reviews on the paper draft. We thank Prof. Devesh Tiwari
+for shepherding the paper and for providing detailed feedback.
+This work was funded in part by EPiQC, an NSF Expedition
+in Computing, under grant CCF-173044.
+13References
+[1]Amira Abbas, David Sutter, Christa Zoufal, Aurelien Lucchi, Alessio
+Figalli, and Stefan Woerner. The power of quantum neural networks.
+Nature Computational Science , 1(6):403–409, Jun 2021.
+[2]Bowen Baker, Otkrist Gupta, Nikhil Naik, and Ramesh Raskar. De-
+signing neural network architectures using reinforcement learning. In
+5th International Conference on Learning Representations, ICLR 2017,
+Toulon, France, April 24-26, 2017, Conference Track Proceedings ,
+2017.
+[3]Jonathan M Baker, Casey Duckering, Alexander Hoover, and Fred-
+eric T Chong. Time-sliced quantum circuit partitioning for modular
+architectures. In Computing Frontiers , pages 98–107, 2020.
+[4]Atilim Gunes Baydin, Barak A. Pearlmutter, Alexey Andreyevich
+Radul, and Jeffrey Mark Siskind. Automatic differentiation in machine
+learning: a survey. Journal of Machine Learning Research , 18(153):1–
+43, 2018.
+[5]Marcello Benedetti, Erika Lloyd, Stefan Sack, and Mattia Fiorentini.
+Parameterized quantum circuits as machine learning models. Quantum
+Science and Technology , 4(4):043001, Nov 2019.
+[6]Ville Bergholm, Josh Izaac, Maria Schuld, Christian Gogolin, M So-
+haib Alam, Shahnawaz Ahmed, Juan Miguel Arrazola, Carsten Blank,
+Alain Delgado, Soran Jahangiri, et al. Pennylane: Automatic differ-
+entiation of hybrid quantum-classical computations. arXiv preprint
+arXiv:1811.04968 , 2018.
+[7]Jacob Biamonte, Peter Wittek, Nicola Pancotti, Patrick Rebentrost,
+Nathan Wiebe, and Seth Lloyd. Quantum machine learning. Nature ,
+549(7671):195–202, 2017.
+[8]Sergey Bravyi and David Gosset. Improved classical simulation
+of quantum circuits dominated by clifford gates. Phys. Rev. Lett. ,
+116:250501, Jun 2016.
+[9]Abdulkadir Canatar, Evan Peters, Cengiz Pehlevan, Stefan M. Wild,
+and Ruslan Shaydulin. Bandwidth enables generalization in quantum
+kernel models. Transactions on Machine Learning Research , 2023.
+[10] Matthias C. Caro, Elies Gil-Fuster, Johannes Jakob Meyer, Jens Eis-
+ert, and Ryan Sweke. Encoding-dependent generalization bounds for
+parametrized quantum circuits. Quantum , 5:582, nov 2021.
+[11] M. Cerezo, Andrew Arrasmith, Ryan Babbush, Simon C. Benjamin,
+Suguru Endo, Keisuke Fujii, Jarrod R. McClean, Kosuke Mitarai,
+Xiao Yuan, Lukasz Cincio, and Patrick J. Coles. Variational quantum
+algorithms. Nature Reviews Physics , 3(9):625–644, 2021.
+[12] M. Cerezo, Akira Sone, Tyler V olkoff, Lukasz Cincio, and Patrick J.
+Coles. Cost function dependent barren plateaus in shallow parametrized
+quantum circuits. Nature Communications , 12(1), mar 2021.
+[13] Poulami Das, Siddharth Dangwal, Swamit S Tannu, and Moinuddin
+Qureshi. Adapt: Mitigating idling errors in qubits via adaptive dynami-
+cal decoupling. In MICRO , 2021.
+[14] Poulami Das, Eric Kessler, and Yunong Shi. The imitation game:
+Leveraging copycats for robust native gate selection in nisq programs.
+InHPCA 2023 , 2022.
+[15] Poulami Das, Swamit Tannu, Siddharth Dangwal, and Moinuddin
+Qureshi. ADAPT: Mitigating idling errors in qubits via adaptive dy-
+namical decoupling. In MICRO-54: 54th Annual IEEE/ACM Interna-
+tional Symposium on Microarchitecture . ACM, oct 2021.
+[16] Poulami Das, Swamit S Tannu, and Moinuddin Qureshi. Jig-
+saw:boosting fidelity of nisq programs via measurement subsetting. In
+MICRO , 2021.
+[17] Xuanyi Dong and Yi Yang. Searching for a robust neural architecture
+in four gpu hours. In Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR) , pages 1761–1770, 2019.
+[18] Yuxuan Du, Tao Huang, Shan You, Min-Hsiu Hsieh, and Dacheng Tao.
+Quantum circuit architecture search for variational quantum algorithms.
+npj Quantum Information , 8(1):62, May 2022.
+[19] Andreas Elben, Steven T. Flammia, Hsin-Yuan Huang, Richard Kueng,
+John Preskill, Benoît Vermersch, and Peter Zoller. The randomized
+measurement toolbox. Nature Reviews Physics , 5(1):9–24, Jan 2023.
+[20] Edward Farhi and Hartmut Neven. Classification with quantum neural
+networks on near term processors. arXiv preprint arXiv:1802.06002 ,
+2018.
+[21] Jennifer R. Glick, Tanvi P. Gujarati, Antonio D. Corcoles, Youngseok
+Kim, Abhinav Kandala, Jay M. Gambetta, and Kristan Temme. Co-
+variant quantum kernels for data with group structure. Bulletin of the
+American Physical Society , 2022.
+[22] Pranav Gokhale, Ali Javadi-Abhari, Nathan Earnest, Yunong Shi, and
+Frederic T Chong. Optimized quantum compilation for near-term
+algorithms with openpulse. In MICRO , pages 186–200. IEEE, 2020.[23] Tobias Haug, Chris N Self, and M S Kim. Quantum machine learning
+of large datasets using randomized measurements. Machine Learning:
+Science and Technology , 4(1):015005, jan 2023.
+[24] V ojtˇech Havlí ˇcek, Antonio D. Córcoles, Kristan Temme, Aram W.
+Harrow, Abhinav Kandala, Jerry M. Chow, and Jay M. Gambetta.
+Supervised learning with quantum-enhanced feature spaces. Nature ,
+567(7747):209–212, mar 2019.
+[25] Zhimin He, Chuangtao Chen, Lvzhou Li, Shenggen Zheng, and
+Haozhen Situ. Quantum architecture search with meta-learning. Ad-
+vanced Quantum Technologies , 5(8):2100134, 2022.
+[26] He-Liang Huang, Yuxuan Du, Ming Gong, Youwei Zhao, Yulin Wu,
+Chaoyue Wang, Shaowei Li, Futian Liang, Jin Lin, Yu Xu, Rui Yang,
+Tongliang Liu, Min-Hsiu Hsieh, Hui Deng, Hao Rong, Cheng-Zhi
+Peng, Chao-Yang Lu, Yu-Ao Chen, Dacheng Tao, Xiaobo Zhu, and
+Jian-Wei Pan. Experimental quantum generative adversarial networks
+for image generation. Physical Review Applied , 16(2), aug 2021.
+[27] Hsin-Yuan Huang, Michael Broughton, Jordan Cotler, Sitan Chen,
+Jerry Li, Masoud Mohseni, Hartmut Neven, Ryan Babbush, Richard
+Kueng, John Preskill, and Jarrod R. McClean. Quantum advantage in
+learning from experiments. Science , 376(6598):1182–1186, jun 2022.
+[28] Hsin-Yuan Huang, Michael Broughton, Masoud Mohseni, Ryan Bab-
+bush, Sergio Boixo, Hartmut Neven, and Jarrod R. McClean. Power of
+data in quantum machine learning. Nature Comms. , 12(1):2631, 2021.
+[29] Hsin-Yuan Huang, Richard Kueng, and John Preskill. Predicting many
+properties of a quantum system from very few measurements. Nature
+Physics , 16(10):1050–1057, jun 2020.
+[30] Yuhan Huang, Qingyu Li, Xiaokai Hou, Rebing Wu, Man-Hong Yung,
+Abolfazl Bayat, and Xiaoting Wang. Robust resource-efficient quantum
+variational ansatz through an evolutionary algorithm. Physical Review
+A, 105(5), may 2022.
+[31] Raban Iten, Romain Moyard, Tony Metger, David Sutter, and Stefan
+Woerner. Exact and practical pattern matching for quantum circuit
+optimization. ACM Transactions on Quantum Computing , 3(1), jan
+2022.
+[32] E. Knill, D. Leibfried, R. Reichle, J. Britton, R. B. Blakestad, J. D.
+Jost, C. Langer, R. Ozeri, S. Seidelin, and D. J. Wineland. Randomized
+benchmarking of quantum gates. Physical Review A , 77(1), jan 2008.
+[33] Jonas M. Kübler, Simon Buchholz, and Bernhard Schölkopf. The
+inductive bias of quantum kernels. In A. Beygelzimer, Y . Dauphin,
+P. Liang, and J. Wortman Vaughan, editors, Advances in Neural Infor-
+mation Processing Systems , 2021.
+[34] Martín Larocca, Nathan Ju, Diego García-Martín, Patrick J. Coles,
+and Marco Cerezo. Theory of overparametrization in quantum neural
+networks. Nature Computational Science , 3(6):542–551, Jun 2023.
+[35] Gushu Li, Yufei Ding, and Yuan Xie. Tackling the qubit mapping prob-
+lem for nisq-era quantum devices. In Proceedings of the Twenty-Fourth
+International Conference on Architectural Support for Programming
+Languages and Operating Systems , ASPLOS ’19, page 1001–1014,
+New York, NY , USA, 2019. Association for Computing Machinery.
+[36] Liam Li and Ameet Talwalkar. Random search and reproducibility
+for neural architecture search. In Ryan P. Adams and Vibhav Gogate,
+editors, Proceedings of The 35th Uncertainty in Artificial Intelligence
+Conference , volume 115 of Proceedings of Machine Learning Research ,
+pages 367–377. PMLR, 22–25 Jul 2020.
+[37] Zhiding Liang, Jinglei Cheng, Hang Ren, Hanrui Wang, Fei Hua,
+Yongshan Ding, Fred Chong, Song Han, Yiyu Shi, and Xuehai Qian.
+Pan: Pulse ansatz on nisq machines. arXiv preprint arXiv:2208.01215 ,
+2022.
+[38] Hanxiao Liu, Karen Simonyan, and Yiming Yang. DARTS: Differen-
+tiable architecture search. In International Conference on Learning
+Representations , 2019.
+[39] Ji Liu, Luciano Bello, and Huiyang Zhou. Relaxed peephole opti-
+mization: A novel compiler optimization for quantum circuits. In
+2021 IEEE/ACM International Symposium on Code Generation and
+Optimization (CGO) , pages 301–314. IEEE, 2021.
+[40] Ji Liu, Peiyi Li, and Huiyang Zhou. Not all swaps have the same
+cost: A case for optimization-aware qubit routing. In 2022 IEEE
+International Symposium on High-Performance Computer Architecture
+(HPCA) , pages 709–725. IEEE, 2022.
+[41] Yunchao Liu, Srinivasan Arunachalam, and Kristan Temme. A rigorous
+and robust quantum speed-up in supervised machine learning. Nature
+Physics , 17(9):1013–1017, jul 2021.
+[42] Seth Lloyd, Maria Schuld, Aroosa Ijaz, Josh Izaac, and Nathan Kil-
+loran. Quantum embeddings for machine learning. arXiv preprint
+arXiv:2001.03622 , 2020.
+[43] V olker Lohweg. banknote authentication. UCI Machine Learning
+Repository, 2013. DOI: https://doi.org/10.24432/C55P57.
+14[44] Aaron Lye, Robert Wille, and Rolf Drechsler. Determining the minimal
+number of swap gates for multi-dimensional nearest neighbor quantum
+circuits. In ASPDAC , pages 178–183. IEEE, 2015.
+[45] Jarrod R. McClean, Sergio Boixo, Vadim N. Smelyanskiy, Ryan Bab-
+bush, and Hartmut Neven. Barren plateaus in quantum neural network
+training landscapes. Nature Communications , 9(1), Nov 2018.
+[46] Dekel Meirom and Steven H. Frankel. Pansatz: Pulse-based ansatz
+for variational quantum algorithms. arXiv preprint arXiv:2212.12911 ,
+2022.
+[47] Prakash Murali, Jonathan M Baker, Ali Javadi-Abhari, Frederic T
+Chong, and Margaret Martonosi. Noise-adaptive compiler mappings
+for noisy intermediate-scale quantum computers. In ASPLOS , 2019.
+[48] Prakash Murali, David C. Mckay, Margaret Martonosi, and Ali Javadi-
+Abhari. Software mitigation of crosstalk on noisy intermediate-scale
+quantum computers. In Proceedings of the Twenty-Fifth International
+Conference on Architectural Support for Programming Languages and
+Operating Systems . ACM, mar 2020.
+[49] Yunseong Nam, Neil J. Ross, Yuan Su, Andrew M. Childs, and Dmitri
+Maslov. Automated optimization of large quantum circuits with con-
+tinuous parameters. npj Quantum Information , 4(1):23, 2018.
+[50] Giacomo Nannicini, Lev S. Bishop, Oktay Günlük, and Petar Jurcevic.
+Optimal qubit assignment and routing via integer programming. ACM
+Transactions on Quantum Computing , 4(1), oct 2022.
+[51] Quynh T. Nguyen, Louis Schatzki, Paolo Braccia, Michael Ragone,
+Patrick J. Coles, Frederic Sauvage, Martin Larocca, and M. Cerezo.
+Theory for equivariant quantum neural networks. arXiv preprint
+arXiv:2210.08566 , 2022.
+[52] Michael A. Nielsen and Isaac L. Chuang. Quantum Computation
+and Quantum Information: 10th Anniversary Edition . Cambridge
+University Press, New York, NY , USA, 10th edition, 2011.
+[53] Xuefei Ning, Changcheng Tang, Wenshuo Li, Zixuan Zhou, Shuang
+Liang, Huazhong Yang, and Yu Wang. Evaluating efficient per-
+formance estimators of neural architectures. In A. Beygelzimer,
+Y . Dauphin, P. Liang, and J. Wortman Vaughan, editors, Advances
+in Neural Information Processing Systems , 2021.
+[54] Murphy Yuezhen Niu, Alexander Zlokapa, Michael Broughton, Sergio
+Boixo, Masoud Mohseni, Vadim Smelyanskyi, and Hartmut Neven.
+Entangling quantum generative adversarial networks. Phys. Rev. Lett. ,
+128:220505, Jun 2022.
+[55] Angelo Oddi and Riccardo Rasconi. Greedy randomized search for
+scalable compilation of quantum circuits. In International Conference
+on the Integration of Constraint Programming, Artificial Intelligence,
+and Operations Research , pages 446–461. Springer, 2018.
+[56] Tirthak Patel, Daniel Silver, and Devesh Tiwari. Geyser: a compilation
+framework for quantum computing with neutral atoms. In Proceedings
+of the 49th Annual International Symposium on Computer Architecture ,
+pages 383–395, 2022.
+[57] Tirthak Patel, Daniel Silver, and Devesh Tiwari. Optic: A practical
+quantum binary classifier for near-term quantum computers. In Pro-
+ceedings of the 2022 Conference and Exhibition on Design, Automation
+and Test in Europe , DATE ’22, page 334–339, Leuven, BEL, 2022.
+European Design and Automation Association.
+[58] Tirthak Patel and Devesh Tiwari. Disq: A novel quantum output state
+classification method on ibm quantum computers using openpulse.
+InProceedings of the 39th International Conference on Computer-
+Aided Design , ICCAD ’20, New York, NY , USA, 2020. Association
+for Computing Machinery.
+[59] Tirthak Patel and Devesh Tiwari. Qraft: reverse your quantum circuit
+and know the correct program output. In Tim Sherwood, Emery D.
+Berger, and Christos Kozyrakis, editors, ASPLOS ’21: 26th ACM
+International Conference on Architectural Support for Programming
+Languages and Operating Systems, Virtual Event, USA, April 19-23,
+2021 , pages 443–455. ACM, 2021.
+[60] Tirthak Patel, Ed Younis, Costin Iancu, Wibe de Jong, and Devesh
+Tiwari. Quest: systematically approximating quantum circuits for
+higher output fidelity. In Proceedings of the 27th ACM International
+Conference on Architectural Support for Programming Languages and
+Operating Systems , pages 514–528, 2022.
+[61] Tirthak Patel, Ed Younis, Costin Iancu, Wibe de Jong, and Devesh
+Tiwari. Robust quantum circuit approximation for resource-efficient
+circuit synthesis. Bulletin of the American Physical Society , 2022.
+[62] Evan Peters and Maria Schuld. Generalization despite overfitting in
+quantum machine learning models. arXiv preprint arXiv:2209.05523 ,
+2022.
+[63] Eric C Peterson, Lev S Bishop, and Ali Javadi-Abhari. Optimal syn-
+thesis into fixed xx interactions. Quantum , 6:696, 2022.[64] Hieu Pham, Melody Guan, Barret Zoph, Quoc Le, and Jeff Dean. Ef-
+ficient neural architecture search via parameters sharing. In Jennifer
+Dy and Andreas Krause, editors, Proceedings of the 35th Interna-
+tional Conference on Machine Learning , volume 80 of Proceedings
+of Machine Learning Research , pages 4095–4104. PMLR, 10–15 Jul
+2018.
+[65] John Preskill. Quantum Computing in the NISQ era and beyond.
+Quantum , 2:79, August 2018.
+[66] Jun Qi, Chao-Han Huck Yang, and Pin-Yu Chen. Qtn-vqc: An end-to-
+end learning framework for quantum neural networks. arXiv preprint
+arXiv:2110.03861 , 2021.
+[67] Gokul Subramanian Ravi, Jonathan M. Baker, Kaitlin N. Smith, Nathan
+Earnest, Ali Javadi-Abhari, and Frederic Chong. Boosting quantum
+fidelity with an ordered diverse ensemble of clifford canary circuits.
+Bulletin of the American Physical Society , 2022.
+[68] Gokul Subramanian Ravi, Pranav Gokhale, Yi Ding, William Kirby,
+Kaitlin Smith, Jonathan M. Baker, Peter J. Love, Henry Hoffmann,
+Kenneth R. Brown, and Frederic T. Chong. Cafqa: A classical simu-
+lation bootstrap for variational quantum algorithms. In Proceedings
+of the 28th ACM International Conference on Architectural Support
+for Programming Languages and Operating Systems, Volume 1 , ASP-
+LOS 2023, page 15–29, New York, NY , USA, 2022. Association for
+Computing Machinery.
+[69] Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V . Le. Regu-
+larized evolution for image classifier architecture search. In Proceed-
+ings of the Thirty-Third AAAI Conference on Artificial Intelligence and
+Thirty-First Innovative Applications of Artificial Intelligence Confer-
+ence and Ninth AAAI Symposium on Educational Advances in Artificial
+Intelligence , AAAI’19/IAAI’19/EAAI’19. AAAI Press, 2019.
+[70] Manuel S. Rudolph, Ntwali Bashige Toussaint, Amara Katabarwa,
+Sonika Johri, Borja Peropadre, and Alejandro Perdomo-Ortiz. Gener-
+ation of high-resolution handwritten digits with an ion-trap quantum
+computer. Phys. Rev. X , 12:031010, Jul 2022.
+[71] Maria Schuld, Ville Bergholm, Christian Gogolin, Josh Izaac, and
+Nathan Killoran. Evaluating analytic gradients on quantum hardware.
+Physical Review A , 99(3), mar 2019.
+[72] Maria Schuld and Francesco Petruccione. Quantum Models as Kernel
+Methods , pages 217–245. Springer International Publishing, Cham,
+2021.
+[73] Maria Schuld, Ryan Sweke, and Johannes Jakob Meyer. Effect of data
+encoding on the expressive power of variational quantum-machine-
+learning models. Physical Review A , 103(3), mar 2021.
+[74] Yunong Shi, Nelson Leung, Pranav Gokhale, Zane Rossi, David I
+Schuster, Henry Hoffmann, and Frederic T Chong. Optimized compi-
+lation of aggregated instructions for realistic quantum computers. In
+ASPLOS , 2019.
+[75] Daniel Silver, Tirthak Patel, and Devesh Tiwari. Quilt: Effective multi-
+class classification on quantum computers using an ensemble of diverse
+quantum classifiers. Proceedings of the AAAI Conference on Artificial
+Intelligence , 36(8):8324–8332, Jun. 2022.
+[76] Sukin Sim, Peter D. Johnson, and Alán Aspuru-Guzik. Expressibility
+and entangling capability of parameterized quantum circuits for hy-
+brid quantum-classical algorithms. Advanced Quantum Technologies ,
+2(12):1900070, Oct 2019.
+[77] Kaitlin N Smith, Gokul Subramanian Ravi, Prakash Murali,
+Jonathan M Baker, Nathan Earnest, Ali Javadi-Abhari, and Frederic T
+Chong. Error mitigation in quantum computers through instruction
+scheduling. arXiv preprint arXiv:2105.01760 , 2021.
+[78] Swamit Tannu, Poulami Das, Ramin Ayanzadeh, and Moinuddin
+Qureshi. HAMMER: boosting fidelity of noisy quantum circuits by
+exploiting hamming behavior of erroneous outcomes. In Proceedings
+of the 27th ACM International Conference on Architectural Support
+for Programming Languages and Operating Systems . ACM, feb 2022.
+[79] Swamit S Tannu and Moinuddin K Qureshi. Not all qubits are cre-
+ated equal: a case for variability-aware policies for nisq-era quantum
+computers. In ASPLOS , 2019.
+[80] H. Wang, Y . Ding, J. Gu, Y . Lin, D. Z. Pan, F. T. Chong, and S. Han.
+Quantumnas: Noise-adaptive search for robust quantum circuits. In
+2022 IEEE International Symposium on High-Performance Computer
+Architecture (HPCA) , pages 692–708, Los Alamitos, CA, USA, apr
+2022. IEEE Computer Society.
+[81] Hanrui Wang, Jiaqi Gu, Yongshan Ding, Zirui Li, Frederic T. Chong,
+David Z. Pan, and Song Han. Roqnn: Noise-aware training for robust
+quantum neural networks. arXiv preprint arXiv:2110.11331 , 2021.
+[82] Hanrui Wang, Jiaqi Gu, Yongshan Ding, Zirui Li, Frederic T. Chong,
+David Z. Pan, and Song Han. Quantumnat: Quantum noise-aware
+15training with noise injection, quantization and normalization. In Pro-
+ceedings of the 59th ACM/IEEE Design Automation Conference , DAC
+’22, page 1–6, New York, NY , USA, 2022. Association for Computing
+Machinery.
+[83] Hanrui Wang, Zirui Li, Jiaqi Gu, Yongshan Ding, David Z. Pan, and
+Song Han. Qoc: Quantum on-chip training with parameter shift and
+gradient pruning. In Proceedings of the 59th ACM/IEEE Design Au-
+tomation Conference , DAC ’22, page 655–660, New York, NY , USA,
+2022. Association for Computing Machinery.
+[84] Samson Wang, Enrico Fontana, M. Cerezo, Kunal Sharma, Akira Sone,
+Lukasz Cincio, and Patrick J. Coles. Noise-induced barren plateaus in
+variational quantum algorithms. Nature Communications , 12(1):6961,
+Nov 2021.
+[85] Xinbiao Wang, Yuxuan Du, Yong Luo, and Dacheng Tao. Towards
+understanding the power of quantum kernels in the NISQ era. Quantum ,
+5:531, aug 2021.
+[86] Mathias Weiden, Justin Kalloor, Tirthak Patel, Ed Younis, Costin Iancu,
+and John Kubiatowicz. Topology aware unitary synthesis for scalable
+quantum circuit optimization. Bulletin of the American Physical Soci-
+ety, 2022.
+[87] David Wierichs, Josh Izaac, Cody Wang, and Cedric Yen-Yu Lin.
+General parameter-shift rules for quantum gradients. Quantum , 6:677,
+mar 2022.
+[88] Robert Wille, Aaron Lye, and Rolf Drechsler. Optimal swap gate
+insertion for nearest neighbor quantum circuits. In ASPDAC . IEEE,
+2014.
+[89] W. K. Wootters and W. H. Zurek. A single quantum cannot be cloned.
+Nature , 299(5886):802–803, 1982.
+[90] Mingkuan Xu, Zikun Li, Oded Padon, Sina Lin, Jessica Pointing,
+Auguste Hirth, Henry Ma, Jens Palsberg, Alex Aiken, Umut A Acar,
+et al. Quartz: superoptimization of quantum circuits. In Proceedings
+of the 43rd ACM SIGPLAN International Conference on Programming
+Language Design and Implementation , pages 625–640, 2022.
+[91] Jiahao Yao, Haoya Li, Marin Bukov, Lin Lin, and Lexing Ying. Monte
+carlo tree search based hybrid optimization of variational quantum
+circuits. In Bin Dong, Qianxiao Li, Lei Wang, and Zhi-Qin John Xu,
+editors, Proceedings of Mathematical and Scientific Machine Learning ,
+volume 190 of Proceedings of Machine Learning Research , pages
+49–64. PMLR, 15–17 Aug 2022.
+[92] Esther Ye and Samuel Yen-Chi Chen. Quantum architecture search via
+continual reinforcement learning. arXiv preprint arXiv:2112.05779 ,
+2021.
+[93] Ed Younis, Koushik Sen, Katherine Yelick, and Costin Iancu. Qfast:
+Conflating search and numerical optimization for scalable quantum
+circuit synthesis. In 2021 IEEE International Conference on Quantum
+Computing and Engineering (QCE) , pages 232–243. IEEE, 2021.
+[94] Shi-Xin Zhang, Chang-Yu Hsieh, Shengyu Zhang, and Hong Yao.
+Differentiable quantum architecture search. Quantum Science and
+Technology , 7(4):045023, aug 2022.
+[95] Barret Zoph and Quoc V . Le. Neural architecture search with reinforce-
+ment learning. In 5th International Conference on Learning Represen-
+tations, ICLR 2017, Toulon, France, April 24-26, 2017, Conference
+Track Proceedings , 2017.
+[96] Christa Zoufal. Generative Quantum Machine Learning . PhD thesis,
+ETH Zurich, 2021.
+[97] Christa Zoufal, Aurélien Lucchi, and Stefan Woerner. Variational
+quantum boltzmann machines. Quantum Machine Intelligence , 3(1),
+feb 2021.
+16
