@@ -29,9 +29,7 @@ const ReviewersView = () => {
 
   return (
     <div className="flex flex-col gap-2 bg-bg">
-      <form 
-      onSubmit={handleReviewSubmit}
-      className="flex flex-col gap-2 p-4">
+      <form onSubmit={handleReviewSubmit} className="flex flex-col gap-2 p-4">
         <label className="text-white font-semibold">
           <a
             href={`${apiUrl}${selectedPost.pdfUrl}`}
@@ -57,6 +55,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, clarity: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
           <li className=" text-sm flex items-center gap-2">
@@ -69,6 +69,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, methodology: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
           <li className="text-sm flex items-center gap-2">
@@ -81,6 +83,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, quality: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
 
@@ -94,6 +98,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, logicalFlow: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
 
@@ -107,6 +113,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, writingStyle: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
 
@@ -120,6 +128,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, citation: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
           <li className="text-sm flex items-center gap-2">
@@ -134,6 +144,8 @@ const ReviewersView = () => {
               onChange={(e) =>
                 setReview({ ...review, contribution: e.target.value })
               }
+              min="0"
+              max="10"
             />
           </li>
         </ul>
